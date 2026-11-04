@@ -11,6 +11,7 @@
 #include "layout.h"
 
 uint64_t rt_lifted_function(uintptr_t rip);
+int coop_watch_counts(void);   // coop_spawn.c: 0 skips this fault (the camera-only watch)
 
 #define SLOTS 64
 static volatile LONG armed;
@@ -47,7 +48,7 @@ static LONG CALLBACK veh(EXCEPTION_POINTERS *ep) {
     if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
     uint64_t a = (uint64_t)er->ExceptionInformation[1];
     if (a < page_lo || a >= page_hi || !page_lo) return EXCEPTION_CONTINUE_SEARCH;
-    if (a >= lo && a < hi) note(rt_lifted_function((uintptr_t)ep->ContextRecord->Rip), a);
+    if (a >= lo && a < hi && coop_watch_counts()) note(rt_lifted_function((uintptr_t)ep->ContextRecord->Rip), a);
     else InterlockedIncrement(&outside);
     DWORD o;
     VirtualProtect((void *)(uintptr_t)page_lo, page_hi - page_lo, old_prot, &o);
