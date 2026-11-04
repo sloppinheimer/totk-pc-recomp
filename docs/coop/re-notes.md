@@ -165,3 +165,14 @@ evidence), guess.
   ExecuteWmSetTime does (hour * 3600 + minute * 60, then main+0xb6bff8 (time object, 1, -1)). Evidence: lifted code
   of the node, memory probe (35571 -> 37671 over the run; HUD 10:00 AM). Test: guest on 6:43 AM set to the host's
   9:55 AM in one request; HUD clocks agree. Confidence: confirmed.
+
+## HUD control guide (2026-11-04)
+- The bottom-right prompts ("Dive R", ...) live on one CtrlGuide screen, found through [main+0x3960158] by name hash
+  0x5528d3d9. main+0x2192c50 (type) shows a prompt type (main+0x2147c64 on the screen), main+0x4cb540 (type) hides
+  one (clears bit type of a mask at screen +0x1b8, rebuilds with main+0x2147df0); main+0x4cb3d8 hides all 42.
+  Every Player's calc calls them, so a co-op Link's state reached this PC's HUD (the tester's screenshot: "Dive R" on
+  the window whose own Link stood still). Evidence: profiler mode TOTK_COOP_PROF=3 saw the screen's guide stack
+  main+0xd82334 entered inside the co-op Link's calc, from main+0x2147e4c; Ghidra for the callers.
+- Fix: both do nothing inside a co-op Link's calc. Test: A glides (tools/coop/glide.txt), A's HUD shows "Dive R",
+  B's shows none. Confidence: confirmed for this prompt; other HUD screens (big action prompts like "A Talk") not
+  checked.

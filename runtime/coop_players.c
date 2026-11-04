@@ -287,6 +287,37 @@ static Slot *slot_new(int source, int net_id) {
 
 // Called from the actor calc hook: 1 when it ran a slot's Player itself (with the slot's controller handed out).
 static __thread int inside;
+// ---- TOTK_COOP_TRACE=diff (a test): which qwords of main's writable data (.data to .bss) a co-op Link's calc changes;
+// counted over calcs and reported every 600 calcs, the most often changed first.
+#define DIFF_LO 0x357dee8
+#define DIFF_HI 0x3adefd0
+#define DIFF_N ((DIFF_HI - DIFF_LO) / 8)
+static uint64_t *diff_snap;
+static uint16_t *diff_count;
+static int diff_calcs;
+static void diff_before(void) {
+    if (!diff_snap) diff_snap = malloc(DIFF_N * 8), diff_count = calloc(DIFF_N, 2);
+    if (diff_snap) memcpy(diff_snap, (void *)(uintptr_t)(MOD_MAIN_BASE + DIFF_LO), DIFF_N * 8);
+}
+static void diff_after(void) {
+    if (!diff_snap || !diff_count) return;
+    const uint64_t *now = (const uint64_t *)(uintptr_t)(MOD_MAIN_BASE + DIFF_LO);
+    for (size_t i = 0; i < DIFF_N; i++)
+        if (now[i] != diff_snap[i] && diff_count[i] < 65535) diff_count[i]++;
+    if (++diff_calcs < 600) return;
+    int shown = 0;
+    for (int want = 600; want > 0 && shown < 60; want = want > 60 ? want - 60 : want - 10)
+        for (size_t i = 0; i < DIFF_N && shown < 60; i++)
+            if (diff_count[i] >= want && diff_count[i] < want + (want > 60 ? 60 : 10)) {
+                rt_log("coop: diff main+%#llx changed in %u of 600 calcs, now %llx", (unsigned long long)(DIFF_LO + i * 8),
+                       diff_count[i], (unsigned long long)now[i]);
+                shown++;
+            }
+    rt_log("coop: diff: %d qwords shown", shown);
+    memset(diff_count, 0, DIFF_N * 2);
+    diff_calcs = 0;
+}
+int coop_in_remote_calc(void) { return inside; }   // this thread runs a co-op Link's calc (coop_spawn.c profiler)
 int coop_players_calc(Cpu *c, uint64_t addr) {
     Slot *s;
     if (inside || !(s = slot_of_actor(c->x[0]))) return 0;
@@ -301,10 +332,14 @@ int coop_players_calc(Cpu *c, uint64_t addr) {
     plat_mutex_unlock(&lock);
     coop_fill_controller(own, buttons, stick, &s->prev, s->held);
     ST64(mgr + 0xa0, own);
+    static int diff_on = -1;   // TOTK_COOP_TRACE=diff: main's writable data the co-op Link's calc changes
+    if (diff_on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); diff_on = e && strstr(e, "diff"); }
+    if (diff_on) diff_before();
     inside = 1;
     c->pc = addr;
     rt_dispatch(c);
     inside = 0;
+    if (diff_on) diff_after();
     ST64(mgr + 0xa0, real);
     return 1;
 }
