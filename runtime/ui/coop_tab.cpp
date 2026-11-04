@@ -84,11 +84,33 @@ static void keyboard(float scale) {
     ImGui::EndPopup();
 }
 
-// A field: its row shows the text; A or a click opens the keyboard on it.
-static void field(const char *id, UiTextId label, char *buf, size_t n) {
+// A field: its row shows the text. Picked with the gamepad (A), it opens the on-screen keyboard; with the mouse or
+// the keyboard (a click, Enter), the row becomes a text box to type in, done on Enter or a click elsewhere.
+static const char *inline_id;   // the field being typed in, NULL none
+static void field(const char *id, UiTextId label, char *buf, size_t n, float scale) {
+    if (inline_id && !strcmp(inline_id, id)) {
+        static bool focused;
+        ImGui::TextUnformatted(menu_text(label));
+        ImGui::SameLine(260 * scale);
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+        if (!focused) ImGui::SetKeyboardFocusHere(), focused = true;
+        char iid[64];
+        snprintf(iid, sizeof iid, "##in%s", id);
+        bool enter = ImGui::InputText(iid, buf, n, ImGuiInputTextFlags_EnterReturnsTrue);
+        if (enter || ImGui::IsItemDeactivated()) {
+            save_fields();
+            inline_id = nullptr, focused = false;
+            opt_focus_key(id);   // the cursor back on the row
+        }
+        return;
+    }
     if (opt_text_row(id, menu_text(label), buf[0] ? buf : "-", nullptr, menu_text(UI_MENU_COOP_EDIT_DESC), false) == 2) {
-        kb_buf = buf, kb_cap = n, kb_upper = false;
-        ImGui::OpenPopup("##coop_kbd");
+        bool pad = ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false) || ImGui::IsKeyDown(ImGuiKey_GamepadFaceDown);
+        if (pad) {
+            kb_buf = buf, kb_cap = n, kb_upper = false;
+            ImGui::OpenPopup("##coop_kbd");
+        } else
+            inline_id = id;
     }
 }
 
@@ -157,12 +179,12 @@ extern "C" void tab_coop(float scale) {
         }
         if (action("##coop_leave", UI_MENU_COOP_LEAVE, UI_MENU_COOP_LEAVE_DESC, scale, true)) coop_end();
     } else {
-        field("##coop_name", UI_MENU_COOP_NAME, g_name, sizeof g_name);
+        field("##coop_name", UI_MENU_COOP_NAME, g_name, sizeof g_name, scale);
         if (action("##coop_host", UI_MENU_COOP_HOST, UI_MENU_COOP_HOST_DESC, scale)) {
             save_fields();
             coop_host(g_name);
         }
-        field("##coop_addr", UI_MENU_COOP_ADDRESS, g_addr, sizeof g_addr);
+        field("##coop_addr", UI_MENU_COOP_ADDRESS, g_addr, sizeof g_addr, scale);
         if (g_addr[0] && action("##coop_join", UI_MENU_COOP_JOIN, UI_MENU_COOP_JOIN_DESC, scale)) {
             save_fields();
             coop_net_join(g_addr, g_name);
@@ -178,8 +200,9 @@ extern "C" void tab_coop(float scale) {
     opt_text(UI_MENU_COOP_NOTE);
     static bool test_kbd;   // TOTK_COOP_TEST_KBD: the keyboard opens on the name the first time the tab shows (tests)
     if (!test_kbd && cfg_get("TOTK_COOP_TEST_KBD")) {
-        test_kbd = true, kb_buf = g_name, kb_cap = sizeof g_name;
-        ImGui::OpenPopup("##coop_kbd");
+        test_kbd = true, kb_buf = g_name, kb_cap = sizeof g_name;   // =inline: the text box a mouse or keyboard gets
+        if (!strcmp(cfg_get("TOTK_COOP_TEST_KBD"), "inline")) inline_id = "##coop_name";
+        else ImGui::OpenPopup("##coop_kbd");
     }
     keyboard(scale);
     opt_end();
