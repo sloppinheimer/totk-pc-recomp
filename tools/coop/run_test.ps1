@@ -22,7 +22,8 @@ $env:TOTK_COOP_BLIND = $Blind
 $env:TOTK_COOP_CTRLDUMP = $CtrlDump
 if ($CamAt) { $env:TOTK_COOP_CAMAT = $CamAt } else { Remove-Item Env:TOTK_COOP_CAMAT -ErrorAction SilentlyContinue }
 if ($P2) { $env:TOTK_COOP_P2 = $P2 } else { Remove-Item Env:TOTK_COOP_P2 -ErrorAction SilentlyContinue }
-$p = Start-Process build\v143\totk.exe -WorkingDirectory build\v143 -PassThru
+. (Join-Path $PSScriptRoot 'quiet.ps1')   # no console, no mouse capture, the window stays behind
+$p = Start-Quiet (Join-Path $root 'build\v143\totk.exe') '' (Join-Path $root 'build\v143')
 $deadline = (Get-Date).AddSeconds($Seconds)
 while ((Get-Date) -lt $deadline -and -not $p.HasExited) { Start-Sleep 1 }
 if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
