@@ -443,7 +443,22 @@ void coop_players_tick(Cpu *c, int numpad3) {
             fake += n + (fake[n] == ',');
         }
         memcpy(st.sticks, local_sticks, sizeof st.sticks);
-        if (coop_local_paused()) {   // a menu is open here: the sticks and buttons move through it, not Link
+        // A menu is open here when the clock has stopped (the game stops time in its menus) and Link has not moved
+        // for 150 ms: the game keeps updating Link in the inventory, so that is no sign (pair test 2026-11-04);
+        // where time stands still in play (if anywhere), Link moving with the input keeps it flowing.
+        static float last_t = -2, last_p[3];
+        static uint64_t t_moved, p_moved;
+        uint64_t now_ns = plat_now_ns();
+        float tnow = day_seconds();
+        if (tnow != last_t) last_t = tnow, t_moved = now_ns;
+        float dpx = st.pos[0] - last_p[0], dpy = st.pos[1] - last_p[1], dpz = st.pos[2] - last_p[2];
+        if (dpx * dpx + dpy * dpy + dpz * dpz > 0.0004f) memcpy(last_p, st.pos, 12), p_moved = now_ns;
+        int paused = now_ns - t_moved > 150000000ull && now_ns - p_moved > 150000000ull;
+        static int was_paused = -1;
+        if (paused != was_paused) rt_log("coop: this Link %s (input sent %s)", paused ? "is paused" : "runs",
+                                         paused ? "neutral" : "as is");
+        was_paused = paused;
+        if (paused) {   // a menu is open here: the sticks and buttons move through it, not Link
             st.buttons = 0;
             memset(st.sticks, 0, sizeof st.sticks);
         }
