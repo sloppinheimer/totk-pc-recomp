@@ -2,7 +2,10 @@
 # plays -ScriptB with no real input. Each runs on a copy of the 1.4.3 profile and logs to its own folder
 # (build\v143 and build\v143b, the second made of links to the first's files). Prints both games' co-op lines.
 #   powershell -ExecutionPolicy Bypass -File tools\coop\run_pair.ps1 [-Seconds 90]
-param([int]$Seconds = 90, [string]$ScriptA = "tools\coop\walk.txt", [string]$ScriptB = "tools\coop\idle.txt", [string]$FakeGearA = "")
+#   -FakeGearA "Weapon_Sword_070,Weapon_Bow_001,Weapon_Shield_001": game A reports these items (see coop_players.c)
+#   -ShotsB w20-30:2 -ShotsDir <dir>: game B saves screenshots (TOTK_SHOTS syntax, boot.c)
+param([int]$Seconds = 90, [string]$ScriptA = "tools\coop\walk.txt", [string]$ScriptB = "tools\coop\idle.txt", [string]$FakeGearA = "",
+      [string]$ShotsB = "", [string]$ShotsDir = "")
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
@@ -34,6 +37,8 @@ foreach ($g in @(@{dir = $a; prof = 'build\prof-coop-a'; script = $ScriptA; name
     $env:TOTK_COOP_RELAY = '127.0.0.1'; $env:TOTK_COOP_NAME = $g.name; $env:TOTK_COOP_P2 = 'off'
     if ($g.input) { $env:TOTK_INPUT = $g.input } else { Remove-Item Env:TOTK_INPUT -ErrorAction SilentlyContinue }
     if ($g.name -eq 'A' -and $FakeGearA) { $env:TOTK_COOP_FAKEGEAR = $FakeGearA } else { Remove-Item Env:TOTK_COOP_FAKEGEAR -ErrorAction SilentlyContinue }
+    if ($g.name -eq 'B' -and $ShotsB) { $env:TOTK_SHOTS = $ShotsB; $env:TOTK_SHOTS_DIR = $ShotsDir; $env:TOTK_SHOTS_FULL = '1' }
+    else { Remove-Item Env:TOTK_SHOTS, Env:TOTK_SHOTS_DIR, Env:TOTK_SHOTS_FULL -ErrorAction SilentlyContinue }
     $games += Start-Process (Join-Path $g.dir 'totk.exe') -WorkingDirectory $g.dir -PassThru
     Start-Sleep 3
 }

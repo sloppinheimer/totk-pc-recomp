@@ -16,7 +16,7 @@ import socket
 import struct
 import time
 
-MAGIC, VERSION = b'TKCO', 1
+MAGIC, VERSION = b'TKCO', 2
 HELLO, WELCOME, STATE, LEAVE, BYE = 1, 2, 3, 4, 5
 MAX_PLAYERS, TIMEOUT = 8, 5.0
 HEADER = struct.Struct('<4sBBBB')
