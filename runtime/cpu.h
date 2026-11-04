@@ -72,7 +72,14 @@ typedef uint8_t __attribute__((may_alias)) u8a;
 // Function-entry profiler (runtime/fnprof.c, LARECOMP_FNPROF): one predictable branch per call when off.
 extern volatile int g_fnprof;
 void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0);
-#define FN_ENTER(a) do { if (__builtin_expect(g_fnprof, 0)) fnprof_hit(a, c->x[30], c->x[0]); } while (0)
+// Co-op entry hooks (runtime/coop_spawn.c coop_hook): a call with the function's registers at the entry of the functions
+// COOP_HOOKED names, before the body loads them, so the hook may change arguments. a is a constant in every generated
+// function, so the test folds away everywhere else.
+// A nonzero return means the hook ran the function itself (coop_hook calls it again through rt_dispatch and the inner
+// entry returns 0), so this entry returns at once with the registers the inner call left.
+#define COOP_HOOKED(a) ((a) == 0x700037ccc0ull || (a) == 0x700037d330ull || (a) == 0x700041bb20ull)   // getController, its input copy, actor calc
+int coop_hook(Cpu *c, uint64_t addr);
+#define FN_ENTER(a) do { if (COOP_HOOKED(a) && coop_hook(c, a)) return; if (__builtin_expect(g_fnprof, 0)) fnprof_hit(a, c->x[30], c->x[0]); } while (0)
 
 #define LD8(a)  (*(const u8a *)(uintptr_t)(a))
 #define LD16(a) (*(const u16u *)(uintptr_t)(a))

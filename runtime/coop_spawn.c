@@ -3,11 +3,16 @@
 // polls the gamepad (ov_input.c npad_states), whose Cpu rt_call needs. Test code: Windows keys only.
 
 #include <stdint.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "host.h"
 #include "input.h"
 #include "layout.h"
+#include "patches.h"
 #include "platform/platform.h"
 
 #define SCENE_SLOT 0x3add238      // [main+] -> +0x1e8 scene (runtime/frame_rate.c player_pos)
@@ -16,6 +21,7 @@
 #define CLAIM_ACTOR 0x1877160     // (handle, link out, 1, 0): what the AI node calls once the handle reads 3
 #define SET_DEPENDENCY 0x5b811c   // (actor system, parent, child): queues a parent -> child update dependency
 #define ACTOR_SYSTEM_SLOT 0x3ad6d80   // [main+] = the actor system SET_DEPENDENCY takes
+#define INPUT_MGR_SLOT 0x3960150      // [[main+]] = the game's controller manager; getController main+0x37ccc0
 #define EDGE_TABLE_SLOT 0x395da68     // [[main+]] +0x2f0 count, +0x2f8 edges {parent, child} (16 bytes each)
 #define ACTOR_NAME 0x218
 #define ACTOR_POS 0x2b4
@@ -26,7 +32,12 @@ static const char *const names[3] = {"Item_Fruit_A", "Npc_Kokiri007", "Player"};
 static _Alignas(16) uint8_t handles[3][0x40];
 static _Alignas(16) uint8_t links[3][0x40];   // the actor link the claim fills (the node keeps it at node+0x28)
 static int last_status[3] = {-1, -1, -1};
-static int dump_ticks;   // resident-list dumps left after the Player claim, one per poll
+int coop_watch_arm(uint64_t addr, uint64_t len);   // coop_watch_win.c
+void coop_watch_disarm(void);
+static uint64_t second_player;          // Player#2's actor once claimed
+static uint64_t player_actor_cached;    // Link#1, refreshed by coop_tick for the calc wrapper
+static int dump_ticks;
+static _Atomic uint64_t copy_dst[16];   // input objects the input copy (coop_hook) has written to
 
 static int rd(uint64_t a, void *out, size_t n) { return a && plat_mem_read(a, out, n); }
 static uint64_t rd_ptr(uint64_t a) {
@@ -126,6 +137,56 @@ static void copy_dependencies(Cpu *c, uint64_t model, uint64_t copy) {
     }
 }
 
+// Where an actor keeps the main controller: getController (main+0x37ccc0) returns [mgr+0xa0] for index 0,
+// [mgr+0xf0 + 8*(i-1)] for 1..3, [mgr+0xa8] for 4. Logs every qword equal to the index-0 controller in the actor's
+// first 0x3000 bytes and one pointer level below it (0x800 bytes of each object it points to).
+// Looks for pointers to the input objects the copy fills (copy_dst) in the actor: its first 0x3000 bytes, the 0x800 bytes
+// of each object those point to, and one more level (0x400 bytes).
+static int is_input_obj(uint64_t v) {
+    for (int i = 0; i < 16; i++) { uint64_t d = atomic_load(&copy_dst[i]); if (!d) break; if (v == d) return i + 1; }
+    return 0;
+}
+static int heapish(uint64_t v) { return v >= 0x100000000ull && v <= 0x7fffffffffull && !(v & 7); }
+static void find_input(const char *who, uint64_t actor) {
+    static uint64_t a0[0x3000 / 8], a1[0x800 / 8], a2[0x400 / 8];
+    if (!actor || !rd(actor, a0, sizeof a0)) return;
+    int hits = 0;
+    for (int i = 0; i < 0x3000 / 8 && hits < 32; i++) {
+        int k;
+        if ((k = is_input_obj(a0[i]))) { rt_log("coop: %s +%#x = input object %d", who, i * 8, k - 1); hits++; continue; }
+        if (!heapish(a0[i]) || !rd(a0[i], a1, sizeof a1)) continue;
+        for (int j = 0; j < 0x800 / 8 && hits < 32; j++) {
+            if ((k = is_input_obj(a1[j]))) { rt_log("coop: %s [+%#x] +%#x = input object %d", who, i * 8, j * 8, k - 1); hits++; continue; }
+            if (!heapish(a1[j]) || !rd(a1[j], a2, sizeof a2)) continue;
+            for (int m = 0; m < 0x400 / 8 && hits < 32; m++)
+                if ((k = is_input_obj(a2[m]))) {
+                    rt_log("coop: %s [[+%#x] +%#x] +%#x = input object %d", who, i * 8, j * 8, m * 8, k - 1);
+                    hits++;
+                }
+        }
+    }
+    rt_log("coop: %s: %d places point at an input object", who, hits);
+}
+
+static void find_controller(const char *who, uint64_t actor) {
+    uint64_t mgr = rd_ptr(rd_ptr(MOD_MAIN_BASE + INPUT_MGR_SLOT)), want = mgr ? rd_ptr(mgr + 0xa0) : 0;
+    if (!want || !actor) return;
+    static uint64_t top[0x3000 / 8], sub[0x800 / 8];
+    if (!rd(actor, top, sizeof top)) return;
+    int hits = 0;
+    for (int i = 0; i < 0x3000 / 8 && hits < 24; i++) {
+        if (top[i] == want) { rt_log("coop: %s +%#x = controller 0", who, i * 8); hits++; continue; }
+        if (top[i] < 0x100000000ull || top[i] > 0x7fffffffffull || (top[i] & 7)) continue;
+        if (!rd(top[i], sub, sizeof sub)) continue;
+        for (int j = 0; j < 0x800 / 8 && hits < 24; j++)
+            if (sub[j] == want) { rt_log("coop: %s [+%#x] +%#x = controller 0", who, i * 8, j * 8); hits++; }
+    }
+    rt_log("coop: %s: %d places hold controller 0 (%llx); mgr %llx, controllers 1..3 %llx %llx %llx, 4 %llx", who, hits,
+           (unsigned long long)want, (unsigned long long)mgr, (unsigned long long)rd_ptr(mgr + 0xf0),
+           (unsigned long long)rd_ptr(mgr + 0xf8), (unsigned long long)rd_ptr(mgr + 0x100),
+           (unsigned long long)rd_ptr(mgr + 0xa8));
+}
+
 static void spawn(Cpu *c, int k) {
     if (k == 2) dump_resident("before the Player request");
     uint64_t actor = player_actor();
@@ -175,11 +236,360 @@ static int handle_status(int k) {
     return w && rd(w, &st, 4) ? (int)(st & 0xffff) : 0;
 }
 
+// Once per call site of the gamepad read: the guest call chain (x30, then the frame-pointer chain from x29), as main+
+// offsets, to find the code that hands controller input to the Player.
+static void log_callers(Cpu *c) {
+    static uint64_t seen[8];
+    uint64_t ra = c->x[30];
+    for (int i = 0; i < 8; i++) {
+        if (seen[i] == ra) return;
+        if (!seen[i]) { seen[i] = ra; break; }
+        if (i == 7) return;
+    }
+    char line[512];
+    int n = snprintf(line, sizeof line, "coop: gamepad read from main+%llx", (unsigned long long)(ra - MOD_MAIN_BASE));
+    uint64_t fp = c->x[29];
+    for (int d = 0; d < 10 && fp && n < (int)sizeof line - 32; d++) {
+        uint64_t next = rd_ptr(fp), ret = rd_ptr(fp + 8);
+        if (!ret) break;
+        n += snprintf(line + n, sizeof line - n, " <- main+%llx", (unsigned long long)(ret - MOD_MAIN_BASE));
+        if (next <= fp) break;
+        fp = next;
+    }
+    rt_log("%s", line);
+}
+
+// ---- functions called with Player#2 (TOTK_COOP_PROF=1): the function profiler (cpu.h FN_ENTER, g_fnprof) runs for
+// about a second after the spawn and records every guest function entered with x0 = Player#2's actor, or a pointer
+// into its first 0x3000 bytes (an embedded part), with a caller.
+static _Atomic uint64_t prof_actor;
+static struct { _Atomic uint64_t fn; _Atomic uint32_t hits; uint32_t off; uint64_t lr; } prof_seen[1024];
+
+void coop_fn_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
+    uint64_t a = atomic_load_explicit(&prof_actor, memory_order_relaxed);
+    if (!a || x0 < a || x0 >= a + 0x3000) return;
+    for (int i = 0; i < 1024; i++) {
+        uint64_t have = atomic_load_explicit(&prof_seen[i].fn, memory_order_relaxed);
+        if (!have && atomic_compare_exchange_strong(&prof_seen[i].fn, &have, addr)) {
+            prof_seen[i].off = (uint32_t)(x0 - a), prof_seen[i].lr = lr;
+            have = addr;
+        }
+        if (have == addr) { atomic_fetch_add_explicit(&prof_seen[i].hits, 1, memory_order_relaxed); return; }
+    }
+}
+
+static void prof_report(void) {
+    char d[160], e[160];
+    int n = 0;
+    for (int i = 0; i < 1024 && prof_seen[i].fn; i++, n++)
+        rt_log("coop: prof %6u x %s, x0 = actor+%#x, from %s", prof_seen[i].hits,
+               ldr_describe(prof_seen[i].fn, d, sizeof d), prof_seen[i].off, ldr_describe(prof_seen[i].lr, e, sizeof e));
+    rt_log("coop: prof: %d functions took Player#2", n);
+}
+
+// ---- entry hooks (cpu.h COOP_HOOKED)
+#define GET_CONTROLLER 0x37ccc0
+#define INPUT_COPY 0x37d330   // (input object, controller): the per-frame update (main+0x37c944) fills its consumers
+// getController's callers: return address, index, calls since the last report. Filled from any game thread.
+static struct { _Atomic uint64_t lr; _Atomic uint32_t index, calls; } gc_callers[64];
+
+#define ACTOR_CALC 0x41bb20   // per-actor update from the actor job (main+0x2f175c), x0 = actor (profiler, 2026-11-03)
+static __thread int in_calc;      // this thread runs ACTOR_CALC through the wrapper
+static _Atomic int calc_log_left = 40;
+static int blind = -1;            // TOTK_COOP_BLIND=1: Player#2's calc sees the idle input (neutral, below)
+static uint8_t neutral[0x200];    // the input object while nothing is held: coop_tick takes it 3 s into the world
+static _Atomic int neutral_ok;
+
+int coop_p2_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
+// Player 2's state written into controller 1 (the game updates it from no pad we feed) right before Player#2's calc.
+// Layout from controller 0 (ctrl0 diff, 2026-11-03): +0x114 and +0x13c held buttons (bit 0 A, 2 ZL, 3 X), +0x8 pressed
+// this frame and +0xc released this frame (guess: sead order before +0x10 repeat), +0x30 + 4 * bit frames held (float),
+// +0x120 / +0x124 left stick x / y (-1..1), +0x128 / +0x12c right stick (guess).
+static void p2_fill(uint64_t ctl) {
+    uint64_t buttons = 0;
+    int32_t lx, ly, rx, ry;
+    if (!ctl || !coop_p2_poll(&buttons, &lx, &ly, &rx, &ry)) return;
+    float f[4] = {lx / 32767.0f, ly / 32767.0f, rx / 32767.0f, ry / 32767.0f};
+    memcpy((void *)(uintptr_t)(ctl + 0x120), f, sizeof f);
+    // Stick directions are buttons too (left stick up = bit 20, seen in controller 0; down/left/right 21-23 and the
+    // right stick 24-27 are the sead order, a guess), held past half deflection.
+    uint32_t hold = 0;
+    if (f[1] > 0.5f) hold |= 1u << 20;
+    if (f[1] < -0.5f) hold |= 1u << 21;
+    if (f[0] < -0.5f) hold |= 1u << 22;
+    if (f[0] > 0.5f) hold |= 1u << 23;
+    static uint32_t prev;
+    static float held[32];
+    for (int b = 0; b < 32; b++) held[b] = hold >> b & 1 ? held[b] + 1 : 0;
+    ST32(ctl + 0x114, hold), ST32(ctl + 0x13c, hold);
+    ST32(ctl + 0x8, hold & ~prev), ST32(ctl + 0xc, prev & ~hold);
+    memcpy((void *)(uintptr_t)(ctl + 0x30), held, sizeof held);
+    static int logged;
+    if (hold && !logged++) rt_log("coop: p2 fill: stick %.2f %.2f, held %#x into controller %llx", f[0], f[1], hold,
+                                  (unsigned long long)ctl);
+    prev = hold;
+}
+
+static int calc_wrap(Cpu *c, uint64_t addr) {
+    uint64_t actor = c->x[0], two = second_player;
+    if (in_calc || !two || (actor != two && actor != player_actor_cached)) return 0;
+    if (atomic_fetch_sub(&calc_log_left, 1) > 0)
+        rt_log("coop: calc %s on thread %p", actor == two ? "Link#2" : "Link#1", c->thread);
+    if (actor != two) return 0;
+    if (blind < 0) { const char *e = cfg_get("TOTK_COOP_BLIND"); blind = e ? atoi(e) : 0; }
+    static uint8_t saved[0x200];
+    uint64_t obj = atomic_load(&copy_dst[0]);
+    int swap = blind == 1 && obj && atomic_load(&neutral_ok);
+    if (swap) { memcpy(saved, (void *)(uintptr_t)obj, sizeof saved); memcpy((void *)(uintptr_t)obj, neutral, sizeof neutral); }
+    // TOTK_COOP_BLIND=2: the controller manager hands out controller 1 (idle: only pad id 0 is live) as controller 0
+    // while Player#2 updates; Link#1 runs after it on the same thread (calc log, 2026-11-03).
+    uint64_t mgr = blind >= 2 ? rd_ptr(rd_ptr(MOD_MAIN_BASE + INPUT_MGR_SLOT)) : 0, ctrl0 = 0;
+    // TOTK_COOP_BLIND=3: controller 0 itself carries player 2's buttons and sticks while Player#2 updates (its fields
+    // +0x8..+0x13f saved and restored around the call).
+    static uint8_t c0_saved[0x138];
+    uint64_t c0 = blind == 3 && mgr ? LD64(mgr + 0xa0) : 0;
+    if (c0) { memcpy(c0_saved, (void *)(uintptr_t)(c0 + 8), sizeof c0_saved); p2_fill(c0); }
+    // TOTK_COOP_BLIND=4: a controller of our own for player 2 (patch page +0x400, 0x400 bytes, which nothing else
+    // writes): a copy of controller 0 with player 2's buttons and sticks, handed out as controller 0 while Player#2
+    // updates. Controllers 0 and 1 are rewritten by the game's controller update (main+0x479c20) while actors update.
+    uint64_t own = blind == 4 && mgr ? RT_PATCH_PAGE + 0x400 : 0;
+    if (own) {
+        ctrl0 = LD64(mgr + 0xa0);
+        memcpy((void *)(uintptr_t)own, (void *)(uintptr_t)ctrl0, 0x400);
+        p2_fill(own);
+        ST64(mgr + 0xa0, own);
+    }
+    if (mgr && blind == 2) {
+        ctrl0 = LD64(mgr + 0xa0);
+        uint64_t ctl1 = LD64(mgr + 0xf0);
+        ST64(mgr + 0xa0, ctl1);
+        p2_fill(ctl1);
+    }
+    in_calc = 1;
+    c->pc = addr;
+    rt_dispatch(c);
+    in_calc = 0;
+    if (swap) memcpy((void *)(uintptr_t)obj, saved, sizeof saved);
+    if (mgr && (blind == 2 || own)) ST64(mgr + 0xa0, ctrl0);
+    if (c0) memcpy((void *)(uintptr_t)(c0 + 8), c0_saved, sizeof c0_saved);
+    return 1;
+}
+
+int coop_hook(Cpu *c, uint64_t addr) {
+    if (addr == MOD_MAIN_BASE + ACTOR_CALC) return calc_wrap(c, addr);
+    if (addr == MOD_MAIN_BASE + INPUT_COPY) {
+        uint64_t dst = c->x[0];
+        for (int i = 0; i < 16; i++) {
+            uint64_t have = atomic_load_explicit(&copy_dst[i], memory_order_relaxed);
+            if (have == dst) return 0;
+            if (!have && atomic_compare_exchange_strong(&copy_dst[i], &have, dst)) {
+                rt_log("coop: input copy into %llx (controller %llx, from main+%llx)", (unsigned long long)dst,
+                       (unsigned long long)c->x[1], (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
+                return 0;
+            }
+        }
+        return 0;
+    }
+    if (addr != MOD_MAIN_BASE + GET_CONTROLLER) return 0;
+    uint64_t lr = c->x[30];
+    uint32_t index = (uint32_t)c->x[1];
+    for (int i = 0; i < 64; i++) {
+        uint64_t have = atomic_load_explicit(&gc_callers[i].lr, memory_order_relaxed);
+        if (!have && atomic_compare_exchange_strong(&gc_callers[i].lr, &have, lr)) {
+            atomic_store(&gc_callers[i].index, index);
+            char name[48] = "";
+            uint64_t np = rd_ptr(c->x[2]);
+            if (np) rd(np, name, sizeof name - 1);
+            rt_log("coop: getController first called from main+%llx, index %u, user '%s'",
+                   (unsigned long long)(lr - MOD_MAIN_BASE), index, name);
+        }
+        if (have == lr || atomic_load_explicit(&gc_callers[i].lr, memory_order_relaxed) == lr) {
+            atomic_fetch_add_explicit(&gc_callers[i].calls, 1, memory_order_relaxed);
+            return 0;
+        }
+    }
+    return 0;
+}
+
+static void report_callers(void) {
+    char line[1024];
+    int n = snprintf(line, sizeof line, "coop: getController calls in the last ~5 s:");
+    for (int i = 0; i < 64 && gc_callers[i].lr && n < (int)sizeof line - 48; i++) {
+        uint32_t k = atomic_exchange(&gc_callers[i].calls, 0);
+        if (k) n += snprintf(line + n, sizeof line - n, " main+%llx(i%u)x%u",
+                             (unsigned long long)(gc_callers[i].lr - MOD_MAIN_BASE), gc_callers[i].index, k);
+    }
+    rt_log("%s", line);
+}
+
+// ---- player 2's controller (Npad id 1, ov_input.c). TOTK_COOP_P2=walk: a test pattern, left stick forward from 4 to
+// 10 s of the world clock, then right. Unset: no player 2 controller.
+static int p2_mode = -1;
+int coop_p2_connected(void) {
+    if (p2_mode < 0) { const char *e = cfg_get("TOTK_COOP_P2"); p2_mode = e && !strcmp(e, "walk") ? 1 : 0; }
+    return p2_mode > 0 && frame_step_world_us() > 0;   // plugged in once the save is in the world: with it from the
+                                                      // start the title never reached the world (2026-11-03)
+}
+// Whether the game is told about player 2 as Npad id 1 as well (TOTK_COOP_P2_NPAD=1). Off by default: player 2's state
+// reaches the game through controller 1 (p2_fill) either way.
+int coop_p2_npad(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_P2_NPAD"); on = e && *e == '1'; }
+    return on && coop_p2_connected();
+}
+int coop_p2_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
+    if (!coop_p2_connected()) return 0;
+    int64_t t = frame_step_world_us();
+    *buttons = 0, *lx = 0, *ly = 0, *rx = 0, *ry = 0;
+    if (t > 4000000 && t < 10000000) *ly = 32767;
+    else if (t >= 10000000 && t < 14000000) *lx = 32767;
+    return 1;
+}
+
 void coop_tick(struct Cpu *c) {
+    log_callers(c);
+    player_actor_cached = player_actor();
+    static int report_ticks;
+    if (++report_ticks % 300 == 0) report_callers();
     static int prev;
     int keys = input_coop_keys(), pressed = keys & ~prev;
     prev = keys;
+    // Once: main's .data/.bss words holding the input object the copy fills (copy_dst[0]) or its owner (dst - 0x198),
+    // so the generated C can be searched for the code that loads them.
+    static int globals_done;
+    uint64_t dst0 = atomic_load(&copy_dst[0]);
+    if (dst0 && !globals_done) {
+        globals_done = 1;
+        static uint64_t page[0x1000 / 8];
+        int found = 0;
+        for (uint64_t a = MOD_MAIN_BASE + 0x3569000; a < MOD_MAIN_BASE + 0x3adf000 && found < 16; a += 0x1000) {
+            if (!rd(a, page, sizeof page)) continue;
+            for (int i = 0; i < 0x1000 / 8; i++)
+                if (page[i] == dst0 || page[i] == dst0 - 0x198) {
+                    rt_log("coop: main+%llx holds the input %s", (unsigned long long)(a + i * 8 - MOD_MAIN_BASE),
+                           page[i] == dst0 ? "object" : "owner (object - 0x198)");
+                    found++;
+                }
+        }
+        rt_log("coop: input object %llx: %d global slots", (unsigned long long)dst0, found);
+    }
+    // TOTK_COOP_WATCH=1: once in the world, watch the input object (copy_dst[0], 0x200 bytes) for 90 polls, then the
+    // index-0 controller (0x200 bytes) for 90 polls, and log which game functions touched each.
+    static int watch_phase, watch_left;
+    if (!watch_phase) { const char *e = cfg_get("TOTK_COOP_WATCH"); watch_phase = e && (*e == '1' || *e == '2') ? 1 : -1; }
+    if (watch_phase > 0 && frame_step_world_us() > 3000000) {
+        if (watch_left && !--watch_left) { coop_watch_disarm(); watch_phase++; }
+        if (!watch_left && watch_phase <= 2) {
+            uint64_t mgr = rd_ptr(rd_ptr(MOD_MAIN_BASE + INPUT_MGR_SLOT));
+            // TOTK_COOP_WATCH=1: the input object, then controller 0; =2: controller 1, then controller 0 (vtables logged)
+            const char *mode = cfg_get("TOTK_COOP_WATCH");
+            int first = mode && *mode == '2';
+            uint64_t target = watch_phase == 1 ? (first ? (mgr ? rd_ptr(mgr + 0xf0) : 0) : atomic_load(&copy_dst[0]))
+                                               : mgr ? rd_ptr(mgr + 0xa0) : 0;
+            rt_log("coop: watch phase %d: %s, vtable main+%llx", watch_phase,
+                   watch_phase == 1 ? (first ? "controller 1" : "input object") : "controller 0",
+                   (unsigned long long)(rd_ptr(target) - MOD_MAIN_BASE));
+            if (target && coop_watch_arm(target, 0x200)) watch_left = 90;
+            else watch_phase++;
+        }
+    }
+    static int prof_phase, prof_left;
+    if (!prof_phase) {
+        const char *e = cfg_get("TOTK_COOP_PROF");
+        prof_phase = e && *e == '1' ? 1 : -1;
+        rt_log("coop: TOTK_COOP_PROF=%s", e ? e : "(unset)");
+    }
+    if (prof_phase == 1 && second_player && ++prof_left == 60) {   // 2 s after the claim: on for 30 polls
+        atomic_store(&prof_actor, second_player);
+        g_fnprof = 1;
+        rt_log("coop: prof on");
+    } else if (prof_phase == 1 && prof_left == 90) {
+        g_fnprof = 0;
+        atomic_store(&prof_actor, 0);
+        prof_phase = 2;
+        prof_report();
+    }
+    if (!atomic_load(&neutral_ok) && atomic_load(&copy_dst[0]) && frame_step_world_us() > 3000000 &&
+        rd(atomic_load(&copy_dst[0]), neutral, sizeof neutral)) {
+        atomic_store(&neutral_ok, 1);
+        rt_log("coop: idle input snapshot taken");
+    }
+    // TOTK_COOP_CTRLDUMP=1: every 20 polls in the world, the 32-bit words of controllers 0 and 1 that are nonzero
+    // floats in (-2, 2) other than 1.0, to find the sticks and which Npad feeds controller 1.
+    static int ctrldump = -1, cd_ticks;
+    if (ctrldump < 0) { const char *e = cfg_get("TOTK_COOP_CTRLDUMP"); ctrldump = e ? atoi(e) : 0; }
+    // =2: every 4 polls, each 32-bit word of controller 0 that differs from its value at 3 s into the world.
+    static uint32_t base[0x200 / 4];
+    static int base_ok;
+    if (ctrldump == 2 && frame_step_world_us() > 3000000) {
+        uint64_t mgr = rd_ptr(rd_ptr(MOD_MAIN_BASE + INPUT_MGR_SLOT)), ctl = mgr ? rd_ptr(mgr + 0xa0) : 0;
+        uint32_t w[0x200 / 4];
+        if (ctl && rd(ctl, w, sizeof w)) {
+            if (!base_ok) { memcpy(base, w, sizeof w); base_ok = 1; }
+            else if (++cd_ticks % 4 == 0) {
+                char line[1024];
+                int n = snprintf(line, sizeof line, "coop: t=%.2f ctrl0 diff", frame_step_world_us() / 1e6), any = 0;
+                for (int i = 2; i < 0x200 / 4 && n < (int)sizeof line - 40; i++)
+                    if (w[i] != base[i]) { n += snprintf(line + n, sizeof line - n, " +%#x=%08x", i * 4, w[i]); any = 1; }
+                if (any) rt_log("%s", line);
+            }
+        }
+    }
+    if (ctrldump == 1 && frame_step_world_us() > 0 && ++cd_ticks % 20 == 0) {
+        uint64_t mgr = rd_ptr(rd_ptr(MOD_MAIN_BASE + INPUT_MGR_SLOT));
+        for (int k = 0; mgr && k < 2; k++) {
+            uint64_t ctl = rd_ptr(mgr + (k ? 0xf0 : 0xa0));
+            uint32_t w[0x200 / 4];
+            if (!ctl || !rd(ctl, w, sizeof w)) continue;
+            char line[1024];
+            int n = snprintf(line, sizeof line, "coop: t=%.1f ctrl%d", frame_step_world_us() / 1e6, k);
+            for (int i = 2; i < 0x200 / 4 && n < (int)sizeof line - 40; i++) {
+                float f;
+                memcpy(&f, &w[i], 4);
+                if (w[i] && f > -2 && f < 2 && f != 1.0f && (f > 0.05f || f < -0.05f))
+                    n += snprintf(line + n, sizeof line - n, " +%#x=%.2f", i * 4, f);
+            }
+            rt_log("%s", line);
+        }
+    }
+    // TOTK_COOP_CTRLDUMP=3: once, 3 s into the world, every 32-bit word where controllers 0 and 1 differ (0x400 bytes).
+    if (ctrldump == 3 && frame_step_world_us() > 3000000) {
+        ctrldump = 0;
+        uint64_t mgr = rd_ptr(rd_ptr(MOD_MAIN_BASE + INPUT_MGR_SLOT));
+        uint32_t a0[0x400 / 4], a1[0x400 / 4];
+        if (mgr && rd(rd_ptr(mgr + 0xa0), a0, sizeof a0) && rd(rd_ptr(mgr + 0xf0), a1, sizeof a1)) {
+            char line[2048];
+            int n = snprintf(line, sizeof line, "coop: ctrl0 vs ctrl1:");
+            for (int i = 0; i < 0x400 / 4 && n < (int)sizeof line - 40; i++)
+                if (a0[i] != a1[i]) n += snprintf(line + n, sizeof line - n, " +%#x %08x/%08x", i * 4, a0[i], a1[i]);
+            rt_log("%s", line);
+        }
+    }
     if (dump_ticks) { dump_ticks--; dump_resident("a poll after the Player claim"); }
+    // Both Links' position and facing about once a second (the gamepad is polled once a frame): does Player#2 move,
+    // and with whose input?
+    static int ticks;
+    if (second_player && ++ticks % 60 == 0) {
+        uint64_t one = player_actor();
+        float p1[3] = {0}, p2[3] = {0}, r1[9] = {0}, r2[9] = {0};
+        int32_t state = -1;
+        rd(one + ACTOR_POS, p1, 12), rd(one + ACTOR_ROT, r1, 36);
+        rd(second_player + ACTOR_POS, p2, 12), rd(second_player + ACTOR_ROT, r2, 36), rd(second_player + 0x24, &state, 4);
+        rt_log("coop: Link#1 %.2f %.2f %.2f facing %.2f %.2f | Link#2 %.2f %.2f %.2f facing %.2f %.2f state %d",
+               p1[0], p1[1], p1[2], r1[2], r1[8], p2[0], p2[1], p2[2], r2[2], r2[8], state);
+        if (state < 2 || state > 6) second_player = 0;   // gone or going away: stop reading it
+    }
+    // TOTK_COOP_AUTOSPAWN=<polls>: spawn Player#2 that many gamepad polls (about 30 a second) after Link is in the
+    // world (frame_step_world_us), for unattended runs (scripted input, no numpad).
+    static int auto_left = -1;
+    if (auto_left == -1) { const char *e = cfg_get("TOTK_COOP_AUTOSPAWN"); auto_left = e ? atoi(e) : 0; }
+    if (auto_left > 0) {
+        if (frame_step_world_us() > 0 && !--auto_left) {   // the world clock runs once the save is in the world
+            rt_log("coop: autospawn (world clock %lld us, snapshot %d, read %d)", (long long)frame_step_world_us(),
+                   atomic_load(&neutral_ok), rd(atomic_load(&copy_dst[0]), neutral, 16));
+            spawn(c, 2);
+        }
+    }
     for (int k = 0; k < 3; k++) {
         if (pressed & 1 << k) spawn(c, k);
         if (!rd_ptr((uint64_t)(uintptr_t)handles[k])) continue;
@@ -203,6 +613,11 @@ void coop_tick(struct Cpu *c) {
                 char nm[40];
                 rt_log("coop: Player#2 actor %llx '%s'", (unsigned long long)second, actor_name(second, nm, 40));
                 if (second && second != player_actor()) copy_dependencies(c, player_actor(), second);
+                second_player = second;
+                find_controller("Link#1", player_actor());
+                find_controller("Link#2", second);
+                find_input("Link#1", player_actor());
+                find_input("Link#2", second);
                 dump_ticks = 5;
             }
         }
