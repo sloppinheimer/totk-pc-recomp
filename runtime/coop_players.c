@@ -443,6 +443,10 @@ void coop_players_tick(Cpu *c, int numpad3) {
             fake += n + (fake[n] == ',');
         }
         memcpy(st.sticks, local_sticks, sizeof st.sticks);
+        if (coop_local_paused()) {   // a menu is open here: the sticks and buttons move through it, not Link
+            st.buttons = 0;
+            memset(st.sticks, 0, sizeof st.sticks);
+        }
         st.day_seconds = day_seconds();
         read_weather(c, me);
         st.weather = weather_now;
