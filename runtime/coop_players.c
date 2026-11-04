@@ -12,6 +12,7 @@
 #include <math.h>
 #include <stdatomic.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "cfg.h"
@@ -39,6 +40,7 @@ typedef struct {
     float want_pos[3], want_rot[9];    // net: the owner's reported transform
     int have_want, idle, snap_wait;
     unsigned snaps;
+    char gear_want[COOP_GEAR_SLOTS][32], gear_have[COOP_GEAR_SLOTS][32];   // the owner's gear; what this Link was given
 } Slot;
 static Slot slots[COOP_MAX_PLAYERS];
 static PlatMutex lock = PLAT_MUTEX_INIT;   // input fields, read by the calc wrapper on worker threads
@@ -63,6 +65,99 @@ static int camera_frame(float fwd[2], float right[2]) {
     if (lf < 1e-3f || lr < 1e-3f) return 0;
     fwd[0] /= lf, fwd[1] /= lf, right[0] /= lr, right[1] /= lr;
     return 1;
+}
+
+// ---- gear. A Player's EquipmentUser builds each slot through main+0xc4a5f4 (eq, slot), which reads the item from the
+// save's inventory and creates it by name: armor through main+0xc4961c (eq, slot, &name, ...), weapons through
+// main+0xaf100c (eq, slot, &name, ...); &name points at a string whose first word is the name (2026-11-04). This PC's
+// Link's names are recorded per slot and sent; a remote Link's slot is rebuilt when its owner's name changes, and its
+// create gets the owner's name in place of the save's.
+const int coop_gear_slot[COOP_GEAR_SLOTS] = {0, 9, 10, 11};
+#define GEAR_REBUILD 0xc4a5f4
+static char my_gear[COOP_GEAR_SLOTS][32];
+static uint64_t unplaced_eq[16];   // EquipmentUsers whose Player was not known when their gear was made
+static struct { uint64_t eq, actor; } eq_owner[32];   // EquipmentUser -> its Player, learned from their creates
+
+static int gear_index(int slot) {
+    for (int k = 0; k < COOP_GEAR_SLOTS; k++) if (coop_gear_slot[k] == slot) return k;
+    return -1;
+}
+// The Player that owns an EquipmentUser: a word in its first 0x400 bytes equal to this PC's Link or a slot's actor.
+static uint64_t gear_owner(uint64_t eq, uint64_t me);
+static Slot *slot_of_actor(uint64_t actor);
+static int eq_off = -1;   // where a Player keeps its EquipmentUser: found on this PC's Link once its gear is built
+static uint64_t eq_of_actor(uint64_t actor) {
+    for (int i = 0; i < 32; i++) if (eq_owner[i].actor == actor) return eq_owner[i].eq;
+    return eq_off >= 0 && actor ? coop_rd_ptr(actor + (uint64_t)eq_off) : 0;
+}
+static void learn_eq_off(uint64_t me, uint64_t eq) {
+    if (eq_off != -1) return;
+    uint64_t words[0x4000 / 8];
+    if (!coop_rd(me, words, sizeof words)) return;
+    for (int w = 0; w < 0x4000 / 8; w++)
+        if (words[w] == eq) { eq_off = w * 8; rt_log("coop: a Player keeps its EquipmentUser at +%#x", eq_off); return; }
+    eq_off = -2;
+    rt_log("coop: no pointer to the EquipmentUser in the Player's first 0x4000 bytes");
+}
+
+int coop_players_gear(Cpu *c, uint64_t addr) {
+    uint64_t eq = c->x[0], me = coop_player_actor();
+    int k = gear_index((int)(uint32_t)c->x[1]);
+    if (k < 0 || !me) return 0;
+    uint64_t owner = gear_owner(eq, me);
+    if (!owner) {   // a Player not claimed yet (a new co-op Link builds its gear first): matched after its claim
+        for (int i = 0; i < 16; i++)
+            if (unplaced_eq[i] == eq || !unplaced_eq[i]) { unplaced_eq[i] = eq; break; }
+        return 0;
+    }
+    uint64_t np = coop_rd_ptr(c->x[2]);
+    char name[32] = "";
+    if (np) coop_rd(np, name, sizeof name - 1);
+    if (owner == me) {
+        learn_eq_off(me, eq);
+        if (name[0] && strcmp(my_gear[k], name)) {
+            memcpy(my_gear[k], name, sizeof name);
+            rt_log("coop: my gear slot %d is now %s", coop_gear_slot[k], name);
+        }
+        return 0;
+    }
+    Slot *s = slot_of_actor(owner);
+    if (!s || !s->gear_want[k][0] || !strcmp(s->gear_want[k], name)) return 0;
+    // The owner's item in place of this save's: a string of the same shape (+0 pointer, +8 capacity 64, the text).
+    static _Alignas(16) uint8_t str[COOP_MAX_PLAYERS][COOP_GEAR_SLOTS][0x60];
+    uint8_t *st = str[s - slots][k];
+    memset(st, 0, 0x60);
+    char *text = (char *)st + 0x10;
+    memcpy(text, s->gear_want[k], 32);
+    uint64_t tp = (uint64_t)(uintptr_t)text;
+    memcpy(st, &tp, 8);
+    int32_t cap = 0x40;
+    memcpy(st + 8, &cap, 4);
+    c->x[2] = (uint64_t)(uintptr_t)st;
+    rt_log("coop: slot %d's Link gets %s in gear slot %d (this save has %s)", (int)(s - slots), s->gear_want[k],
+           coop_gear_slot[k], name[0] ? name : "nothing");
+    (void)addr;
+    return 0;
+}
+
+static uint64_t gear_owner(uint64_t eq, uint64_t me) {
+    for (int i = 0; i < 32; i++) if (eq_owner[i].eq == eq) return eq_owner[i].actor;
+    uint64_t words[0x400 / 8];
+    if (!coop_rd(eq, words, sizeof words)) return 0;
+    uint64_t found = 0;
+    for (int w = 0; w < 0x400 / 8 && !found; w++) {
+        if (words[w] == me) found = me;
+        for (int i = 0; i < COOP_MAX_PLAYERS && !found; i++)
+            if (slots[i].actor && words[w] == slots[i].actor) found = slots[i].actor;
+    }
+    if (!found) return 0;
+    for (int i = 0; i < 32; i++)
+        if (!eq_owner[i].eq || eq_owner[i].actor == found) {
+            eq_owner[i].eq = eq, eq_owner[i].actor = found;
+            rt_log("coop: EquipmentUser %llx belongs to %s", (unsigned long long)eq, found == me ? "this PC's Link" : "a co-op Link");
+            break;
+        }
+    return found;
 }
 
 static Slot *slot_of_actor(uint64_t actor) {
@@ -156,6 +251,9 @@ void coop_players_tick(Cpu *c, int numpad3) {
         coop_rd(me + COOP_ACTOR_POS, st.pos, 12), coop_rd(me + COOP_ACTOR_ROT, st.rot, 36);
         camera_frame(st.cam_fwd, st.cam_right);
         st.buttons = local_buttons;
+        memcpy(st.gear, my_gear, sizeof st.gear);
+        const char *fake = cfg_get("TOTK_COOP_FAKEGEAR");   // test: report this as the weapon in hand
+        if (fake && *fake) snprintf(st.gear[0], 32, "%s", fake);
         memcpy(st.sticks, local_sticks, sizeof st.sticks);
         coop_net_publish(&st);
     }
@@ -177,6 +275,10 @@ void coop_players_tick(Cpu *c, int numpad3) {
         }
         if (!s && !(s = slot_new(SRC_NET, id))) continue;
         memcpy(s->want_pos, st.pos, 12), memcpy(s->want_rot, st.rot, 36), s->have_want = 1;
+        for (int k = 0; k < COOP_GEAR_SLOTS; k++) {
+            memcpy(s->gear_want[k], st.gear[k], 32);
+            s->gear_want[k][31] = 0;
+        }
         // The owner's stick in world space (their camera), then in this PC's camera frame.
         int32_t sticks[4];
         for (int k = 0; k < 4; k += 2) {
@@ -211,6 +313,8 @@ void coop_players_tick(Cpu *c, int numpad3) {
             if (!s->actor || s->actor == me) { rt_log("coop: slot %d: claim gave no new Player", i); s->state = WANTED; continue; }
             coop_copy_dependencies(c, me, s->actor, 0);
             s->state = LIVE;
+            for (int u = 0; u < 16; u++)
+                if (unplaced_eq[u] && gear_owner(unplaced_eq[u], me)) unplaced_eq[u] = 0;
             rt_log("coop: slot %d: Player %llx in the world", i, (unsigned long long)s->actor);
         } else if (s->state == LIVE || s->state == LET_GO) {
             int32_t st = -1;
@@ -219,6 +323,14 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 s->actor = 0, s->state = s->state == LIVE ? WANTED : FREE;
                 continue;
             }
+            // The owner changed an item: rebuild that slot (its create then takes the owner's name).
+            uint64_t eq = s->state == LIVE && s->source == SRC_NET ? eq_of_actor(s->actor) : 0;
+            for (int k = 0; eq && k < COOP_GEAR_SLOTS; k++)
+                if (s->gear_want[k][0] && strcmp(s->gear_want[k], s->gear_have[k])) {
+                    memcpy(s->gear_have[k], s->gear_want[k], 32);
+                    rt_log("coop: slot %d: owner's gear slot %d is %s, rebuilding", i, coop_gear_slot[k], s->gear_want[k]);
+                    coop_guest_call(c, MOD_MAIN_BASE + GEAR_REBUILD, eq, (uint64_t)coop_gear_slot[k], 0, 0);
+                }
             if (s->state == LIVE && s->source == SRC_NET && s->have_want) {
                 float p[3];
                 float lim = s->idle ? COOP_SNAP_IDLE_M : COOP_SNAP_MOVING_M;

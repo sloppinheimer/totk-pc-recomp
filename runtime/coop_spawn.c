@@ -417,6 +417,7 @@ static _Atomic int neutral_ok;
 int coop_players_calc(Cpu *c, uint64_t addr);    // coop_players.c
 void coop_players_tick(Cpu *c, int numpad3);
 uint64_t coop_players_first(void);
+int coop_players_gear(Cpu *c, uint64_t addr);
 
 // Camera follow (Numpad 4): while PlayerCamera's calc runs on a thread (in_camera), ActorLink getActor
 // (main+0x2804d0) answers Link#2 where it would answer Link#1. Nothing in memory changes.
@@ -460,8 +461,55 @@ static int calc_wrap(Cpu *c, uint64_t addr) {
     return coop_players_calc(c, addr);   // a co-op Player (coop_players.c): run with its own controller
 }
 
+// requestCreateActor calls (TOTK_COOP_TRACE=create): the actor name and whose calc it ran in (calc_actor: the actor
+// whose ACTOR_CALC encloses the call on this thread, tracked for Players only).
+static __thread uint64_t calc_actor;
+static int create_trace(Cpu *c) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "create"); }
+    if (!on) return 0;
+    char nm[64] = "", who[40] = "";
+    uint64_t np = rd_ptr(c->x[1]);
+    if (np) rd(np, nm, sizeof nm - 1);
+    uint64_t one = player_actor_cached;
+    // The guest frame chain of gear creates (x29 links), to find where the item name comes from.
+    if (!strncmp(nm, "Weapon_", 7) || !strncmp(nm, "Armor_", 6)) {
+        char line[512];
+        int n = snprintf(line, sizeof line, "coop: create '%s' chain: x0..x3 %llx %llx %llx %llx; ", nm, (unsigned long long)c->x[19],
+                         (unsigned long long)c->x[20], (unsigned long long)c->x[21], (unsigned long long)c->x[22]);
+        uint64_t fp = c->x[29];
+        for (int d = 0; d < 9 && fp && n < (int)sizeof line - 40; d++) {
+            uint64_t next = rd_ptr(fp), ret = rd_ptr(fp + 8);
+            if (!ret) break;
+            n += snprintf(line + n, sizeof line - n, " <- main+%llx", (unsigned long long)(ret - MOD_MAIN_BASE));
+            if (next <= fp) break;
+            fp = next;
+        }
+        rt_log("%s", line);
+    }
+    rt_log("coop: create '%s' inside %s (lr main+%llx)", nm,
+           !calc_actor ? "no Player calc" : calc_actor == one ? "Link#1's calc" : "another Player's calc",
+           (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
+    (void)who;
+    return 0;
+}
+
 int coop_hook(Cpu *c, uint64_t addr) {
-    if (addr == MOD_MAIN_BASE + ACTOR_CALC) return calc_wrap(c, addr);
+    if (addr == MOD_MAIN_BASE + 0x599670) return create_trace(c);
+    if (addr == MOD_MAIN_BASE + 0xc4961c || addr == MOD_MAIN_BASE + 0xaf100c) return coop_players_gear(c, addr);
+    if (addr == MOD_MAIN_BASE + ACTOR_CALC) {
+        // Track which Player's calc this thread runs, for the create trace.
+        char nm[16];
+        uint64_t a = c->x[0];
+        if (getenv("TOTK_COOP_TRACE") && !calc_actor && a && !strcmp(actor_name(a, nm, sizeof nm), "Player")) {
+            calc_actor = a;
+            int r = calc_wrap(c, addr);
+            if (!r) { c->pc = addr; static __thread int deep; if (!deep) { deep = 1; rt_dispatch(c); deep = 0; r = 1; } }
+            calc_actor = 0;
+            return r;
+        }
+        return calc_wrap(c, addr);
+    }
     if (addr == MOD_MAIN_BASE + GET_ACTOR) return get_actor_wrap(c, addr);
     // ActorLink lock-and-get main+0x1afbe4 (out, link): a link is {+8 reference object, +0x10 its id}; inside
     // PlayerCamera's calls a link to Link#1 is handed over as a copy that names Link#2's reference (patch page +0x800;

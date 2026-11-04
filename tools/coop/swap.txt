@@ -1,0 +1,16 @@
+# Title to the first save slot, then in the world: open the inventory (weapons tab), move to the next weapon, A twice
+# (Equip), close. Then the same once more 6 s later.
+300 A 4
+520 A 4
+700 A 4
+900 A 4
+@6000 PLUS 150
+@7500 RIGHT 150
+@8200 A 150
+@8900 A 150
+@9800 PLUS 150
+@14000 PLUS 150
+@15500 RIGHT 150
+@16200 A 150
+@16900 A 150
+@17800 PLUS 150
