@@ -93,4 +93,4 @@ evidence), guess.
   right stick 24-27. Plus / Minus not measured.
 - Player 2 now: the second connected gamepad by default (TOTK_COOP_P2=pad; input.c input_pad2_read), through the
   private controller. Test 2026-11-03: player 1's script and player 2's test pattern moved the two Links on their own
-  paths at the same time. A real second gamepad is untested.
+  paths at the same time. Real second gamepad: works (the tester, 2026-11-03, a PS5 controller in the test).
