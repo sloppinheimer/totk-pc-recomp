@@ -386,6 +386,11 @@ static struct { _Atomic uint64_t fn; _Atomic uint32_t hits; uint32_t off; uint64
 int coop_in_remote_calc(void);   // coop_players.c
 void coop_actor_seen(uint64_t actor);   // coop_world.c
 static int prof3;
+// TOTK_COOP_PROF=4: inside an enemy's calc (enemy_calc), the functions entered with x0 = this PC's Link or its reference
+// object, with their call site: where enemy AI uses the player it fetched.
+static int prof4;
+static __thread uint64_t enemy_calc;
+static uint64_t prof4_ref;
 static struct { _Atomic uint64_t fn; _Atomic uint32_t hits; uint64_t x0, lr; } p3[8192];
 static void p3_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
     uint32_t h = (uint32_t)((addr >> 2) * 2654435761u) & 8191;
@@ -421,6 +426,13 @@ static void p3_report(void) {
         if (!fn) continue;
         n++;
         int global = held && bsearch(&p3[i].x0, held, nheld, sizeof *held, u64cmp);
+        if (prof4) {
+            rt_log("coop: prof4 %6u x %s, x0 %s, from %s", atomic_load(&p3[i].hits), ldr_describe(fn, d, sizeof d),
+                   p3[i].x0 == prof4_ref ? "Link's reference" : "Link", ldr_describe(p3[i].lr, e, sizeof e));
+            if (p3[i].x0 != prof4_ref) rt_log("coop: prof4   (x0 = Link+%#llx)", (unsigned long long)(p3[i].x0 - player_actor_cached));
+            atomic_store(&p3[i].hits, 0), atomic_store(&p3[i].fn, 0);
+            continue;
+        }
         // The control-guide (HUD prompt) code around its table loader main+0xd81910 and stack main+0xd82334.
         int guide = fn >= MOD_MAIN_BASE + 0xd78000 && fn < MOD_MAIN_BASE + 0xd8a000;
         if (guide)
@@ -438,6 +450,17 @@ static void p3_report(void) {
 
 void coop_fn_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
     if (prof3 && coop_in_remote_calc()) p3_hit(addr, lr, x0);
+    static _Atomic uint64_t enemy_fns;
+    if (prof4 && enemy_calc) {
+        atomic_fetch_add_explicit(&enemy_fns, 1, memory_order_relaxed);
+        uint64_t me = player_actor_cached;
+        if (x0 && ((x0 >= me && x0 < me + 0x4000) || x0 == prof4_ref)) p3_hit(addr, lr, x0);
+    }
+    if (prof4 && !(atomic_load(&enemy_fns) & 0xfffff)) {
+        static _Atomic uint64_t said;
+        if (atomic_fetch_add(&said, 1) < 8) rt_log("coop: prof4: %llu function entries inside enemy calcs so far",
+                                                     (unsigned long long)atomic_load(&enemy_fns));
+    }
     uint64_t a = atomic_load_explicit(&prof_actor, memory_order_relaxed);
     if (!a || x0 < a || x0 >= a + 0x4000) return;
     for (int i = 0; i < 1024; i++) {
@@ -557,9 +580,36 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // hides one, on the one CtrlGuide screen. Every Player's calc calls them; a co-op Link's must not change this
     // PC's HUD, so they do nothing inside one (2026-11-04).
     if (addr == MOD_MAIN_BASE + 0x2192c50 || addr == MOD_MAIN_BASE + 0x4cb540) return coop_in_remote_calc();
+    // main+0x1a30670 (actor system, out link, &name): the one actor of that name (the resident "Player" for AI that
+    // wants the player, e.g. QueryTestGetPlayerActor). TOTK_COOP_TRACE=player counts its callers for "Player".
+    if (addr == MOD_MAIN_BASE + 0x1a30670) {
+        static int on = -1;
+        if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "player"); }
+        if (on) {
+            char nm[16] = "";
+            rd(rd_ptr(c->x[2]), nm, 15);
+            static _Atomic int seen_n;
+            if (atomic_fetch_add(&seen_n, 1) < 20) rt_log("coop: named lookup of '%s'", nm);
+            if (!strcmp(nm, "Player")) p3_hit(c->x[30], 0, enemy_calc);
+        }
+        return 0;
+    }
     if (addr == MOD_MAIN_BASE + 0xc4961c || addr == MOD_MAIN_BASE + 0xaf100c) return coop_players_gear(c, addr);
     if (addr == MOD_MAIN_BASE + ACTOR_CALC) {
         coop_actor_seen(c->x[0]);   // every live actor passes here each frame (coop_world.c)
+    if (prof4 && !enemy_calc && c->x[0]) {   // an enemy's calc, bracketed for the profiler
+        char en[16];
+        actor_name(c->x[0], en, sizeof en);
+        static _Atomic int shown;
+        if (!strncmp(en, "Enemy_", 6) && atomic_fetch_add(&shown, 1) < 6) rt_log("coop: prof4: bracketing the calc of '%s' (profiler %d)", en, g_fnprof);
+        if (!strncmp(en, "Enemy_", 6)) {
+            enemy_calc = c->x[0];
+            c->pc = addr;
+            rt_dispatch(c);
+            enemy_calc = 0;
+            return 1;
+        }
+    }
         // Track which Player's calc this thread runs, for the create trace.
         char nm[16];
         uint64_t a = c->x[0];
@@ -682,6 +732,7 @@ int coop_p2_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32
 void coop_tick(struct Cpu *c) {
     if (getenv("TOTK_COOP_TRACE")) log_callers(c);
     player_actor_cached = player_actor();
+    if (prof4) resident_named("Player", &prof4_ref);
     static int report_ticks;
     if (getenv("TOTK_COOP_TRACE") && ++report_ticks % 300 == 0) report_callers();   // input tracing only
     static int prev;
@@ -743,11 +794,28 @@ void coop_tick(struct Cpu *c) {
         prof_phase = e && (*e == '1' || *e == '2') ? 1 : -1;
         prof_kind = e && *e == '2';
         if (e && *e == '3') prof3 = 1, g_fnprof = 1;
+    if (e && *e == '4') prof3 = prof4 = 1;   // the profiler from the world on (loading is too slow under it)
         rt_log("coop: TOTK_COOP_PROF=%s", e ? e : "(unset)");
+    }
+    static int player_trace = -1;   // TOTK_COOP_TRACE=player: the callers of the named lookup for "Player", every 10 s
+    if (player_trace < 0) { const char *e = getenv("TOTK_COOP_TRACE"); player_trace = e && strstr(e, "player"); }
+    if (player_trace) {
+        static int t2;
+        if (++t2 % 300 == 0) {
+            char d[160];
+            int n = 0;
+            for (int i = 0; i < 8192; i++) {
+                uint64_t fn = atomic_load(&p3[i].fn);
+                if (!fn) continue;
+                rt_log("coop: \"Player\" looked up %u x from %s", atomic_load(&p3[i].hits), ldr_describe(fn, d, sizeof d));
+                atomic_store(&p3[i].hits, 0), atomic_store(&p3[i].fn, 0), n++;
+            }
+            rt_log("coop: \"Player\" lookups: %d callers in 10 s", n);
+        }
     }
     if (prof3) {   // reported every 10 s (coop_tick runs at 30 Hz)
         static int t;
-        g_fnprof = 1;   // resolution.c switches it off once the render size is set
+        if (!prof4 || frame_step_world_us() > 0) g_fnprof = 1;   // resolution.c switches it off once the render size is set
         if (++t % 300 == 0) p3_report();
     }
     if (prof_phase == 1 && second_player && ++prof_left == 60) {   // 2 s after the claim: on for 30 polls
