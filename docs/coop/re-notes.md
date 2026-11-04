@@ -63,3 +63,28 @@ evidence), guess.
   copy_dependencies). Result: a second Link stands in the world and takes a combat stance at a Soldier Construct
   next to the first one; no crash. Confidence: confirmed (Sinnik, screenshot).
 - Open: Player#2 is now parent of Player#1's own equipment; it needs its own, with only the shared helpers copied.
+
+## Input (2026-11-03, unattended tests, tools/coop/run_test.ps1)
+- Link#2 copies every input of Link#1 (Sinnik): both Players read controller 0.
+- coop_getController main+0x37ccc0 (mgr = [[main+0x3960150]], index, &user name): index 0 -> [mgr+0xa0], 1..3 ->
+  [mgr+0xf0 + 8 * (i - 1)], 4 -> [mgr+0xa8]; a registered "Custom_Controller_<name>" or flag bit 13 of +0x13c -> +0xc0.
+  Per-frame callers: main+0xb012fc, main+0x37c980 / main+0x37c9b8 (UI), main+0x100d07c (Camera), main+0x5e197c (UI);
+  "Player" asks only at load (main+0x4ced10). Neither Player stores the controller pointer (scan, 3 levels).
+- Controller layout (controllers 0 and 1 share vtable main+0x394c210; diffs while the input script held buttons):
+  +0x114 and +0x13c held mask (bit 0 A, 2 ZL, 3 X, 20 left stick up), +0x10 repeat mask, +0x30 + 4 * bit frames held
+  (float), +0x120 / +0x124 left stick x / y (-1..1), +0x110 a running counter. +0x8 / +0xc pressed / released and
+  +0x128 / +0x12c right stick are guesses (sead order).
+- main+0x479c20 rewrites every controller from the Npad slots continuously, also while actors update; writing a
+  controller's fields during a Player calc does not stick (tests BLIND=3, BLIND=2 + fill: no effect).
+- coop_ActorCalc main+0x41bb20 (x0 = actor), called from the actor job main+0x2f175c: Link#2 then Link#1 on the same
+  worker thread every frame (calc log). Found with the function profiler (cpu.h FN_ENTER, TOTK_COOP_PROF).
+- Working: while Player#2's calc runs, [mgr+0xa0] points at a controller of our own (patch page +0x400: a copy of
+  controller 0 with player 2's buttons and sticks) and is put back after (TOTK_COOP_BLIND=4, runtime/coop_spawn.c
+  calc_wrap). Test: player 1 idle, player 2's test pattern walked Link#2 31 m forward then right; Link#1 did not
+  move. Confidence: confirmed (log and screenshots).
+- Reporting a second Npad (id 1) to the game stalls it: from the start the title never reaches the world; plugged in
+  later the actor calcs stop (cause not traced). Player 2 reaches the game only through the controller swap.
+- Single-player leftovers seen: the HUD shows Link#2's prompts (Jump / Let go while Link#2 climbed).
+- Tools: coop_watch_win.c (software read watchpoint: page protection + trap flag), the entry hooks (COOP_HOOKED in
+  runtime/cpu.h; a hook may run the function itself through rt_dispatch and return 1), TOTK_COOP_* settings
+  (AUTOSPAWN, WATCH, PROF, BLIND, P2, P2_NPAD, CTRLDUMP).

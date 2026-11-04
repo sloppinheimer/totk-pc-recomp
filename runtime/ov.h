@@ -9,6 +9,9 @@
 
 // ---- coop_spawn.c
 void coop_tick(struct Cpu *c);   // co-op spawn test, from the gamepad poll (ov_input.c npad_states)
+int coop_p2_connected(void);     // player 2's controller: Npad id 1
+int coop_p2_npad(void);          // report player 2 as Npad id 1 to the game (TOTK_COOP_P2_NPAD=1)
+int coop_p2_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);   // 1 with a state
 
 // ---- ov_system.c
 int ov_handheld(void);                     // TOTK_OPERATION_MODE=handheld (default docked); fatal on another value

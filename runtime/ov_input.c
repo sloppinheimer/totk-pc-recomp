@@ -8,6 +8,7 @@
 // the gamepad's gyro and accelerometer (TOTK_MOTION=0, live: reads at rest). State layouts follow libnx HID.
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -57,6 +58,9 @@ static void ov_supported_ids(Cpu *c) {
     if (n > 10 || (!ids && n)) rt_fatal("nn::hid::SetSupportedNpadIdType: invalid id list (%llu ids)", (unsigned long long)n);
     int ok = 0;
     for (uint64_t i = 0; i < n; i++) ok |= ids[i] == pad_id();
+    char list[96] = "";
+    for (uint64_t i = 0, m = 0; i < n && m < sizeof list - 8; i++) m += snprintf(list + m, sizeof list - m, " %#x", ids[i]);
+    rt_log("hid: the game supports controller ids%s", list);   // co-op: is id 1 among them
     plat_mutex_lock(&lock);
     allowed = ok;
     plat_mutex_unlock(&lock);
@@ -74,6 +78,7 @@ static void ov_style_set(Cpu *c) {
     uint32_t id = *need_id(c, 0, "GetNpadStyleSet");
     plat_mutex_lock_shared(&lock);
     uint32_t v = enabled && allowed && id == pad_id() ? styles & pad_style() : 0;
+    if (enabled && id == 1 && coop_p2_npad()) v = styles & STYLE_FULL_KEY;   // co-op player 2 (coop_spawn.c)
     plat_mutex_unlock_shared(&lock);
     ret_x(c, v);
 }
@@ -94,7 +99,8 @@ static void npad_states(Cpu *c, uint32_t want) {
     if (live) {
         s.attributes = ATTR_CONNECTED;
         input_poll(&s.buttons, &s.lx, &s.ly, &s.rx, &s.ry);
-    }
+    } else if (want == STYLE_FULL_KEY && id == 1 && enabled && coop_p2_npad() && coop_p2_poll(&s.buttons, &s.lx, &s.ly, &s.rx, &s.ry))
+        s.attributes = ATTR_CONNECTED;   // co-op player 2: Npad id 1, read by controller 1 (coop_spawn.c)
     *out = s;
     ret_x(c, 1);
 }

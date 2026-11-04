@@ -1,0 +1,8 @@
+# Title to the first save slot, then in the world: hold ZL 6-9 s, hold X 11-11.2 s (jump), hold A 13-13.2 s.
+300 A 4
+520 A 4
+700 A 4
+900 A 4
+@6000 ZL 3000
+@11000 X 200
+@13000 A 200

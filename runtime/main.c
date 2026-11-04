@@ -155,7 +155,8 @@ const RtConfig *rt_config(void) { return &cfg; }
 
 // ---- runtime services the generated code calls (cpu.h)
 volatile int g_fnprof = 0;   // resolution.c switches it on until the game sets its render size (res_fn_hit)
-void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) { (void)lr, res_fn_hit(addr, x0); }
+void coop_fn_hit(uint64_t addr, uint64_t lr, uint64_t x0);   // coop_spawn.c
+void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) { res_fn_hit(addr, x0), coop_fn_hit(addr, lr, x0); }
 
 void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) {
     char at[128], lr[128];
@@ -211,6 +212,7 @@ static uint64_t lifted_function(uintptr_t rip) {
     }
     return lo ? fn_rev[lo - 1].guest : 0;
 }
+uint64_t rt_lifted_function(uintptr_t rip) { return lifted_function(rip); }   // coop_watch_win.c
 
 static int readable(uint64_t a, uint64_t n) { return plat_mem_readable(a, n); }
 
