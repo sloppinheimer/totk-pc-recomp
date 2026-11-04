@@ -334,6 +334,23 @@ static void stick(SDL_GamepadAxis ax, SDL_GamepadAxis ay, float dead, int32_t ou
 
 // Open the first gamepad when none is open or the open one went away; logs once per change.
 static void scan_pads(void) {
+    // With TOTK_PAD_INDEX (one game per gamepad) the open pad must stay the n-th: when the list changes (a pad
+    // dropped and came back, now first), pick again. Otherwise a game left holding the other player's pad while
+    // its own was away keeps it, and one pad drives both games (the tester, 2026-11-04: a DualSense reconnecting).
+    static int last_n = -1;
+    if (pad && SDL_GamepadConnected(pad) && cfg_get("TOTK_PAD_INDEX")) {
+        int n = 0;
+        SDL_JoystickID *ids = SDL_GetGamepads(&n);
+        int want = atoi(cfg_get("TOTK_PAD_INDEX"));
+        int wrong = n != last_n && (!ids || want >= n || ids[want] != SDL_GetGamepadID(pad));
+        last_n = n;
+        SDL_free(ids);
+        if (!wrong) return;
+        rt_log("input: the gamepads changed; picking gamepad %d again", want);
+        SDL_CloseGamepad(pad); pad = NULL; sensor_pad = 0; sensor_ok = 0;
+        plat_xchg32(&pad_layout_shown, -1);
+        for (int i = 0; i < 4; i++) plat_xchg32(&pad_labels[i], PAD_LABEL_NONE);
+    }
     if (pad && SDL_GamepadConnected(pad)) return;
     if (pad) {
         SDL_CloseGamepad(pad); pad = NULL; sensor_pad = 0; sensor_ok = 0;
@@ -471,7 +488,11 @@ static void pick(int32_t *x, int32_t *y, int32_t kx, int32_t ky) {
 
 // Under lock, state 1: the open gamepad's inputs by position (pd[PAD_*] != 0 held); 0 without a connected gamepad.
 static int pad_physical(uint8_t pd[PAD_COUNT]) {
-    if ((!pad || !SDL_GamepadConnected(pad)) && plat_now_ns() / 1000000u >= next_scan) { next_scan = plat_now_ns() / 1000000u + RESCAN_MS; scan_pads(); }
+    // Also with a pad open under TOTK_PAD_INDEX: scan_pads checks it is still the n-th one.
+    if ((!pad || !SDL_GamepadConnected(pad) || cfg_get("TOTK_PAD_INDEX")) && plat_now_ns() / 1000000u >= next_scan) {
+        next_scan = plat_now_ns() / 1000000u + RESCAN_MS;
+        scan_pads();
+    }
     SDL_UpdateGamepads();
     if (!pad || !SDL_GamepadConnected(pad)) return 0;
     for (int p = PAD_SOUTH; p < PAD_ZL; p++) pd[p] = SDL_GetGamepadButton(pad, pad_sdl[p]);
