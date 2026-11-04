@@ -3,6 +3,7 @@
 // polls the gamepad (ov_input.c npad_states), whose Cpu rt_call needs. Test code: Windows keys only.
 
 #include <stdint.h>
+#include <math.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -159,7 +160,9 @@ static void camera_scan(void) {
 static const uint16_t cam_slot[4][2] = {{0x1a8, 0x160}, {0x858, 0x100}, {0xa20, 0x790}, {0x1fc0, 0x1c0}};
 static void camera_follow(uint64_t target, uint64_t from) {
     static int mask = -1;
-    if (mask < 0) { const char *e = cfg_get("TOTK_COOP_CAMMASK"); mask = e ? (int)strtol(e, NULL, 0) : 15; }
+    // Off unless TOTK_COOP_CAMMASK is set: the places move between runs (another scan found one reference elsewhere)
+    // and writing them stripped Link#1's hair, Zonai arm and armor (the tester, 2026-11-04).
+    if (mask < 0) { const char *e = cfg_get("TOTK_COOP_CAMMASK"); mask = e ? (int)strtol(e, NULL, 0) : 0; }
     uint64_t cam = resident_named("PlayerCamera", NULL);
     for (int i = 0; cam && i < 4; i++) {
         uint64_t obj = rd_ptr(cam + cam_slot[i][0]);
@@ -707,6 +710,12 @@ void coop_tick(struct Cpu *c) {
         cam_at = -1, cam_two = 1;
         rt_log("coop: camera follows Link#2");
     }
+    static int cam_back = -2;   // TOTK_COOP_CAMBACK=<seconds>: back to Link#1 then
+    if (cam_back == -2) { const char *e = cfg_get("TOTK_COOP_CAMBACK"); cam_back = e ? atoi(e) : -1; }
+    if (cam_back > 0 && cam_two && frame_step_world_us() > cam_back * 1000000ll) {
+        cam_back = -1, cam_two = 0;
+        rt_log("coop: camera follows Link#1");
+    }
     if (second_player) {
         uint64_t one = player_actor();
         if (cam_two) camera_follow(second_player, one);
@@ -741,6 +750,16 @@ void coop_tick(struct Cpu *c) {
         int32_t state = -1;
         rd(one + ACTOR_POS, p1, 12), rd(one + ACTOR_ROT, r1, 36);
         rd(second_player + ACTOR_POS, p2, 12), rd(second_player + ACTOR_ROT, r2, 36), rd(second_player + 0x24, &state, 4);
+        {
+            uint64_t cam = resident_named("PlayerCamera", NULL);
+            float cp[3] = {0};
+            int32_t n1 = 0;
+            if (cam) rd(cam + ACTOR_POS, cp, 12);
+            rd(one + 0x1d0, &n1, 4);
+            float d1 = (cp[0] - p1[0]) * (cp[0] - p1[0]) + (cp[2] - p1[2]) * (cp[2] - p1[2]),
+                  d2 = (cp[0] - p2[0]) * (cp[0] - p2[0]) + (cp[2] - p2[2]) * (cp[2] - p2[2]);
+            rt_log("coop: camera %.1f m from Link#1, %.1f m from Link#2; Link#1 has %d update links", sqrtf(d1), sqrtf(d2), n1);
+        }
         rt_log("coop: Link#1 %.2f %.2f %.2f facing %.2f %.2f | Link#2 %.2f %.2f %.2f facing %.2f %.2f state %d",
                p1[0], p1[1], p1[2], r1[2], r1[8], p2[0], p2[1], p2[2], r2[2], r2[8], state);
         if (state < 2 || state > 6) second_player = 0;   // gone or going away: stop reading it

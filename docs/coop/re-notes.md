@@ -106,4 +106,9 @@ evidence), guess.
 - Camera: PlayerCamera (resident) holds the followed Player at [cam+0x1a8]+0x160, [cam+0x858]+0x100,
   [cam+0xa20]+0x790, [cam+0x1fc0]+0x1c0 (scan for Link#1's actor). Writing Link#2 there each poll makes the camera
   follow Link#2 (walks and climbs, screenshots); Numpad 4 switches, TOTK_COOP_CAMAT=<s> for runs. Which of the four
-  are needed is untested (TOTK_COOP_CAMMASK). Confidence: confirmed for all four together.
+  are needed is untested (TOTK_COOP_CAMMASK). Confidence: confirmed for all four together, in one run only.
+- Correction (2026-11-04): not reliable and harmful. Switching stripped Link#1 of hair, Zonai arm and armor (the tester's
+  screenshot). Later scans found other places (one run: a single Link#1 *reference* at [cam+0x3a0]+0x48, another at
+  [cam+0x3590]+0x298), and with all four written the camera stayed on Link#1. The four were caches, at least one of
+  them shared with Link#1's model. The switch is off by default now (TOTK_COOP_CAMMASK unset). Next: find how the
+  game sets the camera's target (camera or event code that takes an actor), instead of patching memory.
