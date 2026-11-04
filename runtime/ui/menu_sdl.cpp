@@ -74,6 +74,15 @@ extern "C" void menu_sdl_event(const SDL_Event *e) {
     case SDL_EVENT_MOUSE_WHEEL:
         if (menu_is_open()) menu_event_wheel(e->wheel.x, e->wheel.y);
         return;
+    case SDL_EVENT_TEXT_INPUT:   // typed text for the menu's text boxes (needs SDL_StartTextInput on the window)
+        if (menu_is_open())
+            for (const unsigned char *p = (const unsigned char *)e->text.text; p && *p;) {
+                unsigned c = *p++, more = c >= 0xf0 ? 3 : c >= 0xe0 ? 2 : c >= 0xc0 ? 1 : 0;
+                c &= more == 3 ? 0x07 : more == 2 ? 0x0f : more == 1 ? 0x1f : 0x7f;
+                while (more-- && (*p & 0xc0) == 0x80) c = (c << 6) | (*p++ & 0x3f);
+                menu_event_char(c);
+            }
+        return;
     case SDL_EVENT_WINDOW_FOCUS_GAINED:
     case SDL_EVENT_WINDOW_FOCUS_LOST:
         menu_event_focus(e->type == SDL_EVENT_WINDOW_FOCUS_GAINED);
