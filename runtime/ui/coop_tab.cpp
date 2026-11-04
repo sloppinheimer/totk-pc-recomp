@@ -49,6 +49,12 @@ extern "C" void tab_coop(float scale) {
         if (!coop_local_address(ip, sizeof ip)) snprintf(ip, sizeof ip, "this PC's address");
         snprintf(line, sizeof line, menu_text(UI_MENU_COOP_HOSTING), ip);
         opt_text_str(line);
+        char detail[160];
+        int up = coop_upnp_status(detail, sizeof detail);
+        static const UiTextId kUpnp[] = {UI_MENU_COOP_UPNP_WORKING, UI_MENU_COOP_UPNP_WORKING, UI_MENU_COOP_UPNP_OPEN,
+                                         UI_MENU_COOP_UPNP_OPEN_NOIP, UI_MENU_COOP_UPNP_SHARED, UI_MENU_COOP_UPNP_FAILED};
+        snprintf(line, sizeof line, menu_text(kUpnp[up]), detail);
+        opt_text_str(line, up == COOP_UPNP_FAILED || up == COOP_UPNP_SHARED);
     } else if (*target && id) {
         snprintf(line, sizeof line, menu_text(UI_MENU_COOP_JOINED), target, id);
         opt_text_str(line);

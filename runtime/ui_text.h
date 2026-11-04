@@ -243,7 +243,10 @@ typedef enum {
     UI_MENU_COOP_ALONE,
     UI_MENU_COOP_FAILED,      // "%s": why
     UI_MENU_COOP_NOTE,
-    UI_MENU_LAST_ID = UI_MENU_COOP_NOTE,
+    // the router (coop_upnp.c): "%s" the internet address, or (FAILED) why, in English
+    UI_MENU_COOP_UPNP_WORKING, UI_MENU_COOP_UPNP_OPEN, UI_MENU_COOP_UPNP_OPEN_NOIP, UI_MENU_COOP_UPNP_SHARED,
+    UI_MENU_COOP_UPNP_FAILED,
+    UI_MENU_LAST_ID = UI_MENU_COOP_UPNP_FAILED,
     UI_TEXT_COUNT
 } UiTextId;
 
