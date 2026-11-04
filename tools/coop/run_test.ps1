@@ -1,7 +1,7 @@
 # Unattended co-op test run: a copy of the 1.4.3 profile (the real one is never written), scripted title-to-save input,
 # Player#2 spawned automatically, a small window. Stops the game after -Seconds and prints the coop log lines.
 #   powershell -ExecutionPolicy Bypass -File tools\coop\run_test.ps1 [-Seconds 90] [-Script tools\input\load_save.txt]
-param([int]$Seconds = 90, [string]$Script = "tools\input\load_save.txt", [int]$AutoSpawn = 150, [string]$Watch = "0", [string]$Prof = "0", [string]$Blind = "0", [string]$P2 = "", [string]$CtrlDump = "0")
+param([int]$Seconds = 90, [string]$Script = "tools\input\load_save.txt", [int]$AutoSpawn = 150, [string]$Watch = "0", [string]$Prof = "0", [string]$Blind = "0", [string]$P2 = "", [string]$CtrlDump = "0", [string]$CamAt = "")
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
@@ -20,6 +20,7 @@ $env:TOTK_COOP_WATCH = $Watch
 $env:TOTK_COOP_PROF = $Prof
 $env:TOTK_COOP_BLIND = $Blind
 $env:TOTK_COOP_CTRLDUMP = $CtrlDump
+if ($CamAt) { $env:TOTK_COOP_CAMAT = $CamAt } else { Remove-Item Env:TOTK_COOP_CAMAT -ErrorAction SilentlyContinue }
 if ($P2) { $env:TOTK_COOP_P2 = $P2 } else { Remove-Item Env:TOTK_COOP_P2 -ErrorAction SilentlyContinue }
 $p = Start-Process build\v143\totk.exe -WorkingDirectory build\v143 -PassThru
 $deadline = (Get-Date).AddSeconds($Seconds)

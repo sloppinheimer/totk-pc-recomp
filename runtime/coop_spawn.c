@@ -107,6 +107,68 @@ static const char *actor_name(uint64_t actor, char *buf, size_t n) {
 // capacity, +0x1cc start, +0x1d0 count, indices into the edge table) is queued again with copy in model's place.
 // ActorLink's getActor (main+0x2804d0) hands an actor out on a worker thread only to an actor connected to it by
 // such edges; a second Player without them gets null for ThrowBox and crashes (main+0x4b46a4).
+static int heapish(uint64_t v) { return v >= 0x100000000ull && v <= 0x7fffffffffull && !(v & 7); }
+
+// The resident actor named `want` and its reference object (entry +8), or 0.
+static uint64_t resident_named(const char *want, uint64_t *ref_out) {
+    uint64_t module = rd_ptr(MOD_MAIN_BASE + SCENE_SLOT), scene = module ? rd_ptr(module + 0x1e8) : 0;
+    int32_t count = 0;
+    if (!scene || !rd(scene + 0x50, &count, 4) || count < 14) return 0;
+    uint64_t comps = rd_ptr(scene + 0x58), resident = comps ? rd_ptr(comps + 13 * 8) : 0;
+    if (!resident || !rd(resident + 0x20, &count, 4) || count < 0 || count > 64) return 0;
+    uint64_t entries = rd_ptr(resident + 0x28);
+    for (int i = 0; entries && i < count; i++) {
+        uint64_t ref = rd_ptr(entries + (uint64_t)i * 0x70 + 8), actor = ref ? rd_ptr(ref + 0x40) : 0;
+        char nm[40];
+        if (actor && !strcmp(actor_name(actor, nm, sizeof nm), want)) {
+            if (ref_out) *ref_out = ref;
+            return actor;
+        }
+    }
+    return 0;
+}
+
+// Where PlayerCamera keeps the Player it follows: words in its first 0x4000 bytes, and one pointer level below
+// (0x800 bytes each), equal to Link#1's actor or its resident reference object (logged for the follow switch).
+static void camera_scan(void) {
+    uint64_t ref1 = 0, cam = resident_named("PlayerCamera", NULL), one = resident_named("Player", &ref1);
+    if (!cam || !one) { rt_log("coop: camera scan: no PlayerCamera or Player"); return; }
+    static uint64_t a0[0x4000 / 8], a1[0x800 / 8];
+    if (!rd(cam, a0, sizeof a0)) return;
+    int hits = 0;
+    for (int i = 0; i < 0x4000 / 8 && hits < 32; i++) {
+        if (a0[i] == one || a0[i] == ref1) {
+            rt_log("coop: PlayerCamera +%#x = Link#1 %s", i * 8, a0[i] == one ? "actor" : "reference");
+            hits++;
+            continue;
+        }
+        if (!heapish(a0[i]) || !rd(a0[i], a1, sizeof a1)) continue;
+        for (int j = 0; j < 0x800 / 8 && hits < 32; j++)
+            if (a1[j] == one || a1[j] == ref1) {
+                rt_log("coop: PlayerCamera [+%#x] +%#x = Link#1 %s", i * 8, j * 8, a1[j] == one ? "actor" : "reference");
+                hits++;
+            }
+    }
+    rt_log("coop: camera scan: %d places (camera %llx, Link#1 %llx, reference %llx)", hits, (unsigned long long)cam,
+           (unsigned long long)one, (unsigned long long)ref1);
+}
+
+// The camera follow switch: the four places in PlayerCamera that hold the followed Player (camera_scan, 2026-11-04):
+// [cam+0x1a8]+0x160, [cam+0x858]+0x100, [cam+0xa20]+0x790, [cam+0x1fc0]+0x1c0. TOTK_COOP_CAMMASK picks which are
+// written (bits 0-3, default all); written every poll while the camera follows Link#2.
+static const uint16_t cam_slot[4][2] = {{0x1a8, 0x160}, {0x858, 0x100}, {0xa20, 0x790}, {0x1fc0, 0x1c0}};
+static void camera_follow(uint64_t target, uint64_t from) {
+    static int mask = -1;
+    if (mask < 0) { const char *e = cfg_get("TOTK_COOP_CAMMASK"); mask = e ? (int)strtol(e, NULL, 0) : 15; }
+    uint64_t cam = resident_named("PlayerCamera", NULL);
+    for (int i = 0; cam && i < 4; i++) {
+        uint64_t obj = rd_ptr(cam + cam_slot[i][0]);
+        if (!(mask >> i & 1) || !heapish(obj)) continue;
+        uint64_t at = obj + cam_slot[i][1];
+        if (rd_ptr(at) == from) ST64(at, target);
+    }
+}
+
 // Whether an actor is in the resident actor list (scene component 13).
 static int is_resident(uint64_t actor) {
     uint64_t module = rd_ptr(MOD_MAIN_BASE + SCENE_SLOT), scene = module ? rd_ptr(module + 0x1e8) : 0;
@@ -196,7 +258,6 @@ static int is_input_obj(uint64_t v) {
     for (int i = 0; i < 16; i++) { uint64_t d = atomic_load(&copy_dst[i]); if (!d) break; if (v == d) return i + 1; }
     return 0;
 }
-static int heapish(uint64_t v) { return v >= 0x100000000ull && v <= 0x7fffffffffull && !(v & 7); }
 static void find_input(const char *who, uint64_t actor) {
     static uint64_t a0[0x3000 / 8], a1[0x800 / 8], a2[0x400 / 8];
     if (!actor || !rd(actor, a0, sizeof a0)) return;
@@ -637,6 +698,20 @@ void coop_tick(struct Cpu *c) {
         }
     }
     if (dump_ticks) { dump_ticks--; dump_resident("a poll after the Player claim"); }
+    // Camera: Numpad 4 switches which Link the camera follows; TOTK_COOP_CAMAT=<seconds> switches it to Link#2 at that
+    // world-clock time (unattended runs).
+    static int cam_two, cam_at = -2;
+    if (cam_at == -2) { const char *e = cfg_get("TOTK_COOP_CAMAT"); cam_at = e ? atoi(e) : -1; }
+    if (pressed & 8) cam_two = !cam_two, rt_log("coop: camera follows Link#%d", cam_two + 1);
+    if (cam_at > 0 && second_player && frame_step_world_us() > cam_at * 1000000ll) {
+        cam_at = -1, cam_two = 1;
+        rt_log("coop: camera follows Link#2");
+    }
+    if (second_player) {
+        uint64_t one = player_actor();
+        if (cam_two) camera_follow(second_player, one);
+        else camera_follow(one, second_player);
+    }
     static int edges_left = -1;
     if (second_player && edges_left < 0) edges_left = 400;
     if (edges_left > 0 && !--edges_left) {
@@ -655,6 +730,7 @@ void coop_tick(struct Cpu *c) {
                 }
         }
         rt_log("coop: %d globals point at a Link", found);
+        camera_scan();
     }
     // Both Links' position and facing about once a second (the gamepad is polled once a frame): does Player#2 move,
     // and with whose input?

@@ -42,7 +42,7 @@ int input_capture(int reset, int *id);
 uint32_t input_key_char(int key);
 // F8, the flight recorder's key (no KEY_ id), held while the game window is in front.
 int input_flight_key(void);
-// Co-op spawn test keys (runtime/coop_spawn.c): bit 0..2 = numpad 1..3 held while the game window is in front.
+// Co-op spawn test keys (runtime/coop_spawn.c): bit 0..3 = numpad 1..4 held while the game window is in front.
 int input_coop_keys(void);
 // Co-op player 2: the second connected gamepad (Switch bits, sticks after the dead zone); 0 without one.
 int input_pad2_read(uint64_t *buttons, int32_t sl[2], int32_t sr[2]);
