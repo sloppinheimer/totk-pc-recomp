@@ -41,4 +41,11 @@ void coop_copy_dependencies(Cpu *c, uint64_t model, uint64_t copy, int verbose);
 
 // A controller's input fields (controller layout in re-notes): Switch buttons (input_map.h B_*) and sticks -1..1.
 // prev and held carry the previous frame's mask and the per-bit hold counters for this controller.
+// The shared world (coop_world.c): every actor the per-actor calc updates, and the per-frame sync.
+void coop_actor_seen(uint64_t actor);
+void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);
+void coop_world_tick(Cpu *c, uint64_t me);
+int coop_world_role(void);                              // coop_players.c: 0 alone, 1 host, 2 guest
+int coop_player_positions(float (*out)[3], int max);   // the remote Links' positions
+
 void coop_fill_controller(uint64_t ctl, uint64_t buttons, const float stick[4], uint32_t *prev, float held[32]);

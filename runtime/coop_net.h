@@ -25,3 +25,9 @@ int coop_net_on(void);                                         // starts the thr
 int coop_net_id(void);                                         // this player's id, 0 before the relay answered
 void coop_net_publish(const NetState *st);                     // this player's latest state
 int coop_net_remote(int id, NetState *out, uint64_t *age_ns);  // player id's latest state; 0 if not here
+
+// The shared world (coop_world.c): the host sends its enemies (latest wins), guests send hits on them (queued).
+void coop_net_world_send(const void *data, int len);               // up to 1800 bytes
+int coop_net_world(void *out, int max, int *from, uint64_t *age_ns);   // the latest from the host; 0 if none
+void coop_net_hit_send(const void *data, int len);                 // up to 64 bytes
+int coop_net_hit_take(void *out, int max, int *from);              // the oldest hit received; 0 when none

@@ -323,6 +323,15 @@ static Slot *slot_new(int source, int net_id) {
 }
 
 // Called from the actor calc hook: 1 when it ran a slot's Player itself (with the slot's controller handed out).
+static int world_role;   // coop_world_role: 0 alone, 1 host (others follow this game), 2 guest
+int coop_world_role(void) { return world_role; }
+// The remote players' Links' positions (for the host's sync radius).
+int coop_player_positions(float (*out)[3], int max) {
+    int n = 0;
+    for (int i = 0; i < COOP_MAX_PLAYERS && n < max; i++)
+        if (slots[i].state == LIVE && slots[i].source == SRC_NET && slots[i].have_want) memcpy(out[n++], slots[i].want_pos, 12);
+    return n;
+}
 static __thread int inside;
 // ---- TOTK_COOP_TRACE=diff (a test): which qwords of main's writable data (.data to .bss) a co-op Link's calc changes;
 // counted over calcs and reported every 600 calcs, the most often changed first.
@@ -416,6 +425,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
     if (frame_step_world_us() <= 0) return;   // not in the world yet
     uint64_t me = coop_player_actor();
     if (!me) return;
+    coop_world_tick(c, me);
 
     // This player's state out, when on a relay.
     if (coop_net_on()) {
@@ -486,6 +496,9 @@ void coop_players_tick(Cpu *c, int numpad3) {
         set_input(s, st.buttons, sticks);
         s->idle = !st.buttons && abs(st.sticks[0]) < 3000 && abs(st.sticks[1]) < 3000;
     }
+    int others = 0;
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++) others += slots[i].state != FREE && slots[i].source == SRC_NET;
+    world_role = !coop_net_on() || !coop_net_id() ? 0 : have_host ? 2 : others ? 1 : 0;
     if (host_time >= 0) follow_host_time(c, host_time);
     if (have_host && host_weather >= 0) follow_host_weather(c, host_weather);
     else if (!have_host && weather_forced >= 0) follow_host_weather(c, -1);   // the host left, or this game is the host
