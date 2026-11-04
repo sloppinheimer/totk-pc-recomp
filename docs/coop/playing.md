@@ -17,7 +17,7 @@ items (each game keeps its own world), outfits (everyone looks like the local sa
 player leaves, menus for remote players.
 
 ## One PC, two games, two gamepads (online co-op without a second PC)
-`powershell -ExecutionPolicy Bypass -File tools\coop\play_two.ps1` starts the relay and two game windows; window 1
+Double-click `Play co-op (two pads).vbs` in the repo folder (or run `tools\coop\play_two.ps1`): it starts the relay and two game windows with no console windows; window 1
 reads the first connected gamepad, window 2 the second (the log lists the gamepads it sees: "input: gamepad 0 of 2").
 Load the save in both. Both play copies of the save (build\prof-play-1/-2, fresh each start): nothing is saved back.
 Wake both gamepads before starting. The launcher frees the mouse (mouse_sens = 0: no mouse camera, no cursor capture) and hides the consoles (coop_hide_console = 1); logs stay in logs	otk.log. Setting: `pad_index = <n>` in totk.ini picks the n-th gamepad (0 = first).
