@@ -134,3 +134,7 @@ evidence), guess.
   script and game B's copy of A followed the same path within about 1 m (A 386.3,1320.8 -> 397.5,1351.9; B's copy
   386.6,1319.8 -> 398.4,1350.9). ForceSetMatrix's snap path did not trigger in it (untested). Confidence: confirmed
   for walking.
+- Drift (Sinnik, 2026-11-04, two windows): input alone left a remote Link about 2 m off (other side of a staircase).
+  Now put back past 1.5 m while its owner moves and past 0.25 m once they stand still, at most every 10 polls.
+  Pair test: three put-backs of about 0.5 m when A stopped; final gap 0.1 m (A 392.06,1357.91, B's copy
+  392.09,1357.80). ForceSetMatrix (main+0x45ce70) confirmed working from the input thread.

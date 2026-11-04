@@ -7,7 +7,7 @@
 // slot's controller as controller 0: a copy of the real one with the slot's buttons and sticks (the real one is
 // rewritten by the game while actors update; this one is not). The first Player, this PC's Link, keeps the real one.
 // A remote Link follows its owner's input (sticks turned from the owner's camera into this PC's camera) and is put
-// back at the owner's position when it drifts more than COOP_SNAP_M.
+// back at the owner's position when it drifts (COOP_SNAP_MOVING_M, COOP_SNAP_IDLE_M; at most every 10 polls).
 
 #include <math.h>
 #include <stdatomic.h>
@@ -22,7 +22,8 @@
 #include "layout.h"
 #include "platform/platform.h"
 
-#define COOP_SNAP_M 3.0f
+#define COOP_SNAP_MOVING_M 1.5f   // a remote Link is put back past this while its owner moves
+#define COOP_SNAP_IDLE_M 0.25f    // ... and past this once its owner stands still (no stick, no buttons)
 
 enum { FREE, WANTED, REQUESTED, LIVE, LET_GO };
 enum { SRC_PAD, SRC_NET };
@@ -36,7 +37,8 @@ typedef struct {
     uint64_t buttons;                  // this frame's input, set by coop_players_tick
     float stick[4];
     float want_pos[3], want_rot[9];    // net: the owner's reported transform
-    int have_want;
+    int have_want, idle, snap_wait;
+    unsigned snaps;
 } Slot;
 static Slot slots[COOP_MAX_PLAYERS];
 static PlatMutex lock = PLAT_MUTEX_INIT;   // input fields, read by the calc wrapper on worker threads
@@ -185,6 +187,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
             sticks[k] = (int32_t)(lx * 32767.0f), sticks[k + 1] = (int32_t)(ly * 32767.0f);
         }
         set_input(s, st.buttons, sticks);
+        s->idle = !st.buttons && abs(st.sticks[0]) < 3000 && abs(st.sticks[1]) < 3000;
     }
 
     // A second gamepad on this PC drives one more Link (Numpad 3 spawns it; the pad alone does not).
@@ -218,9 +221,17 @@ void coop_players_tick(Cpu *c, int numpad3) {
             }
             if (s->state == LIVE && s->source == SRC_NET && s->have_want) {
                 float p[3];
-                if (coop_rd(s->actor + COOP_ACTOR_POS, p, 12)) {
+                float lim = s->idle ? COOP_SNAP_IDLE_M : COOP_SNAP_MOVING_M;
+                if (s->snap_wait) s->snap_wait--;
+                else if (coop_rd(s->actor + COOP_ACTOR_POS, p, 12)) {
                     float dx = p[0] - s->want_pos[0], dy = p[1] - s->want_pos[1], dz = p[2] - s->want_pos[2];
-                    if (dx * dx + dy * dy + dz * dz > COOP_SNAP_M * COOP_SNAP_M) snap(c, s);
+                    float d2 = dx * dx + dy * dy + dz * dz;
+                    if (d2 > lim * lim) {
+                        snap(c, s);
+                        s->snap_wait = 10;
+                        if (++s->snaps <= 20 || s->snaps % 50 == 0)
+                            rt_log("coop: slot %d: put back %.2f m (%s); %u so far", i, sqrtf(d2), s->idle ? "idle" : "moving", s->snaps);
+                    }
                 }
             }
         }
