@@ -13,12 +13,13 @@
 Everyone needs the same build (the packet version must match) and the same game update. A standalone relay still
 works: `python server/coop_relay.py` on a PC everyone can reach, and `coop_relay = <address>` in `totk.ini` joins
 it at start (the test scripts do this).
-What works (2026-11-04): each player's Link appears in the others' games and moves with that player's input (walk,
-run, jump, attack); it is put back at its owner's position when it drifts. It carries its owner's weapon, bow and
-shield and wears their head, body and leg armor, updated when they change them. Not yet: shared enemies and items
-(each game keeps its own world), fused weapon parts and armor dyes, removing a Link when its player leaves, menus for
-remote players.
 
+What works (2026-11-04): each player's Link appears in the others' games and moves with that player's input (walk,
+run, jump, glide, attack); it is put back at its owner's position when it drifts, and goes away when its player
+leaves. It carries its owner's weapon, bow and shield and wears their head, body and leg armor. Guests follow the
+host's time of day and weather, and the host's placed enemies near the players (position, life, death; a guest's
+hits count on the host's enemy). The host's HUD prompts stay on the host's screen. Not yet: items, enemy attacks
+decided by the host, fused weapon parts and armor dyes, menus for remote players. Chests stay each player's own.
 ## One PC, two games, two gamepads (online co-op without a second PC)
 Double-click `Play co-op (two pads).vbs` in the repo folder (or run `tools\coop\play_two.ps1`): it starts the relay and two game windows with no console windows; window 1
 reads the first connected gamepad, window 2 the second (the log lists the gamepads it sees: "input: gamepad 0 of 2").
