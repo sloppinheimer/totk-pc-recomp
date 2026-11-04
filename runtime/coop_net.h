@@ -51,3 +51,9 @@ int coop_local_address(char *out, size_t n);   // this PC's LAN address, for the
 void coop_host(const char *name);   // the relay here, joined at 127.0.0.1
 void coop_end(void);                // leave, and stop the relay here if any
 void coop_session_tests(int64_t world_us);
+
+// The router (coop_upnp.c): Host asks it to forward UDP COOP_PORT here (UPnP), Leave takes that back.
+enum { COOP_UPNP_NONE, COOP_UPNP_WORKING, COOP_UPNP_OPEN, COOP_UPNP_OPEN_NOIP, COOP_UPNP_SHARED, COOP_UPNP_FAILED };
+void coop_upnp_open(void);
+void coop_upnp_close(void);
+int coop_upnp_status(char *detail, size_t n);   // COOP_UPNP_*; detail: the internet address, or why it failed

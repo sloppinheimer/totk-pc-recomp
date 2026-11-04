@@ -162,6 +162,7 @@ int coop_local_address(char *out, size_t n) {
 // Host: the relay here, joined through 127.0.0.1 (the menu's Host button and TOTK_COOP_TEST_HOST).
 void coop_host(const char *name) {
     coop_relay_start(COOP_PORT);
+    coop_upnp_open();   // the router, for players over the internet
     char self[32];
     snprintf(self, sizeof self, "127.0.0.1:%d", COOP_PORT);
     coop_net_join(self, name);
@@ -169,6 +170,7 @@ void coop_host(const char *name) {
 
 void coop_end(void) {
     coop_net_leave();
+    if (coop_relay_port()) coop_upnp_close();
     coop_relay_stop();
 }
 

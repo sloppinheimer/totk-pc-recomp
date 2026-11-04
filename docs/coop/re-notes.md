@@ -197,3 +197,8 @@ evidence), guess.
   14 of 152 with 3.5 of 38 hearts; Chuchu Junior 10 of 10). Writing 0 kills: the game's own death follows and the
   enemy stays dead. The actor delete request (main+0x63baa8) on a placed enemy instead lets the map make a fresh
   one at once. Confidence: confirmed (pair test).
+
+## Router (UPnP), 2026-11-04
+- This PC's router: two devices answer the SSDP search; the one with WANIPConnection:2 is at 192.168.1.1 (control
+  /ctl/IPConn). AddPortMapping with a 3600 s lease works. DeletePortMapping with an empty NewRemoteHost answers 402
+  Invalid Args (both service versions); with NewRemoteHost "*" it works. runtime/coop_upnp.c tries both.
