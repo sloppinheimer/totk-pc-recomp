@@ -343,7 +343,17 @@ static void scan_pads(void) {
     }
     int n = 0;
     SDL_JoystickID *ids = SDL_GetGamepads(&n);
-    for (int i = 0; ids && i < n && !pad; i++) pad = SDL_OpenGamepad(ids[i]);
+    // TOTK_PAD_INDEX=<n> (co-op on one PC: one game per gamepad): the n-th connected gamepad, counted from 0, in the
+    // order SDL lists them; the default is the first.
+    const char *e = cfg_get("TOTK_PAD_INDEX");
+    int want = e ? atoi(e) : 0;
+    for (int i = 0; ids && i < n; i++)
+        rt_log("input: gamepad %d of %d: \"%s\" (id %u)%s", i, n, SDL_GetGamepadNameForID(ids[i]), (unsigned)ids[i],
+               i == want ? " <- this game's" : "");
+    if (want > 0) {
+        if (ids && want < n) pad = SDL_OpenGamepad(ids[want]);
+    } else
+        for (int i = 0; ids && i < n && !pad; i++) pad = SDL_OpenGamepad(ids[i]);
     SDL_free(ids);
     if (!pad) return;
     pad_rumble = SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false);
