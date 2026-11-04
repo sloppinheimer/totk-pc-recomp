@@ -57,7 +57,7 @@ extern const int rt_game_version;
 extern const char rt_port_version[];
 void cheats_frame(uint64_t frame);   // cheats.c
 bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into the rebuild
-void tab_coop(float scale);          // ui/coop_tab.cpp
+void tab_coop(float scale);          // ui/coop_tab.cpp (sets the page modal itself)
 }
 
 // Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
@@ -717,6 +717,8 @@ static void tab_sound(float scale) {
 
 // A confirmation is open (Controls: restart, Advanced: reset): B and Esc close it, not the menu; L / R stay on the page.
 static bool g_modal;
+// A page's own popup (the Co-op tab's keyboard) holds B and the tab keys while it is open.
+extern "C" void menu_page_modal(bool on) { g_modal = on; }
 
 // The note under the layout: Automatic with a gamepad connected, the layout it picked ("in use: Xbox"). NULL otherwise.
 static const char *pad_layout_note(void) {
@@ -1213,7 +1215,7 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
     ImGui::SameLine();
     if (ImGui::Button(quit, ImVec2(bw, 0))) gfx_window_request_close();
     bool was_modal = g_modal || binds_modal();
-    if (g_tab != TAB_ADVANCED && g_tab != TAB_CONTROLS) g_modal = false;
+    if (g_tab != TAB_ADVANCED && g_tab != TAB_CONTROLS && g_tab != TAB_COOP) g_modal = false;
     if (!was_modal && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
         set_open(0);
     ImGui::End();

@@ -1,10 +1,10 @@
 # The menu's Host / Join / Leave without the menu: game A hosts (a relay inside it) -HostAt seconds into the world,
-# game B joins it at 127.0.0.1 -JoinAt seconds in and leaves -LeaveAt seconds in (0: stays). No external relay, no
+# game B joins it at 127.0.0.1 -JoinAt seconds in and leaves -LeaveAt seconds in (0: stays); -HostLeaveAt: A leaves. No external relay, no
 # TOTK_COOP_RELAY. Both play the first save of copies of the 1.4.3 profile, no real input.
 #   powershell -ExecutionPolicy Bypass -File tools\coop\run_session.ps1 [-Seconds 90]
 param([int]$Seconds = 90, [int]$HostAt = 5, [int]$JoinAt = 10, [int]$LeaveAt = 40,
       [string]$ScriptA = "tools\coop\idle.txt", [string]$ScriptB = "tools\coop\idle.txt", [string]$MenuTestB = "",
-      [string]$ShotsDir = "")
+      [string]$ShotsDir = "", [int]$HostLeaveAt = 0)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
@@ -32,11 +32,11 @@ foreach ($g in @(@{dir = $a; prof = 'build\prof-coop-a'; script = $ScriptA; name
     $env:TOTK_FULLSCREEN = '0'; $env:TOTK_WINDOW_SIZE = '960x540'
     $env:TOTK_COOP_NAME = "Player $($g.name)"; $env:TOTK_COOP_P2 = 'off'
     if ($g.input) { $env:TOTK_INPUT = $g.input } else { Remove-Item Env:TOTK_INPUT -ErrorAction SilentlyContinue }
-    if ($g.name -eq 'A') { $env:TOTK_COOP_TEST_HOST = "$HostAt" }
+    if ($g.name -eq 'A') { $env:TOTK_COOP_TEST_HOST = "$HostAt"; if ($HostLeaveAt) { $env:TOTK_COOP_TEST_LEAVE = "$HostLeaveAt" } else { Remove-Item Env:TOTK_COOP_TEST_LEAVE -ErrorAction SilentlyContinue } }
     else {
         Remove-Item Env:TOTK_COOP_TEST_HOST -ErrorAction SilentlyContinue
         $env:TOTK_COOP_TEST_JOIN = "${JoinAt}:127.0.0.1"
-        if ($LeaveAt) { $env:TOTK_COOP_TEST_LEAVE = "$LeaveAt" }
+        if ($LeaveAt) { $env:TOTK_COOP_TEST_LEAVE = "$LeaveAt" } else { Remove-Item Env:TOTK_COOP_TEST_LEAVE -ErrorAction SilentlyContinue }
         if ($MenuTestB) { $env:TOTK_MENU_TEST = $MenuTestB; $env:TOTK_MENU_TEST_DIR = $ShotsDir }
     }
     $games += Start-Quiet (Join-Path $g.dir 'totk.exe') '' $g.dir
