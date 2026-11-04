@@ -29,14 +29,18 @@ typedef int Sock;
 #include "host.h"
 #include "platform/platform.h"
 
-enum { HELLO = 1, WELCOME = 2, STATE = 3, LEAVE = 4, BYE = 5, WORLD = 6, HIT = 7, VERSION = 5, HEADER = 8 };
+enum { HELLO = 1, WELCOME = 2, STATE = 3, LEAVE = 4, BYE = 5, WORLD = 6, HIT = 7, VERSION = COOP_NET_VERSION, HEADER = 8 };
 
 static PlatMutex lock = PLAT_MUTEX_INIT;
 static NetState mine;                 // lock
 static int mine_set;                  // lock
 static struct { NetState st; uint64_t at_ns; int live; char name[17]; } others[COOP_MAX_PLAYERS + 1];   // lock; by id
 static volatile int my_id;            // 0 until WELCOME
-static int started;
+static int started;                   // the settings were looked at (TOTK_COOP_RELAY joins at start)
+static volatile int net_gen;          // a new value stops the running network thread
+static volatile int net_active;       // a network thread runs (joined or joining)
+static char target[256], my_name[17];   // the relay host[:port], this player's name; set before a thread starts
+static char last_error[160];           // why the last join failed ("" none)
 // The shared world: the latest WORLD packet out (this game is the host) and in (from the host), and HIT packets
 // both ways (a guest's damage to the host's enemies), queued.
 #define WORLD_MAX 1800
@@ -50,10 +54,10 @@ static int hit_out_n, hit_in_n;   // lock
 static void header(uint8_t *p, int kind) { memcpy(p, "TKCO", 4), p[4] = VERSION, p[5] = (uint8_t)kind, p[6] = (uint8_t)my_id, p[7] = 0; }
 
 static void net_thread(void *arg) {
-    (void)arg;
-    const char *relay = cfg_get("TOTK_COOP_RELAY"), *name = cfg_get("TOTK_COOP_NAME");
+    int gen = (int)(intptr_t)arg;
+    const char *name = my_name;
     char host[256];
-    snprintf(host, sizeof host, "%s", relay);
+    snprintf(host, sizeof host, "%s", target);
     const char *port = "41900";
     char *colon = strrchr(host, ':');
     if (colon) *colon = 0, port = colon + 1;
@@ -65,10 +69,18 @@ static void net_thread(void *arg) {
     hints.ai_family = AF_INET, hints.ai_socktype = SOCK_DGRAM;
     if (getaddrinfo(host, port, &hints, &res) || !res) {
         rt_log("coop net: cannot resolve the relay %s:%s; co-op networking off", host, port);
+        snprintf(last_error, sizeof last_error, "cannot find %s", host);
+        if (net_gen == gen) net_active = 0;
         return;
     }
     Sock s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (s == SOCK_BAD) { rt_log("coop net: no socket; co-op networking off"); freeaddrinfo(res); return; }
+    if (s == SOCK_BAD) {
+        rt_log("coop net: no socket; co-op networking off");
+        snprintf(last_error, sizeof last_error, "no network socket");
+        if (net_gen == gen) net_active = 0;
+        freeaddrinfo(res);
+        return;
+    }
 #ifdef _WIN32
     DWORD tmo = 10;   // ms: the loop sends about every 33 ms
 #else
@@ -76,9 +88,9 @@ static void net_thread(void *arg) {
 #endif
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tmo, sizeof tmo);
     rt_log("coop net: relay %s:%s, name \"%s\"", host, port, name ? name : "Player");
-    uint64_t last_hello = 0, last_state = 0, seq = 0;
+    uint64_t last_hello = 0, last_state = 0, seq = 0; int joined = 0;   // a WELCOME came: say bye on leaving
     uint8_t buf[2048];
-    for (;;) {
+    while (net_gen == gen) {
         uint64_t now = plat_now_ns();
         if (!my_id && now - last_hello > 1000000000ull) {
             last_hello = now;
@@ -125,10 +137,12 @@ static void net_thread(void *arg) {
             }
         }
         int n = (int)recvfrom(s, (char *)buf, sizeof buf, 0, NULL, NULL);
+        if (net_gen != gen) break;
         if (n < HEADER || memcmp(buf, "TKCO", 4) || buf[4] != VERSION) continue;
         int kind = buf[5], id = buf[6];
         if (kind == WELCOME) {
             if (!my_id) rt_log("coop net: joined as player %d", id);
+            joined = 1;
             my_id = id;
             for (int off = HEADER; off + 17 <= n; off += 17) {
                 int other = buf[off];
@@ -161,16 +175,56 @@ static void net_thread(void *arg) {
             plat_mutex_unlock(&lock);
         }
     }
+    // Left (coop_net_leave, or a new join): say bye so the others drop this player at once.
+    if (joined) {
+        header(buf, BYE);
+        sendto(s, (const char *)buf, HEADER, 0, res->ai_addr, (int)res->ai_addrlen);
+    }
+    closesocket(s);
+    freeaddrinfo(res);
+    rt_log("coop net: left %s", host);
+}
+
+void coop_net_leave(void) {
+    net_gen++;
+    net_active = 0;
+    my_id = 0;
+    plat_mutex_lock(&lock);
+    for (int i = 0; i <= COOP_MAX_PLAYERS; i++) others[i].live = 0;
+    mine_set = 0, world_in_len = 0, hit_out_n = hit_in_n = 0;
+    plat_mutex_unlock(&lock);
+}
+
+void coop_net_join(const char *relay, const char *name) {
+    coop_net_leave();
+    started = 1;
+    snprintf(target, sizeof target, "%s", relay);
+    snprintf(my_name, sizeof my_name, "%s", name && *name ? name : "Player");
+    last_error[0] = 0;
+    net_active = 1;
+    plat_thread_spawn(net_thread, (void *)(intptr_t)++net_gen, "coop-net", 0);
 }
 
 int coop_net_on(void) {
-    if (!started) {
+    if (!started) {   // TOTK_COOP_RELAY (the test scripts, play_two.ps1): join at start
         started = 1;
         const char *relay = cfg_get("TOTK_COOP_RELAY");
-        if (relay && *relay) plat_thread_spawn(net_thread, NULL, "coop-net", 0);
-        else started = 2;
+        if (relay && *relay) coop_net_join(relay, cfg_get("TOTK_COOP_NAME"));
     }
-    return started == 1;
+    return net_active;
+}
+
+const char *coop_net_target(void) { return net_active ? target : ""; }
+const char *coop_net_error(void) { return last_error; }
+
+// The other players here: their ids and names, up to max; returns how many.
+int coop_net_players(int *ids, char (*names)[17], int max) {
+    int n = 0;
+    plat_mutex_lock(&lock);
+    for (int i = 1; i <= COOP_MAX_PLAYERS && n < max; i++)
+        if (others[i].live && i != my_id) ids[n] = i, memcpy(names[n], others[i].name, 17), names[n][16] = 0, n++;
+    plat_mutex_unlock(&lock);
+    return n;
 }
 
 int coop_net_id(void) { return my_id; }
