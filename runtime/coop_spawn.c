@@ -380,7 +380,63 @@ static void log_callers(Cpu *c) {
 static _Atomic uint64_t prof_actor;
 static struct { _Atomic uint64_t fn; _Atomic uint32_t hits; uint32_t off; uint64_t lr; } prof_seen[1024];
 
+// TOTK_COOP_PROF=3: every function entered on a thread inside a co-op Link's calc, with a sample x0, for finding
+// what such a calc changes outside its own actor (HUD prompts). Reported every 10 s with the x0s that a global of
+// main holds (a singleton), and cleared.
+int coop_in_remote_calc(void);   // coop_players.c
+static int prof3;
+static struct { _Atomic uint64_t fn; _Atomic uint32_t hits; uint64_t x0, lr; } p3[8192];
+static void p3_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
+    uint32_t h = (uint32_t)((addr >> 2) * 2654435761u) & 8191;
+    for (int k = 0; k < 64; k++, h = (h + 1) & 8191) {
+        uint64_t have = atomic_load_explicit(&p3[h].fn, memory_order_relaxed);
+        if (!have && atomic_compare_exchange_strong(&p3[h].fn, &have, addr)) { p3[h].x0 = x0, p3[h].lr = lr; have = addr; }
+        if (have == addr) { atomic_fetch_add_explicit(&p3[h].hits, 1, memory_order_relaxed); return; }
+    }
+}
+static int u64cmp(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return x < y ? -1 : x > y;
+}
+static void p3_report(void) {
+    // Pointers main's writable data holds, and what they point at (one more level: [[main+x]] singletons).
+    static uint64_t *held;
+    static size_t nheld;
+    uint64_t lo = MOD_MAIN_BASE + 0x357dee8, hi = MOD_MAIN_BASE + 0x3adefd0;
+    if (!held) held = malloc(((hi - lo) / 8) * 2 * sizeof *held);
+    nheld = 0;
+    for (uint64_t a = lo; held && a < hi; a += 8) {
+        uint64_t q = 0;
+        if (!rd(a, &q, 8) || q < 0x10000 || (q >> 40) > 0x80) continue;
+        held[nheld++] = q;
+        uint64_t q2 = 0;
+        if (rd(q, &q2, 8) && q2 > 0x10000 && (q2 >> 40) <= 0x80) held[nheld++] = q2;
+    }
+    if (held) qsort(held, nheld, sizeof *held, u64cmp);
+    char d[160], e[160];
+    int n = 0, g = 0;
+    for (int i = 0; i < 8192; i++) {
+        uint64_t fn = atomic_load(&p3[i].fn);
+        if (!fn) continue;
+        n++;
+        int global = held && bsearch(&p3[i].x0, held, nheld, sizeof *held, u64cmp);
+        // The control-guide (HUD prompt) code around its table loader main+0xd81910 and stack main+0xd82334.
+        int guide = fn >= MOD_MAIN_BASE + 0xd78000 && fn < MOD_MAIN_BASE + 0xd8a000;
+        if (guide)
+            rt_log("coop: prof3 guide %6u x %s, x0 %llx, from %s", atomic_load(&p3[i].hits), ldr_describe(fn, d, sizeof d),
+                   (unsigned long long)p3[i].x0, ldr_describe(p3[i].lr, e, sizeof e));
+        if (global) {
+            g++;
+            rt_log("coop: prof3 %6u x %s, x0 %llx (held by a global), from %s", atomic_load(&p3[i].hits),
+                   ldr_describe(fn, d, sizeof d), (unsigned long long)p3[i].x0, ldr_describe(p3[i].lr, e, sizeof e));
+        }
+        atomic_store(&p3[i].hits, 0), atomic_store(&p3[i].fn, 0);
+    }
+    rt_log("coop: prof3: %d functions in co-op Link calcs, %d with a global's object", n, g);
+}
+
 void coop_fn_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
+    if (prof3 && coop_in_remote_calc()) p3_hit(addr, lr, x0);
     uint64_t a = atomic_load_explicit(&prof_actor, memory_order_relaxed);
     if (!a || x0 < a || x0 >= a + 0x4000) return;
     for (int i = 0; i < 1024; i++) {
@@ -496,6 +552,10 @@ static int create_trace(Cpu *c) {
 
 int coop_hook(Cpu *c, uint64_t addr) {
     if (addr == MOD_MAIN_BASE + 0x599670) return create_trace(c);
+    // HUD control guide (bottom-right prompts such as "Dive R"): main+0x2192c50 (type) shows one, main+0x4cb540 (type)
+    // hides one, on the one CtrlGuide screen. Every Player's calc calls them; a co-op Link's must not change this
+    // PC's HUD, so they do nothing inside one (2026-11-04).
+    if (addr == MOD_MAIN_BASE + 0x2192c50 || addr == MOD_MAIN_BASE + 0x4cb540) return coop_in_remote_calc();
     if (addr == MOD_MAIN_BASE + 0xc4961c || addr == MOD_MAIN_BASE + 0xaf100c) return coop_players_gear(c, addr);
     if (addr == MOD_MAIN_BASE + ACTOR_CALC) {
         // Track which Player's calc this thread runs, for the create trace.
@@ -680,7 +740,13 @@ void coop_tick(struct Cpu *c) {
         const char *e = cfg_get("TOTK_COOP_PROF");
         prof_phase = e && (*e == '1' || *e == '2') ? 1 : -1;
         prof_kind = e && *e == '2';
+        if (e && *e == '3') prof3 = 1, g_fnprof = 1;
         rt_log("coop: TOTK_COOP_PROF=%s", e ? e : "(unset)");
+    }
+    if (prof3) {   // reported every 10 s (coop_tick runs at 30 Hz)
+        static int t;
+        g_fnprof = 1;   // resolution.c switches it off once the render size is set
+        if (++t % 300 == 0) p3_report();
     }
     if (prof_phase == 1 && second_player && ++prof_left == 60) {   // 2 s after the claim: on for 30 polls
         atomic_store(&prof_actor, prof_kind ? resident_named("PlayerCamera", NULL) : second_player);
