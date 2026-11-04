@@ -168,6 +168,13 @@ extern "C" void tab_coop(float scale) {
             coop_net_join(g_addr, g_name);
         }
     }
+    // Show player names (coop_tags; drawn by ui/coop_tags.cpp): on unless set to off.
+    const char *tags = cfg_get("TOTK_COOP_TAGS");
+    bool tags_on = !(tags && !strcmp(tags, "off"));
+    if (opt_toggle_text("##coop_tags", menu_text(UI_MENU_COOP_TAGS), menu_text(UI_MENU_COOP_TAGS_DESC), tags_on)) {
+        cfg_set("TOTK_COOP_TAGS", tags_on ? "off" : "on");
+        opt_save_soon();
+    }
     opt_text(UI_MENU_COOP_NOTE);
     static bool test_kbd;   // TOTK_COOP_TEST_KBD: the keyboard opens on the name the first time the tab shows (tests)
     if (!test_kbd && cfg_get("TOTK_COOP_TEST_KBD")) {

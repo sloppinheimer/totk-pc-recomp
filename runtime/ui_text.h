@@ -248,7 +248,8 @@ typedef enum {
     UI_MENU_COOP_UPNP_FAILED,
     // the on-screen keyboard for the name and the address
     UI_MENU_COOP_EDIT_DESC, UI_MENU_COOP_KEY_SPACE, UI_MENU_COOP_KEY_DELETE, UI_MENU_COOP_KEY_DONE,
-    UI_MENU_LAST_ID = UI_MENU_COOP_KEY_DONE,
+    UI_MENU_COOP_TAGS, UI_MENU_COOP_TAGS_DESC,   // the other players' names over their Links
+    UI_MENU_LAST_ID = UI_MENU_COOP_TAGS_DESC,
     UI_TEXT_COUNT
 } UiTextId;
 

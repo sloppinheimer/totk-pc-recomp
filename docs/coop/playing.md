@@ -10,7 +10,7 @@
    as they connect and disappear when they leave (**Leave the session**, or closing the game). When the host leaves
    the session ends for everyone.
 4. The name and the last address are kept in `totk.ini` (`coop_name`, `coop_join`).
-5. The others' names show over their Links (`coop_tags = off` in `totk.ini` hides them). The name and the address
+5. The others' names show over their Links (**Show player names** in the tab, `coop_tags` in `totk.ini`). The name and the address
    fields open an on-screen keyboard, so a gamepad is enough. When the host leaves, a guest's tab says the session ended,
    and the guest's game goes back to its own time of day and weather.
 
