@@ -183,6 +183,12 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
 
 static int key_down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
 
+int input_coop_keys(void) {
+    HWND w = gfx_window_handle();
+    if (!w || w != GetForegroundWindow()) return 0;
+    return key_down(VK_NUMPAD1) | key_down(VK_NUMPAD2) << 1 | key_down(VK_NUMPAD3) << 2;
+}
+
 int input_flight_key(void) {
     HWND w = gfx_window_handle();
     return w && w == GetForegroundWindow() && key_down(VK_F8);

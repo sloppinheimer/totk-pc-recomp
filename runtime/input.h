@@ -42,6 +42,8 @@ int input_capture(int reset, int *id);
 uint32_t input_key_char(int key);
 // F8, the flight recorder's key (no KEY_ id), held while the game window is in front.
 int input_flight_key(void);
+// Co-op spawn test keys (runtime/coop_spawn.c): bit 0..2 = numpad 1..3 held while the game window is in front.
+int input_coop_keys(void);
 
 // Mouse camera and cursor (input_win.c, Win32 window thread). The window procedure calls input_window_msg first for raw
 // mouse input, cursor hiding and confinement; it returns 1 with *res set when the message is handled. input_cursor_suspend(1)
