@@ -136,6 +136,25 @@ static void follow_host_weather(Cpu *c, int32_t host) {   // host -1: no host (a
     weather_forced = host;
 }
 
+static int set_day_seconds(Cpu *c, float t) {
+    uint64_t wm = coop_rd_ptr(MOD_MAIN_BASE + WM_SLOT);
+    if (!wm) return 0;
+    while (t < 0) t += 86400.0f;
+    while (t >= 86400.0f) t -= 86400.0f;
+    __uint128_t v0 = c->v[0];
+    uint32_t bits;
+    memcpy(&bits, &t, 4);
+    c->v[0] = bits;
+    coop_guest_call(c, MOD_MAIN_BASE + WM_SET_TIME, wm, 0, 0, 0);
+    c->v[0] = v0;
+    return 1;
+}
+
+// The guest's own clock: how far it was from the host's when the session began, given back when it ends, so the
+// guest's world (and save) keeps its own time of day.
+static int time_following;
+static float own_offset;
+
 static void follow_host_time(Cpu *c, float host) {
     static uint64_t last_ns;
     float mine = day_seconds();
@@ -143,18 +162,20 @@ static void follow_host_time(Cpu *c, float host) {
     float d = host - mine;
     if (d > 43200.0f) d -= 86400.0f;
     if (d < -43200.0f) d += 86400.0f;
+    if (!time_following) time_following = 1, own_offset = -d;
     uint64_t now = plat_now_ns();
     if (fabsf(d) < TIME_FOLLOW_S || now - last_ns < 5000000000ull) return;
-    uint64_t wm = coop_rd_ptr(MOD_MAIN_BASE + WM_SLOT);
-    if (!wm) return;
     last_ns = now;
     rt_log("coop: time of day %.0f s, the host's %.0f s: set to the host's", mine, host);
-    __uint128_t v0 = c->v[0];
-    uint32_t bits;
-    memcpy(&bits, &host, 4);
-    c->v[0] = bits;
-    coop_guest_call(c, MOD_MAIN_BASE + WM_SET_TIME, wm, 0, 0, 0);
-    c->v[0] = v0;
+    set_day_seconds(c, host);
+}
+
+static void own_time_back(Cpu *c) {   // the session ended here: this game's own clock again
+    float mine = day_seconds();
+    if (!time_following || mine < 0) return;
+    time_following = 0;
+    rt_log("coop: time of day back to this game's own (%.0f s from the host's)", own_offset);
+    if (fabsf(own_offset) >= TIME_FOLLOW_S) set_day_seconds(c, mine + own_offset);
 }
 
 // Which of the synced slots an item belongs to, from its actor name; -1 for the rest (sheath, quiver, devices).
@@ -522,6 +543,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
     for (int i = 0; i < COOP_MAX_PLAYERS; i++) others += slots[i].state != FREE && slots[i].source == SRC_NET;
     world_role = !coop_net_on() || !coop_net_id() ? 0 : have_host ? 2 : others ? 1 : 0;
     if (host_time >= 0) follow_host_time(c, host_time);
+    else if (!have_host) own_time_back(c);
     if (have_host && host_weather >= 0) follow_host_weather(c, host_weather);
     else if (!have_host && weather_forced >= 0) follow_host_weather(c, -1);   // the host left, or this game is the host
 
