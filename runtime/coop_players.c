@@ -83,6 +83,43 @@ const int coop_gear_slot[COOP_GEAR_SLOTS] = {0, 7, 8, 9, 10, 11};   // weapon, b
 #define GEAR_NONE "-"            // on the wire: the slot is empty ("" is not known yet)
 static char my_gear[COOP_GEAR_SLOTS][32];
 
+// ---- the host's world. Time of day: the world manager [main+0x3a83968] +0x98 is the time object; +0x28 the second
+// of the day now (float, 0..86400), +0x48 the last time asked for. main+0x21cd794 (world manager, s0 = second of the
+// day) asks for a new time, as AI node ExecuteWmSetTime does (hour * 3600 + minute * 60); the game applies it later
+// (2026-11-04).
+#define WM_SLOT 0x3a83968
+#define WM_TIME 0x98
+#define TIME_NOW 0x28
+#define WM_SET_TIME 0x21cd794
+#define TIME_FOLLOW_S 90.0f        // game seconds off the host before this game is set to its time (60 a real second)
+
+static float day_seconds(void) {
+    uint64_t tm = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + WM_SLOT) + WM_TIME);
+    float t = -1;
+    return tm && coop_rd(tm + TIME_NOW, &t, 4) && t >= 0 && t <= 86400.0f ? t : -1;
+}
+
+static void follow_host_time(Cpu *c, float host) {
+    static uint64_t last_ns;
+    float mine = day_seconds();
+    if (mine < 0 || host < 0) return;
+    float d = host - mine;
+    if (d > 43200.0f) d -= 86400.0f;
+    if (d < -43200.0f) d += 86400.0f;
+    uint64_t now = plat_now_ns();
+    if (fabsf(d) < TIME_FOLLOW_S || now - last_ns < 5000000000ull) return;
+    uint64_t wm = coop_rd_ptr(MOD_MAIN_BASE + WM_SLOT);
+    if (!wm) return;
+    last_ns = now;
+    rt_log("coop: time of day %.0f s, the host's %.0f s: set to the host's", mine, host);
+    __uint128_t v0 = c->v[0];
+    uint32_t bits;
+    memcpy(&bits, &host, 4);
+    c->v[0] = bits;
+    coop_guest_call(c, MOD_MAIN_BASE + WM_SET_TIME, wm, 0, 0, 0);
+    c->v[0] = v0;
+}
+
 // Which of the synced slots an item belongs to, from its actor name; -1 for the rest (sheath, quiver, devices).
 static int gear_kind(const char *n) {
     size_t len = strlen(n);
@@ -324,12 +361,17 @@ void coop_players_tick(Cpu *c, int numpad3) {
             fake += n + (fake[n] == ',');
         }
         memcpy(st.sticks, local_sticks, sizeof st.sticks);
+        st.day_seconds = day_seconds();
         coop_net_publish(&st);
     }
     uint64_t my_eq = eq_of_actor(me);
     if (my_eq) read_my_gear(my_eq);
     float fwd[2], right[2];
     int have_cam = camera_frame(fwd, right);
+
+    // The host's world (for now the player with the lowest id): its time of day, seen below.
+    int host_id = coop_net_on() && coop_net_id() ? coop_net_id() : 0;
+    float host_time = -1;
 
     // Remote players in, slots for new ones, let go of the ones that left.
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++) {
@@ -347,6 +389,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
             } else if (s && s->state != LET_GO) s->state = FREE;
             continue;
         }
+        if (id < host_id && age < 2000000000ull) host_id = id, host_time = st.day_seconds;
         if (!s && !(s = slot_new(SRC_NET, id))) continue;
         memcpy(s->want_pos, st.pos, 12), memcpy(s->want_rot, st.rot, 36), s->have_want = 1;
         for (int k = 0; k < COOP_GEAR_SLOTS; k++) {
@@ -365,6 +408,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         set_input(s, st.buttons, sticks);
         s->idle = !st.buttons && abs(st.sticks[0]) < 3000 && abs(st.sticks[1]) < 3000;
     }
+    if (host_time >= 0) follow_host_time(c, host_time);
 
     // A second gamepad on this PC drives one more Link (Numpad 3 spawns it; the pad alone does not).
     Slot *pad = slot_for(SRC_PAD, 0);

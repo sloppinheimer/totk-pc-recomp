@@ -14,8 +14,9 @@ typedef struct {
     uint64_t buttons;                 // Switch buttons (input_map.h B_*)
     int32_t sticks[4];                // lx, ly, rx, ry (-32767..32767)
     char gear[6][32];                 // equipped actor names: weapon, bow, shield, head, body, legs ("" unknown, "-" none)
+    float day_seconds, reserved;      // time of day, 0..86400 (-1 unknown): the host's is followed
 } NetState;
-_Static_assert(sizeof(NetState) == 288, "NetState wire size");
+_Static_assert(sizeof(NetState) == 296, "NetState wire size");
 #define COOP_GEAR_SLOTS 6
 extern const int coop_gear_slot[COOP_GEAR_SLOTS];   // the EquipmentUser slots they are (coop_players.c)
 
