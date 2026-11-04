@@ -99,6 +99,43 @@ static float day_seconds(void) {
     return tm && coop_rd(tm + TIME_NOW, &t, 4) && t >= 0 && t <= 86400.0f ? t : -1;
 }
 
+// Weather: the weather manager [[main+0x395dc20]]. AI query QueryWorldInfoCheckCurrentWeather reads the weather at
+// an actor as main+0x1c2fd1c (main+0x4f8d60 (actor)), once main+0x21cd370 (manager) says it is ready; flowchart node
+// OneShotWmSetWeatherForFlowchart forces one with main+0x21d0798 (manager, type, flag), OneShotWmResetWeather...
+// gives it back to the forecast with main+0x21d0c18 (manager) (2026-11-04).
+#define WX_SLOT 0x395dc20
+#define WX_READY 0x21cd370
+#define WX_CONTEXT 0x4f8d60
+#define WX_AT 0x1c2fd1c
+#define WX_FORCE 0x21d0798
+#define WX_RELEASE 0x21d0c18
+static int32_t weather_now = -1;   // the weather at this PC's Link, read once a second
+static int32_t weather_forced = -1;   // the host's weather this game was told to show (-1: the forecast's own)
+
+static void read_weather(Cpu *c, uint64_t me) {
+    static int t;
+    if (++t % 30) return;
+    uint64_t wx = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + WX_SLOT));
+    if (!wx || !(coop_guest_call(c, MOD_MAIN_BASE + WX_READY, wx, 0, 0, 0) & 1)) { weather_now = -1; return; }
+    uint64_t ctx = coop_guest_call(c, MOD_MAIN_BASE + WX_CONTEXT, me, 0, 0, 0);
+    int32_t w = ctx ? (int32_t)(uint32_t)coop_guest_call(c, MOD_MAIN_BASE + WX_AT, ctx, 0, 0, 0) : -1;
+    if (w != weather_now) rt_log("coop: weather here is now %d", w);
+    weather_now = w;
+}
+
+static void follow_host_weather(Cpu *c, int32_t host) {   // host -1: no host (alone, or it left)
+    uint64_t wx = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + WX_SLOT));
+    if (!wx || host == weather_forced) return;
+    if (host < 0) {
+        rt_log("coop: weather back to this game's forecast");
+        coop_guest_call(c, MOD_MAIN_BASE + WX_RELEASE, wx, 0, 0, 0);
+    } else {
+        rt_log("coop: weather %d, the host's %d: set to the host's", weather_now, host);
+        coop_guest_call(c, MOD_MAIN_BASE + WX_FORCE, wx, (uint64_t)(uint32_t)host, 0, 0);
+    }
+    weather_forced = host;
+}
+
 static void follow_host_time(Cpu *c, float host) {
     static uint64_t last_ns;
     float mine = day_seconds();
@@ -397,6 +434,10 @@ void coop_players_tick(Cpu *c, int numpad3) {
         }
         memcpy(st.sticks, local_sticks, sizeof st.sticks);
         st.day_seconds = day_seconds();
+        read_weather(c, me);
+        st.weather = weather_now;
+        const char *fw = cfg_get("TOTK_COOP_FAKEWEATHER");   // test: report this weather type instead
+        if (fw && *fw) st.weather = atoi(fw);
         coop_net_publish(&st);
     }
     uint64_t my_eq = eq_of_actor(me);
@@ -407,6 +448,8 @@ void coop_players_tick(Cpu *c, int numpad3) {
     // The host's world (for now the player with the lowest id): its time of day, seen below.
     int host_id = coop_net_on() && coop_net_id() ? coop_net_id() : 0;
     float host_time = -1;
+    int32_t host_weather = -1;
+    int have_host = 0;
 
     // Remote players in, slots for new ones, let go of the ones that left.
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++) {
@@ -424,7 +467,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
             } else if (s && s->state != LET_GO) s->state = FREE;
             continue;
         }
-        if (id < host_id && age < 2000000000ull) host_id = id, host_time = st.day_seconds;
+        if (id < host_id && age < 2000000000ull) host_id = id, host_time = st.day_seconds, host_weather = st.weather, have_host = 1;
         if (!s && !(s = slot_new(SRC_NET, id))) continue;
         memcpy(s->want_pos, st.pos, 12), memcpy(s->want_rot, st.rot, 36), s->have_want = 1;
         for (int k = 0; k < COOP_GEAR_SLOTS; k++) {
@@ -444,6 +487,8 @@ void coop_players_tick(Cpu *c, int numpad3) {
         s->idle = !st.buttons && abs(st.sticks[0]) < 3000 && abs(st.sticks[1]) < 3000;
     }
     if (host_time >= 0) follow_host_time(c, host_time);
+    if (have_host && host_weather >= 0) follow_host_weather(c, host_weather);
+    else if (!have_host && weather_forced >= 0) follow_host_weather(c, -1);   // the host left, or this game is the host
 
     // A second gamepad on this PC drives one more Link (Numpad 3 spawns it; the pad alone does not).
     Slot *pad = slot_for(SRC_PAD, 0);

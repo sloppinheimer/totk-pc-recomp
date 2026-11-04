@@ -29,7 +29,7 @@ typedef int Sock;
 #include "host.h"
 #include "platform/platform.h"
 
-enum { HELLO = 1, WELCOME = 2, STATE = 3, LEAVE = 4, BYE = 5, VERSION = 3, HEADER = 8 };
+enum { HELLO = 1, WELCOME = 2, STATE = 3, LEAVE = 4, BYE = 5, VERSION = 4, HEADER = 8 };
 
 static PlatMutex lock = PLAT_MUTEX_INIT;
 static NetState mine;                 // lock

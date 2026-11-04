@@ -176,3 +176,12 @@ evidence), guess.
 - Fix: both do nothing inside a co-op Link's calc. Test: A glides (tools/coop/glide.txt), A's HUD shows "Dive R",
   B's shows none. Confidence: confirmed for this prompt; other HUD screens (big action prompts like "A Talk") not
   checked.
+
+## Weather (2026-11-04)
+- Weather manager [[main+0x395dc20]]. Weather at an actor: main+0x1c2fd1c (main+0x4f8d60 (actor)), after main+0x21cd370
+  (manager) & 1 (ready), as AI query QueryWorldInfoCheckCurrentWeather. Force one: main+0x21d0798 (manager, type,
+  flag): writes a request block at +0x940 (+0xd20 a buffer, index at +0x2380; type at +0xcd8), as flowchart node
+  OneShotWmSetWeatherForFlowchart. Back to the forecast: main+0x21d0c18 (manager). Types seen: 0 clear, 2 rain (HUD
+  raindrop), 4 snow (HUD snowflake). Evidence: lifted node code; pair test with TOTK_COOP_FAKEWEATHER. Confidence:
+  confirmed.
+- A guest shows the weather at the host's Link, wherever the guest is (players far apart see the host's sky).
