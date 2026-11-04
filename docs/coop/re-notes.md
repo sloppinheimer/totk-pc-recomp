@@ -112,3 +112,12 @@ evidence), guess.
   [cam+0x3590]+0x298), and with all four written the camera stayed on Link#1. The four were caches, at least one of
   them shared with Link#1's model. The switch is off by default now (TOTK_COOP_CAMMASK unset). Next: find how the
   game sets the camera's target (camera or event code that takes an actor), instead of patching memory.
+- Camera trace (2026-11-04): PlayerCamera's calls (main+0x41bb20, 0x2e27b0, 0x245030, 0x257310, 0x2f7f70, 0x19557fc,
+  0x6c9ad0 with x0 = PlayerCamera; profiler TOTK_COOP_PROF=2) make no ActorLink getActor (main+0x2804d0) calls.
+  Watch from inside them only (TOTK_COOP_WATCH=4/5): Link#1's reference read by main+0x1b0614 (ActorLink assign:
+  (dst, src, flag)), main+0x1afbe4 (ActorLink lock-and-get: (out, link); a link is {+8 reference object, +0x10 its
+  id}) and main+0x87509c, a few times a second; Link#1's actor read only at +0x228 (a pointer: the crash of
+  main+0x4b46a4 read the same field) by main+0x87509c and main+0x876670, a camera component ([x0+0x38]+0x18 chain).
+  Redirecting 0x1afbe4's link inside the camera changed nothing (0 hits on Link#1). Not solved.
+- Design note: online, each PC's own Link is the original Player (camera, HUD, input as in single player) and the
+  other player is the spawned second Player, so the camera follow switch only matters for one-screen play.

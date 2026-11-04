@@ -36,6 +36,7 @@ static int last_status[3] = {-1, -1, -1};
 int coop_watch_arm(uint64_t addr, uint64_t len);   // coop_watch_win.c
 void coop_watch_disarm(void);
 static uint64_t second_player;          // Player#2's actor once claimed
+static uint64_t second_ref;             // Player#2's reference object (the claim's link [1]; +0x40 actor, +0x48 id)
 static uint64_t player_actor_cached;    // Link#1, refreshed by coop_tick for the calc wrapper
 static int dump_ticks;
 static _Atomic uint64_t copy_dst[16];   // input objects the input copy (coop_hook) has written to
@@ -381,7 +382,7 @@ static struct { _Atomic uint64_t fn; _Atomic uint32_t hits; uint32_t off; uint64
 
 void coop_fn_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
     uint64_t a = atomic_load_explicit(&prof_actor, memory_order_relaxed);
-    if (!a || x0 < a || x0 >= a + 0x3000) return;
+    if (!a || x0 < a || x0 >= a + 0x4000) return;
     for (int i = 0; i < 1024; i++) {
         uint64_t have = atomic_load_explicit(&prof_seen[i].fn, memory_order_relaxed);
         if (!have && atomic_compare_exchange_strong(&prof_seen[i].fn, &have, addr)) {
@@ -455,8 +456,44 @@ static void p2_fill(uint64_t ctl) {
     prev = hold;
 }
 
+// Camera follow (Numpad 4): while PlayerCamera's calc runs on a thread (in_camera), ActorLink getActor
+// (main+0x2804d0) answers Link#2 where it would answer Link#1. Nothing in memory changes.
+static __thread int in_camera;
+static uint64_t camera_actor;   // PlayerCamera, refreshed by coop_tick
+static volatile int cam_two;    // the camera follows Link#2
+static _Atomic uint32_t cam_redirects;
+#define GET_ACTOR 0x2804d0
+
+static _Atomic uint32_t cam_lookups, cam_wraps;
+// The watchpoint counts a fault only on a thread inside PlayerCamera's calls when TOTK_COOP_WATCH=4.
+static int watch_camera_only;
+int coop_watch_counts(void) { return !watch_camera_only || in_camera; }
+
+static int get_actor_wrap(Cpu *c, uint64_t addr) {
+    static __thread int inside;
+    if (inside || !in_camera || !cam_two || !second_player) return 0;
+    atomic_fetch_add_explicit(&cam_lookups, 1, memory_order_relaxed);
+    inside = 1;
+    c->pc = addr;
+    rt_dispatch(c);
+    inside = 0;
+    if (c->x[0] && c->x[0] == player_actor_cached) {
+        c->x[0] = second_player;
+        atomic_fetch_add_explicit(&cam_redirects, 1, memory_order_relaxed);
+    }
+    return 1;
+}
+
 static int calc_wrap(Cpu *c, uint64_t addr) {
     uint64_t actor = c->x[0], two = second_player;
+    if (!in_camera && actor && actor == camera_actor && cam_two && two) {
+        atomic_fetch_add_explicit(&cam_wraps, 1, memory_order_relaxed);
+        in_camera = 1;
+        c->pc = addr;
+        rt_dispatch(c);
+        in_camera = 0;
+        return 1;
+    }
     if (in_calc || !two || (actor != two && actor != player_actor_cached)) return 0;
     if (atomic_fetch_sub(&calc_log_left, 1) > 0)
         rt_log("coop: calc %s on thread %p", actor == two ? "Link#2" : "Link#1", c->thread);
@@ -503,6 +540,35 @@ static int calc_wrap(Cpu *c, uint64_t addr) {
 
 int coop_hook(Cpu *c, uint64_t addr) {
     if (addr == MOD_MAIN_BASE + ACTOR_CALC) return calc_wrap(c, addr);
+    if (addr == MOD_MAIN_BASE + GET_ACTOR) return get_actor_wrap(c, addr);
+    // ActorLink lock-and-get main+0x1afbe4 (out, link): a link is {+8 reference object, +0x10 its id}; inside
+    // PlayerCamera's calls a link to Link#1 is handed over as a copy that names Link#2's reference (patch page +0x800;
+    // only the camera thread uses it while the camera runs).
+    if (addr == MOD_MAIN_BASE + 0x1afbe4 && in_camera && cam_two && second_ref) {
+        uint64_t link = c->x[1], ref = link ? LD64(link + 8) : 0;
+        if (ref && LD64(ref + 0x40) == player_actor_cached) {
+            uint64_t tmp = RT_PATCH_PAGE + 0x800;
+            memcpy((void *)(uintptr_t)tmp, (void *)(uintptr_t)link, 0x20);
+            ST64(tmp + 8, second_ref);
+            ST32(tmp + 0x10, LD32(second_ref + 0x48));
+            c->x[1] = tmp;
+            atomic_fetch_add_explicit(&cam_redirects, 1, memory_order_relaxed);
+        }
+        return 0;
+    }
+    // The other functions the profiler saw entered with PlayerCamera (TOTK_COOP_PROF=2): bracket them for the
+    // camera too.
+    if (addr == MOD_MAIN_BASE + 0x2e27b0 || addr == MOD_MAIN_BASE + 0x245030 || addr == MOD_MAIN_BASE + 0x257310 ||
+        addr == MOD_MAIN_BASE + 0x2f7f70 || addr == MOD_MAIN_BASE + 0x19557fc || addr == MOD_MAIN_BASE + 0x6c9ad0) {
+        uint64_t actor = c->x[0];
+        if (in_camera || !actor || actor != camera_actor || !cam_two || !second_player) return 0;
+        atomic_fetch_add_explicit(&cam_wraps, 1, memory_order_relaxed);
+        in_camera = 1;
+        c->pc = addr;
+        rt_dispatch(c);
+        in_camera = 0;
+        return 1;
+    }
     if (addr == MOD_MAIN_BASE + INPUT_COPY) {
         uint64_t dst = c->x[0];
         for (int i = 0; i < 16; i++) {
@@ -611,7 +677,7 @@ void coop_tick(struct Cpu *c) {
     // TOTK_COOP_WATCH=1: once in the world, watch the input object (copy_dst[0], 0x200 bytes) for 90 polls, then the
     // index-0 controller (0x200 bytes) for 90 polls, and log which game functions touched each.
     static int watch_phase, watch_left;
-    if (!watch_phase) { const char *e = cfg_get("TOTK_COOP_WATCH"); watch_phase = e && (*e == '1' || *e == '2') ? 1 : -1; }
+    if (!watch_phase) { const char *e = cfg_get("TOTK_COOP_WATCH"); watch_phase = e && *e >= '1' && *e <= '5' ? 1 : -1; }
     if (watch_phase > 0 && frame_step_world_us() > 3000000) {
         if (watch_left && !--watch_left) { coop_watch_disarm(); watch_phase++; }
         if (!watch_left && watch_phase <= 2) {
@@ -621,6 +687,16 @@ void coop_tick(struct Cpu *c) {
             int first = mode && *mode == '2';
             uint64_t target = watch_phase == 1 ? (first ? (mgr ? rd_ptr(mgr + 0xf0) : 0) : atomic_load(&copy_dst[0]))
                                                : mgr ? rd_ptr(mgr + 0xa0) : 0;
+            watch_camera_only = mode && (*mode == '4' || *mode == '5');
+            if (mode && *mode == '5') {   // =5: Link#1's actor +0x200 (position +0x2b4), then +0x400, camera faults only
+                uint64_t one = resident_named("Player", NULL);
+                target = one + (watch_phase == 1 ? 0x200 : 0x400);
+            } else
+            if (mode && (*mode == '3' || *mode == '4')) {   // =3: Link#1's resident reference object, then Link#1's
+                                                              // actor head; =4: the same, faults inside PlayerCamera only
+                uint64_t ref1 = 0, one = resident_named("Player", &ref1);
+                target = watch_phase == 1 ? ref1 : one;
+            }
             rt_log("coop: watch phase %d: %s, vtable main+%llx", watch_phase,
                    watch_phase == 1 ? (first ? "controller 1" : "input object") : "controller 0",
                    (unsigned long long)(rd_ptr(target) - MOD_MAIN_BASE));
@@ -629,13 +705,15 @@ void coop_tick(struct Cpu *c) {
         }
     }
     static int prof_phase, prof_left;
+    static int prof_kind;   // TOTK_COOP_PROF=2: functions entered with PlayerCamera instead of Player#2
     if (!prof_phase) {
         const char *e = cfg_get("TOTK_COOP_PROF");
-        prof_phase = e && *e == '1' ? 1 : -1;
+        prof_phase = e && (*e == '1' || *e == '2') ? 1 : -1;
+        prof_kind = e && *e == '2';
         rt_log("coop: TOTK_COOP_PROF=%s", e ? e : "(unset)");
     }
     if (prof_phase == 1 && second_player && ++prof_left == 60) {   // 2 s after the claim: on for 30 polls
-        atomic_store(&prof_actor, second_player);
+        atomic_store(&prof_actor, prof_kind ? resident_named("PlayerCamera", NULL) : second_player);
         g_fnprof = 1;
         rt_log("coop: prof on");
     } else if (prof_phase == 1 && prof_left == 90) {
@@ -703,7 +781,7 @@ void coop_tick(struct Cpu *c) {
     if (dump_ticks) { dump_ticks--; dump_resident("a poll after the Player claim"); }
     // Camera: Numpad 4 switches which Link the camera follows; TOTK_COOP_CAMAT=<seconds> switches it to Link#2 at that
     // world-clock time (unattended runs).
-    static int cam_two, cam_at = -2;
+    static int cam_at = -2;
     if (cam_at == -2) { const char *e = cfg_get("TOTK_COOP_CAMAT"); cam_at = e ? atoi(e) : -1; }
     if (pressed & 8) cam_two = !cam_two, rt_log("coop: camera follows Link#%d", cam_two + 1);
     if (cam_at > 0 && second_player && frame_step_world_us() > cam_at * 1000000ll) {
@@ -716,7 +794,11 @@ void coop_tick(struct Cpu *c) {
         cam_back = -1, cam_two = 0;
         rt_log("coop: camera follows Link#1");
     }
-    if (second_player) {
+    camera_actor = resident_named("PlayerCamera", NULL);
+    static int cam_report;
+    if (cam_two && ++cam_report % 300 == 0) rt_log("coop: camera: %u wrapped calls, %u lookups, %u redirected", atomic_load(&cam_wraps),
+                                                     atomic_load(&cam_lookups), atomic_load(&cam_redirects));
+    if (second_player && getenv("TOTK_COOP_CAMMASK")) {   // the old memory patch (harmful, kept for comparison)
         uint64_t one = player_actor();
         if (cam_two) camera_follow(second_player, one);
         else camera_follow(one, second_player);
@@ -799,6 +881,7 @@ void coop_tick(struct Cpu *c) {
                 rt_log("coop: Player#2 actor %llx '%s'", (unsigned long long)second, actor_name(second, nm, 40));
                 if (second && second != player_actor()) copy_dependencies(c, player_actor(), second);
                 second_player = second;
+                second_ref = l[1];
                 find_controller("Link#1", player_actor());
                 find_controller("Link#2", second);
                 find_input("Link#1", player_actor());
