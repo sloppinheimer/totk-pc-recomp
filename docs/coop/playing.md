@@ -10,6 +10,9 @@
    as they connect and disappear when they leave (**Leave the session**, or closing the game). When the host leaves
    the session ends for everyone.
 4. The name and the last address are kept in `totk.ini` (`coop_name`, `coop_join`).
+5. The others' names show over their Links (`coop_tags = off` in `totk.ini` hides them). The name and the address
+   fields open an on-screen keyboard, so a gamepad is enough. When the host leaves, a guest's tab says the session ended,
+   and the guest's game goes back to its own time of day and weather.
 
 Everyone needs the same build (the packet version must match) and the same game update. A standalone relay still
 works: `python server/coop_relay.py` on a PC everyone can reach, and `coop_relay = <address>` in `totk.ini` joins

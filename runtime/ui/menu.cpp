@@ -58,6 +58,8 @@ extern const char rt_port_version[];
 void cheats_frame(uint64_t frame);   // cheats.c
 bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into the rebuild
 void tab_coop(float scale);          // ui/coop_tab.cpp (sets the page modal itself)
+bool coop_tags_wanted(void);          // ui/coop_tags.cpp: the other players' names over their Links
+void coop_tags_draw(float w, float h, float scale, bool menu_open);
 }
 
 // Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
@@ -1505,7 +1507,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
             g_tab_request = 0;
             set_open(1);
             open = true;
-        } else if (!g_perf_mode) {
+        } else if (!g_perf_mode && !coop_tags_wanted()) {
             return 0;
         }
     }
@@ -1555,7 +1557,18 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     ImGui::NewFrame();
     if (open) layout_menu(t->width, t->height, scale);
     perf_draw(t, scale);
+    coop_tags_draw((float)t->width, (float)t->height, scale, open);
     ImGui::Render();
+    // TOTK_COOP_TEST_TAGSHOT=<frame>: that frame's swapchain image, overlay and all, to TOTK_MENU_TEST_DIR (tests)
+    static long long tag_shot = -2;
+    if (tag_shot == -2) tag_shot = cfg_get("TOTK_COOP_TEST_TAGSHOT") ? atoll(cfg_get("TOTK_COOP_TEST_TAGSHOT")) : -1;
+    if (tag_shot > 0 && frame >= (uint64_t)tag_shot) {
+        static char tpath[512];
+        const char *dir = cfg_get("TOTK_MENU_TEST_DIR");
+        snprintf(tpath, sizeof tpath, "%s/tag-%llu.png", dir ? dir : ".", (unsigned long long)frame);
+        *shot = tpath;
+        tag_shot = -1;
+    }
     if (open) g_save_pending = opt_save_tick(0);
     g_cost_ns += plat_now_ns() - t0;
     if (g_test.page >= 0 && frame >= g_test.opened + g_test.per_page * (uint64_t)(g_test.page + 1)) {
