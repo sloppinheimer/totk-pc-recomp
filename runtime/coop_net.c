@@ -88,7 +88,8 @@ static void net_thread(void *arg) {
 #endif
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tmo, sizeof tmo);
     rt_log("coop net: relay %s:%s, name \"%s\"", host, port, name ? name : "Player");
-    uint64_t last_hello = 0, last_state = 0, seq = 0; int joined = 0;   // a WELCOME came: say bye on leaving
+    uint64_t last_hello = 0, last_state = 0, seq = 0, started_ns = plat_now_ns(), heard_ns = 0;
+    int joined = 0;   // a WELCOME came: say bye on leaving
     uint8_t buf[2048];
     while (net_gen == gen) {
         uint64_t now = plat_now_ns();
@@ -137,8 +138,24 @@ static void net_thread(void *arg) {
             }
         }
         int n = (int)recvfrom(s, (char *)buf, sizeof buf, 0, NULL, NULL);
+        // The relay went quiet (the host left, or the network dropped) or never answered: end here and say why.
+        uint64_t t_now = plat_now_ns();
+        if ((joined && t_now - heard_ns > 6000000000ull) || (!joined && t_now - started_ns > 15000000000ull)) {
+            snprintf(last_error, sizeof last_error, joined ? "the session ended (the host left or cannot be reached)"
+                                                           : "no answer from %s", host);
+            rt_log("coop net: %s", last_error);
+            if (net_gen == gen) {
+                net_active = 0, my_id = 0;
+                plat_mutex_lock(&lock);
+                for (int i = 0; i <= COOP_MAX_PLAYERS; i++) others[i].live = 0;
+                plat_mutex_unlock(&lock);
+            }
+            joined = 0;
+            break;
+        }
         if (net_gen != gen) break;
         if (n < HEADER || memcmp(buf, "TKCO", 4) || buf[4] != VERSION) continue;
+        heard_ns = plat_now_ns();
         int kind = buf[5], id = buf[6];
         if (kind == WELCOME) {
             if (!my_id) rt_log("coop net: joined as player %d", id);
