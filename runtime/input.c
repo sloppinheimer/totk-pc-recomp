@@ -482,6 +482,48 @@ static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     return 1;
 }
 
+// ---- co-op player 2 (runtime/coop_spawn.c): the second connected gamepad, with the first one's layout and dead zones.
+static SDL_Gamepad *pad2;
+static uint64_t next_scan2;
+
+static void scan_pad2(void) {
+    if (pad2 && SDL_GamepadConnected(pad2)) return;
+    if (pad2) { SDL_CloseGamepad(pad2); pad2 = NULL; rt_log("input: player 2 gamepad disconnected"); }
+    if (!pad) return;   // player 1 takes the first gamepad
+    int n = 0;
+    SDL_JoystickID *ids = SDL_GetGamepads(&n), mine = SDL_GetGamepadID(pad);
+    for (int i = 0; ids && i < n && !pad2; i++)
+        if (ids[i] != mine) pad2 = SDL_OpenGamepad(ids[i]);
+    SDL_free(ids);
+    if (pad2) rt_log("input: player 2 gamepad \"%s\"", SDL_GetGamepadName(pad2));
+}
+
+int input_pad2_read(uint64_t *buttons, int32_t sl[2], int32_t sr[2]) {
+    int ok = 0;
+    plat_mutex_lock(&lock);
+    if (state == 1) {
+        if ((!pad2 || !SDL_GamepadConnected(pad2)) && plat_now_ns() / 1000000u >= next_scan2) {
+            next_scan2 = plat_now_ns() / 1000000u + RESCAN_MS;
+            scan_pad2();
+        }
+        if (pad2 && SDL_GamepadConnected(pad2)) {
+            uint8_t pd[PAD_COUNT] = {0};
+            for (int p = PAD_SOUTH; p < PAD_ZL; p++) pd[p] = SDL_GetGamepadButton(pad2, pad_sdl[p]);
+            pd[PAD_ZL] = SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > TRIGGER_ON;
+            pd[PAD_ZR] = SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > TRIGGER_ON;
+            for (int p = PAD_ZR + 1; p < PAD_COUNT; p++) pd[p] = SDL_GetGamepadButton(pad2, pad_sdl[p]);
+            *buttons = input_map_pad_buttons(pd, pad_layout_get());
+            input_pad_stick(SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_LEFTX), -(int32_t)SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_LEFTY),
+                            stick_dead_get(0), sl);
+            input_pad_stick(SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_RIGHTX), -(int32_t)SDL_GetGamepadAxis(pad2, SDL_GAMEPAD_AXIS_RIGHTY),
+                            stick_dead_get(1), sr);
+            ok = 1;
+        }
+    }
+    plat_mutex_unlock(&lock);
+    return ok;
+}
+
 int input_pad_stick_percent(double pct[2]) {
     int ok = 0;
     pct[0] = pct[1] = 0;
