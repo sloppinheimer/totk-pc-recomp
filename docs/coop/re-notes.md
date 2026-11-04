@@ -155,3 +155,13 @@ evidence), guess.
 - Test (run_pair, A reports Weapon_Sword_070, Weapon_Bow_001, Weapon_Shield_001): game B's copy of A wore all three
   (screenshot); B's save has none. A's menu Remove reached B as an empty weapon slot. Confidence: confirmed.
 - The Decayed Master Sword cannot be equipped on this save (Great Sky Island start): the menu ignores A on it.
+
+## Leaving and time of day (2026-11-04)
+- Actor delete request: main+0x63baa8 (actor, reason). AI node OneShotGenericDeleteThisActor passes 3; returns at
+  once for an actor already going away (state 7..11). Evidence: Ghidra (node vtable 0x71037ef048, its enter calls
+  it). Test: B closed, A's copy of B and its gear gone two seconds later (state 7), no crash. Confidence: confirmed.
+- World manager [main+0x3a83968]; +0x98 the time object: +0x28 the second of the day now (float 0..86400), +0x48 the
+  last one asked for. main+0x21cd794 (world manager, s0 = second of the day) asks for a time, as AI node
+  ExecuteWmSetTime does (hour * 3600 + minute * 60, then main+0xb6bff8 (time object, 1, -1)). Evidence: lifted code
+  of the node, memory probe (35571 -> 37671 over the run; HUD 10:00 AM). Test: guest on 6:43 AM set to the host's
+  9:55 AM in one request; HUD clocks agree. Confidence: confirmed.
