@@ -107,6 +107,46 @@ static const char *actor_name(uint64_t actor, char *buf, size_t n) {
 // capacity, +0x1cc start, +0x1d0 count, indices into the edge table) is queued again with copy in model's place.
 // ActorLink's getActor (main+0x2804d0) hands an actor out on a worker thread only to an actor connected to it by
 // such edges; a second Player without them gets null for ThrowBox and crashes (main+0x4b46a4).
+// Whether an actor is in the resident actor list (scene component 13).
+static int is_resident(uint64_t actor) {
+    uint64_t module = rd_ptr(MOD_MAIN_BASE + SCENE_SLOT), scene = module ? rd_ptr(module + 0x1e8) : 0;
+    int32_t count = 0;
+    if (!scene || !rd(scene + 0x50, &count, 4) || count < 14) return 0;
+    uint64_t comps = rd_ptr(scene + 0x58), resident = comps ? rd_ptr(comps + 13 * 8) : 0;
+    if (!resident || !rd(resident + 0x20, &count, 4) || count < 0 || count > 64) return 0;
+    uint64_t entries = rd_ptr(resident + 0x28);
+    for (int i = 0; entries && i < count; i++) {
+        uint64_t ref = rd_ptr(entries + (uint64_t)i * 0x70 + 8);
+        if (ref && rd_ptr(ref + 0x40) == actor) return 1;
+    }
+    return 0;
+}
+
+// Logs an actor's update-dependency edges (the ring of copy_dependencies) by the other actor's name.
+static void list_dependencies(const char *who, uint64_t actor) {
+    uint64_t tbl = rd_ptr(rd_ptr(MOD_MAIN_BASE + EDGE_TABLE_SLOT)), ring = rd_ptr(actor + 0x1c0);
+    uint64_t edges = tbl ? rd_ptr(tbl + 0x2f8) : 0;
+    int32_t cap = 0, start = 0, count = 0;
+    uint32_t n_edges = 0;
+    rd(actor + 0x1c8, &cap, 4), rd(actor + 0x1cc, &start, 4), rd(actor + 0x1d0, &count, 4);
+    if (tbl) rd(tbl + 0x2f0, &n_edges, 4);
+    if (!ring || !edges || cap <= 0 || count < 0 || count > cap) return;
+    char line[2048];
+    int n = snprintf(line, sizeof line, "coop: %s edges (%d):", who, count);
+    for (int i = 0; i < count && n < (int)sizeof line - 60; i++) {
+        int slot = start + i >= cap ? start + i - cap : start + i;
+        uint16_t idx = 0;
+        rd(ring + (uint64_t)slot * 2, &idx, 2);
+        uint64_t e[2] = {0, 0};
+        rd(edges + (uint64_t)(idx < n_edges ? idx : 0) * 16, e, 16);
+        char a[40];
+        uint64_t o = e[0] == actor ? e[1] : e[0];
+        n += snprintf(line + n, sizeof line - n, " %s%s@%llx", e[0] == actor ? "->" : "<-", actor_name(o, a, 40),
+                      (unsigned long long)(o & 0xffffff));
+    }
+    rt_log("%s", line);
+}
+
 static void copy_dependencies(Cpu *c, uint64_t model, uint64_t copy) {
     uint64_t sys = rd_ptr(MOD_MAIN_BASE + ACTOR_SYSTEM_SLOT), tbl = rd_ptr(rd_ptr(MOD_MAIN_BASE + EDGE_TABLE_SLOT));
     uint64_t ring = rd_ptr(model + 0x1c0), edges = tbl ? rd_ptr(tbl + 0x2f8) : 0;
@@ -128,6 +168,16 @@ static void copy_dependencies(Cpu *c, uint64_t model, uint64_t copy) {
         if (e[0] != model && e[1] != model) {
             rt_log("coop:   edge %u: %s -> %s does not involve the Player, skipped", idx, actor_name(e[0], a, 40),
                    actor_name(e[1], b, 40));
+            continue;
+        }
+        // Only edges to resident actors are copied (TOTK_COOP_EDGES=all: every edge): Player#2 makes its own weapons,
+        // armor, devices, Ultrahand and rope helpers and links them itself (edge lists, 2026-11-03); the resident
+        // helpers (ThrowBox, CarryBox, Parasail, the revival fairy) are one per game and need the link copied.
+        static int all = -1;
+        if (all < 0) { const char *v = cfg_get("TOTK_COOP_EDGES"); all = v && !strcmp(v, "all"); }
+        uint64_t other = e[0] == model ? e[1] : e[0];
+        if (!all && !is_resident(other)) {
+            rt_log("coop:   edge %u: %s is Player#1's own, not copied", idx, actor_name(other, b, 40));
             continue;
         }
         uint64_t ok = guest_call(c, MOD_MAIN_BASE + SET_DEPENDENCY, sys, parent, child, 0);
@@ -587,6 +637,25 @@ void coop_tick(struct Cpu *c) {
         }
     }
     if (dump_ticks) { dump_ticks--; dump_resident("a poll after the Player claim"); }
+    static int edges_left = -1;
+    if (second_player && edges_left < 0) edges_left = 400;
+    if (edges_left > 0 && !--edges_left) {
+        list_dependencies("Link#1", player_actor());
+        list_dependencies("Link#2", second_player);
+        // main's .data/.bss words that point at either Link (the HUD shows Link#2's prompts: some global took it).
+        static uint64_t page[0x1000 / 8];
+        uint64_t one = player_actor(), two = second_player;
+        int found = 0;
+        for (uint64_t a = MOD_MAIN_BASE + 0x3569000; a < MOD_MAIN_BASE + 0x3adf000 && found < 32; a += 0x1000) {
+            if (!rd(a, page, sizeof page)) continue;
+            for (int i = 0; i < 0x1000 / 8; i++)
+                if (page[i] == one || page[i] == two) {
+                    rt_log("coop: global main+%llx = Link#%d", (unsigned long long)(a + i * 8 - MOD_MAIN_BASE), page[i] == one ? 1 : 2);
+                    found++;
+                }
+        }
+        rt_log("coop: %d globals point at a Link", found);
+    }
     // Both Links' position and facing about once a second (the gamepad is polled once a frame): does Player#2 move,
     // and with whose input?
     static int ticks;
