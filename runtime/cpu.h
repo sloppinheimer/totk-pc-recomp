@@ -77,7 +77,7 @@ void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0);
 // function, so the test folds away everywhere else.
 // A nonzero return means the hook ran the function itself (coop_hook calls it again through rt_dispatch and the inner
 // entry returns 0), so this entry returns at once with the registers the inner call left.
-#define COOP_HOOKED(a) ((a) == 0x700037ccc0ull || (a) == 0x700037d330ull || (a) == 0x700041bb20ull || (a) == 0x70002804d0ull || (a) == 0x70002e27b0ull || (a) == 0x7000245030ull || (a) == 0x7000257310ull || (a) == 0x70002f7f70ull || (a) == 0x70019557fcull || (a) == 0x70006c9ad0ull || (a) == 0x70001afbe4ull || (a) == 0x7000599670ull || (a) == 0x7000c4961cull || (a) == 0x7000af100cull || (a) == 0x7002192c50ull || (a) == 0x70004cb540ull)   // getController, its input copy, actor calc, ActorLink getActor
+#define COOP_HOOKED(a) ((a) == 0x700037ccc0ull || (a) == 0x700037d330ull || (a) == 0x700041bb20ull || (a) == 0x70002804d0ull || (a) == 0x70002e27b0ull || (a) == 0x7000245030ull || (a) == 0x7000257310ull || (a) == 0x70002f7f70ull || (a) == 0x70019557fcull || (a) == 0x70006c9ad0ull || (a) == 0x70001afbe4ull || (a) == 0x7000599670ull || (a) == 0x7000c4961cull || (a) == 0x7000af100cull || (a) == 0x7002192c50ull || (a) == 0x70004cb540ull || (a) == 0x7001a30670ull)   // getController, its input copy, actor calc, ActorLink getActor
 int coop_hook(Cpu *c, uint64_t addr);
 #define FN_ENTER(a) do { if (COOP_HOOKED(a) && coop_hook(c, a)) return; if (__builtin_expect(g_fnprof, 0)) fnprof_hit(a, c->x[30], c->x[0]); } while (0)
 

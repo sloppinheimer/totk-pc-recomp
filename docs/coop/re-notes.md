@@ -202,3 +202,13 @@ evidence), guess.
 - This PC's router: two devices answer the SSDP search; the one with WANIPConnection:2 is at 192.168.1.1 (control
   /ctl/IPConn). AddPortMapping with a 3600 s lease works. DeletePortMapping with an empty NewRemoteHost answers 402
   Invalid Args (both service versions); with NewRemoteHost "*" it works. runtime/coop_upnp.c tries both.
+
+## Enemy targets: not found (2026-11-04)
+- A Bokoblin spawned 2 m from Link (TOTK_COOP_TEST_SPAWN) stands alert facing him. No pointer to Link or to its
+  reference object in the actor's first 0x1000 bytes, in the objects those point to (0x400 each), or in its
+  components (actor +0x228 table, 0x800 each) (TOTK_COOP_TRACE=target).
+- Inside the enemy's per-actor calc (main+0x41bb20) no function is entered with x0 in Link or its reference
+  (TOTK_COOP_PROF=4; the calc is bracketed and the profiler on): the AI's decisions run elsewhere.
+- main+0x1a30670 (actor system [[main+0x395da68]], out link, &name) finds the one actor of a name in a tree at
+  +0x38 (QueryTestGetPlayerActor asks it for "Player"); it is not called at all during play with the Bokoblin
+  (TOTK_COOP_TRACE=player). Enemy AI finds the player another way: likely the sensor / awareness system.
