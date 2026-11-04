@@ -45,6 +45,7 @@ void coop_copy_dependencies(Cpu *c, uint64_t model, uint64_t copy, int verbose);
 void coop_actor_seen(uint64_t actor);
 void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);
 void coop_world_tick(Cpu *c, uint64_t me);
+int coop_local_paused(void);                            // coop_world.c: this PC's Link is not being updated (menu)
 int coop_world_role(void);                              // coop_players.c: 0 alone, 1 host, 2 guest
 int coop_player_positions(float (*out)[3], int max);   // the remote Links' positions
 
