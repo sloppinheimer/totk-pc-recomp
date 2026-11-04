@@ -13,8 +13,11 @@ typedef struct {
     float cam_fwd[2], cam_right[2];   // x, z
     uint64_t buttons;                 // Switch buttons (input_map.h B_*)
     int32_t sticks[4];                // lx, ly, rx, ry (-32767..32767)
+    char gear[4][32];                 // equipped actor names: weapon in hand, head, body, legs ("" unknown)
 } NetState;
-_Static_assert(sizeof(NetState) == 96, "NetState wire size");
+_Static_assert(sizeof(NetState) == 224, "NetState wire size");
+#define COOP_GEAR_SLOTS 4
+extern const int coop_gear_slot[COOP_GEAR_SLOTS];   // the EquipmentUser slots they are (coop_players.c)
 
 int coop_net_on(void);                                         // starts the thread once; 1 when networking is on
 int coop_net_id(void);                                         // this player's id, 0 before the relay answered
