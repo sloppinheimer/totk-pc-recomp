@@ -569,18 +569,11 @@ int coop_p2_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32
     return 1;
 }
 
-void coop_hide_console(void);   // coop_watch_win.c
 void coop_tick(struct Cpu *c) {
-    static int console_done;
-    if (!console_done) {
-        console_done = 1;
-        const char *e = cfg_get("TOTK_COOP_HIDE_CONSOLE");
-        if (e && *e == '1') coop_hide_console();
-    }
-    log_callers(c);
+    if (getenv("TOTK_COOP_TRACE")) log_callers(c);
     player_actor_cached = player_actor();
     static int report_ticks;
-    if (++report_ticks % 300 == 0) report_callers();
+    if (getenv("TOTK_COOP_TRACE") && ++report_ticks % 300 == 0) report_callers();   // input tracing only
     static int prev;
     int keys = input_coop_keys(), pressed = keys & ~prev;
     prev = keys;

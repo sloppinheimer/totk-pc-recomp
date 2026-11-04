@@ -1,12 +1,16 @@
 # Co-op on one PC, one game per gamepad: starts the relay and two games side by side; game 1 reads the first connected
 # gamepad, game 2 the second. Both play copies of the 1.4.3 save (build\prof-play-1 and -2, made fresh each start), so
 # nothing is saved back to the real profile. Close either window (or this console) to end the session.
-#   powershell -ExecutionPolicy Bypass -File tools\coop\play_two.ps1
+#   powershell -ExecutionPolicy Bypass -File tools\coop\play_two.ps1   (or double-click "Play co-op (two pads).vbs")
 param([string]$Name1 = "Player 1", [string]$Name2 = "Player 2", [string]$Size = "1920x1080")
 $ErrorActionPreference = 'Stop'
-# This console out of the way; the session ends when a game window closes.
-Add-Type -Name Win -Namespace Coop -MemberDefinition '[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h, int c);'
-[Coop.Win]::ShowWindow([Coop.Win]::GetConsoleWindow(), 0) | Out-Null
+# Programs started with no console window at all (CREATE_NO_WINDOW): hiding one after the fact does not work when
+# Windows Terminal hosts the consoles. Their environment is this script's (set below for each game).
+function Start-NoConsole([string]$exe, [string]$arguments, [string]$dir) {
+    $si = New-Object System.Diagnostics.ProcessStartInfo $exe, $arguments
+    $si.UseShellExecute = $false; $si.CreateNoWindow = $true; $si.WorkingDirectory = $dir
+    [System.Diagnostics.Process]::Start($si)
+}
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
 Get-Process totk -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -23,7 +27,7 @@ foreach ($f in Get-ChildItem $a -Force) {
     else { New-Item -ItemType HardLink $t -Target $f.FullName | Out-Null }
 }
 
-$relay = Start-Process -PassThru -WindowStyle Hidden (Join-Path $root '.venv\Scripts\python.exe') -ArgumentList 'server\coop_relay.py'
+$relay = Start-NoConsole (Join-Path $root '.venv\Scripts\python.exe') 'server\coop_relay.py' $root
 $games = @()
 foreach ($g in @(@{dir = $a; n = 1; name = $Name1; pad = '0'}, @{dir = $b; n = 2; name = $Name2; pad = '1'})) {
     $p = Join-Path $root "build\prof-play-$($g.n)"
@@ -38,7 +42,7 @@ foreach ($g in @(@{dir = $a; n = 1; name = $Name1; pad = '0'}, @{dir = $b; n = 2
     $env:TOTK_MOUSE_SENS = '0'          # no mouse camera, no cursor capture: the mouse moves between the windows
     $env:TOTK_COOP_HIDE_CONSOLE = '1'
     Remove-Item Env:TOTK_INPUT_SCRIPT, Env:TOTK_INPUT, Env:TOTK_COOP_AUTOSPAWN -ErrorAction SilentlyContinue
-    $games += Start-Process (Join-Path $g.dir 'totk.exe') -WorkingDirectory $g.dir -PassThru
+    $games += Start-NoConsole (Join-Path $g.dir 'totk.exe') '' $g.dir
     Start-Sleep 3
 }
 "Session running: game 1 = first gamepad, game 2 = second gamepad. Load your save in both windows."

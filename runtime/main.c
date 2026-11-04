@@ -503,8 +503,13 @@ static void portable_paths(RtConfig *c) {
     c->profile = portable_path(exe, "TOTK_PROFILE_DIR", "profile", NULL, pp_profile, sizeof pp_profile, c->profile);
 }
 
+void coop_hide_console(void);   // coop_watch_win.c
 int main(int argc, char **argv) {
     mem_init();   // first: claim the guest address space before anything else can land there; reads totk.ini
+    {   // co-op sessions with several windows: the console window out of the way at once (TOTK_COOP_HIDE_CONSOLE=1)
+        const char *e = cfg_get("TOTK_COOP_HIDE_CONSOLE");
+        if (e && *e == '1') coop_hide_console();
+    }
     // A restart from the settings menu (gfx_present.c gfx_window_closed) starts this process while the one it replaces
     // is still exiting: its log, RomFS and saves are free once it is gone.
     if (plat_restart_wait(30000) < 0) rt_log("restart: the previous process still runs after 30 s; starting anyway");
