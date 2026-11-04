@@ -28,7 +28,7 @@
 #define ACTOR_POS 0x2b4
 #define ACTOR_ROT 0x2c0
 
-static const char *const names[3] = {"Item_Fruit_A", "Npc_Kokiri007", "Player"};
+static const char *names[3] = {"Item_Fruit_A", "Npc_Kokiri007", "Player"};   // [1]: TOTK_COOP_TEST_SPAWN can change it
 // The handle the manager fills when the actor exists; it keeps the address, so it outlives the call.
 static _Alignas(16) uint8_t handles[3][0x40];
 static _Alignas(16) uint8_t links[3][0x40];   // the actor link the claim fills (the node keeps it at node+0x28)
@@ -903,6 +903,16 @@ void coop_tick(struct Cpu *c) {
     auto3 = 0;
     second_player = coop_players_first();   // the tracing below looks at the first co-op Player
     for (int k = 0; k < 3; k++) {
+        // Test: TOTK_COOP_TEST_SPAWN=<actor>@<s> spawns that actor in slot 1 (Numpad 2's) that many seconds into the world.
+        static int test_spawned;
+        const char *ts = cfg_get("TOTK_COOP_TEST_SPAWN");
+        const char *at = ts ? strchr(ts, '@') : NULL;
+        if (k == 1 && at && !test_spawned && frame_step_world_us() / 1e6 >= atof(at + 1)) {
+            static char nm[64];
+            snprintf(nm, sizeof nm, "%.*s", (int)(at - ts), ts);
+            names[1] = nm, test_spawned = 1;
+            spawn(c, 1);
+        }
         if (k < 2 && pressed & 1 << k) spawn(c, k);
         if (!rd_ptr((uint64_t)(uintptr_t)handles[k])) continue;
         int st = handle_status(k);
