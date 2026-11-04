@@ -88,3 +88,9 @@ evidence), guess.
 - Tools: coop_watch_win.c (software read watchpoint: page protection + trap flag), the entry hooks (COOP_HOOKED in
   runtime/cpu.h; a hook may run the function itself through rt_dispatch and return 1), TOTK_COOP_* settings
   (AUTOSPAWN, WATCH, PROF, BLIND, P2, P2_NPAD, CTRLDUMP).
+- Controller bits (button-map test, tools/coop/button_map.txt): A 0, B 1, ZL 2, X 3, Y 4, ZR 5, right stick click 6,
+  left stick click 7, L 13, R 14, d-pad up 16, down 17, left 18, right 19, left stick up / down / left / right 20-23,
+  right stick 24-27. Plus / Minus not measured.
+- Player 2 now: the second connected gamepad by default (TOTK_COOP_P2=pad; input.c input_pad2_read), through the
+  private controller. Test 2026-11-03: player 1's script and player 2's test pattern moved the two Links on their own
+  paths at the same time. A real second gamepad is untested.

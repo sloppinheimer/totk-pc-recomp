@@ -300,6 +300,7 @@ static int blind = -1;            // TOTK_COOP_BLIND=1: Player#2's calc sees the
 static uint8_t neutral[0x200];    // the input object while nothing is held: coop_tick takes it 3 s into the world
 static _Atomic int neutral_ok;
 
+int coop_p2_connected(void);
 int coop_p2_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
 // Player 2's state written into controller 1 (the game updates it from no pad we feed) right before Player#2's calc.
 // Layout from controller 0 (ctrl0 diff, 2026-11-03): +0x114 and +0x13c held buttons (bit 0 A, 2 ZL, 3 X), +0x8 pressed
@@ -311,9 +312,19 @@ static void p2_fill(uint64_t ctl) {
     if (!ctl || !coop_p2_poll(&buttons, &lx, &ly, &rx, &ry)) return;
     float f[4] = {lx / 32767.0f, ly / 32767.0f, rx / 32767.0f, ry / 32767.0f};
     memcpy((void *)(uintptr_t)(ctl + 0x120), f, sizeof f);
-    // Stick directions are buttons too (left stick up = bit 20, seen in controller 0; down/left/right 21-23 and the
-    // right stick 24-27 are the sead order, a guess), held past half deflection.
+    // Stick directions are buttons too (left stick up / down / left / right 20-23, right stick 24-27: button-map
+    // test), held past half deflection.
+    // Switch buttons (input_map.h B_*) to the controller's bits, from the button-map test (2026-11-03): A 0, B 1, ZL 2,
+    // X 3, Y 4, ZR 5, right stick click 6, left stick click 7, L 13, R 14, d-pad up 16, down 17, left 18, right 19.
+    // Plus and Minus are left out (not mapped yet; they would open player 1's menus).
+    static const int8_t to_ctl[16] = {0, 1, 3, 4, 7, 6, 13, 14, 2, 5, -1, -1, 18, 16, 19, 17};
     uint32_t hold = 0;
+    for (int b = 0; b < 16; b++)
+        if (buttons >> b & 1 && to_ctl[b] >= 0) hold |= 1u << to_ctl[b];
+    if (f[3] > 0.5f) hold |= 1u << 24;
+    if (f[3] < -0.5f) hold |= 1u << 25;
+    if (f[2] < -0.5f) hold |= 1u << 26;
+    if (f[2] > 0.5f) hold |= 1u << 27;
     if (f[1] > 0.5f) hold |= 1u << 20;
     if (f[1] < -0.5f) hold |= 1u << 21;
     if (f[0] < -0.5f) hold |= 1u << 22;
@@ -352,7 +363,8 @@ static int calc_wrap(Cpu *c, uint64_t addr) {
     // TOTK_COOP_BLIND=4: a controller of our own for player 2 (patch page +0x400, 0x400 bytes, which nothing else
     // writes): a copy of controller 0 with player 2's buttons and sticks, handed out as controller 0 while Player#2
     // updates. Controllers 0 and 1 are rewritten by the game's controller update (main+0x479c20) while actors update.
-    uint64_t own = blind == 4 && mgr ? RT_PATCH_PAGE + 0x400 : 0;
+    if (!mgr && coop_p2_connected()) mgr = rd_ptr(rd_ptr(MOD_MAIN_BASE + INPUT_MGR_SLOT));
+    uint64_t own = (blind == 4 || (blind <= 0 && coop_p2_connected())) && mgr ? RT_PATCH_PAGE + 0x400 : 0;
     if (own) {
         ctrl0 = LD64(mgr + 0xa0);
         memcpy((void *)(uintptr_t)own, (void *)(uintptr_t)ctrl0, 0x400);
@@ -422,11 +434,14 @@ static void report_callers(void) {
     rt_log("%s", line);
 }
 
-// ---- player 2's controller (Npad id 1, ov_input.c). TOTK_COOP_P2=walk: a test pattern, left stick forward from 4 to
-// 10 s of the world clock, then right. Unset: no player 2 controller.
-static int p2_mode = -1;
+// ---- player 2's input. TOTK_COOP_P2=pad (the default): the second connected gamepad (input.c input_pad2_read);
+// =walk: a test pattern, left stick forward from 4 to 10 s of the world clock, then right; =off: none.
+static int p2_mode = -1;   // 0 off, 1 walk, 2 pad
 int coop_p2_connected(void) {
-    if (p2_mode < 0) { const char *e = cfg_get("TOTK_COOP_P2"); p2_mode = e && !strcmp(e, "walk") ? 1 : 0; }
+    if (p2_mode < 0) {
+        const char *e = cfg_get("TOTK_COOP_P2");
+        p2_mode = !e || !*e || !strcmp(e, "pad") ? 2 : !strcmp(e, "walk") ? 1 : 0;
+    }
     return p2_mode > 0 && frame_step_world_us() > 0;   // plugged in once the save is in the world: with it from the
                                                       // start the title never reached the world (2026-11-03)
 }
@@ -439,8 +454,14 @@ int coop_p2_npad(void) {
 }
 int coop_p2_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     if (!coop_p2_connected()) return 0;
-    int64_t t = frame_step_world_us();
     *buttons = 0, *lx = 0, *ly = 0, *rx = 0, *ry = 0;
+    if (p2_mode == 2) {
+        int32_t sl[2] = {0, 0}, sr[2] = {0, 0};
+        int ok = input_pad2_read(buttons, sl, sr);
+        *lx = sl[0], *ly = sl[1], *rx = sr[0], *ry = sr[1];
+        return ok;
+    }
+    int64_t t = frame_step_world_us();
     if (t > 4000000 && t < 10000000) *ly = 32767;
     else if (t >= 10000000 && t < 14000000) *lx = 32767;
     return 1;
