@@ -384,6 +384,7 @@ static struct { _Atomic uint64_t fn; _Atomic uint32_t hits; uint32_t off; uint64
 // what such a calc changes outside its own actor (HUD prompts). Reported every 10 s with the x0s that a global of
 // main holds (a singleton), and cleared.
 int coop_in_remote_calc(void);   // coop_players.c
+void coop_actor_seen(uint64_t actor);   // coop_world.c
 static int prof3;
 static struct { _Atomic uint64_t fn; _Atomic uint32_t hits; uint64_t x0, lr; } p3[8192];
 static void p3_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
@@ -558,6 +559,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
     if (addr == MOD_MAIN_BASE + 0x2192c50 || addr == MOD_MAIN_BASE + 0x4cb540) return coop_in_remote_calc();
     if (addr == MOD_MAIN_BASE + 0xc4961c || addr == MOD_MAIN_BASE + 0xaf100c) return coop_players_gear(c, addr);
     if (addr == MOD_MAIN_BASE + ACTOR_CALC) {
+        coop_actor_seen(c->x[0]);   // every live actor passes here each frame (coop_world.c)
         // Track which Player's calc this thread runs, for the create trace.
         char nm[16];
         uint64_t a = c->x[0];

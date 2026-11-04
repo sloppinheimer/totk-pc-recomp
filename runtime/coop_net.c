@@ -29,7 +29,7 @@ typedef int Sock;
 #include "host.h"
 #include "platform/platform.h"
 
-enum { HELLO = 1, WELCOME = 2, STATE = 3, LEAVE = 4, BYE = 5, VERSION = 4, HEADER = 8 };
+enum { HELLO = 1, WELCOME = 2, STATE = 3, LEAVE = 4, BYE = 5, WORLD = 6, HIT = 7, VERSION = 5, HEADER = 8 };
 
 static PlatMutex lock = PLAT_MUTEX_INIT;
 static NetState mine;                 // lock
@@ -37,6 +37,15 @@ static int mine_set;                  // lock
 static struct { NetState st; uint64_t at_ns; int live; char name[17]; } others[COOP_MAX_PLAYERS + 1];   // lock; by id
 static volatile int my_id;            // 0 until WELCOME
 static int started;
+// The shared world: the latest WORLD packet out (this game is the host) and in (from the host), and HIT packets
+// both ways (a guest's damage to the host's enemies), queued.
+#define WORLD_MAX 1800
+static uint8_t world_out[WORLD_MAX], world_in[WORLD_MAX];   // lock
+static int world_out_len, world_out_new, world_in_len, world_in_from;   // lock
+static uint64_t world_in_at;   // lock
+#define HITQ 64
+static struct { uint8_t d[64]; int len, from; } hit_out[HITQ], hit_in[HITQ];   // lock
+static int hit_out_n, hit_in_n;   // lock
 
 static void header(uint8_t *p, int kind) { memcpy(p, "TKCO", 4), p[4] = VERSION, p[5] = (uint8_t)kind, p[6] = (uint8_t)my_id, p[7] = 0; }
 
@@ -99,6 +108,22 @@ static void net_thread(void *arg) {
                 if (!have) seq++;
             }
         }
+        if (my_id) {   // the world packet (host, about 10 a second) and queued hits, as they come
+            uint8_t w[HEADER + WORLD_MAX];
+            int wl = 0, nh = 0;
+            struct { uint8_t d[64]; int len; } hits[HITQ];
+            plat_mutex_lock(&lock);
+            if (world_out_new) memcpy(w + HEADER, world_out, world_out_len), wl = world_out_len, world_out_new = 0;
+            for (int i = 0; i < hit_out_n; i++) memcpy(hits[i].d, hit_out[i].d, 64), hits[i].len = hit_out[i].len;
+            nh = hit_out_n, hit_out_n = 0;
+            plat_mutex_unlock(&lock);
+            if (wl) header(w, WORLD), sendto(s, (const char *)w, HEADER + wl, 0, res->ai_addr, (int)res->ai_addrlen);
+            for (int i = 0; i < nh; i++) {
+                header(w, HIT);
+                memcpy(w + HEADER, hits[i].d, hits[i].len);
+                sendto(s, (const char *)w, HEADER + hits[i].len, 0, res->ai_addr, (int)res->ai_addrlen);
+            }
+        }
         int n = (int)recvfrom(s, (char *)buf, sizeof buf, 0, NULL, NULL);
         if (n < HEADER || memcmp(buf, "TKCO", 4) || buf[4] != VERSION) continue;
         int kind = buf[5], id = buf[6];
@@ -118,6 +143,16 @@ static void net_thread(void *arg) {
             memcpy(&others[id].st, buf + HEADER, sizeof(NetState));
             others[id].at_ns = plat_now_ns();
             others[id].live = 1;
+            plat_mutex_unlock(&lock);
+        } else if (kind == WORLD && n - HEADER <= WORLD_MAX) {
+            plat_mutex_lock(&lock);
+            memcpy(world_in, buf + HEADER, n - HEADER), world_in_len = n - HEADER, world_in_from = id;
+            world_in_at = plat_now_ns();
+            plat_mutex_unlock(&lock);
+        } else if (kind == HIT && n - HEADER <= 64) {
+            plat_mutex_lock(&lock);
+            if (hit_in_n < HITQ) memcpy(hit_in[hit_in_n].d, buf + HEADER, n - HEADER), hit_in[hit_in_n].len = n - HEADER,
+                                 hit_in[hit_in_n].from = id, hit_in_n++;
             plat_mutex_unlock(&lock);
         } else if (kind == LEAVE && id >= 1 && id <= COOP_MAX_PLAYERS) {
             plat_mutex_lock(&lock);
@@ -157,4 +192,39 @@ int coop_net_remote(int id, NetState *out, uint64_t *age_ns) {
     }
     plat_mutex_unlock(&lock);
     return live;
+}
+
+void coop_net_world_send(const void *data, int len) {
+    if (len < 0 || len > WORLD_MAX) return;
+    plat_mutex_lock(&lock);
+    memcpy(world_out, data, len), world_out_len = len, world_out_new = 1;
+    plat_mutex_unlock(&lock);
+}
+
+int coop_net_world(void *out, int max, int *from, uint64_t *age_ns) {
+    plat_mutex_lock(&lock);
+    int n = world_in_len <= max ? world_in_len : 0;
+    if (n) memcpy(out, world_in, n), *from = world_in_from, *age_ns = plat_now_ns() - world_in_at;
+    plat_mutex_unlock(&lock);
+    return n;
+}
+
+void coop_net_hit_send(const void *data, int len) {
+    if (len < 0 || len > 64) return;
+    plat_mutex_lock(&lock);
+    if (hit_out_n < HITQ) memcpy(hit_out[hit_out_n].d, data, len), hit_out[hit_out_n].len = len, hit_out_n++;
+    plat_mutex_unlock(&lock);
+}
+
+int coop_net_hit_take(void *out, int max, int *from) {
+    plat_mutex_lock(&lock);
+    int n = 0;
+    if (hit_in_n) {
+        n = hit_in[0].len <= max ? hit_in[0].len : 0;
+        memcpy(out, hit_in[0].d, n), *from = hit_in[0].from;
+        memmove(hit_in, hit_in + 1, (size_t)(hit_in_n - 1) * sizeof hit_in[0]), hit_in_n--;
+        if (!n) n = -1;   // dropped (too big): keep the caller looping
+    }
+    plat_mutex_unlock(&lock);
+    return n;
 }

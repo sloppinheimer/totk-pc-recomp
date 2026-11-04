@@ -185,3 +185,15 @@ evidence), guess.
   raindrop), 4 snow (HUD snowflake). Evidence: lifted node code; pair test with TOTK_COOP_FAKEWEATHER. Confidence:
   confirmed.
 - A guest shows the weather at the host's Link, wherever the guest is (players far apart see the host's sky).
+
+## Enemies (2026-11-04)
+- Every live actor passes the per-actor calc main+0x41bb20 each frame (x0 = actor): the live set.
+- Placed enemies are created at the same spot in every game on a save (two Chuchus at 68.7/22.9, 1498, 1471, the
+  same to 0.1 m in two games). No per-enemy value equal across games and different between enemies was found in
+  the actor's first 0x2000 bytes (only position and matrices): the map's placement hash is elsewhere. Key used:
+  name + first position (half metres). Confidence: works for placed enemies; random spawns not checked.
+- Actor +0x228 is a component table: +0x2f8 life component, +0x518 world-info component (main+0x4f8d78 and
+  main+0x4f8d60 return them). Life u32 at [life+0x1830] +8, max at [life+0x1838] +8 (AI query QueryActorLife; Link
+  14 of 152 with 3.5 of 38 hearts; Chuchu Junior 10 of 10). Writing 0 kills: the game's own death follows and the
+  enemy stays dead. The actor delete request (main+0x63baa8) on a placed enemy instead lets the map make a fresh
+  one at once. Confidence: confirmed (pair test).
