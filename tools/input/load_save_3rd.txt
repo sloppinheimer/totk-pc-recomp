@@ -1,0 +1,6 @@
+# Title to the third save in the list (the 100% save, "In-isa Shrine"): Continue, down twice, A, Load.
+300 A 4
+520 DOWN 4
+580 DOWN 4
+640 A 4
+800 A 4
