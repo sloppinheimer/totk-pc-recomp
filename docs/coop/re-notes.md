@@ -121,3 +121,16 @@ evidence), guess.
   Redirecting 0x1afbe4's link inside the camera changed nothing (0 hits on Link#1). Not solved.
 - Design note: online, each PC's own Link is the original Player (camera, HUD, input as in single player) and the
   other player is the spawned second Player, so the camera follow switch only matters for one-screen play.
+
+## Networking v1 (2026-11-04)
+- Relay server/coop_relay.py (UDP 41900, up to 8 players, join / leave any time); client runtime/coop_net.c on its own
+  thread (TOTK_COOP_RELAY, TOTK_COOP_NAME); 30 states a second: position, rotation, the camera's forward / right, the
+  Switch buttons and sticks (NetState, 96 bytes).
+- Player slots (runtime/coop_players.c, helpers in coop_game.c): a remote player's Link is spawned when their first
+  state arrives; its calc runs with a controller of its own filled from their input, the stick turned from their
+  camera into this PC's camera (PlayerCamera rotation: looks along -Z, X is its right); ForceSetMatrix (main+0x45ce70)
+  puts it back when it drifts more than 3 m.
+- Test (tools/coop/run_pair.ps1, two games on this PC): both joined, each spawned the other's Link; game A walked its
+  script and game B's copy of A followed the same path within about 1 m (A 386.3,1320.8 -> 397.5,1351.9; B's copy
+  386.6,1319.8 -> 398.4,1350.9). ForceSetMatrix's snap path did not trigger in it (untested). Confidence: confirmed
+  for walking.
