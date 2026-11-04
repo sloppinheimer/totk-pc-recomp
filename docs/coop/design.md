@@ -1,0 +1,23 @@
+# Co-op design (decisions and plans)
+
+## Shape
+- Shared world, online, two PCs (the tester, 2026-11-03). One host runs the world (enemies, physics, quests, time); the
+  guest plays a second Player actor in it. Local two-gamepad play is the test bench on the way there.
+- Each PC renders its own view, so the online camera simply follows that PC's own Link. Split-screen on one PC is not
+  planned (it would render the world twice); local testing switches which Link the camera follows.
+
+## Saves: drop-in co-op, like Elden Ring (the tester, 2026-11-03) — plan, not built
+- Everyone plays their own save alone. At any time a player can join another player's game.
+- The host's save is the game state: world, quests, map, time, shrines. The guest's world state is not touched.
+- The guest brings their own character from their save: inventory (weapons, bows, shields, materials, food), armor,
+  hearts and stamina, abilities they have unlocked, Zonai devices and battery.
+- What the guest gains in the session (items picked up, weapons, armor, materials, rupees) goes back into the guest's
+  own save when they leave; their world progress does not (it happened in the host's world).
+- Open questions (decide before building): durability and lost items (does a weapon that breaks in co-op stay broken
+  back home — likely yes); quest items and key items picked up in the host's world (likely not carried home); hearts
+  or stamina gained from the host's shrines (likely no); death of the guest (respawn at the host, no item loss?);
+  what the guest may do to the host's world (open chests: who gets the item).
+- Building blocks this needs (none researched yet): where the game keeps the player's inventory and stats in memory
+  (GameData flags, the "PorchItem" style arrays of BotW are a lead), reading them from the guest's save file without
+  loading it as the world, giving Link#2 that inventory instead of Link#1's, and writing the guest's changed inventory
+  back into the guest's save on leave.
