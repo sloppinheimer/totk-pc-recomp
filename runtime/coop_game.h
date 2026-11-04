@@ -16,6 +16,8 @@
 #define COOP_INPUT_MGR_SLOT 0x3960150  // [[main+]] = controller manager; [mgr+0xa0] controller 0
 #define COOP_FORCE_MATRIX 0x45ce70     // (actor, const float m[12] rows rotation | position, 0): teleport
 #define COOP_ACTOR_CALC 0x41bb20       // per-actor update, x0 = actor
+#define COOP_REQUEST_DELETE 0x63baa8   // (actor, reason): ignored once the actor is going away (state 7..11)
+#define COOP_DELETE_REASON 3           // what OneShotGenericDeleteThisActor passes
 #define COOP_ACTOR_NAME 0x218
 #define COOP_ACTOR_POS 0x2b4
 #define COOP_ACTOR_ROT 0x2c0

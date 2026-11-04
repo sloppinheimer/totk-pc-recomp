@@ -225,24 +225,24 @@ static uint64_t gear_owner(uint64_t eq, uint64_t me) {
 
 static Slot *slot_of_actor(uint64_t actor) {
     for (int i = 0; i < COOP_MAX_PLAYERS; i++)
-        if (slots[i].state == LIVE && slots[i].actor == actor) return &slots[i];
+        if ((slots[i].state == LIVE || slots[i].state == LET_GO) && slots[i].actor == actor) return &slots[i];
     return NULL;
 }
 static Slot *slot_for(int source, int net_id) {
     for (int i = 0; i < COOP_MAX_PLAYERS; i++)
-        if (slots[i].state != FREE && slots[i].source == source && slots[i].net_id == net_id) return &slots[i];
+        if (slots[i].state != FREE && slots[i].state != LET_GO && slots[i].source == source && slots[i].net_id == net_id)
+            return &slots[i];
     return NULL;
 }
 static Slot *slot_new(int source, int net_id) {
     for (int i = 0; i < COOP_MAX_PLAYERS; i++)
-        if (slots[i].state == FREE || (slots[i].state == LET_GO && slots[i].actor)) {
+        if (slots[i].state == FREE) {
             Slot *s = &slots[i];
-            int reuse = s->state == LET_GO;   // a Link left behind by an earlier player: driven again, not respawned
             s->source = source, s->net_id = net_id, s->prev = 0, s->have_want = 0;
             memset(s->held, 0, sizeof s->held);
-            s->state = reuse ? LIVE : WANTED;
-            rt_log("coop: player slot %d for %s %d%s", i, source == SRC_NET ? "remote player" : "local pad", net_id,
-                   reuse ? " (the Link left behind is reused)" : "");
+            memset(s->gear_want, 0, sizeof s->gear_want), memset(s->gear_have, 0, sizeof s->gear_have);
+            s->state = WANTED;
+            rt_log("coop: player slot %d for %s %d", i, source == SRC_NET ? "remote player" : "local pad", net_id);
             return s;
         }
     return NULL;
@@ -338,9 +338,12 @@ void coop_players_tick(Cpu *c, int numpad3) {
         Slot *s = slot_for(SRC_NET, id);
         if (!coop_net_on() || !coop_net_remote(id, &st, &age)) {
             if (s && s->state == LIVE) {
+                // Their Link goes: the game's own delete request (as AI node OneShotGenericDeleteThisActor makes it).
+                // The slot stays LET_GO, driven with no input, until the actor reads as going away.
                 s->state = LET_GO;
                 set_input(s, 0, (const int32_t[4]){0, 0, 0, 0});
-                rt_log("coop: remote player %d left; their Link stays idle", id);
+                if (s->actor) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->actor, COOP_DELETE_REASON, 0, 0);
+                rt_log("coop: remote player %d left; their Link is deleted", id);
             } else if (s && s->state != LET_GO) s->state = FREE;
             continue;
         }
@@ -389,8 +392,10 @@ void coop_players_tick(Cpu *c, int numpad3) {
             rt_log("coop: slot %d: Player %llx in the world", i, (unsigned long long)s->actor);
         } else if (s->state == LIVE || s->state == LET_GO) {
             int32_t st = -1;
-            if (s->actor && coop_rd(s->actor + COOP_ACTOR_STATE, &st, 4) && (st < 2 || st > 6)) {
+            if (!s->actor || (coop_rd(s->actor + COOP_ACTOR_STATE, &st, 4) && (st < 2 || st > 6))) {
                 rt_log("coop: slot %d: its Player went away (state %d)", i, st);
+                for (int e = 0; e < 32; e++)   // its EquipmentUser goes with it; a new Player may reuse the address
+                    if (s->actor && eq_owner[e].actor == s->actor) eq_owner[e].actor = eq_owner[e].eq = 0;
                 s->actor = 0, s->state = s->state == LIVE ? WANTED : FREE;
                 continue;
             }

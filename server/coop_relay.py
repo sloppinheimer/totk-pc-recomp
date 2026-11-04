@@ -14,6 +14,7 @@ Any player may join or leave at any time; ids 1..MAX_PLAYERS are handed out on H
 import argparse
 import socket
 import struct
+import sys
 import time
 
 MAGIC, VERSION = b'TKCO', 2
@@ -29,7 +30,10 @@ def header(kind, pid):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--port', type=int, default=41900)
+    ap.add_argument('--log', help='write the lines here instead of to the console (for pythonw, which has none)')
     a = ap.parse_args()
+    if a.log:
+        sys.stdout = sys.stderr = open(a.log, 'w', buffering=1, encoding='utf-8')
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(('0.0.0.0', a.port))
     sock.settimeout(0.5)
