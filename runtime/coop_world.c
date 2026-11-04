@@ -35,18 +35,8 @@ static struct {
     _Atomic int home_ok;
 } seen[SEEN_N];
 
-// This PC's Link: when the game last updated it (real time). The game stops updating it while a menu is open (the
-// world is paused), so its input then means menu moves, not Link's.
-static _Atomic uint64_t me_actor, me_calc_ns;
-int coop_local_paused(void) {
-    uint64_t at = atomic_load_explicit(&me_calc_ns, memory_order_relaxed);
-    return !at || plat_now_ns() - at > 150000000ull;
-}
-
 void coop_actor_seen(uint64_t actor) {
     if (!actor) return;
-    if (actor == atomic_load_explicit(&me_actor, memory_order_relaxed))
-        atomic_store_explicit(&me_calc_ns, plat_now_ns(), memory_order_relaxed);
     int64_t now = frame_step_world_us();
     uint32_t h = (uint32_t)((actor >> 4) * 2654435761u) & (SEEN_N - 1);
     for (int k = 0; k < 32; k++, h = (h + 1) & (SEEN_N - 1)) {
@@ -298,7 +288,6 @@ static void probe_one(int cell, uint64_t a, void *arg) {
 }
 
 void coop_world_tick(Cpu *c, uint64_t me) {
-    atomic_store_explicit(&me_actor, me, memory_order_relaxed);
     static int on = -1, t;
     if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "enemy"); }
     if (on && ++t % 300 == 0) { probe_me = me; each_live(probe_one, NULL); }
