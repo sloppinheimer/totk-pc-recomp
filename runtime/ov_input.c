@@ -81,6 +81,7 @@ static void ov_style_set(Cpu *c) {
 // int GetNpadStates(<State> *out, int count, const NpadIdType &id): the newest state only. want: the style of the
 // overload, 0 for the Joy-Con overloads (never connected).
 static void npad_states(Cpu *c, uint32_t want) {
+    coop_tick(c);   // keeps c's registers
     NpadState *out = arg_p(c, 0);
     int max = (int)arg_x(c, 1);
     uint32_t id = *need_id(c, 2, "GetNpadStates");

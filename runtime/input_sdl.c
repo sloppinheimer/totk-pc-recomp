@@ -115,6 +115,7 @@ uint32_t input_key_char(int key) {
 }
 
 int input_flight_key(void) { return focused && f8_held; }
+int input_coop_keys(void) { return 0; }   // the co-op spawn test is Windows-only for now
 
 // ---- the cursor (window thread)
 static void cursor_apply(void) {

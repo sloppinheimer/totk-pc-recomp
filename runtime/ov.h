@@ -7,6 +7,9 @@
 
 #include "gfx.h"
 
+// ---- coop_spawn.c
+void coop_tick(struct Cpu *c);   // co-op spawn test, from the gamepad poll (ov_input.c npad_states)
+
 // ---- ov_system.c
 int ov_handheld(void);                     // TOTK_OPERATION_MODE=handheld (default docked); fatal on another value
 const char *ov_language(void);             // the game's language, a Switch language code ("en-US", "zh-Hans", ...)
