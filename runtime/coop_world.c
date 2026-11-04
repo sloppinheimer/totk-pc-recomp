@@ -284,10 +284,68 @@ static void probe_one(int cell, uint64_t a, void *arg) {
     if (!key || !coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(probe_me + COOP_ACTOR_POS, q, 12)) return;
     float dx = p[0] - q[0], dz = p[2] - q[2];
     if (dx * dx + dz * dz > 150.f * 150.f) return;
-    rt_log("coop: enemy %s %08x at %.1f %.1f %.1f, life %d", nm, key, p[0], p[1], p[2], life_of(a));
+    rt_log("coop: enemy %s %08x at %.1f %.1f %.1f, life %d; this Link at %.1f %.1f %.1f", nm, key, p[0], p[1], p[2], life_of(a), q[0], q[1], q[2]);
+}
+
+// ---- PROBE (TOTK_COOP_TRACE=target): where an enemy keeps the Link it is after. For enemies within 40 m: words in
+// the actor's first 0x1000 bytes, and in its components' first 0x800 (the table at actor +0x228), that equal a Link
+// actor (this PC's or a co-op one); logged with the offsets, every 2 s.
+int coop_player_actors(uint64_t *actors, int *net_ids, int max);   // coop_players.c
+static uint64_t tp_links[COOP_MAX_PLAYERS + 1], tp_refs[COOP_MAX_PLAYERS + 1];
+static int tp_n;
+static const char *link_of(uint64_t v) {
+    static char s[32];
+    for (int i = 0; i < tp_n; i++) {
+        if (v && v == tp_links[i]) { snprintf(s, sizeof s, i ? "co-op Link %d" : "this Link", i); return s; }
+        if (v && v == tp_refs[i]) { snprintf(s, sizeof s, i ? "ref of co-op Link %d" : "ref of this Link", i); return s; }
+    }
+    return NULL;
+}
+// A Link's reference object (an ActorLink's +8; [ref+0x40] is the actor): this PC's from the resident list.
+static void target_probe_one(int cell, uint64_t a, void *arg) {
+    (void)arg;
+    char nm[64];
+    if (!enemy_of(cell, a, nm, sizeof nm)) return;
+    float p[3], q[3];
+    if (!coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(tp_links[0] + COOP_ACTOR_POS, q, 12)) return;
+    float dx = p[0] - q[0], dz = p[2] - q[2];
+    if (dx * dx + dz * dz > 60.f * 60.f) return;
+    char line[2048];
+    int n = snprintf(line, sizeof line, "coop: target probe %s at %.1f m:", nm, sqrtf(dx * dx + dz * dz));
+    static uint64_t w[0x1000 / 8], cw[0x800 / 8], tw[0x800 / 8];
+    if (coop_rd(a, w, sizeof w))
+        for (int j = 0; j < 0x1000 / 8 && n < 1900; j++)
+            if (link_of(w[j])) n += snprintf(line + n, sizeof line - n, " actor+%#x=%s", j * 8, link_of(w[j]));
+    // One level down from the actor itself: each object it points to, its first 0x400 bytes.
+    static uint64_t ow[0x400 / 8];
+    for (int j = 0; j < 0x1000 / 8 && n < 1900; j++) {
+        uint64_t o = w[j];
+        if (o < 0x100000000ull || o >= 0x8000000000ull || o == a || !coop_rd(o, ow, sizeof ow)) continue;
+        for (int i = 0; i < 0x400 / 8 && n < 1900; i++)
+            if (link_of(ow[i])) n += snprintf(line + n, sizeof line - n, " [actor+%#x]+%#x=%s", j * 8, i * 8, link_of(ow[i]));
+    }
+    uint64_t table = coop_rd_ptr(a + 0x228);
+    if (table && coop_rd(table, tw, sizeof tw))
+        for (int k = 0; k < 0x800 / 8 && n < 1900; k++) {
+            uint64_t comp = tw[k];
+            if (comp < 0x100000000ull || comp >= 0x8000000000ull || !coop_rd(comp, cw, sizeof cw)) continue;
+            for (int j = 0; j < 0x800 / 8 && n < 1900; j++)
+                if (link_of(cw[j])) n += snprintf(line + n, sizeof line - n, " comp[+%#x]+%#x=%s", k * 8, j * 8, link_of(cw[j]));
+        }
+    rt_log("%s", line);
 }
 
 void coop_world_tick(Cpu *c, uint64_t me) {
+    static int ton = -1, tt;
+    if (ton < 0) { const char *e = getenv("TOTK_COOP_TRACE"); ton = e && strstr(e, "target"); }
+    if (ton && ++tt % 60 == 0) {
+        int ids[COOP_MAX_PLAYERS];
+        tp_links[0] = me;
+        coop_resident_named("Player", &tp_refs[0]);
+        tp_n = 1 + coop_player_actors(tp_links + 1, ids, COOP_MAX_PLAYERS);
+        for (int i = 1; i < tp_n; i++) tp_refs[i] = 0;
+        each_live(target_probe_one, NULL);
+    }
     static int on = -1, t;
     if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "enemy"); }
     if (on && ++t % 300 == 0) { probe_me = me; each_live(probe_one, NULL); }

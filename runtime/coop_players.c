@@ -388,6 +388,14 @@ static Slot *slot_new(int source, int net_id) {
 static int world_role;   // coop_world_role: 0 alone, 1 host (others follow this game), 2 guest
 int coop_world_role(void) { return world_role; }
 // The remote players' Links' positions (for the host's sync radius).
+// The remote players' Links (actor, and their net id), for the enemy sync.
+int coop_player_actors(uint64_t *actors, int *net_ids, int max) {
+    int n = 0;
+    for (int i = 0; i < COOP_MAX_PLAYERS && n < max; i++)
+        if (slots[i].state == LIVE && slots[i].source == SRC_NET && slots[i].actor)
+            actors[n] = slots[i].actor, net_ids[n] = slots[i].net_id, n++;
+    return n;
+}
 int coop_player_positions(float (*out)[3], int max) {
     int n = 0;
     for (int i = 0; i < COOP_MAX_PLAYERS && n < max; i++)
