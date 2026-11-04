@@ -1,8 +1,10 @@
 // Co-op networking (coop_net.c): this player's state out, the other players' states in.
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 
 #define COOP_MAX_PLAYERS 8
+#define COOP_NET_VERSION 5   // packet header version: games and relays of another version ignore each other
 
 // One player's state, sent about 30 times a second. Positions and directions are world space; the sticks are as the
 // player's own camera saw them, with the camera's horizontal forward and right so a receiver can turn them into its
@@ -31,3 +33,21 @@ void coop_net_world_send(const void *data, int len);               // up to 1800
 int coop_net_world(void *out, int max, int *from, uint64_t *age_ns);   // the latest from the host; 0 if none
 void coop_net_hit_send(const void *data, int len);                 // up to 64 bytes
 int coop_net_hit_take(void *out, int max, int *from);              // the oldest hit received; 0 when none
+
+// Joining and leaving while the game runs (the menu's Co-op tab; TOTK_COOP_RELAY joins at start).
+void coop_net_join(const char *relay, const char *name);   // relay: host[:port], 41900 by default
+void coop_net_leave(void);
+const char *coop_net_target(void);                         // the relay joined or being joined, "" none
+const char *coop_net_error(void);                          // why the last join failed, "" none
+int coop_net_players(int *ids, char (*names)[17], int max);   // the other players here
+
+// The relay inside this game (coop_relay.c): Host starts it and joins it at 127.0.0.1.
+int coop_relay_start(int port);
+void coop_relay_stop(void);
+int coop_relay_port(void);       // 0 when none runs here
+int coop_relay_players(void);
+int coop_local_address(char *out, size_t n);   // this PC's LAN address, for the other players
+#define COOP_PORT 41900
+void coop_host(const char *name);   // the relay here, joined at 127.0.0.1
+void coop_end(void);                // leave, and stop the relay here if any
+void coop_session_tests(int64_t world_us);

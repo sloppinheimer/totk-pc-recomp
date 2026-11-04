@@ -1,16 +1,18 @@
 # Playing co-op (test builds)
 
 ## Online (any number of players up to 8)
-1. One player runs the relay on a PC everyone can reach (UDP port 41900 open or forwarded):
-   `python server/coop_relay.py` (Python 3, no packages).
-2. Everyone adds to `totk.ini` next to `totk.exe`, then starts the game and loads a save:
-   ```
-   [coop]
-   coop_relay = <relay PC address>
-   coop_name = <your name>
-   ```
-3. Players appear in each other's games as they connect, and stay behind idle when they leave. Join or leave any time.
+1. Everyone loads a save, opens the menu (F1) and goes to the **Co-op** tab, and types a name.
+2. One player chooses **Host a session**. The tab then shows the address the others use on the same network. Over
+   the internet the others use the host's internet address, and the host's router must forward UDP port 41900 to
+   the host's PC.
+3. The others type that address under **Host's address** and choose **Join**. Players appear in each other's games
+   as they connect and disappear when they leave (**Leave the session**, or closing the game). When the host leaves
+   the session ends for everyone.
+4. The name and the last address are kept in `totk.ini` (`coop_name`, `coop_join`).
 
+Everyone needs the same build (the packet version must match) and the same game update. A standalone relay still
+works: `python server/coop_relay.py` on a PC everyone can reach, and `coop_relay = <address>` in `totk.ini` joins
+it at start (the test scripts do this).
 What works (2026-11-04): each player's Link appears in the others' games and moves with that player's input (walk,
 run, jump, attack); it is put back at its owner's position when it drifts. It carries its owner's weapon, bow and
 shield and wears their head, body and leg armor, updated when they change them. Not yet: shared enemies and items

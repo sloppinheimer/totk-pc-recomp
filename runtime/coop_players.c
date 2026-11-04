@@ -423,6 +423,7 @@ static void set_input(Slot *s, uint64_t buttons, const int32_t sticks[4]) {
 
 void coop_players_tick(Cpu *c, int numpad3) {
     if (frame_step_world_us() <= 0) return;   // not in the world yet
+    coop_session_tests(frame_step_world_us());
     uint64_t me = coop_player_actor();
     if (!me) return;
     coop_world_tick(c, me);
@@ -455,8 +456,10 @@ void coop_players_tick(Cpu *c, int numpad3) {
         if (dpx * dpx + dpy * dpy + dpz * dpz > 0.0004f) memcpy(last_p, st.pos, 12), p_moved = now_ns;
         int paused = now_ns - t_moved > 150000000ull && now_ns - p_moved > 150000000ull;
         static int was_paused = -1;
-        if (paused != was_paused) rt_log("coop: this Link %s (input sent %s)", paused ? "is paused" : "runs",
-                                         paused ? "neutral" : "as is");
+        if (paused != was_paused)
+            rt_log("coop: this Link %s (input sent %s; clock still %.2f s, Link still %.2f s, time %.2f, at %.3f %.3f %.3f)",
+                   paused ? "is paused" : "runs", paused ? "neutral" : "as is", (now_ns - t_moved) / 1e9,
+                   (now_ns - p_moved) / 1e9, tnow, st.pos[0], st.pos[1], st.pos[2]);
         was_paused = paused;
         if (paused) {   // a menu is open here: the sticks and buttons move through it, not Link
             st.buttons = 0;
