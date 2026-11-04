@@ -1,0 +1,6 @@
+# Rito Village save: at 20 s into the world walk left along the platform for 2.5 s, then stand.
+300 A 4
+520 A 4
+700 A 4
+900 A 4
+@20000 LSTICK -32767 0 2500

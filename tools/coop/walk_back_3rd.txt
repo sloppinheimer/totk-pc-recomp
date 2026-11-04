@@ -1,0 +1,7 @@
+# The 100% save (third in the Continue list): at 20 s into the world walk back towards the camera for 2 s.
+300 A 4
+520 DOWN 4
+580 DOWN 4
+640 A 4
+800 A 4
+@20000 LSTICK 0 -32767 2000

@@ -68,6 +68,47 @@ static int camera_frame(float fwd[2], float right[2]) {
     return 1;
 }
 
+// ---- name tags over the other players' Links (drawn by ui/coop_tags.cpp with the overlay).
+// The camera: PlayerCamera's position is the eye, its rotation's columns right, up and back (it looks along -Z);
+// the vertical field of view is TOTK_COOP_TAG_FOV degrees (50 until it is found in the game).
+typedef struct { float x, y, dist; char name[17]; } CoopTag;   // x, y: 0..1 of the screen
+int coop_name_tags(CoopTag *out, int max, float aspect) {
+    uint64_t cam = coop_resident_named("PlayerCamera", NULL);
+    float cp[3], r[9];
+    if (!cam || !coop_rd(cam + COOP_ACTOR_POS, cp, 12) || !coop_rd(cam + COOP_ACTOR_ROT, r, 36)) return 0;
+    const char *fv = cfg_get("TOTK_COOP_TAG_FOV");
+    float fovy = (fv && *fv ? (float)atof(fv) : 50.0f) * 3.14159265f / 180.0f, ty = tanf(fovy / 2), tx = ty * aspect;
+    int ids[COOP_MAX_PLAYERS];
+    char names[COOP_MAX_PLAYERS][17];
+    int nn = coop_net_players(ids, names, COOP_MAX_PLAYERS), n = 0;
+    uint64_t self_test = cfg_get("TOTK_COOP_TEST_TAGSELF") ? coop_player_actor() : 0;   // test: tag this PC's Link
+    for (int i = 0; i <= COOP_MAX_PLAYERS && n < max; i++) {
+        uint64_t a;
+        const char *nm = "";
+        if (i == COOP_MAX_PLAYERS) {
+            if (!self_test) break;
+            a = self_test, nm = "(you)";
+        } else {
+            Slot *s = &slots[i];
+            if (s->state != LIVE || s->source != SRC_NET || !s->actor) continue;
+            a = s->actor;
+            for (int k = 0; k < nn; k++) if (ids[k] == s->net_id) nm = names[k];
+        }
+        float p[3];
+        if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) continue;
+        p[1] += 2.0f;   // above the head
+        float d[3] = {p[0] - cp[0], p[1] - cp[1], p[2] - cp[2]};
+        float x = d[0] * r[0] + d[1] * r[3] + d[2] * r[6], y = d[0] * r[1] + d[1] * r[4] + d[2] * r[7];
+        float z = -(d[0] * r[2] + d[1] * r[5] + d[2] * r[8]);
+        float dist = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        if (z < 0.3f || dist > 150.0f) continue;
+        CoopTag *t = &out[n++];
+        t->x = 0.5f + 0.5f * x / (z * tx), t->y = 0.5f - 0.5f * y / (z * ty), t->dist = dist;
+        snprintf(t->name, sizeof t->name, "%s", nm[0] ? nm : "Player");
+    }
+    return n;
+}
+
 // ---- gear. A Player's EquipmentUser builds each slot through main+0xc4a5f4 (eq, slot), which reads the item from the
 // save's inventory and creates it by name: weapons through main+0xaf100c (eq, slot, &name, ... 14 arguments), armor
 // through main+0xc48ac0 (eq, slot, &name, dye, 0, 1) and on to main+0xc4961c; &name points at a string whose first
