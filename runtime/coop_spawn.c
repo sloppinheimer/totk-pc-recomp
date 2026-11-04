@@ -411,50 +411,12 @@ static struct { _Atomic uint64_t lr; _Atomic uint32_t index, calls; } gc_callers
 #define ACTOR_CALC 0x41bb20   // per-actor update from the actor job (main+0x2f175c), x0 = actor (profiler, 2026-11-03)
 static __thread int in_calc;      // this thread runs ACTOR_CALC through the wrapper
 static _Atomic int calc_log_left = 40;
-static int blind = -1;            // TOTK_COOP_BLIND=1: Player#2's calc sees the idle input (neutral, below)
 static uint8_t neutral[0x200];    // the input object while nothing is held: coop_tick takes it 3 s into the world
 static _Atomic int neutral_ok;
 
-int coop_p2_connected(void);
-int coop_p2_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
-// Player 2's state written into controller 1 (the game updates it from no pad we feed) right before Player#2's calc.
-// Layout from controller 0 (ctrl0 diff, 2026-11-03): +0x114 and +0x13c held buttons (bit 0 A, 2 ZL, 3 X), +0x8 pressed
-// this frame and +0xc released this frame (guess: sead order before +0x10 repeat), +0x30 + 4 * bit frames held (float),
-// +0x120 / +0x124 left stick x / y (-1..1), +0x128 / +0x12c right stick (guess).
-static void p2_fill(uint64_t ctl) {
-    uint64_t buttons = 0;
-    int32_t lx, ly, rx, ry;
-    if (!ctl || !coop_p2_poll(&buttons, &lx, &ly, &rx, &ry)) return;
-    float f[4] = {lx / 32767.0f, ly / 32767.0f, rx / 32767.0f, ry / 32767.0f};
-    memcpy((void *)(uintptr_t)(ctl + 0x120), f, sizeof f);
-    // Stick directions are buttons too (left stick up / down / left / right 20-23, right stick 24-27: button-map
-    // test), held past half deflection.
-    // Switch buttons (input_map.h B_*) to the controller's bits, from the button-map test (2026-11-03): A 0, B 1, ZL 2,
-    // X 3, Y 4, ZR 5, right stick click 6, left stick click 7, L 13, R 14, d-pad up 16, down 17, left 18, right 19.
-    // Plus and Minus are left out (not mapped yet; they would open player 1's menus).
-    static const int8_t to_ctl[16] = {0, 1, 3, 4, 7, 6, 13, 14, 2, 5, -1, -1, 18, 16, 19, 17};
-    uint32_t hold = 0;
-    for (int b = 0; b < 16; b++)
-        if (buttons >> b & 1 && to_ctl[b] >= 0) hold |= 1u << to_ctl[b];
-    if (f[3] > 0.5f) hold |= 1u << 24;
-    if (f[3] < -0.5f) hold |= 1u << 25;
-    if (f[2] < -0.5f) hold |= 1u << 26;
-    if (f[2] > 0.5f) hold |= 1u << 27;
-    if (f[1] > 0.5f) hold |= 1u << 20;
-    if (f[1] < -0.5f) hold |= 1u << 21;
-    if (f[0] < -0.5f) hold |= 1u << 22;
-    if (f[0] > 0.5f) hold |= 1u << 23;
-    static uint32_t prev;
-    static float held[32];
-    for (int b = 0; b < 32; b++) held[b] = hold >> b & 1 ? held[b] + 1 : 0;
-    ST32(ctl + 0x114, hold), ST32(ctl + 0x13c, hold);
-    ST32(ctl + 0x8, hold & ~prev), ST32(ctl + 0xc, prev & ~hold);
-    memcpy((void *)(uintptr_t)(ctl + 0x30), held, sizeof held);
-    static int logged;
-    if (hold && !logged++) rt_log("coop: p2 fill: stick %.2f %.2f, held %#x into controller %llx", f[0], f[1], hold,
-                                  (unsigned long long)ctl);
-    prev = hold;
-}
+int coop_players_calc(Cpu *c, uint64_t addr);    // coop_players.c
+void coop_players_tick(Cpu *c, int numpad3);
+uint64_t coop_players_first(void);
 
 // Camera follow (Numpad 4): while PlayerCamera's calc runs on a thread (in_camera), ActorLink getActor
 // (main+0x2804d0) answers Link#2 where it would answer Link#1. Nothing in memory changes.
@@ -494,48 +456,8 @@ static int calc_wrap(Cpu *c, uint64_t addr) {
         in_camera = 0;
         return 1;
     }
-    if (in_calc || !two || (actor != two && actor != player_actor_cached)) return 0;
-    if (atomic_fetch_sub(&calc_log_left, 1) > 0)
-        rt_log("coop: calc %s on thread %p", actor == two ? "Link#2" : "Link#1", c->thread);
-    if (actor != two) return 0;
-    if (blind < 0) { const char *e = cfg_get("TOTK_COOP_BLIND"); blind = e ? atoi(e) : 0; }
-    static uint8_t saved[0x200];
-    uint64_t obj = atomic_load(&copy_dst[0]);
-    int swap = blind == 1 && obj && atomic_load(&neutral_ok);
-    if (swap) { memcpy(saved, (void *)(uintptr_t)obj, sizeof saved); memcpy((void *)(uintptr_t)obj, neutral, sizeof neutral); }
-    // TOTK_COOP_BLIND=2: the controller manager hands out controller 1 (idle: only pad id 0 is live) as controller 0
-    // while Player#2 updates; Link#1 runs after it on the same thread (calc log, 2026-11-03).
-    uint64_t mgr = blind >= 2 ? rd_ptr(rd_ptr(MOD_MAIN_BASE + INPUT_MGR_SLOT)) : 0, ctrl0 = 0;
-    // TOTK_COOP_BLIND=3: controller 0 itself carries player 2's buttons and sticks while Player#2 updates (its fields
-    // +0x8..+0x13f saved and restored around the call).
-    static uint8_t c0_saved[0x138];
-    uint64_t c0 = blind == 3 && mgr ? LD64(mgr + 0xa0) : 0;
-    if (c0) { memcpy(c0_saved, (void *)(uintptr_t)(c0 + 8), sizeof c0_saved); p2_fill(c0); }
-    // TOTK_COOP_BLIND=4: a controller of our own for player 2 (patch page +0x400, 0x400 bytes, which nothing else
-    // writes): a copy of controller 0 with player 2's buttons and sticks, handed out as controller 0 while Player#2
-    // updates. Controllers 0 and 1 are rewritten by the game's controller update (main+0x479c20) while actors update.
-    if (!mgr && coop_p2_connected()) mgr = rd_ptr(rd_ptr(MOD_MAIN_BASE + INPUT_MGR_SLOT));
-    uint64_t own = (blind == 4 || (blind <= 0 && coop_p2_connected())) && mgr ? RT_PATCH_PAGE + 0x400 : 0;
-    if (own) {
-        ctrl0 = LD64(mgr + 0xa0);
-        memcpy((void *)(uintptr_t)own, (void *)(uintptr_t)ctrl0, 0x400);
-        p2_fill(own);
-        ST64(mgr + 0xa0, own);
-    }
-    if (mgr && blind == 2) {
-        ctrl0 = LD64(mgr + 0xa0);
-        uint64_t ctl1 = LD64(mgr + 0xf0);
-        ST64(mgr + 0xa0, ctl1);
-        p2_fill(ctl1);
-    }
-    in_calc = 1;
-    c->pc = addr;
-    rt_dispatch(c);
-    in_calc = 0;
-    if (swap) memcpy((void *)(uintptr_t)obj, saved, sizeof saved);
-    if (mgr && (blind == 2 || own)) ST64(mgr + 0xa0, ctrl0);
-    if (c0) memcpy((void *)(uintptr_t)(c0 + 8), c0_saved, sizeof c0_saved);
-    return 1;
+    (void)in_calc;
+    return coop_players_calc(c, addr);   // a co-op Player (coop_players.c): run with its own controller
 }
 
 int coop_hook(Cpu *c, uint64_t addr) {
@@ -841,6 +763,10 @@ void coop_tick(struct Cpu *c) {
             float d1 = (cp[0] - p1[0]) * (cp[0] - p1[0]) + (cp[2] - p1[2]) * (cp[2] - p1[2]),
                   d2 = (cp[0] - p2[0]) * (cp[0] - p2[0]) + (cp[2] - p2[2]) * (cp[2] - p2[2]);
             rt_log("coop: camera %.1f m from Link#1, %.1f m from Link#2; Link#1 has %d update links", sqrtf(d1), sqrtf(d2), n1);
+            float cr[9] = {0};
+            if (cam) rd(cam + ACTOR_ROT, cr, 36);
+            rt_log("coop: camera at %.1f %.1f %.1f rot cols x %.2f %.2f %.2f | z %.2f %.2f %.2f; Link#1 facing %.2f %.2f", cp[0],
+                   cp[1], cp[2], cr[0], cr[3], cr[6], cr[2], cr[5], cr[8], r1[2], r1[8]);
         }
         rt_log("coop: Link#1 %.2f %.2f %.2f facing %.2f %.2f | Link#2 %.2f %.2f %.2f facing %.2f %.2f state %d",
                p1[0], p1[1], p1[2], r1[2], r1[8], p2[0], p2[1], p2[2], r2[2], r2[8], state);
@@ -848,17 +774,20 @@ void coop_tick(struct Cpu *c) {
     }
     // TOTK_COOP_AUTOSPAWN=<polls>: spawn Player#2 that many gamepad polls (about 30 a second) after Link is in the
     // world (frame_step_world_us), for unattended runs (scripted input, no numpad).
-    static int auto_left = -1;
+    static int auto_left = -1, auto3;
     if (auto_left == -1) { const char *e = cfg_get("TOTK_COOP_AUTOSPAWN"); auto_left = e ? atoi(e) : 0; }
     if (auto_left > 0) {
         if (frame_step_world_us() > 0 && !--auto_left) {   // the world clock runs once the save is in the world
             rt_log("coop: autospawn (world clock %lld us, snapshot %d, read %d)", (long long)frame_step_world_us(),
                    atomic_load(&neutral_ok), rd(atomic_load(&copy_dst[0]), neutral, 16));
-            spawn(c, 2);
+            auto3 = 1;
         }
     }
+    coop_players_tick(c, (pressed & 4) || auto3);
+    auto3 = 0;
+    second_player = coop_players_first();   // the tracing below looks at the first co-op Player
     for (int k = 0; k < 3; k++) {
-        if (pressed & 1 << k) spawn(c, k);
+        if (k < 2 && pressed & 1 << k) spawn(c, k);
         if (!rd_ptr((uint64_t)(uintptr_t)handles[k])) continue;
         int st = handle_status(k);
         if (st != last_status[k]) rt_log("coop: %s handle status %d", names[k], st);

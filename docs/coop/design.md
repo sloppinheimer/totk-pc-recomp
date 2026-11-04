@@ -6,6 +6,18 @@
 - Each PC renders its own view, so the online camera simply follows that PC's own Link. Split-screen on one PC is not
   planned (it would render the world twice); local testing switches which Link the camera follows.
 
+## Sessions: drop in, drop out, more than two (the tester, 2026-11-04)
+- Seamless, plug-and-play joining and leaving at any time; more than 2 players.
+- Transport: a small relay server (stdlib Python, server/coop_relay.py) that every game connects to; it forwards each
+  player's state to the others. Anyone can join or leave a session at any time, there is no fixed pairing, and it
+  works behind home routers (only the relay needs a reachable port). LAN and one-PC tests run it locally.
+- Game side: up to 8 players (1 local + 7 remote). Each remote player is a spawned Player actor with its own
+  controller and calc wrapper; it appears when the player's first state arrives and goes away when they leave or
+  time out.
+- Version 1 (no world sync): every PC runs its own world and save; remote Links are driven by their owner's input
+  (camera-relative stick turned into this PC's camera frame) and pulled back to the owner's reported position when
+  they drift. World sync (enemies, items, host-authoritative state) and the save rules below come after.
+
 ## Saves: drop-in co-op, like Elden Ring (the tester, 2026-11-03) — plan, not built
 - Everyone plays their own save alone. At any time a player can join another player's game.
 - The host's save is the game state: world, quests, map, time, shrines. The guest's world state is not touched.
