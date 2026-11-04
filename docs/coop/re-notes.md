@@ -94,3 +94,16 @@ evidence), guess.
 - Player 2 now: the second connected gamepad by default (TOTK_COOP_P2=pad; input.c input_pad2_read), through the
   private controller. Test 2026-11-03: player 1's script and player 2's test pattern moved the two Links on their own
   paths at the same time. Real second gamepad: works (the tester, 2026-11-03: player 1 DualSense, player 2 Xbox One Elite 2).
+
+## Equipment, HUD, camera (2026-11-04)
+- Equipment: Player#2 creates its own weapons, armor, quiver, Zonai devices, PlayerRaulHand, Obj_OneTouch_Connection
+  and WakeBoardRope (different actors, its own update links; edge lists by address). Only the resident helpers
+  (ThrowBox, CarryBox, Parasail, Dm_Npc_RevivalFairy) are one per game, so only edges to resident actors are copied
+  now. Both build their gear from the same inventory (the save's), so they look alike. Confidence: confirmed (logs).
+- HUD: no global in main's .data/.bss points at either Link (scan); the button guides ("Jump / Let go") seem to be
+  pushed by whichever Player's update asks (guess). UI names: CtrlGuide (UICtrlGuideScreen, game__ui__CtrlGuideSet,
+  HoldSensorHitInfoSend*CtrlGuide). Not fixed.
+- Camera: PlayerCamera (resident) holds the followed Player at [cam+0x1a8]+0x160, [cam+0x858]+0x100,
+  [cam+0xa20]+0x790, [cam+0x1fc0]+0x1c0 (scan for Link#1's actor). Writing Link#2 there each poll makes the camera
+  follow Link#2 (walks and climbs, screenshots); Numpad 4 switches, TOTK_COOP_CAMAT=<s> for runs. Which of the four
+  are needed is untested (TOTK_COOP_CAMMASK). Confidence: confirmed for all four together.

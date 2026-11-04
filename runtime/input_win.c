@@ -186,7 +186,7 @@ static int key_down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
 int input_coop_keys(void) {
     HWND w = gfx_window_handle();
     if (!w || w != GetForegroundWindow()) return 0;
-    return key_down(VK_NUMPAD1) | key_down(VK_NUMPAD2) << 1 | key_down(VK_NUMPAD3) << 2;
+    return key_down(VK_NUMPAD1) | key_down(VK_NUMPAD2) << 1 | key_down(VK_NUMPAD3) << 2 | key_down(VK_NUMPAD4) << 3;
 }
 
 int input_flight_key(void) {
