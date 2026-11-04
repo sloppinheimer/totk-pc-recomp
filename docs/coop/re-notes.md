@@ -138,3 +138,20 @@ evidence), guess.
   Now put back past 1.5 m while its owner moves and past 0.25 m once they stand still, at most every 10 polls.
   Pair test: three put-backs of about 0.5 m when A stopped; final gap 0.1 m (A 392.06,1357.91, B's copy
   392.09,1357.80). ForceSetMatrix (main+0x45ce70) confirmed working from the input thread.
+
+## Gear (2026-11-04)
+- EquipmentUser slot build: main+0xc4a5f4 (eq, slot) reads the item from the save and creates it by name. Weapons go
+  through main+0xaf100c (eq, slot, &name, 1 out / 2 put away, life -1, extra life -1, &attachment, 1, 0, 0, 0, -1, 0,
+  -1), armor through main+0xc48ac0 (eq, slot, &name, dye -1, 0, 1). Create slots: 0 weapon, 7 bow, 8 shield,
+  9 head, 10 body, 11 legs (also 3 sheath, 6 quiver, 15/16 extras, made along with them). &name: +0 char*, +8
+  capacity 0x40. Evidence: Ghidra pseudocode of both, create traces. Confidence: confirmed (calls work).
+- What an EquipmentUser holds: a table at +0x28, 0x18 a row; the row's first word is a reference whose +0x40 is the
+  item actor. Seen rows: 0 weapon, 8 head, 9 body, 10 legs, 11 sheath, 14 quiver, 15/16 extras (row order is not the
+  create slot order, so items are sorted by actor name). Removing the weapon from the menu clears row 0 and the
+  sheath row. Evidence: memory scan while equipping/removing. Confidence: confirmed for weapon and armor rows; bow
+  and shield rows not seen (this save has neither), found by name.
+- main+0xaf100c clears the slot's handle (+0x1430 + 8 * slot) and destroys the old item first; an empty name leaves
+  the slot empty. Used for "-" (nothing) on a remote Link.
+- Test (run_pair, A reports Weapon_Sword_070, Weapon_Bow_001, Weapon_Shield_001): game B's copy of A wore all three
+  (screenshot); B's save has none. A's menu Remove reached B as an empty weapon slot. Confidence: confirmed.
+- The Decayed Master Sword cannot be equipped on this save (Great Sky Island start): the menu ignores A on it.

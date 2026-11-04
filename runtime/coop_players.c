@@ -41,6 +41,7 @@ typedef struct {
     int have_want, idle, snap_wait;
     unsigned snaps;
     char gear_want[COOP_GEAR_SLOTS][32], gear_have[COOP_GEAR_SLOTS][32];   // the owner's gear; what this Link was given
+    _Alignas(16) uint8_t gear_str[COOP_GEAR_SLOTS][0x60];   // the names handed to the creates, kept while they run
 } Slot;
 static Slot slots[COOP_MAX_PLAYERS];
 static PlatMutex lock = PLAT_MUTEX_INIT;   // input fields, read by the calc wrapper on worker threads
@@ -68,13 +69,89 @@ static int camera_frame(float fwd[2], float right[2]) {
 }
 
 // ---- gear. A Player's EquipmentUser builds each slot through main+0xc4a5f4 (eq, slot), which reads the item from the
-// save's inventory and creates it by name: armor through main+0xc4961c (eq, slot, &name, ...), weapons through
-// main+0xaf100c (eq, slot, &name, ...); &name points at a string whose first word is the name (2026-11-04). This PC's
-// Link's names are recorded per slot and sent; a remote Link's slot is rebuilt when its owner's name changes, and its
-// create gets the owner's name in place of the save's.
-const int coop_gear_slot[COOP_GEAR_SLOTS] = {0, 9, 10, 11};
-#define GEAR_REBUILD 0xc4a5f4
+// save's inventory and creates it by name: weapons through main+0xaf100c (eq, slot, &name, ... 14 arguments), armor
+// through main+0xc48ac0 (eq, slot, &name, dye, 0, 1) and on to main+0xc4961c; &name points at a string whose first
+// word is the name (2026-11-04). It keeps what it made in a table at +0x28 (0x18 a row, the row's first word a
+// reference whose +0x40 is the item actor), cleared when an item is put away. This PC's Link's table is read every
+// frame and sorted by item name (menu equips, unequips and broken weapons all show there); a remote Link's slot is
+// made with its owner's item by calling the create itself, as the save may have nothing for that slot.
+const int coop_gear_slot[COOP_GEAR_SLOTS] = {0, 7, 8, 9, 10, 11};   // weapon, bow, shield, head, body, legs
+#define GEAR_WEAPON_CREATE 0xaf100c
+#define GEAR_ARMOR_CREATE 0xc48ac0
+#define GEAR_IN_HAND 0x3e322c    // (eq, 0 weapon / 3 bow / 4 shield): 1 when out; c4a5f4 passes 1 for it, else 2
+#define GEAR_TABLE 0x28
+#define GEAR_NONE "-"            // on the wire: the slot is empty ("" is not known yet)
 static char my_gear[COOP_GEAR_SLOTS][32];
+
+// Which of the synced slots an item belongs to, from its actor name; -1 for the rest (sheath, quiver, devices).
+static int gear_kind(const char *n) {
+    size_t len = strlen(n);
+    if (!strncmp(n, "Weapon_Sword_", 13) || !strncmp(n, "Weapon_Lsword_", 14) || !strncmp(n, "Weapon_Spear_", 13)) return 0;
+    if (!strncmp(n, "Weapon_Bow_", 11)) return 1;
+    if (!strncmp(n, "Weapon_Shield_", 14)) return 2;
+    if (!strncmp(n, "Armor_", 6) && len > 5) {
+        if (!strcmp(n + len - 5, "_Head")) return 3;
+        if (!strcmp(n + len - 6, "_Upper")) return 4;
+        if (!strcmp(n + len - 6, "_Lower")) return 5;
+    }
+    return -1;
+}
+
+// What an EquipmentUser holds now, per synced slot (GEAR_NONE for an empty one).
+static void eq_gear(uint64_t eq, char now[COOP_GEAR_SLOTS][32]) {
+    for (int k = 0; k < COOP_GEAR_SLOTS; k++) strcpy(now[k], GEAR_NONE);
+    for (int row = 0; row < 24; row++) {
+        uint64_t ref = coop_rd_ptr(eq + GEAR_TABLE + 0x18 * (uint64_t)row);
+        char nm[32];
+        coop_actor_name(ref ? coop_rd_ptr(ref + 0x40) : 0, nm, sizeof nm);
+        int k = nm[0] ? gear_kind(nm) : -1;
+        if (k >= 0) memcpy(now[k], nm, 32);
+    }
+}
+
+static void read_my_gear(uint64_t eq) {
+    char now[COOP_GEAR_SLOTS][32];
+    eq_gear(eq, now);
+    for (int k = 0; k < COOP_GEAR_SLOTS; k++)
+        if (strcmp(now[k], my_gear[k])) {
+            rt_log("coop: my gear slot %d is now %s", coop_gear_slot[k], now[k]);
+            memcpy(my_gear[k], now[k], 32);
+        }
+}
+
+// The string shape the creates take: +0 pointer to the text, +8 capacity 64, the text kept here.
+static uint64_t gear_string(uint8_t st[0x60], const char *text) {
+    memset(st, 0, 0x60);
+    snprintf((char *)st + 0x10, 0x40, "%s", text);
+    uint64_t tp = (uint64_t)(uintptr_t)(st + 0x10);
+    int32_t cap = 0x40;
+    memcpy(st, &tp, 8), memcpy(st + 8, &cap, 4);
+    return (uint64_t)(uintptr_t)st;
+}
+
+// Makes slot k of a remote Link's EquipmentUser the item name ("" empties a weapon slot), as c4a5f4 would from a save.
+static void give_gear(Cpu *c, uint64_t eq, int k, const char *name, uint8_t st[0x60]) {
+    uint64_t slot = (uint64_t)coop_gear_slot[k], np = gear_string(st, name);
+    uint64_t saved_x[31], sp0 = c->sp;
+    memcpy(saved_x, c->x, sizeof saved_x);
+    if (k <= 2) {
+        static const uint64_t hand_of[3] = {0, 3, 4};
+        int out = (int)(coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, eq, hand_of[k], 0, 0) & 1);
+        static _Alignas(16) uint8_t no_attachment[0x60];
+        uint64_t att = gear_string(no_attachment, "");
+        uint64_t sp = (sp0 - 0x100) & ~0xfull;
+        uint64_t stack[6] = {0, 0, 0, (uint64_t)(uint32_t)-1, 0, (uint64_t)(uint32_t)-1};   // arguments 9..14
+        memcpy((void *)(uintptr_t)sp, stack, sizeof stack);
+        c->sp = sp;
+        rt_call(c, MOD_MAIN_BASE + GEAR_WEAPON_CREATE, 8, eq, slot, np, (uint64_t)(out ? 1 : 2), (uint64_t)(uint32_t)-1,
+                (uint64_t)(uint32_t)-1, att, (uint64_t)1);
+    } else {
+        c->sp = (sp0 - 0x100) & ~0xfull;
+        rt_call(c, MOD_MAIN_BASE + GEAR_ARMOR_CREATE, 6, eq, slot, np, (uint64_t)(uint32_t)-1, (uint64_t)0, (uint64_t)1);
+    }
+    c->sp = sp0;
+    memcpy(c->x, saved_x, sizeof saved_x);
+}
 static uint64_t unplaced_eq[16];   // EquipmentUsers whose Player was not known when their gear was made
 static struct { uint64_t eq, actor; } eq_owner[32];   // EquipmentUser -> its Player, learned from their creates
 
@@ -113,28 +190,14 @@ int coop_players_gear(Cpu *c, uint64_t addr) {
     uint64_t np = coop_rd_ptr(c->x[2]);
     char name[32] = "";
     if (np) coop_rd(np, name, sizeof name - 1);
-    if (owner == me) {
-        learn_eq_off(me, eq);
-        if (name[0] && strcmp(my_gear[k], name)) {
-            memcpy(my_gear[k], name, sizeof name);
-            rt_log("coop: my gear slot %d is now %s", coop_gear_slot[k], name);
-        }
-        return 0;
-    }
+    if (owner == me) { learn_eq_off(me, eq); return 0; }   // this PC's Link: its gear is read from its table
+    // A remote Link's own build (its first gear, or the game rebuilding a slot): the owner's item in place of the save's.
     Slot *s = slot_of_actor(owner);
-    if (!s || !s->gear_want[k][0] || !strcmp(s->gear_want[k], name)) return 0;
-    // The owner's item in place of this save's: a string of the same shape (+0 pointer, +8 capacity 64, the text).
-    static _Alignas(16) uint8_t str[COOP_MAX_PLAYERS][COOP_GEAR_SLOTS][0x60];
-    uint8_t *st = str[s - slots][k];
-    memset(st, 0, 0x60);
-    char *text = (char *)st + 0x10;
-    memcpy(text, s->gear_want[k], 32);
-    uint64_t tp = (uint64_t)(uintptr_t)text;
-    memcpy(st, &tp, 8);
-    int32_t cap = 0x40;
-    memcpy(st + 8, &cap, 4);
-    c->x[2] = (uint64_t)(uintptr_t)st;
-    rt_log("coop: slot %d's Link gets %s in gear slot %d (this save has %s)", (int)(s - slots), s->gear_want[k],
+    if (!s || !s->gear_want[k][0]) return 0;
+    const char *want = strcmp(s->gear_want[k], GEAR_NONE) ? s->gear_want[k] : "";
+    if (!strcmp(want, name) || (!want[0] && k > 2)) return 0;   // armor always has a piece: none is the save's default
+    c->x[2] = gear_string(s->gear_str[k], want);
+    rt_log("coop: slot %d's Link gets %s in gear slot %d (this save has %s)", (int)(s - slots), want[0] ? want : "nothing",
            coop_gear_slot[k], name[0] ? name : "nothing");
     (void)addr;
     return 0;
@@ -252,11 +315,19 @@ void coop_players_tick(Cpu *c, int numpad3) {
         camera_frame(st.cam_fwd, st.cam_right);
         st.buttons = local_buttons;
         memcpy(st.gear, my_gear, sizeof st.gear);
-        const char *fake = cfg_get("TOTK_COOP_FAKEGEAR");   // test: report this as the weapon in hand
-        if (fake && *fake) snprintf(st.gear[0], 32, "%s", fake);
+        // Test: report these items instead, comma-separated in slot order (weapon, bow, shield, head, body, legs);
+        // an empty field keeps the real one.
+        const char *fake = cfg_get("TOTK_COOP_FAKEGEAR");
+        for (int k = 0; fake && *fake && k < COOP_GEAR_SLOTS; k++) {
+            size_t n = strcspn(fake, ",");
+            if (n && n < 32) memcpy(st.gear[k], fake, n), st.gear[k][n] = 0;
+            fake += n + (fake[n] == ',');
+        }
         memcpy(st.sticks, local_sticks, sizeof st.sticks);
         coop_net_publish(&st);
     }
+    uint64_t my_eq = eq_of_actor(me);
+    if (my_eq) read_my_gear(my_eq);
     float fwd[2], right[2];
     int have_cam = camera_frame(fwd, right);
 
@@ -323,13 +394,17 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 s->actor = 0, s->state = s->state == LIVE ? WANTED : FREE;
                 continue;
             }
-            // The owner changed an item: rebuild that slot (its create then takes the owner's name).
+            // The owner changed an item: make that slot the owner's item.
             uint64_t eq = s->state == LIVE && s->source == SRC_NET ? eq_of_actor(s->actor) : 0;
+            char held[COOP_GEAR_SLOTS][32];
+            if (eq) eq_gear(eq, held);
             for (int k = 0; eq && k < COOP_GEAR_SLOTS; k++)
                 if (s->gear_want[k][0] && strcmp(s->gear_want[k], s->gear_have[k])) {
                     memcpy(s->gear_have[k], s->gear_want[k], 32);
-                    rt_log("coop: slot %d: owner's gear slot %d is %s, rebuilding", i, coop_gear_slot[k], s->gear_want[k]);
-                    coop_guest_call(c, MOD_MAIN_BASE + GEAR_REBUILD, eq, (uint64_t)coop_gear_slot[k], 0, 0);
+                    int none = !strcmp(s->gear_want[k], GEAR_NONE);
+                    if ((none && k > 2) || !strcmp(held[k], s->gear_want[k])) continue;   // nothing to change
+                    rt_log("coop: slot %d: owner's gear slot %d is %s", i, coop_gear_slot[k], s->gear_want[k]);
+                    give_gear(c, eq, k, none ? "" : s->gear_want[k], s->gear_str[k]);
                 }
             if (s->state == LIVE && s->source == SRC_NET && s->have_want) {
                 float p[3];

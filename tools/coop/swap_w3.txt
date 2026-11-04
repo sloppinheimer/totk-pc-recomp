@@ -1,0 +1,12 @@
+# Inventory: Remove the equipped branch (A, A), then right to the next weapon and Equip it (A, A), close.
+300 A 4
+520 A 4
+700 A 4
+900 A 4
+@6000 PLUS 150
+@8500 A 400
+@10000 A 400
+@11500 RIGHT 200
+@12500 A 400
+@14000 A 400
+@15500 PLUS 300

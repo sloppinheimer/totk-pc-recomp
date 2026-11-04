@@ -12,9 +12,10 @@
 3. Players appear in each other's games as they connect, and stay behind idle when they leave. Join or leave any time.
 
 What works (2026-11-04): each player's Link appears in the others' games and moves with that player's input (walk,
-run, jump, attack); it is put back at its owner's position when it drifts more than 3 m. Not yet: shared enemies and
-items (each game keeps its own world), outfits (everyone looks like the local save's Link), removing a Link when its
-player leaves, menus for remote players.
+run, jump, attack); it is put back at its owner's position when it drifts. It carries its owner's weapon, bow and
+shield and wears their head, body and leg armor, updated when they change them. Not yet: shared enemies and items
+(each game keeps its own world), fused weapon parts and armor dyes, removing a Link when its player leaves, menus for
+remote players.
 
 ## One PC, two games, two gamepads (online co-op without a second PC)
 Double-click `Play co-op (two pads).vbs` in the repo folder (or run `tools\coop\play_two.ps1`): it starts the relay and two game windows with no console windows; window 1
