@@ -87,3 +87,10 @@ void coop_watch_disarm(void) {
         rt_log("coop:   %6ld reads/writes by %s at +%#lx..+%#lx", seen[i].hits,
                ldr_describe((uint64_t)seen[i].fn, d, sizeof d), seen[i].min_off, seen[i].max_off);
 }
+
+// TOTK_COOP_HIDE_CONSOLE=1: hides the console window totk.exe (a console program) opens, for co-op sessions with
+// several game windows; the log still goes to logs\totk.log.
+void coop_hide_console(void) {
+    HWND w = GetConsoleWindow();
+    if (w) ShowWindow(w, SW_HIDE);
+}

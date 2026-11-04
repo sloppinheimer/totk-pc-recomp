@@ -20,7 +20,7 @@ player leaves, menus for remote players.
 `powershell -ExecutionPolicy Bypass -File tools\coop\play_two.ps1` starts the relay and two game windows; window 1
 reads the first connected gamepad, window 2 the second (the log lists the gamepads it sees: "input: gamepad 0 of 2").
 Load the save in both. Both play copies of the save (build\prof-play-1/-2, fresh each start): nothing is saved back.
-Wake both gamepads before starting. Setting: `pad_index = <n>` in totk.ini picks the n-th gamepad (0 = first).
+Wake both gamepads before starting. The launcher frees the mouse (mouse_sens = 0: no mouse camera, no cursor capture) and hides the consoles (coop_hide_console = 1); logs stay in logs	otk.log. Setting: `pad_index = <n>` in totk.ini picks the n-th gamepad (0 = first).
 
 ## One PC, one game, two gamepads
 Plug in two gamepads; the second is player 2. Press Numpad 3 once in the world to spawn player 2's Link.
