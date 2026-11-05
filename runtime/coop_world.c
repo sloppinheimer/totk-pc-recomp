@@ -369,7 +369,89 @@ static void target_probe_one(int cell, uint64_t a, void *arg) {
     }
 }
 
+int coop_watch_arm(uint64_t addr, uint64_t len);   // coop_watch_win.c: the readers of a range, reported on disarm
+void coop_watch_disarm(void);
+
+// Test (TOTK_COOP_TEST_WATCH5=<s>): from that many seconds into the world, for 10 s, the game functions that read
+// slot 5 ([main+0x3ad9830] +0x250, this Link's perception data where enemies seem to take the player from).
+static void watch_slot5(void) {
+    const char *e = cfg_get("TOTK_COOP_TEST_WATCH5");
+    static int phase;
+    if (!e || phase == 2) return;
+    double s = frame_step_world_us() / 1e6;
+    if (!phase && s >= atof(e)) {
+        uint64_t obj = coop_rd_ptr(MOD_MAIN_BASE + 0x3ad9830);
+        const char *what = cfg_get("TOTK_COOP_TEST_WATCHWHAT");   // =data: this Link's perception data (0x300) instead
+        if (what && !strcmp(what, "slot3")) {   // the perception manager's player emitter field
+            uint64_t m = coop_rd_ptr(MOD_MAIN_BASE + 0x3a6ea80);
+            if (m && coop_watch_arm(m + 0x58, 8)) phase = 1, rt_log("coop: test: watching the perception manager's player field %llx", (unsigned long long)(m + 0x58));
+            else phase = 2;
+            return;
+        }
+        if (what && !strcmp(what, "coopdata")) {   // the first co-op Link's perception data
+            uint64_t ca[1]; int ci[1];
+            uint64_t d = coop_player_actors(ca, ci, 1) ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(ca[0] + 0x228) + 0x378) + 0x30) : 0;
+            if (d && coop_watch_arm(d, 0x300)) phase = 1, rt_log("coop: test: watching the co-op Link's perception data %llx", (unsigned long long)d);
+            else if (!d) return;   // no co-op Link yet: try again next tick
+            else phase = 2;
+            return;
+        }
+        if (what && !strcmp(what, "data")) {
+            uint64_t me = coop_player_actor(), d = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(me + 0x228) + 0x378) + 0x30);
+            if (d && coop_watch_arm(d, 0x300)) phase = 1, rt_log("coop: test: watching this Link's perception data %llx", (unsigned long long)d);
+            else phase = 2;
+            return;
+        }
+        if (obj && coop_watch_arm(obj + 0x250, 8)) phase = 1, rt_log("coop: test: watching slot 5 at %llx", (unsigned long long)(obj + 0x250));
+        else phase = 2;
+    } else if (phase == 1 && s >= atof(e) + 10) {
+        coop_watch_disarm();
+        phase = 2;
+    }
+}
+
+// ---- enemies choose between players. The game's perception has one player emitter (the manager's +0x58, this
+// Link's data); coop_spawn.c's hook on the receiver check main+0x45b930 asks here, per enemy, for a co-op Link
+// nearer than this one, and puts its data there for that check. Cached once a tick (the hook runs per receiver).
+static _Atomic uint64_t near_me;
+static struct { _Atomic uint64_t actor, data; } near_links[COOP_MAX_PLAYERS];
+static _Atomic int near_n;
+static void cache_links(uint64_t me) {
+    uint64_t acts[COOP_MAX_PLAYERS];
+    int ids[COOP_MAX_PLAYERS];
+    int n = coop_world_role() ? coop_player_actors(acts, ids, COOP_MAX_PLAYERS) : 0;
+    for (int i = 0; i < n; i++) {
+        uint64_t d = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(acts[i] + 0x228) + 0x378) + 0x30);
+        atomic_store(&near_links[i].actor, acts[i]), atomic_store(&near_links[i].data, d);
+    }
+    atomic_store(&near_n, n);
+    atomic_store(&near_me, me);
+}
+uint64_t coop_nearest_link_data(uint64_t enemy) {
+    int n = atomic_load_explicit(&near_n, memory_order_relaxed);
+    uint64_t me = atomic_load_explicit(&near_me, memory_order_relaxed);
+    if (!n || !me || enemy == me) return 0;
+    char nm[8];
+    coop_actor_name(enemy, nm, sizeof nm);
+    if (strncmp(nm, "Enemy_", 6)) return 0;
+    float e[3], p[3];
+    if (!coop_rd(enemy + COOP_ACTOR_POS, e, 12) || !coop_rd(me + COOP_ACTOR_POS, p, 12)) return 0;
+    float best = (e[0] - p[0]) * (e[0] - p[0]) + (e[1] - p[1]) * (e[1] - p[1]) + (e[2] - p[2]) * (e[2] - p[2]);
+    best = sqrtf(best) - 1.0f;   // a co-op Link must be over 1 m nearer: no flicker between two players at one distance
+    uint64_t pick = 0;
+    for (int i = 0; i < n; i++) {
+        uint64_t a = atomic_load_explicit(&near_links[i].actor, memory_order_relaxed);
+        uint64_t d = atomic_load_explicit(&near_links[i].data, memory_order_relaxed);
+        if (!a || !d || !coop_rd(a + COOP_ACTOR_POS, p, 12)) continue;
+        float dist = sqrtf((e[0] - p[0]) * (e[0] - p[0]) + (e[1] - p[1]) * (e[1] - p[1]) + (e[2] - p[2]) * (e[2] - p[2]));
+        if (dist < best) best = dist, pick = d;
+    }
+    return pick;
+}
+
 void coop_world_tick(Cpu *c, uint64_t me) {
+    cache_links(me);
+    watch_slot5();
     static int ton = -1, tt;
     if (ton < 0) { const char *e = getenv("TOTK_COOP_TRACE"); ton = e && strstr(e, "target"); }
     if (ton && ++tt % 60 == 0) {

@@ -223,3 +223,11 @@ evidence), guess.
   +0x58): A is not hit; B's Link loses life even 28 m from the Bokoblin (something else hurts "the player").
   Slot 5 ([main+0x3ad9830]+0x250): A is not hit, the Bokoblin stays 1-5 m from B's Link for ~30 s and B's Link
   loses 1 life. Lead: slot 5 is what enemies take as the player. Confidence: likely (one run each).
+- Who reads this Link's perception data (read watch, 10 s with a Bokoblin): main+0x3020e0, 0x328d80, 0x41bb20,
+  0x488258, 0x484b14, 0x4cbc28, 0x4c2bb0, 0x684e10 read both Links' data; main+0x45b930 and main+0x72b4e8 read
+  only this Link's. main+0x45b930 is called from the emitter updates main+0x446a84 / main+0x49f5f8 (x19: the
+  emitter component, +0x18 its actor, NPCs and insects; never a Link) and takes the player's data from the
+  perception manager [main+0x3a6ea80] +0x58 (the same field as [main+0x3ad9830] +0x250: "slots" 3 and 5 are one).
+- Putting the nearest co-op Link's data in that field for each enemy's call of main+0x45b930
+  (TOTK_COOP_ENEMY_REDIRECT=1, about 2000 times in a run) does not change whom a Bokoblin attacks; the field itself
+  is not read at all in 10 s of fighting (read watch). The choice is made from something cached elsewhere. Open.
