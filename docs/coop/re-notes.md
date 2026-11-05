@@ -243,3 +243,9 @@ evidence), guess.
 - The registry [main+0x3a75a40] is small (27 entries); its key 0x5d5d398d entry and that object's +0x150 hold no
   pointer to either Link, its ref, or its perception component or data, even one level down (TRACE=target
   "registry"). It is a module or parameter object; main+0x72b4e8 only takes a scale factor from it. Not the player.
+- Parked 2026-11-04. Resume at the consumer of the perception event ring (manager [main+0x3a6ea80] +0xda0 entries,
+  +0xd98 capacity, +0xda8/+0xdac head/tail, filled by main+0x4cac5c): a grep for 0xda0/0xda8/0xdac in the lifted C
+  gives dozens of hits (other objects use the same offsets), so a read watch on +0xdac during a fight is the faster way
+  to find it. Untried idea: swapping the two Links' positions during an enemy's calc (risky: actor calcs run on
+  several threads). Test caveat: with tools/coop/idle.txt and TOTK_COOP_TEST_SPAWN=Enemy_Bokoblin_Junior@8 the
+  Bokoblin circles both Links but did not hit either in 80-150 s runs; a test needs a real fight.
