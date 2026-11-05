@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "coop_net.h"
 #include "host.h"
 #include "input.h"
 #include "layout.h"
@@ -384,12 +385,15 @@ static struct { _Atomic uint64_t fn; _Atomic uint32_t hits; uint32_t off; uint64
 // what such a calc changes outside its own actor (HUD prompts). Reported every 10 s with the x0s that a global of
 // main holds (a singleton), and cleared.
 int coop_in_remote_calc(void);   // coop_players.c
+int coop_players_phase(Cpu *c, uint64_t addr);   // coop_players.c: another update phase of a co-op Link
+int coop_is_coop_life(uint64_t comp);   // coop_world.c: a co-op Link's life component
 void coop_actor_seen(uint64_t actor);   // coop_world.c
 uint64_t coop_nearest_link_data(uint64_t enemy);   // coop_world.c: a co-op Link's perception data when nearer, else 0
 static int prof3;
 // TOTK_COOP_PROF=4: inside an enemy's calc (enemy_calc), the functions entered with x0 = this PC's Link or its reference
 // object, with their call site: where enemy AI uses the player it fetched.
 static int prof4;
+static int prof7;   // TOTK_COOP_PROF=7, below coop_fn_hit
 static __thread uint64_t enemy_calc;
 static uint64_t prof4_ref;
 static struct { _Atomic uint64_t fn; _Atomic uint32_t hits; uint64_t x0, lr; } p3[8192];
@@ -407,26 +411,41 @@ static int u64cmp(const void *a, const void *b) {
 }
 static void p3_report(void) {
     // Pointers main's writable data holds, and what they point at (one more level: [[main+x]] singletons).
+    // Pairs {value, where}: where is the main offset of the global, with bit 63 set for one level down ([[main+x]]).
     static uint64_t *held;
     static size_t nheld;
     uint64_t lo = MOD_MAIN_BASE + 0x357dee8, hi = MOD_MAIN_BASE + 0x3adefd0;
-    if (!held) held = malloc(((hi - lo) / 8) * 2 * sizeof *held);
+    if (!held) held = malloc(((hi - lo) / 8) * 4 * sizeof *held);
     nheld = 0;
     for (uint64_t a = lo; held && a < hi; a += 8) {
         uint64_t q = 0;
         if (!rd(a, &q, 8) || q < 0x10000 || (q >> 40) > 0x80) continue;
-        held[nheld++] = q;
+        held[2 * nheld] = q, held[2 * nheld + 1] = a - MOD_MAIN_BASE, nheld++;
         uint64_t q2 = 0;
-        if (rd(q, &q2, 8) && q2 > 0x10000 && (q2 >> 40) <= 0x80) held[nheld++] = q2;
+        if (rd(q, &q2, 8) && q2 > 0x10000 && (q2 >> 40) <= 0x80)
+            held[2 * nheld] = q2, held[2 * nheld + 1] = (a - MOD_MAIN_BASE) | (1ull << 63), nheld++;
     }
-    if (held) qsort(held, nheld, sizeof *held, u64cmp);
+    if (held) qsort(held, nheld, 2 * sizeof *held, u64cmp);
     char d[160], e[160];
     int n = 0, g = 0;
     for (int i = 0; i < 8192; i++) {
         uint64_t fn = atomic_load(&p3[i].fn);
         if (!fn) continue;
         n++;
-        int global = held && bsearch(&p3[i].x0, held, nheld, sizeof *held, u64cmp);
+        const uint64_t *hit = held ? bsearch(&p3[i].x0, held, nheld, 2 * sizeof *held, u64cmp) : NULL;
+        int global = hit != NULL;
+        char where[48] = "";
+        if (hit) snprintf(where, sizeof where, (hit[1] >> 63) ? "[[main+%#llx]]" : "[main+%#llx]", (unsigned long long)(hit[1] & ~(1ull << 63)));
+        if (prof7) {
+            uint32_t slot = (uint32_t)(p3[i].x0 >> 32), off = (uint32_t)p3[i].x0;
+            char what[48];
+            if (slot == 0xffff) snprintf(what, sizeof what, "co-op Link+%#x", off);
+            else snprintf(what, sizeof what, "component +%#x, +%#x", slot, off);
+            rt_log("coop: prof7 %6u x %s, x0 %s, from %s", atomic_load(&p3[i].hits), ldr_describe(fn, d, sizeof d), what,
+                   ldr_describe(p3[i].lr, e, sizeof e));
+            atomic_store(&p3[i].hits, 0), atomic_store(&p3[i].fn, 0);
+            continue;
+        }
         if (prof4) {
             rt_log("coop: prof4 %6u x %s, x0 %s, from %s", atomic_load(&p3[i].hits), ldr_describe(fn, d, sizeof d),
                    p3[i].x0 == prof4_ref ? "Link's reference" : "Link", ldr_describe(p3[i].lr, e, sizeof e));
@@ -441,15 +460,69 @@ static void p3_report(void) {
                    (unsigned long long)p3[i].x0, ldr_describe(p3[i].lr, e, sizeof e));
         if (global) {
             g++;
-            rt_log("coop: prof3 %6u x %s, x0 %llx (held by a global), from %s", atomic_load(&p3[i].hits),
-                   ldr_describe(fn, d, sizeof d), (unsigned long long)p3[i].x0, ldr_describe(p3[i].lr, e, sizeof e));
+            rt_log("coop: prof3 %6u x %s, x0 %llx (held by a global %s), from %s", atomic_load(&p3[i].hits),
+                   ldr_describe(fn, d, sizeof d), (unsigned long long)p3[i].x0, where, ldr_describe(p3[i].lr, e, sizeof e));
         }
         atomic_store(&p3[i].hits, 0), atomic_store(&p3[i].fn, 0);
     }
     rt_log("coop: prof3: %d functions in co-op Link calcs, %d with a global's object", n, g);
 }
 
+// TOTK_COOP_PROF=6: every function entered for the first time once the world has run TOTK_COOP_PROF_AFTER seconds
+// (default 20), logged with its world time, caller and whether a co-op Link's calc is running on that thread: what
+// a moment (a tip opening, a Game Over) runs that nothing ran before.
+static int prof6;
+static double prof6_after = 20;
+static _Atomic uint64_t p6[1 << 18];
+static void p6_hit(uint64_t addr, uint64_t lr) {
+    uint32_t h = (uint32_t)((addr >> 2) * 2654435761u) & ((1 << 18) - 1);
+    for (int k = 0; k < 256; k++, h = (h + 1) & ((1 << 18) - 1)) {
+        uint64_t have = atomic_load_explicit(&p6[h], memory_order_relaxed);
+        if (have == addr) return;
+        if (!have && atomic_compare_exchange_strong(&p6[h], &have, addr)) {
+            double s = frame_step_world_us() / 1e6;
+            if (s >= prof6_after) {
+                char d[160], e[160];
+                rt_log("coop: prof6 new %.2f s: %s from %s%s", s, ldr_describe(addr, d, sizeof d), ldr_describe(lr, e, sizeof e),
+                       coop_in_remote_calc() ? " (co-op Link calc)" : "");
+            }
+            return;
+        }
+        if (have == addr) return;
+    }
+}
+
+// TOTK_COOP_PROF=7: functions entered OUTSIDE a co-op Link's calc with x0 = that Link (its first 0x4000 bytes) or
+// one of its components (table [actor+0x228], their first 0x400 bytes): the other phases of its update (AI, AS,
+// physics, ragdoll) that the calc flag does not cover. Reported every 10 s with p3_report's table.
+static uint64_t p7_lo[COOP_MAX_PLAYERS * 160], p7_hi[COOP_MAX_PLAYERS * 160];
+static uint32_t p7_slot[COOP_MAX_PLAYERS * 160];   // 0xffff the actor itself, else its component table offset
+static _Atomic int p7_n;
+int coop_player_actors(uint64_t *actors, int *net_ids, int max);   // coop_players.c
+static void p7_refresh(void) {
+    uint64_t acts[COOP_MAX_PLAYERS];
+    int ids[COOP_MAX_PLAYERS], n = coop_player_actors(acts, ids, COOP_MAX_PLAYERS), k = 0;
+    atomic_store(&p7_n, 0);
+    for (int i = 0; i < n; i++) {
+        p7_lo[k] = acts[i], p7_hi[k] = acts[i] + 0x4000, p7_slot[k] = 0xffff, k++;
+        uint64_t t = rd_ptr(acts[i] + 0x228);
+        for (int j = 0; t && j < 150; j++) {
+            uint64_t comp = rd_ptr(t + j * 8);
+            if (comp > 0x100000000ull && comp < 0x8000000000ull) p7_lo[k] = comp, p7_hi[k] = comp + 0x400, p7_slot[k] = j * 8, k++;
+        }
+    }
+    atomic_store(&p7_n, k);
+}
+
 void coop_fn_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
+    if (prof6) { p6_hit(addr, lr); return; }
+    if (prof7) {
+        if (coop_in_remote_calc() || !x0) return;
+        int n = atomic_load_explicit(&p7_n, memory_order_relaxed);
+        for (int i = 0; i < n; i++)
+            if (x0 >= p7_lo[i] && x0 < p7_hi[i]) { p3_hit(addr, lr, ((uint64_t)p7_slot[i] << 32) | (x0 - p7_lo[i])); return; }
+        return;
+    }
     if (prof3 && coop_in_remote_calc()) p3_hit(addr, lr, x0);
     static _Atomic uint64_t enemy_fns;
     if (prof4 && enemy_calc) {
@@ -580,15 +653,72 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // HUD control guide (bottom-right prompts such as "Dive R"): main+0x2192c50 (type) shows one, main+0x4cb540 (type)
     // hides one, on the one CtrlGuide screen. Every Player's calc calls them; a co-op Link's must not change this
     // PC's HUD, so they do nothing inside one (2026-11-04).
-    if (addr == MOD_MAIN_BASE + 0x2192c50 || addr == MOD_MAIN_BASE + 0x4cb540) return coop_in_remote_calc();
+    // An actor's other per-frame update phases besides ACTOR_CALC (its vtable holds main+0x41bb20, main+0x245030,
+    // main+0x194fd7c; the actor job also runs main+0x2f9910): a co-op Link's run as its calc (TOTK_COOP_PROF=7 found
+    // them: its ragdoll and tips ran there, outside the calc flag) (2026-11-04).
+    if (addr == MOD_MAIN_BASE + 0x245030 || addr == MOD_MAIN_BASE + 0x2f9910 || addr == MOD_MAIN_BASE + 0x194fd7c)
+        return coop_players_phase(c, addr);    if (addr == MOD_MAIN_BASE + 0x2192c50 || addr == MOD_MAIN_BASE + 0x4cb540) return coop_in_remote_calc();
+    // main+0x4400b0 (life component): its per-frame update applies damage to the life at [comp+0x1830] +8. A co-op
+    // Link's life is its own game's: here it takes no damage, so it cannot die here and bring this game's Game Over
+    // (its fall killed it here too) (2026-11-04). The life is lifted for the call and put back (healing kept).
+    // TOTK_COOP_TEST_LIFE_KEEP: the damage is applied as before (a control for tests).
+    if (addr == MOD_MAIN_BASE + 0x4400b0 && coop_is_coop_life(c->x[0])) {
+        static __thread int in;
+        static int keep = -1;
+        if (keep < 0) keep = cfg_get("TOTK_COOP_TEST_LIFE_KEEP") != NULL;
+        uint64_t p = rd_ptr(c->x[0] + 0x1830);
+        uint32_t before = 0;
+        if (in || keep || !p || !rd(p + 8, &before, 4)) return 0;
+        ST32(p + 8, 0x3fffffffu);
+        in = 1;
+        c->pc = addr;
+        rt_dispatch(c);
+        in = 0;
+        uint32_t after = LD32(p + 8);
+        if (after < 0x3fffffffu && after > 0x3fff0000u) {   // damage taken off the lifted value (not the clamp to max)
+            static _Atomic int said;
+            if (atomic_fetch_add(&said, 1) < 8) rt_log("coop: a co-op Link's damage %u not taken here", 0x3fffffffu - after);
+        }
+        ST32(p + 8, after > 0x3fffffffu ? before + (after - 0x3fffffffu) : before);
+        return 1;
+    }
+    // main+0x207ea50 (instant tips manager, tip id) queues an instant tip ("To shield surf...") and records the action
+    // (main+0x207eba0). A co-op Link's actions call it from its calc; its own game shows the tip (2026-11-04).
+    if (addr == MOD_MAIN_BASE + 0x207ea50 && coop_in_remote_calc()) {
+        static _Atomic int said;
+        if (atomic_fetch_add(&said, 1) < 8) rt_log("coop: a co-op Link's instant tip %llu not queued", (unsigned long long)(uint32_t)c->x[1]);
+        return 1;
+    }
     // main+0x923d20 (game data, 1, &key, value) sets a game-data enum. A Player's calc records its actions in this
     // game's data with it (main+0x207eba0: the last action, e.g. a shield surf), and the instant tips show from those
     // ("To shield surf..."). A co-op Link's actions are its own player's, so nothing is written inside one (2026-11-04).
-    if (addr == MOD_MAIN_BASE + 0x923d20 && coop_in_remote_calc()) {
+    if (addr == MOD_MAIN_BASE + 0x923d20) {   // TOTK_COOP_TRACE=gdata: every write, with its time, key, value, caller
+        static int tr = -1;
+        if (tr < 0) { const char *e = getenv("TOTK_COOP_TRACE"); tr = e && strstr(e, "gdata"); }
+        if (tr) {
+            uint32_t key = 0;
+            rd(c->x[2], &key, 4);
+            char from[96];
+            rt_log("coop: gdata %.2f s: enum %08x = %llu from %s%s", frame_step_world_us() / 1e6, key,
+                   (unsigned long long)(uint32_t)c->x[3], ldr_describe(c->x[30], from, sizeof from),
+                   coop_in_remote_calc() ? " (in a co-op Link's calc)" : "");
+        }
+    }
+    static int gdata_keep = -1;   // TOTK_COOP_TEST_GDATA_KEEP: the writes are not skipped (a control for tests)
+    if (gdata_keep < 0) gdata_keep = cfg_get("TOTK_COOP_TEST_GDATA_KEEP") != NULL;
+    // All the game-data setters a co-op Link's update calls (the action tour, TOTK_COOP_PROF=3 with the game-data
+    // manager [[main+0x395dff0]] as x0; the ones that return nothing and take a value, 2026-11-04): main+0x170210,
+    // 0x16fdcc (from the player's state code main+0x281d40 / 0x282a0c), 0x170490, 0x282280 (main+0x281d28),
+    // 0x2aabf84 (main+0x21919b0), 0x923d20. The getters it calls (main+0x1b02f8, 0x19f9d4, 0x735698, 0x980288,
+    // 0x9eee70, 0x16fac0, 0x6e76d0, 0x2aab9b4, 0x282ed8, and the key lookups 0x4561c, 0x478c0, 0x3cffe8) still run.
+    if ((addr == MOD_MAIN_BASE + 0x923d20 || addr == MOD_MAIN_BASE + 0x170210 || addr == MOD_MAIN_BASE + 0x16fdcc ||
+         addr == MOD_MAIN_BASE + 0x170490 || addr == MOD_MAIN_BASE + 0x282280 || addr == MOD_MAIN_BASE + 0x2aabf84) &&
+        !gdata_keep && coop_in_remote_calc()) {
         static _Atomic int skipped;
         char from[96];
-        if (atomic_fetch_add(&skipped, 1) < 8) rt_log("coop: a co-op Link's game-data write skipped (from %s)", ldr_describe(c->x[30], from, sizeof from));
-        c->x[0] = 1;
+        if (atomic_fetch_add(&skipped, 1) < 12)
+            rt_log("coop: a co-op Link's game-data write main+%#llx skipped (from %s)", (unsigned long long)(addr - MOD_MAIN_BASE),
+                   ldr_describe(c->x[30], from, sizeof from));
         return 1;
     }
     // main+0x1a30670 (actor system, out link, &name): the one actor of that name (the resident "Player" for AI that
@@ -914,6 +1044,12 @@ void coop_tick(struct Cpu *c) {
         prof_kind = e && *e == '2';
         if (e && *e == '3') prof3 = 1, g_fnprof = 1;
     if (e && *e == '4') prof3 = prof4 = 1;   // the profiler from the world on (loading is too slow under it)
+        if (e && *e == '7') prof7 = prof3 = 1, g_fnprof = 1;
+        if (e && *e == '6') {
+            const char *a = cfg_get("TOTK_COOP_PROF_AFTER");
+            prof6 = 1, g_fnprof = 1;
+            if (a) prof6_after = atof(a);
+        }
         rt_log("coop: TOTK_COOP_PROF=%s", e ? e : "(unset)");
     }
     static int player_trace = -1;   // TOTK_COOP_TRACE=player: the callers of the named lookup for "Player", every 10 s
@@ -932,6 +1068,8 @@ void coop_tick(struct Cpu *c) {
             rt_log("coop: \"Player\" lookups: %d callers in 10 s", n);
         }
     }
+    if (prof6) g_fnprof = 1;
+    if (prof7) p7_refresh();   // resolution.c switches it off once the render size is set
     if (prof3) {   // reported every 10 s (coop_tick runs at 30 Hz)
         static int t;
         if (!prof4 || frame_step_world_us() > 0) g_fnprof = 1;   // resolution.c switches it off once the render size is set

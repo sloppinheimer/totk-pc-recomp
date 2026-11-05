@@ -258,3 +258,27 @@ evidence), guess.
   tools/coop/surf.txt on game B: the only game-data write in the surf windows.
 - Fix: coop_spawn.c skips main+0x923d20 inside a co-op Link's calc. Test: run_pair with B surfing, the tip shows in
   B's game only (screenshots, one run). Other game-data setters (bool, int) are not hooked; none showed up here.
+
+## A co-op Link must not change this game (2026-11-04)
+Each game runs the other players' Links as full Players, so their actions reached this game's shared systems: the
+other player's shield surf showed the instant tip here, its fatal fall brought this game's Game Over. Swept by system
+instead of by action:
+- Update phases: an actor's vtable holds main+0x41bb20 (calc), main+0x245030 and main+0x194fd7c; a co-op Link's
+  main+0x245030 now also counts as its calc (coop_players_phase). Found with TOTK_COOP_PROF=7 (functions entered with
+  x0 = a co-op Link or one of its components outside its calc). main+0x2f9910 and main+0x194fd7c are hooked but
+  never matched (x0 is not the actor there).
+- Shared systems a co-op Link's update calls (TOTK_COOP_PROF=3 with an action tour, tools/coop/tour.txt; x0 named by
+  the global that holds it): game data ([[main+0x395dff0]] = [main+0x3ad66b0]) is the one it writes. Its setters
+  (return nothing, take a value): main+0x170210, 0x16fdcc, 0x170490, 0x282280, 0x2aabf84, 0x923d20; skipped inside
+  a co-op Link's update. It wrote some every frame (from the player state code main+0x281d28 / 0x281d40 /
+  0x282a0c and main+0x2b04c8 / 0x2b0568). Getters it calls run as before (list in coop_spawn.c).
+- Instant tips: main+0x207ea50 (tips manager, tip id) queues a tip; skipped inside a co-op Link's update.
+- Death: main+0x4400b0 (life component) applies damage each frame; for a co-op Link's component the life is
+  lifted for the call and put back, so it takes no damage here and cannot die here (its own game has its life).
+  Found with a write watch on its life (TOTK_COOP_TEST_WATCH5 + WATCHWHAT=cooplife, coop_watch_writes).
+- Tests (run_pair, A idle, B scripted; tools/coop/tipcheck.py on every frame): before, A showed the tip (2-3 frames)
+  and Game Over; after, the tour and the surf-and-fall runs show neither in A, while B keeps its own tip and Game Over.
+- Tools: TOTK_COOP_PROF=6 (functions run for the first time after TOTK_COOP_PROF_AFTER s), =7 (above),
+  TOTK_COOP_TRACE=gdata (game-data enum writes), TOTK_COOP_TEST_GDATA_KEEP / TEST_LIFE_KEEP (controls).
+- Not covered: shared systems the tour did not reach (swimming, climbing, riding, abilities, cooking, enemies hitting
+  a co-op Link); sound and effects were not looked at.
