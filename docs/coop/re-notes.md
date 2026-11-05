@@ -212,3 +212,14 @@ evidence), guess.
 - main+0x1a30670 (actor system [[main+0x395da68]], out link, &name) finds the one actor of a name in a tree at
   +0x38 (QueryTestGetPlayerActor asks it for "Player"); it is not called at all during play with the Bokoblin
   (TOTK_COOP_TRACE=player). Enemy AI finds the player another way: likely the sensor / awareness system.
+- Perception (2026-11-04): an actor's perception component is [[actor+0x228] +0x378]; its data [comp+0x30], the id
+  a u32 at data +0x10 (AI query QueryActorGetPerceptionID, main+0x1b0c67c). This PC's Link has id 4; a co-op Link
+  has its own (0x2b, 0x29). Copying the resident Link's data flags (+0x14, +0x1c) to a co-op Link changes nothing.
+- Five globals hold this Link's perception data and none a co-op Link's: [main+0x3a4e6a8]+0x98, [main+0x3a4e6e0]
+  +0x370, [main+0x3a6ea80]+0x58, [main+0x3a83a30]+0x3b0, [main+0x3ad9830]+0x250 (pointer table: main+0x395dbd0 ->
+  main+0x3a6ea80, main+0x395f110 -> main+0x3a4e6e0; main+0x3ad9820 is put in a registry by main+0xd65634).
+- Swap test (TOTK_COOP_TEST_SLOT, the co-op Link's data put in one slot; A walks away from a Bokoblin next to B's
+  Link): slots 1, 2, 4: the Bokoblin leaves B's Link and attacks A (as without a swap). Slot 3 ([main+0x3a6ea80]
+  +0x58): A is not hit; B's Link loses life even 28 m from the Bokoblin (something else hurts "the player").
+  Slot 5 ([main+0x3ad9830]+0x250): A is not hit, the Bokoblin stays 1-5 m from B's Link for ~30 s and B's Link
+  loses 1 life. Lead: slot 5 is what enemies take as the player. Confidence: likely (one run each).

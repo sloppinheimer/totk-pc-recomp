@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "coop_game.h"
 #include "coop_net.h"
 #include "host.h"
@@ -292,12 +293,25 @@ static void probe_one(int cell, uint64_t a, void *arg) {
 // actor (this PC's or a co-op one); logged with the offsets, every 2 s.
 int coop_player_actors(uint64_t *actors, int *net_ids, int max);   // coop_players.c
 static uint64_t tp_links[COOP_MAX_PLAYERS + 1], tp_refs[COOP_MAX_PLAYERS + 1];
+static uint32_t tp_ids[COOP_MAX_PLAYERS + 1];   // perception ids
+// An actor's perception id: its perception component [[actor+0x228] +0x378], then [[comp+0x30] +0x10] (AI query
+// QueryActorGetPerceptionID, main+0x1b0c67c); 0xffffffff none.
+static uint32_t perception_id(uint64_t a) {
+    uint64_t comp = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x378), d = comp ? coop_rd_ptr(comp + 0x30) : 0;
+    uint32_t id = 0xffffffffu;
+    if (d) coop_rd(d + 0x10, &id, 4);
+    return id;
+}
 static int tp_n;
 static const char *link_of(uint64_t v) {
     static char s[32];
     for (int i = 0; i < tp_n; i++) {
         if (v && v == tp_links[i]) { snprintf(s, sizeof s, i ? "co-op Link %d" : "this Link", i); return s; }
         if (v && v == tp_refs[i]) { snprintf(s, sizeof s, i ? "ref of co-op Link %d" : "ref of this Link", i); return s; }
+        if (tp_ids[i] != 0xffffffffu && tp_ids[i] > 16 && ((uint32_t)v == tp_ids[i] || (uint32_t)(v >> 32) == tp_ids[i])) {
+            snprintf(s, sizeof s, i ? "id of co-op Link %d (%s)" : "id of this Link (%s)", i, (uint32_t)v == tp_ids[i] ? "low" : "high");
+            return s;
+        }
     }
     return NULL;
 }
@@ -312,6 +326,13 @@ static void target_probe_one(int cell, uint64_t a, void *arg) {
     if (dx * dx + dz * dz > 60.f * 60.f) return;
     char line[2048];
     int n = snprintf(line, sizeof line, "coop: target probe %s at %.1f m:", nm, sqrtf(dx * dx + dz * dz));
+    for (int i = 1; i < tp_n; i++) {   // the co-op Links: how far, and their life (an enemy attacking one takes it)
+        float r[3];
+        if (!coop_rd(tp_links[i] + COOP_ACTOR_POS, r, 12)) continue;
+        float ex = p[0] - r[0], ez = p[2] - r[2];
+        n += snprintf(line + n, sizeof line - n, " co-op Link %d at %.1f m, life %d;", i, sqrtf(ex * ex + ez * ez), life_of(tp_links[i]));
+    }
+    n += snprintf(line + n, sizeof line - n, " this Link life %d;", life_of(tp_links[0]));
     static uint64_t w[0x1000 / 8], cw[0x800 / 8], tw[0x800 / 8];
     if (coop_rd(a, w, sizeof w))
         for (int j = 0; j < 0x1000 / 8 && n < 1900; j++)
@@ -333,6 +354,19 @@ static void target_probe_one(int cell, uint64_t a, void *arg) {
                 if (link_of(cw[j])) n += snprintf(line + n, sizeof line - n, " comp[+%#x]+%#x=%s", k * 8, j * 8, link_of(cw[j]));
         }
     rt_log("%s", line);
+    // The enemy's components around its perception one (table +0x360..+0x3a0): their u32s equal to this Link's id.
+    for (int k = 0x360 / 8; table && k < 0x3a0 / 8; k++) {
+        uint64_t comp = tw[k];
+        if (comp < 0x100000000ull || comp >= 0x8000000000ull) continue;
+        static uint32_t u[0x2000 / 4];
+        if (!coop_rd(comp, u, sizeof u)) continue;
+        char l2[1024];
+        int m = snprintf(l2, sizeof l2, "coop: target probe %s comp[+%#x] %llx u32 == %#x at:", nm, k * 8,
+                         (unsigned long long)comp, tp_ids[0]);
+        for (int j = 0; j < 0x2000 / 4 && m < 950; j++)
+            if (u[j] == tp_ids[0]) m += snprintf(l2 + m, sizeof l2 - m, " +%#x", j * 4);
+        rt_log("%s", l2);
+    }
 }
 
 void coop_world_tick(Cpu *c, uint64_t me) {
@@ -344,6 +378,87 @@ void coop_world_tick(Cpu *c, uint64_t me) {
         coop_resident_named("Player", &tp_refs[0]);
         tp_n = 1 + coop_player_actors(tp_links + 1, ids, COOP_MAX_PLAYERS);
         for (int i = 1; i < tp_n; i++) tp_refs[i] = 0;
+        for (int i = 0; i < tp_n; i++) tp_ids[i] = perception_id(tp_links[i]);
+        static int said;
+        if (!said++ || tt % 600 == 0) rt_log("coop: perception id of this Link %#x%s", tp_ids[0], tp_n > 1 ? ", of co-op Links:" : "");
+        for (int i = 1; i < tp_n && tt % 600 == 0; i++) rt_log("coop:   co-op Link %d: %#x", i, tp_ids[i]);
+        // Test (TOTK_COOP_TEST_RESIDENT): the co-op Links' perception flags (data +0x14, +0x1c and the second record's
+        // +0x27c, +0x284) made this Link's, to see whether enemies then take them as targets.
+        if (cfg_get("TOTK_COOP_TEST_RESIDENT")) {
+            uint64_t d0 = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(tp_links[0] + 0x228) + 0x378) + 0x30);
+            for (int i = 1; i < tp_n && d0; i++) {
+                uint64_t d1 = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(tp_links[i] + 0x228) + 0x378) + 0x30);
+                static const int offs[4] = {0x14, 0x1c, 0x27c, 0x284};
+                for (int k = 0; d1 && k < 4; k++) {
+                    uint32_t v = 0, old = 0;
+                    coop_rd(d0 + offs[k], &v, 4), coop_rd(d1 + offs[k], &old, 4);
+                    if (v != old) ST32(d1 + offs[k], v), rt_log("coop: test: co-op Link %d perception +%#x %#x -> %#x", i, offs[k], old, v);
+                }
+            }
+        }
+        // Where the game keeps either Link's perception component or data: words of main's data (.data to .bss) and
+        // of the objects they point to (first 0x800 bytes) equal to one of them. Once, after 20 s.
+        static int scanned;
+        if (tp_n > 1 && !scanned && tt > 600) {
+            scanned = 1;
+            uint64_t want[4];
+            for (int i = 0; i < 2; i++) {
+                want[i * 2] = coop_rd_ptr(coop_rd_ptr(tp_links[i] + 0x228) + 0x378);
+                want[i * 2 + 1] = want[i * 2] ? coop_rd_ptr(want[i * 2] + 0x30) : 0;
+            }
+            static const char *const what[4] = {"this Link's component", "this Link's data", "co-op Link's component", "co-op Link's data"};
+            int found = 0;
+            static uint64_t obj[0x800 / 8];
+            for (uint64_t g = MOD_MAIN_BASE + 0x357dee8; g < MOD_MAIN_BASE + 0x3adefd0 && found < 40; g += 8) {
+                uint64_t v = coop_rd_ptr(g);
+                for (int k = 0; k < 4; k++)
+                    if (v && v == want[k]) rt_log("coop: perception scan: main+%#llx = %s", (unsigned long long)(g - MOD_MAIN_BASE), what[k]), found++;
+                if (v < 0x100000000ull || v >= 0x8000000000ull || !coop_rd(v, obj, sizeof obj)) continue;
+                for (int j = 0; j < 0x800 / 8; j++)
+                    for (int k = 0; k < 4; k++)
+                        if (obj[j] && obj[j] == want[k]) {
+                            rt_log("coop: perception scan: [main+%#llx]+%#x = %s", (unsigned long long)(g - MOD_MAIN_BASE), j * 8, what[k]);
+                            found++;
+                        }
+            }
+            rt_log("coop: perception scan: %d places", found);
+            for (uint64_t g = MOD_MAIN_BASE + 0x357dee8; g < MOD_MAIN_BASE + 0x3adefd0; g += 8) {   // who points at the objects
+                uint64_t v = coop_rd_ptr(g);
+                if (v == MOD_MAIN_BASE + 0x3ad9830 || v == MOD_MAIN_BASE + 0x3a6ea80 || v == MOD_MAIN_BASE + 0x3a4e6a8 ||
+                    v == MOD_MAIN_BASE + 0x3a4e6e0 || v == MOD_MAIN_BASE + 0x3a83a30)
+                    rt_log("coop: perception scan: main+%#llx holds &main+%#llx", (unsigned long long)(g - MOD_MAIN_BASE),
+                           (unsigned long long)(v - MOD_MAIN_BASE));
+            }
+        }
+        // Test (TOTK_COOP_TEST_SLOT=1..5): one of those five places made to hold the co-op Link's data from 20 s on.
+        const char *slot = cfg_get("TOTK_COOP_TEST_SLOT");
+        if (slot && tp_n > 1 && tt > 600) {
+            static const uint32_t g_off[5][2] = {{0x3a4e6a8, 0x98}, {0x3a4e6e0, 0x370}, {0x3a6ea80, 0x58}, {0x3a83a30, 0x3b0}, {0x3ad9830, 0x250}};
+            int k = atoi(slot) - 1;
+            uint64_t obj = k >= 0 && k < 5 ? coop_rd_ptr(MOD_MAIN_BASE + g_off[k][0]) : 0;
+            uint64_t d1 = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(tp_links[1] + 0x228) + 0x378) + 0x30);
+            if (obj && d1 && coop_rd_ptr(obj + g_off[k][1]) != d1) {
+                rt_log("coop: test: [main+%#x]+%#x = the co-op Link's perception data", g_off[k][0], g_off[k][1]);
+                ST64(obj + g_off[k][1], d1);
+            }
+        }
+        // Both Links' perception components ([actor+0x228] +0x378) and the object at their +0x30, side by side.
+        static int dumped;
+        if (tp_n > 1 && !dumped && tt > 600) {
+            dumped = 1;
+            for (int lvl = 0; lvl < 2; lvl++) {
+                uint64_t c0 = coop_rd_ptr(coop_rd_ptr(tp_links[0] + 0x228) + 0x378), c1 = coop_rd_ptr(coop_rd_ptr(tp_links[1] + 0x228) + 0x378);
+                if (lvl) c0 = coop_rd_ptr(c0 + 0x30), c1 = coop_rd_ptr(c1 + 0x30);
+                uint64_t a0[0x300 / 8] = {0}, a1[0x300 / 8] = {0};
+                coop_rd(c0, a0, sizeof a0), coop_rd(c1, a1, sizeof a1);
+                rt_log("coop: perception %s: this Link's %llx, co-op Link's %llx", lvl ? "data (+0x30)" : "component", (unsigned long long)c0, (unsigned long long)c1);
+                for (int j = 0; j < 0x300 / 8; j++) {
+                    int ptr0 = a0[j] >= 0x100000000ull && a0[j] < 0x8000000000ull, ptr1 = a1[j] >= 0x100000000ull && a1[j] < 0x8000000000ull;
+                    if (a0[j] != a1[j] && !(ptr0 && ptr1))
+                        rt_log("coop:   +%#05x  %016llx  %016llx", j * 8, (unsigned long long)a0[j], (unsigned long long)a1[j]);
+                }
+            }
+        }
         each_live(target_probe_one, NULL);
     }
     static int on = -1, t;
