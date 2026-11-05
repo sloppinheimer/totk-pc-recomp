@@ -33,3 +33,7 @@
   (GameData flags, the "PorchItem" style arrays of BotW are a lead), reading them from the guest's save file without
   loading it as the world, giving Link#2 that inventory instead of Link#1's, and writing the guest's changed inventory
   back into the guest's save on leave.
+
+## Later (nice to have, Sinnik, 2026-11-04)
+- A notification when a teammate fast-travels, naming where they went.
+- Live map markers for teammates.

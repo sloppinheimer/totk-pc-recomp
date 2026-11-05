@@ -154,6 +154,12 @@ void coop_fill_controller(uint64_t ctl, uint64_t buttons, const float stick[4], 
     uint32_t hold = 0;
     for (int b = 0; b < 16; b++)
         if (buttons >> b & 1 && to_ctl[b] >= 0) hold |= 1u << to_ctl[b];
+    // No L for a co-op Link: its abilities (Ultrahand, Fuse, Ascend, Recall, Autobuild) would run in this game on this
+    // game's objects, which are not shared, and tint this game's view (Ultrahand's highlight, tools/coop/tour2.txt);
+    // its own game runs them (2026-11-04). TOTK_COOP_TEST_ABILITY_KEEP: L passes (a control for tests).
+    static int keep_l = -1;
+    if (keep_l < 0) keep_l = cfg_get("TOTK_COOP_TEST_ABILITY_KEEP") != NULL;
+    if (!keep_l) hold &= ~(1u << 13);
     if (stick[1] > 0.5f) hold |= 1u << 20;
     if (stick[1] < -0.5f) hold |= 1u << 21;
     if (stick[0] < -0.5f) hold |= 1u << 22;

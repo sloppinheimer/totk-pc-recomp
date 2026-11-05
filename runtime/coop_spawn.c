@@ -658,6 +658,15 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // them: its ragdoll and tips ran there, outside the calc flag) (2026-11-04).
     if (addr == MOD_MAIN_BASE + 0x245030 || addr == MOD_MAIN_BASE + 0x2f9910 || addr == MOD_MAIN_BASE + 0x194fd7c)
         return coop_players_phase(c, addr);    if (addr == MOD_MAIN_BASE + 0x2192c50 || addr == MOD_MAIN_BASE + 0x4cb540) return coop_in_remote_calc();
+    // The ability screen effects ([main+0x3a5e878], the manager at its +0x3a8 ability): main+0x2056f3c starts one,
+    // main+0x205719c ends it ("UltraHand_End", "ReverseRecorder_End"...), main+0x2057384 focus on/off. A co-op Link's
+    // Ultrahand tinted this game's world red (tools/coop/tour2.txt) (2026-11-04).
+    if ((addr == MOD_MAIN_BASE + 0x2056f3c || addr == MOD_MAIN_BASE + 0x205719c || addr == MOD_MAIN_BASE + 0x2057384) &&
+        coop_in_remote_calc()) {
+        static _Atomic int said;
+        if (atomic_fetch_add(&said, 1) < 6) rt_log("coop: a co-op Link's ability screen effect main+%#llx skipped", (unsigned long long)(addr - MOD_MAIN_BASE));
+        return 1;
+    }
     // main+0x4400b0 (life component): its per-frame update applies damage to the life at [comp+0x1830] +8. A co-op
     // Link's life is its own game's: here it takes no damage, so it cannot die here and bring this game's Game Over
     // (its fall killed it here too) (2026-11-04). The life is lifted for the call and put back (healing kept).
@@ -711,8 +720,11 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // 0x16fdcc (from the player's state code main+0x281d40 / 0x282a0c), 0x170490, 0x282280 (main+0x281d28),
     // 0x2aabf84 (main+0x21919b0), 0x923d20. The getters it calls (main+0x1b02f8, 0x19f9d4, 0x735698, 0x980288,
     // 0x9eee70, 0x16fac0, 0x6e76d0, 0x2aab9b4, 0x282ed8, and the key lookups 0x4561c, 0x478c0, 0x3cffe8) still run.
+    // The abilities tour (tools/coop/tour2.txt) added main+0x16ee70 (mgr, value, key hash) and 0x31d824 (value, mgr,
+    // key hash).
     if ((addr == MOD_MAIN_BASE + 0x923d20 || addr == MOD_MAIN_BASE + 0x170210 || addr == MOD_MAIN_BASE + 0x16fdcc ||
-         addr == MOD_MAIN_BASE + 0x170490 || addr == MOD_MAIN_BASE + 0x282280 || addr == MOD_MAIN_BASE + 0x2aabf84) &&
+         addr == MOD_MAIN_BASE + 0x170490 || addr == MOD_MAIN_BASE + 0x282280 || addr == MOD_MAIN_BASE + 0x2aabf84 ||
+         addr == MOD_MAIN_BASE + 0x16ee70 || addr == MOD_MAIN_BASE + 0x31d824) &&
         !gdata_keep && coop_in_remote_calc()) {
         static _Atomic int skipped;
         char from[96];
