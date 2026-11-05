@@ -1241,7 +1241,7 @@ static void arrow_track_fn(uint64_t a, void *arg) {
 }
 static void mat_quat(const float *r, float q[4]);
 static void quat_mat(const float q[4], float *r);
-static void report_arrows(uint64_t me, CoopObj *out) {
+static int report_arrows(uint64_t me, CoopObj *out) {
     void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
     arrow_tick++;
     if (local_buttons >> 9 & 1) zr_tick = arrow_tick;
@@ -1261,7 +1261,9 @@ static void report_arrows(uint64_t me, CoopObj *out) {
         mat_quat(r, o->q);
         n++;
     }
+    return n;
 }
+static int key_missing(uint32_t id);
 static void arrow_copies(Cpu *c, Slot *s) {
     for (int k = 0; k < COOP_OBJS; k++) {   // copies whose arrow is gone
         if (!s->mir[k].state) continue;
@@ -1274,7 +1276,7 @@ static void arrow_copies(Cpu *c, Slot *s) {
     }
     for (int j = 0; j < COOP_OBJS; j++) {   // new arrows, and where each one is now
         const CoopObj *o = &s->objs_want[j];
-        if (!o->id) continue;
+        if (!o->id || ((o->id & COOP_OBJ_KEYED) && !key_missing(o->id))) continue;   // keyed: this game's own is moved
         int k = 0;
         while (k < COOP_OBJS && !(s->mir[k].state && s->mir[k].id == o->id)) k++;
         if (k == COOP_OBJS) {
@@ -1336,6 +1338,272 @@ static void place_copy(Cpu *c, Slot *s, int k) {
         coop_guest_call(c, MOD_MAIN_BASE + PROXY_MODEL_PUSH, model, 0, 0, 0);
     }
 }
+// ---- world objects (the tester's list: dropped items, Ultrahand, autobuild, Zonai devices; 2026-11-05). Two kinds:
+// - Made by this Link: an actor first seen within 6 m of it, nearer it than any co-op Link (a dropped weapon is the
+//   equipped one's own actor, first seen at the equip, so it counts once it is no longer in this Link's gear). Sent
+//   while within 20 m, by number, and shown in the other games as a frozen copy, as an arrow. A save load or a
+//   streamed-in area makes many at once: more than 6 new near this Link in one tick are taken as the world's.
+// - One every game has (a placed rock or plank): known everywhere by its key (name and where it was first seen, as
+//   the enemies'). While it moves within 20 m of this Link and nearer it than any co-op Link, it is sent with its
+//   key until 1 s after it stops; the other games force theirs to that place (COOP_FORCE_MATRIX), and do not send
+//   it themselves while they do.
+// Not checked in a game yet: which actors Ultrahand, autobuild and the Zonai devices move or make; the tester tests it.
+#define PROPS_N 256
+static struct { uint64_t actor; uint32_t key, id; int seen, moved, born, made, near_me, said; float last[3]; char name[28]; } props[PROPS_N];
+static struct { uint64_t actor; int until; } driven[64];   // actors this game forces to another's report
+static int prop_tick;
+// Keys another game moves that this game does not update (an object at rest runs no per-actor calc, so it is not in
+// the live list: only about 70 actors were, none of the placed ones around the Link, 2026-11-05). Those are shown
+// as a copy instead; this game's own one stays where it was, so the object can show twice.
+static uint32_t missing_key[64];
+static int missing_n;
+static int key_missing(uint32_t id) {
+    for (int i = 0; i < missing_n; i++) if (missing_key[i] == (id & ~COOP_OBJ_KEYED)) return 1;
+    return 0;
+}
+static int is_driven(uint64_t a) {
+    for (int i = 0; i < 64; i++) if (driven[i].actor == a && driven[i].until >= prop_tick) return 1;
+    return 0;
+}
+static void set_driven(uint64_t a) {
+    int free = 0;
+    for (int i = 0; i < 64; i++) {
+        if (driven[i].actor == a) { driven[i].until = prop_tick + 60; return; }
+        if (driven[i].until < driven[free].until) free = i;
+    }
+    driven[free].actor = a, driven[free].until = prop_tick + 60;
+}
+// Not world objects: Links and what they wear and carry, people, animals, enemies (synced on their own), arrows.
+static int prop_skip(const char *nm) {
+    static const char *pre[] = {"Player", "Armor_", "Accessory_", "PlayerRaul", "Npc", "Animal_", "Enemy_",
+                                "Weapon_Sheath", "Weapon_Quiver"};
+    for (size_t i = 0; i < sizeof pre / sizeof *pre; i++) if (!strncmp(nm, pre[i], strlen(pre[i]))) return 1;
+    if (strstr(nm, "Arrow")) return 1;
+    // Helpers that go with this Link and are not things in the world: EventCamera and CameraXLinkControl were sent
+    // as moved objects (pair test, 2026-11-05).
+    static const char *in[] = {"Camera", "Event", "Control", "Manager", "Sensor", "Area", "System"};
+    for (size_t i = 0; i < sizeof in / sizeof *in; i++) if (strstr(nm, in[i])) return 1;
+    if (!strncmp(nm, "Weapon_", 7)) {   // gear still worn by this Link or given to a co-op Link
+        for (int k = 0; k < 3; k++) if (!strcmp(nm, my_gear[k])) return 1;
+        for (int i = 0; i < COOP_MAX_PLAYERS; i++)
+            for (int k = 0; k < 3; k++) if (slots[i].actor && !strcmp(nm, slots[i].gear_want[k])) return 1;
+    }
+    return 0;
+}
+// A copy being made (requested, not claimed yet) near p: its actor shows up before copy_of knows it.
+static int copy_pending_near(const float *p) {
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++)
+        for (int k = 0; k < COOP_OBJS; k++) {
+            const float *q = slots[i].mir[k].pos;
+            if ((slots[i].mir[k].state == 1 || slots[i].mir[k].state == 2) &&
+                (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]) < 1)
+                return 1;
+        }
+    return 0;
+}
+typedef struct { float me[3]; int cand[32], n_cand, n_first_near; } PropScan;
+static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *arg) {
+    PropScan *ps = arg;
+    Slot *cs;
+    int ck;
+    if (prop_skip(nm) || copy_of(a, &cs, &ck) || is_driven(a)) return;
+    for (int i = 0; i < 32; i++) if (my_arrows[i].actor == a) return;   // an arrow's fused material
+    float p[3];
+    if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+    float d2 = (p[0] - ps->me[0]) * (p[0] - ps->me[0]) + (p[1] - ps->me[1]) * (p[1] - ps->me[1]) + (p[2] - ps->me[2]) * (p[2] - ps->me[2]);
+    if (d2 > 400) return;
+    float dco = 1e18f;
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++) {
+        float r[3];
+        if (slots[i].actor && coop_rd(slots[i].actor + COOP_ACTOR_POS, r, 12)) {
+            float e = (p[0] - r[0]) * (p[0] - r[0]) + (p[1] - r[1]) * (p[1] - r[1]) + (p[2] - r[2]) * (p[2] - r[2]);
+            if (e < dco) dco = e;
+        }
+    }
+    int e = -1, free = -1;
+    for (int i = 0; i < PROPS_N && e < 0; i++) {
+        if (props[i].actor == a) e = i;
+        else if (free < 0 && (!props[i].actor || (prop_tick - props[i].seen > 30 && !props[i].made))) free = i;
+    }
+    if (e < 0) {
+        if (free < 0) return;
+        e = free;
+        memset(&props[e], 0, sizeof props[e]);
+        props[e].actor = a, props[e].key = key, props[e].moved = -1000, memcpy(props[e].last, p, 12);
+        snprintf(props[e].name, sizeof props[e].name, "%s", nm);
+        if (first && d2 < 36) {
+            ps->n_first_near++;
+            if (d2 < dco && !copy_pending_near(p) && ps->n_cand < 32) ps->cand[ps->n_cand++] = e;
+        }
+    } else {
+        float dx = p[0] - props[e].last[0], dy = p[1] - props[e].last[1], dz = p[2] - props[e].last[2];
+        if (dx * dx + dy * dy + dz * dz > 1e-4f) props[e].moved = prop_tick, memcpy(props[e].last, p, 12);
+    }
+    props[e].seen = prop_tick, props[e].near_me = d2 < dco;
+}
+static int report_props(uint64_t me, CoopObj *out, int max) {
+    void coop_actors_keyed(void (*fn)(uint64_t, const char *, uint32_t, int, void *), void *arg);   // coop_world.c
+    prop_tick++;
+    static PropScan ps;
+    memset(&ps, 0, sizeof ps);
+    if (!coop_rd(me + COOP_ACTOR_POS, ps.me, 12)) return 0;
+    coop_actors_keyed(prop_fn, &ps);
+    const float *me_p = ps.me;
+    if (ps.n_first_near <= 6 && frame_step_world_us() > 20000000)   // more at once: a load, the world's own
+        for (int i = 0; i < ps.n_cand; i++) {
+            int e = ps.cand[i];
+            props[e].made = 1, props[e].born = prop_tick, props[e].id = next_arrow_id++;
+        }
+    int n = 0;
+    for (int e = 0; e < PROPS_N && n < max; e++) {
+        if (!props[e].actor) continue;
+        if (props[e].made && props[e].seen != prop_tick) {
+            // At rest it runs no calc and leaves the live list; it is still there until the game takes it away
+            // (state 7..11) or the memory holds another actor. Sent while within 20 m.
+            int32_t st = 0;
+            char nm[48];
+            float q[3];
+            if (!coop_rd(props[e].actor + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 ||
+                strcmp(coop_actor_name(props[e].actor, nm, sizeof nm), props[e].name)) { props[e].actor = 0; continue; }
+            if (!coop_rd(props[e].actor + COOP_ACTOR_POS, q, 12) || (q[0] - me_p[0]) * (q[0] - me_p[0]) + (q[1] - me_p[1]) * (q[1] - me_p[1]) +
+                (q[2] - me_p[2]) * (q[2] - me_p[2]) > 400) continue;
+        } else if (props[e].seen != prop_tick) continue;
+        Slot *cs;
+        int ck;
+        uint32_t id = 0;
+        if (props[e].made) {
+            if (prop_tick - props[e].born < 10 || prop_skip(props[e].name)) continue;   // a copy made here is known by now; gear worn again
+            if (copy_of(props[e].actor, &cs, &ck)) { props[e].made = 0; continue; }
+            id = props[e].id;
+        } else if (prop_tick - props[e].moved <= 30 && props[e].near_me)
+            id = COOP_OBJ_KEYED | (props[e].key & ~COOP_OBJ_KEYED);
+        if (!id) continue;
+        CoopObj *o = &out[n];
+        float r[9];
+        if (!coop_rd(props[e].actor + COOP_ACTOR_POS, o->pos, 12) || !coop_rd(props[e].actor + COOP_ACTOR_ROT, r, 36)) continue;
+        o->id = id;
+        coop_actor_name(props[e].actor, o->name, sizeof o->name);
+        mat_quat(r, o->q);
+        static int said;
+        if (!props[e].said && said < 60) {
+            props[e].said = 1, said++;
+            rt_log("coop: %s %s (%s %08x)", props[e].made ? "I made" : "I move", o->name, props[e].made ? "number" : "key",
+                   props[e].made ? props[e].id : props[e].key);
+        }
+        n++;
+    }
+    return n;
+}
+// The objects every game has that co-op players move: this game's own goes where theirs is.
+typedef struct { uint32_t key[COOP_MAX_PLAYERS * COOP_OBJS]; uint64_t actor[COOP_MAX_PLAYERS * COOP_OBJS]; int n; } KeyFind;
+static void keyfind_fn(uint64_t a, const char *nm, uint32_t key, int first, void *arg) {
+    KeyFind *kf = arg;
+    (void)nm, (void)first;
+    for (int i = 0; i < kf->n; i++) if (kf->key[i] == (key & ~COOP_OBJ_KEYED) && !kf->actor[i]) kf->actor[i] = a;   // 31 bits sent
+}
+static void props_receive(Cpu *c) {
+    void coop_actors_keyed(void (*fn)(uint64_t, const char *, uint32_t, int, void *), void *arg);   // coop_world.c
+    static KeyFind kf;
+    kf.n = 0;
+    const CoopObj *want[COOP_MAX_PLAYERS * COOP_OBJS];
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++) {
+        if (slots[i].state != LIVE || slots[i].source != SRC_NET) continue;
+        for (int j = 0; j < COOP_OBJS; j++)
+            if (slots[i].objs_want[j].id & COOP_OBJ_KEYED) {
+                want[kf.n] = &slots[i].objs_want[j];
+                kf.key[kf.n] = slots[i].objs_want[j].id & ~COOP_OBJ_KEYED, kf.actor[kf.n] = 0, kf.n++;
+            }
+    }
+    if (!kf.n) return;
+    coop_actors_keyed(keyfind_fn, &kf);
+    for (int i = 0; i < kf.n; i++) {
+        uint64_t a = kf.actor[i];
+        static uint32_t said[64];
+        static int n_said;
+        int known = 0;
+        for (int k = 0; k < n_said; k++) known |= said[k] == kf.key[i];
+        if (!known && n_said < 64) {
+            said[n_said++] = kf.key[i];
+            rt_log("coop: a co-op player moves %s (key %08x)%s", want[i]->name, kf.key[i], a ? "" : ", not updated here: a copy");
+        }
+        if (!a) {
+            if (!key_missing(kf.key[i])) missing_key[missing_n++ % 64] = kf.key[i], missing_n = missing_n > 64 ? 64 : missing_n;
+            continue;
+        }
+        set_driven(a);
+        float p[3];
+        if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) continue;
+        float dx = p[0] - want[i]->pos[0], dy = p[1] - want[i]->pos[1], dz = p[2] - want[i]->pos[2];
+        if (dx * dx + dy * dy + dz * dz < 4e-4f) continue;
+        float r[9], m[12];
+        quat_mat(want[i]->q, r);
+        for (int row = 0; row < 3; row++) {
+            for (int k = 0; k < 3; k++) m[row * 4 + k] = r[row * 3 + k];
+            m[row * 4 + 3] = want[i]->pos[row];
+        }
+        coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, a, (uint64_t)(uintptr_t)m, 0, 0);
+    }
+}
+// Test (TOTK_COOP_TEST_PROPS=1, in the game that joined as player 1): at 24 s into the world it makes a BombFruit
+// 1 m above this Link (an object of its own), and from 28 s to 30 s it lifts the nearest placed object within 6 m
+// 1 cm a tick (one every game has); the other game's log shows both arriving. Then every 30 ticks both games log
+// where that object is, for comparing.
+static void props_test(Cpu *c, uint64_t me) {
+    static int on = -1, made, picked;
+    static uint64_t obj;
+    static float base[3];
+    static uint32_t obj_key;
+    static _Alignas(16) uint8_t handle[0x40];
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_PROPS") != NULL;
+    if (!on) return;
+    double now = frame_step_world_us() / 1e6;
+    float p[3];
+    if (!coop_rd(me + COOP_ACTOR_POS, p, 12)) return;
+    if (coop_net_id() == 1 && !made && now > 24) {
+        float at[3] = {p[0], p[1] + 1, p[2]}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        made = coop_request_create(c, "BombFruit", at, rot, handle) ? 1 : 0;
+        rt_log("coop: test: props: BombFruit asked for at %.2f %.2f %.2f (%d)", at[0], at[1], at[2], made);
+    }
+    static _Alignas(16) uint8_t link[0x40];
+    if (made == 1 && coop_handle_status(handle) == 3) {
+        uint64_t ref, a = coop_claim(c, handle, link, &ref);
+        made = 2;
+        rt_log("coop: test: props: BombFruit is here (%llx)", (unsigned long long)a);
+    }
+    if (coop_net_id() == 1 && !picked && now > 28) {
+        float best = 36;
+        for (int e = 0; e < PROPS_N; e++) {
+            float q[3];
+            if (!props[e].actor || props[e].made || prop_tick - props[e].seen > 1 || !coop_rd(props[e].actor + COOP_ACTOR_POS, q, 12)) continue;
+            float d2 = (q[0] - p[0]) * (q[0] - p[0]) + (q[1] - p[1]) * (q[1] - p[1]) + (q[2] - p[2]) * (q[2] - p[2]);
+            if (d2 < best) best = d2, obj = props[e].actor, obj_key = props[e].key & ~COOP_OBJ_KEYED, memcpy(base, q, 12);
+        }
+        picked = 1;
+        char nm[48] = "";
+        if (obj) coop_actor_name(obj, nm, sizeof nm);
+        rt_log("coop: test: props: lifting %s (key %08x) from %.2f %.2f %.2f", nm, obj_key, base[0], base[1], base[2]);
+    }
+    if (obj && now > 28 && now < 30) {
+        float m[12] = {1, 0, 0, base[0], 0, 1, 0, base[1] + (float)(now - 28) * 0.75f, 0, 0, 1, base[2]};
+        coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, obj, (uint64_t)(uintptr_t)m, 0, 0);
+    }
+}
+// Both games: where the object a co-op player moved last is here (for the test above).
+static void props_test_where(void) {
+    static int on = -1, t;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_PROPS") != NULL;
+    if (!on || ++t % 30) return;
+    for (int e = 0; e < PROPS_N; e++) {
+        float q[3];
+        if (props[e].actor && !props[e].made && prop_tick - props[e].moved < 60 && coop_rd(props[e].actor + COOP_ACTOR_POS, q, 12))
+            rt_log("coop: test: props: moved here %08x at %.2f %.2f %.2f", props[e].key & ~COOP_OBJ_KEYED, q[0], q[1], q[2]);
+    }
+    for (int i = 0; i < 64; i++) {
+        float q[3];
+        if (driven[i].actor && driven[i].until >= prop_tick && coop_rd(driven[i].actor + COOP_ACTOR_POS, q, 12))
+            rt_log("coop: test: props: driven here %llx at %.2f %.2f %.2f", (unsigned long long)driven[i].actor, q[0], q[1], q[2]);
+    }
+}
 static int this_paused;   // this game sits in a menu (the clock and this Link both still; set by the tick)
 void coop_players_tick(Cpu *c, int numpad3) {
     if (frame_step_world_us() <= 0) return;   // not in the world yet
@@ -1352,7 +1620,8 @@ void coop_players_tick(Cpu *c, int numpad3) {
         st.buttons = local_buttons;
         memcpy(st.gear, my_gear, sizeof st.gear);
         memcpy(st.dye, my_dye, sizeof st.dye);
-        report_arrows(me, st.objs);
+        int n_objs = report_arrows(me, st.objs);
+        report_props(me, st.objs + n_objs, COOP_OBJS - n_objs);
         for (int k = 0; k < 3; k++) memcpy(st.fuse[k], strcmp(my_gear[k], GEAR_NONE) ? my_fuse[k] : "", 32);   // none when unequipped
         match_my_eq(me);
         uint64_t my_eq = eq_of_actor(me);   // weapon, bow, shield in hand
@@ -1406,6 +1675,8 @@ void coop_players_tick(Cpu *c, int numpad3) {
         const char *fw = cfg_get("TOTK_COOP_FAKEWEATHER");   // test: report this weather type instead
         if (fw && *fw) st.weather = atoi(fw);
         coop_net_publish(&st);
+        if (coop_proxy_mode()) props_receive(c);   // the placed objects co-op players move (from their last state)
+        props_test(c, me), props_test_where();
     }
     armor_probe(me);
     arrow_log(me);

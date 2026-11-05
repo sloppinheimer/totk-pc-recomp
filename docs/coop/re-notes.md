@@ -652,3 +652,15 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
 - A copy is placed from the co-op tick, not from one of its own updates: the game stopped calling a frozen arrow's
   calc after two frames (the BombFruit's went on), and the Player's update phase main+0x245030 never runs for
   either (TOTK_COOP_TEST_COPYLOG).
+
+## World objects (protocol 9, 2026-11-05)
+- Only actors that run their per-actor calc (main+0x41bb20) are in the live list (coop_world.c seen[]): about 70 in
+  the In-isa save, none of them the placed rocks, planks or plants around the Link. An object at rest runs no calc.
+  So another game's copy of a placed object can be found by its key only while it is awake there; otherwise it is
+  shown as a copy at the mover's place, and the resting original stays (the object shows twice). Finding a resting
+  actor needs the game's full actor list (not found yet; Ghidra was not running).
+- A dropped weapon is the equipped one's own actor (Weapon_Sword_070 kept its address from the equip on).
+- Helpers that move with the Link were taken as moved objects: EventCamera, CameraXLinkControl.
+- TOTK_COOP_TEST_PROPS=1 (the game that joined as player 1 makes a BombFruit 1 m above its Link at 24 s): "I made
+  BombFruit" there, one copy in the other game, no copy churn, and an equipped weapon is not sent (equip_3rd.txt).
+  The moved-object half of that test found no awake placed object within 6 m to lift: not tested.

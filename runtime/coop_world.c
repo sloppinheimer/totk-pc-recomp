@@ -98,6 +98,25 @@ static uint32_t enemy_key(const char *name, const float home[3]) {
     return h ? h : 1;
 }
 
+// Calls fn for each actor updated in the last second, with its name, its key (the name and where this game first
+// saw it, as the enemies': a placed object has the same key in every game) and whether it was first seen just now.
+void coop_actors_keyed(void (*fn)(uint64_t actor, const char *name, uint32_t key, int first, void *arg), void *arg) {
+    int64_t now = frame_step_world_us();
+    for (int i = 0; i < SEEN_N; i++) {
+        uint64_t a = atomic_load_explicit(&seen[i].actor, memory_order_relaxed);
+        if (!a || now - atomic_load_explicit(&seen[i].at_us, memory_order_relaxed) >= 1000000) continue;
+        char nm[48];
+        coop_actor_name(a, nm, sizeof nm);
+        int first = 0;
+        if (!atomic_load_explicit(&seen[i].home_ok, memory_order_relaxed)) {
+            if (!coop_rd(a + COOP_ACTOR_POS, seen[i].home, 12)) continue;
+            atomic_store_explicit(&seen[i].home_ok, 1, memory_order_relaxed);
+            first = 1;
+        }
+        fn(a, nm, enemy_key(nm, seen[i].home), first, arg);
+    }
+}
+
 // An enemy this game updates, with its key (0 if not an enemy).
 static uint32_t enemy_of(int cell, uint64_t a, char *nm, size_t n) {
     coop_actor_name(a, nm, n);

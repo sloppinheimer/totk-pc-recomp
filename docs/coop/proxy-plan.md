@@ -102,6 +102,11 @@ right in the tester's own two-pad session.
   Arrow types go by name (any actor with "Arrow" in it). A fused material is an actor of its own (BombFruit for a
   bomb flower), sent as one more object when it appears within 1.5 m of an arrow while ZR is in use; it shows on the
   arrow on B. Not shown: what a fused arrow does on hit (the blast). Re-notes "Arrows".
+- **World objects** (protocol 9; dropped items, Ultrahand, autobuild, Zonai devices from the tester's list; written for
+  him to test, checked only by logs): what a Link makes (an actor first seen within 6 m of it) shows in the other
+  games as a frozen copy; a placed object it moves goes to the same place in the other games when they have it
+  awake, else as a copy (then it can show twice). Not done: what Zonai devices do (fans, flames), the bomb blast,
+  picking up a copy in the other game (unknown whether it can be taken). Re-notes "World objects".
 - Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
 
 ## Plan

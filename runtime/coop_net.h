@@ -4,16 +4,18 @@
 #include <stdint.h>
 
 #define COOP_MAX_PLAYERS 8
-#define COOP_NET_VERSION 8   // packet header version: games and relays of another version ignore each other
+#define COOP_NET_VERSION 9   // packet header version: games and relays of another version ignore each other
 
 // One player's state, sent about 30 times a second. Positions and directions are world space; the sticks are as the
 // player's own camera saw them, with the camera's horizontal forward and right so a receiver can turn them into its
 // own camera's frame.
-// A world object of the player's own (its arrows, held and in flight, and fused arrows' materials): shown in the
-// other games as a copy.
-#define COOP_OBJS 8
+// A world object the player shot, made or moved (coop_players.c, "world objects"). Its own (arrows, fused materials,
+// dropped and made objects): shown in the other games as a copy, by the owner's number. One every game has (a
+// placed rock it moves): COOP_OBJ_KEYED | its key, and the other games move their own to match.
+#define COOP_OBJS 24
+#define COOP_OBJ_KEYED 0x80000000u
 typedef struct {
-    uint32_t id;                      // the owner's number for it (0: an empty entry)
+    uint32_t id;                      // the owner's number for it, or COOP_OBJ_KEYED | key (0: an empty entry)
     char name[28];                    // its actor name (NormalArrow, BombFruit...)
     float pos[3], q[4];               // world position, rotation as a quaternion x y z w
 } CoopObj;
@@ -30,9 +32,9 @@ typedef struct {
     uint8_t pad[2];
     char fuse[3][32];                 // weapon, bow, shield: the fused material's actor name ("" none; the weapon
                                       // create's 7th argument, e.g. AsbObj_RockParts_C_S_01)
-    CoopObj objs[COOP_OBJS];          // the player's arrows and their fused materials (coop_players.c)
+    CoopObj objs[COOP_OBJS];          // the player's arrows, made and moved objects (coop_players.c)
 } NetState;
-_Static_assert(sizeof(NetState) == 880, "NetState wire size");
+_Static_assert(sizeof(NetState) == 1840, "NetState wire size");
 #define COOP_GEAR_SLOTS 6
 extern const int coop_gear_slot[COOP_GEAR_SLOTS];   // the EquipmentUser slots they are (coop_players.c)
 
