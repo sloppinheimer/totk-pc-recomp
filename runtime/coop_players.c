@@ -52,6 +52,9 @@ typedef struct {
     int have_want, idle, snap_wait;
     unsigned snaps;
     char gear_want[COOP_GEAR_SLOTS][32], gear_have[COOP_GEAR_SLOTS][32];   // the owner's gear; what this Link was given
+    int ride_owner;                    // the owner's Link rides that player's object ride_id at ride_off (proxy_drive)
+    uint32_t ride_id;
+    float ride_off[3];
     char fuse_want[3][32], fuse_have[3][32];   // weapon, bow, shield: the owner's fused material; as last made here
     CoopObj objs_want[COOP_OBJS];      // the owner's objects, as its OBJS packets last said (objs_receive)
     int objs_heard[COOP_OBJS];         // when each was last heard of
@@ -80,6 +83,9 @@ typedef struct {
     _Alignas(16) uint8_t gear_str[COOP_GEAR_SLOTS][0x60];   // the names handed to the creates, kept while they run
 } Slot;
 static Slot slots[COOP_MAX_PLAYERS];
+static int ride_owner_now;      // what this Link rides, for the state out (0 none; ride_carry)
+static uint32_t ride_id_now;
+static float ride_off_now[3];
 static PlatMutex lock = PLAT_MUTEX_INIT;   // input fields, read by the calc wrapper on worker threads
 
 // This PC's input as the game read it this poll (ov_input.c npad_states), for the relay.
@@ -601,10 +607,15 @@ static int proxied(const Slot *s) {
     return coop_proxy_mode() && s->source == SRC_NET && s->state == LIVE && s->have_want && s->live_ticks > PROXY_WARMUP_TICKS &&
            coop_puppet_pose_obj(body_skeleton(s->actor));
 }
+static int ride_place(const Slot *s, float out[3]);   // the owner rides an object: where, here
 static void proxy_drive(Cpu *c, Slot *s) {
     uint64_t actor = s->actor;
     float m[12], pos[3], rot[9];
     owner_matrix(s, m);
+    {   // its owner rides an object: put where it stands on this game's one of it, not at the delayed place
+        float rp[3];
+        if (ride_place(s, rp)) m[3] = rp[0], m[7] = rp[1], m[11] = rp[2];
+    }
     for (int r = 0; r < 3; r++) {
         pos[r] = m[r * 4 + 3];
         for (int k = 0; k < 3; k++) rot[r * 3 + k] = m[r * 4 + k];
@@ -1342,24 +1353,53 @@ static void place_copy(Cpu *c, Slot *s, int k) {
         ST8(model + 0x240, LD8(model + 0x240) | 1);
         coop_guest_call(c, MOD_MAIN_BASE + PROXY_MODEL_PUSH, model, 0, 0, 0);
     }
-    // With riding on (TOTK_COOP_RIDE), its physics body too, when it moved: a Link can stand on it then (ride_carry);
-    // with the model alone the body stays where the copy was made. Off by default: a teleported body could push Links.
-    float bp[3];
-    static float last[COOP_MAX_PLAYERS][COOP_OBJS][3];
-    float *lp = last[s - slots][k];
-    (void)bp;
+    // With riding on (TOTK_COOP_RIDE), its physics body too, so a Link can stand on it (ride_carry). Moved by speed,
+    // not teleported: the body is given the speed that takes it from the last place sent to this one in the time
+    // between (SetLinearVelocity main+0x567750, SetAngularVelocity main+0x25a1f0, both (body, float v[3]); found by
+    // their "next_linear_velocity" / "next_angular_velocity" checks), so it is a moving floor to a Link standing on
+    // it; teleported (COOP_FORCE_MATRIX) once a second, and when it is more than 1 m off, so it does not drift. The
+    // body: [[[actor+0x228] +0x50] +0x20] +0x150 (as COOP_FORCE_MATRIX finds it). A moving body can push Links;
+    // TOTK_COOP_RIDE=0 leaves copies bodiless as before.
     int ride_on(void);
-    if (ride_on() && !strstr(s->mir[k].name, "Arrow") &&
-        (lp[0] - s->mir[k].pos[0]) * (lp[0] - s->mir[k].pos[0]) + (lp[1] - s->mir[k].pos[1]) * (lp[1] - s->mir[k].pos[1]) +
-        (lp[2] - s->mir[k].pos[2]) * (lp[2] - s->mir[k].pos[2]) > 1e-6f) {
-        coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, actor, (uint64_t)(uintptr_t)m, 0, 0);
-        memcpy(lp, s->mir[k].pos, 12);
+    if (ride_on() && !strstr(s->mir[k].name, "Arrow")) {
+        static struct { float pos[3], rot[9]; int64_t us, teleported; } last[COOP_MAX_PLAYERS][COOP_OBJS];
+        typeof(&last[0][0]) l = &last[s - slots][k];
+        int64_t now = frame_step_world_us();
+        uint64_t phys = coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x50), ctl = phys ? coop_rd_ptr(phys + 0x20) : 0;
+        uint64_t body = ctl ? coop_rd_ptr(ctl + 0x150) : 0;
+        float dt = l->us ? (float)(now - l->us) / 1e6f : 0;
+        float dx = s->mir[k].pos[0] - l->pos[0], dy = s->mir[k].pos[1] - l->pos[1], dz = s->mir[k].pos[2] - l->pos[2];
+        if (!l->us || !body || dt <= 0 || dt > 0.5f || dx * dx + dy * dy + dz * dz > 1 || now - l->teleported > 1000000) {
+            coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, actor, (uint64_t)(uintptr_t)m, 0, 0);
+            l->teleported = now;
+        }
+        static int said;
+        if (said < 4) said++, rt_log("coop: ride: copy %u (%s) body %llx", s->mir[k].id, s->mir[k].name, (unsigned long long)body);
+        if (body && dt > 0 && dt <= 0.5f) {
+            _Alignas(16) float v[4] = {dx / dt, dy / dt, dz / dt, 0};
+            // angular: the turn R_now * R_last^T as an axis times its angle, over dt
+            const float *a = s->mir[k].rot, *b = l->rot;
+            float d[9];
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++) d[i * 3 + j] = a[i * 3 + 0] * b[j * 3 + 0] + a[i * 3 + 1] * b[j * 3 + 1] + a[i * 3 + 2] * b[j * 3 + 2];
+            float ca = (d[0] + d[4] + d[8] - 1) * 0.5f;
+            ca = ca > 1 ? 1 : ca < -1 ? -1 : ca;
+            float ang = acosf(ca), sa = sinf(ang);
+            _Alignas(16) float w[4] = {0, 0, 0, 0};
+            if (ang > 1e-4f && sa > 1e-4f) {
+                float f = ang / (2 * sa * dt);
+                w[0] = (d[7] - d[5]) * f, w[1] = (d[2] - d[6]) * f, w[2] = (d[3] - d[1]) * f;
+            }
+            coop_guest_call(c, MOD_MAIN_BASE + 0x567750, body, (uint64_t)(uintptr_t)v, 0, 0);
+            coop_guest_call(c, MOD_MAIN_BASE + 0x25a1f0, body, (uint64_t)(uintptr_t)w, 0, 0);
+        }
+        memcpy(l->pos, s->mir[k].pos, 12), memcpy(l->rot, s->mir[k].rot, 36), l->us = now;
     }
 }
 // ---- world objects (the tester's list: dropped items, Ultrahand, autobuild, Zonai devices; 2026-11-05). Two kinds:
 // - Made by this Link: an actor first seen within 6 m of it, nearer it than any co-op Link (a dropped weapon is the
 //   equipped one's own actor, first seen at the equip, so it counts once it is no longer in this Link's gear). Sent
-//   while within 20 m, by number, and shown in the other games as a frozen copy, as an arrow. A save load or a
+//   while within 20 m of a Link (this one or a co-op one), by number, and shown in the other games as a frozen copy, as an arrow. A save load or a
 //   streamed-in area makes many at once: more than 20 new near this Link in one tick are taken as the world's.
 // - One every game has (a placed rock or plank): known everywhere by its key (name and where it was first seen, as
 //   the enemies'). Once it moves in this game within 20 m of this Link while no co-op player's report moves it, it
@@ -1432,7 +1472,6 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
     float p[3];
     if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
     float d2 = (p[0] - ps->me[0]) * (p[0] - ps->me[0]) + (p[1] - ps->me[1]) * (p[1] - ps->me[1]) + (p[2] - ps->me[2]) * (p[2] - ps->me[2]);
-    if (d2 > 400) return;
     float dco = 1e18f;
     for (int i = 0; i < COOP_MAX_PLAYERS; i++) {
         float r[3];
@@ -1441,6 +1480,7 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
             if (e < dco) dco = e;
         }
     }
+    if (d2 > 400 && dco > 400) return;   // within 20 m of a Link, this one or a co-op one
     int e = -1, free = -1;
     for (int i = 0; i < PROPS_N && e < 0; i++) {
         if (props[i].actor == a) e = i;
@@ -1466,6 +1506,17 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
     // Nearer this Link, or as near within 1 m: two Links on one spot each claimed nothing (props test, 2026-11-05).
     props[e].seen = prop_tick, props[e].near_me = d2 < dco + 1;
 }
+static float near2_any(const float *q, const float *me_p) {   // squared distance to the nearest Link, this one or co-op
+    float best = (q[0] - me_p[0]) * (q[0] - me_p[0]) + (q[1] - me_p[1]) * (q[1] - me_p[1]) + (q[2] - me_p[2]) * (q[2] - me_p[2]);
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++) {
+        float r[3];
+        if (slots[i].actor && coop_rd(slots[i].actor + COOP_ACTOR_POS, r, 12)) {
+            float e = (q[0] - r[0]) * (q[0] - r[0]) + (q[1] - r[1]) * (q[1] - r[1]) + (q[2] - r[2]) * (q[2] - r[2]);
+            if (e < best) best = e;
+        }
+    }
+    return best;
+}
 static int report_props(uint64_t me, CoopObj *out, int max) {
     void coop_actors_keyed(void (*fn)(uint64_t, const char *, uint32_t, int, void *), void *arg);   // coop_world.c
     prop_tick++;
@@ -1485,16 +1536,16 @@ static int report_props(uint64_t me, CoopObj *out, int max) {
         if (!props[e].actor) continue;
         if ((props[e].made || props[e].touched) && props[e].seen != prop_tick) {
             // At rest it runs no calc and leaves the live list; it is still there until the game takes it away
-            // (state 7..11) or the memory holds another actor. Sent while within 20 m; one this Link moved is
-            // forgotten beyond that, or once another player moves it (this game forces it then).
+            // (state 7..11) or the memory holds another actor. Sent while within 20 m of a Link (this one or a co-op
+            // one: a glider flown 20 m from its maker with the other Link on it went away under that Link, ride
+            // test at 5 m/s); one this Link moved is forgotten beyond that, or once another player moves it.
             int32_t st = 0;
             char nm[48];
             float q[3];
             if (!coop_rd(props[e].actor + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 ||
                 strcmp(coop_actor_name(props[e].actor, nm, sizeof nm), props[e].name)) { props[e].actor = 0; continue; }
             if (!props[e].made && is_driven(props[e].actor)) { props[e].touched = 0; continue; }
-            int far = !coop_rd(props[e].actor + COOP_ACTOR_POS, q, 12) || (q[0] - me_p[0]) * (q[0] - me_p[0]) + (q[1] - me_p[1]) * (q[1] - me_p[1]) +
-                      (q[2] - me_p[2]) * (q[2] - me_p[2]) > 400;
+            int far = !coop_rd(props[e].actor + COOP_ACTOR_POS, q, 12) || near2_any(q, me_p) > 400;
             if (far && !props[e].made) props[e].touched = 0;
             if (far) continue;
         } else if (props[e].seen != prop_tick) continue;
@@ -1533,7 +1584,7 @@ static void keyfind_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
 }
 // Keys found here, kept while their actor still has that name: the scan of every actor runs only for new keys, and
 // an object once moved here is no longer where its key says.
-static struct { uint32_t key; uint64_t actor; char name[48]; float pos[3], q[4]; int last; } key_found[128];
+static struct { uint32_t key; uint64_t actor; char name[48]; float pos[3], q[4]; int last, from; } key_found[128];
 static uint64_t key_cached(uint32_t key, const char *name) {
     for (int i = 0; i < 128; i++)
         if (key_found[i].actor && key_found[i].key == key) {
@@ -1613,7 +1664,9 @@ static void props_receive(Cpu *c) {
         }
         if (coop_net_id() < want_from[i] && my_report(a)) continue;   // this game sends it too, and wins
         for (int k = 0; k < 128; k++)   // the last place sent, for after the reports stop
-            if (key_found[k].actor == a) memcpy(key_found[k].pos, want[i]->pos, 12), memcpy(key_found[k].q, want[i]->q, 16), key_found[k].last = prop_tick;
+            if (key_found[k].actor == a)
+                memcpy(key_found[k].pos, want[i]->pos, 12), memcpy(key_found[k].q, want[i]->q, 16), key_found[k].last = prop_tick,
+                key_found[k].from = want_from[i];
         set_driven(a);
         force_to(c, a, want[i]->pos, want[i]->q);
     }
@@ -1941,35 +1994,73 @@ static void stand_test(Cpu *c, uint64_t me) {
 // tick (its turn about its origin and its shift) is put on this Link too (COOP_FORCE_MATRIX), so it goes along as on
 // a moving floor and still walks on it. Where the game keeps what Link stands on was not found: no word in the
 // Link's first 0x4000 bytes or one level down held the glider it stood on (TOTK_COOP_TEST_STAND).
-// Not good enough yet, so off unless TOTK_COOP_RIDE=1 (ride test, a glider moved 1 m/s and up 0.3 m/s): the Link
-// was carried, but fell behind by up to 1 m in 2 s and sank into the copy (held at its boarding height only now and
-// then), then fell off. Likely the Link's own movement undoes the forced place, and the copy (teleported, no speed)
-// is no moving floor to it. Next: how the game carries a Link on its own moving platforms, or give the copy a speed.
-typedef struct { uint64_t actor; float pos[3], rot[9]; } RideObj;
+// What it took (ride test, TOTK_COOP_TEST_RIDE=<m/s>: A moves a glider along x and 0.3 m/s up for 10 s, B's Link is
+// put on its copy): the copy moved by speed, not teleported, holds the Link up (teleported, it sank through); this
+// runs once a frame (the tick ran twice at one world time, and the second undid the first: the Link fell behind at
+// half the glider's speed); objects are sent within 20 m of any Link (a glider flown 20 m from its maker went away
+// under its rider). At 5 m/s B rode the 50 m, 0.1-0.2 m from where it stood, and came down with the glider after.
+// Seen in the other games the rider is put on their one of the object (ride_place). TOTK_COOP_RIDE=0 turns it off.
+typedef struct { uint64_t actor; float pos[3], rot[9]; int owner; uint32_t id; } RideObj;
 static int ride_objects(RideObj *out, int max) {
     int n = 0;
     for (int i = 0; i < COOP_MAX_PLAYERS; i++)
         for (int k = 0; k < COOP_OBJS && n < max && copies_live[i]; k++)
             if (slots[i].mir[k].state == 3 && slots[i].mir[k].ticks >= COPY_WARMUP && !strstr(slots[i].mir[k].name, "Arrow")) {   // not ridden
-                out[n].actor = slots[i].mir[k].actor;
+                out[n].actor = slots[i].mir[k].actor, out[n].owner = slots[i].net_id, out[n].id = slots[i].mir[k].id;
                 memcpy(out[n].pos, slots[i].mir[k].pos, 12), memcpy(out[n].rot, slots[i].mir[k].rot, 36);
                 n++;
             }
     for (int k = 0; k < 128 && n < max; k++)
         if (key_found[k].actor && key_found[k].last && prop_tick - key_found[k].last < 150) {
-            out[n].actor = key_found[k].actor;
+            out[n].actor = key_found[k].actor, out[n].owner = key_found[k].from, out[n].id = COOP_OBJ_KEYED | key_found[k].key;
             memcpy(out[n].pos, key_found[k].pos, 12), quat_mat(key_found[k].q, out[n].rot);
             n++;
         }
     return n;
 }
-int ride_on(void) {   // TOTK_COOP_RIDE=1: riding on (not yet good enough to be on by default)
+// Where a slot's owner stands, here, when it rides an object: this game's own one (an object this game sends: made
+// here, or a placed one it moves) or its copy of a third player's, its place now, and the owner's offset in its
+// frame. Seen from the owner of a glider moved 1 m/s, the rider was 0.1 m behind where it stood in its own game
+// (the state's delay); faster, more (ride test, 2026-11-05).
+static int ride_place(const Slot *s, float out[3]) {
+    if (!s->ride_owner || !s->ride_id) return 0;
+    uint64_t a = 0;
+    float p[3], r[9];
+    if (s->ride_owner == coop_net_id()) {
+        for (int e = 0; e < PROPS_N && !a; e++)
+            if (props[e].actor && ((props[e].made && props[e].id == s->ride_id) ||
+                                   (!props[e].made && props[e].touched && (COOP_OBJ_KEYED | (props[e].key & ~COOP_OBJ_KEYED)) == s->ride_id)))
+                a = props[e].actor;
+        if (!a || !coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(a + COOP_ACTOR_ROT, r, 36)) return 0;
+    } else {
+        Slot *o = slot_for(SRC_NET, s->ride_owner);
+        int k = 0;
+        while (o && k < COOP_OBJS && !(o->mir[k].state == 3 && o->mir[k].id == s->ride_id)) k++;
+        if (!o || k == COOP_OBJS) return 0;
+        memcpy(p, o->mir[k].pos, 12), memcpy(r, o->mir[k].rot, 36);
+    }
+    for (int i = 0; i < 3; i++) out[i] = p[i] + r[i * 3 + 0] * s->ride_off[0] + r[i * 3 + 1] * s->ride_off[1] + r[i * 3 + 2] * s->ride_off[2];
+    return 1;
+}
+int ride_on(void) {   // riding a co-op player's object: on unless TOTK_COOP_RIDE=0
     static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_COOP_RIDE") != NULL || cfg_get("TOTK_COOP_TEST_RIDE") != NULL;
+    if (on < 0) {
+        const char *e = cfg_get("TOTK_COOP_RIDE");
+        on = !(e && *e == '0');
+    }
     return on;
 }
 static void ride_carry(Cpu *c, uint64_t me) {
     if (!ride_on()) return;
+    // Once a frame: the tick ran twice at one world time, and the second, reading the Link where it was (a forced place
+    // shows only after the game's step) and the object unmoved, put it back; it fell behind by half the object's
+    // speed (per-tick ride log, 2026-11-05).
+    static int64_t last_us = -1;
+    int64_t now_us = frame_step_world_us();
+    if (now_us == last_us) return;
+    last_us = now_us;
+    static int nocarry = -1;   // TOTK_COOP_TEST_NOCARRY=1: no carrying here, to see whether the moving copy carries the Link itself
+    if (nocarry < 0) nocarry = cfg_get("TOTK_COOP_TEST_NOCARRY") != NULL;
     static uint64_t riding;
     static float last_pos[3], last_rot[9];
     static int said;
@@ -1987,7 +2078,7 @@ static void ride_carry(Cpu *c, uint64_t me) {
     }
     if (!on) {
         if (riding && said < 40) said++, rt_log("coop: ride: off %llx", (unsigned long long)riding);
-        riding = 0;
+        riding = 0, ride_owner_now = 0, ride_id_now = 0;
         return;
     }
     if (on->actor != riding) {   // stepped on: carried from the next tick
@@ -2011,7 +2102,19 @@ static void ride_carry(Cpu *c, uint64_t me) {
         for (int i = 0; i < 3; i++)
             for (int j = 0; j < 3; j++) nr[i * 3 + j] = d[i * 3 + 0] * r[0 * 3 + j] + d[i * 3 + 1] * r[1 * 3 + j] + d[i * 3 + 2] * r[2 * 3 + j];
         float mv = (np[0] - p[0]) * (np[0] - p[0]) + (np[1] - p[1]) * (np[1] - p[1]) + (np[2] - p[2]) * (np[2] - p[2]);
-        if (mv > 1e-6f) {
+        {   // TOTK_COOP_TEST_RIDE: each tick for 3 s after stepping on, where the Link was, where it is put, the object
+            static int dbg = -1, n_dbg;
+            static float put[3];
+            if (dbg < 0) dbg = cfg_get("TOTK_COOP_TEST_RIDE") != NULL;
+            if (dbg && n_dbg < 90) {
+                n_dbg++;
+                rt_log("coop: test: ride: tick %.3f s: Link %.3f %.3f %.3f (put %.3f %.3f %.3f last tick), object moved %.3f %.3f %.3f, put at %.3f %.3f %.3f",
+                       frame_step_world_us() / 1e6, p[0], p[1], p[2], put[0], put[1], put[2], on->pos[0] - last_pos[0],
+                       on->pos[1] - last_pos[1], on->pos[2] - last_pos[2], np[0], np[1], np[2]);
+                memcpy(put, np, 12);
+            }
+        }
+        if (mv > 1e-6f && !nocarry) {
             float m[12];
             for (int i = 0; i < 3; i++) {
                 for (int j = 0; j < 3; j++) m[i * 4 + j] = nr[i * 3 + j];
@@ -2021,9 +2124,18 @@ static void ride_carry(Cpu *c, uint64_t me) {
         }
     }
     memcpy(last_pos, on->pos, 12), memcpy(last_rot, on->rot, 36);
+    {   // for the state out: the Link in the object's frame (from this tick's place, as the owner sent the object)
+        float q[3], o[3];
+        if (coop_rd(me + COOP_ACTOR_POS, q, 12)) {
+            for (int i = 0; i < 3; i++) o[i] = q[i] - on->pos[i];
+            for (int j = 0; j < 3; j++) ride_off_now[j] = on->rot[0 * 3 + j] * o[0] + on->rot[1 * 3 + j] * o[1] + on->rot[2 * 3 + j] * o[2];
+            ride_owner_now = on->owner, ride_id_now = on->id;
+        }
+    }
 }
 // Test (TOTK_COOP_TEST_RIDE=1, two games): the game that joined as player 1 makes a glider 3 m beside its Link at
-// 22 s and from 30 s moves it 1 m/s along x and 0.3 m/s up for 10 s (COOP_FORCE_MATRIX each tick); the other game
+// 22 s and from 30 s moves it along x (the variable's value in m/s) and 0.3 m/s up for 10 s (COOP_FORCE_MATRIX each
+// tick); the other game
 // puts its Link 0.6 m above its copy at 27 s, and every 15 ticks logs its Link's place on the copy.
 static void ride_test(Cpu *c, uint64_t me) {
     static int on = -1, stage;
@@ -2048,9 +2160,17 @@ static void ride_test(Cpu *c, uint64_t me) {
         }
         if (stage == 2 && now > 30) coop_rd(wing + COOP_ACTOR_POS, base, 12), stage = 3;
         if (stage == 3 && now < 40) {
-            float t = (float)(now - 30), m[12] = {1, 0, 0, base[0] + t, 0, 1, 0, base[1] + 0.3f * t, 0, 0, 1, base[2]};
+            float sp = (float)atof(cfg_get("TOTK_COOP_TEST_RIDE"));   // its value: the speed along x, m/s (1 m/s for "1")
+            if (sp <= 0) sp = 1;
+            float t = (float)(now - 30), m[12] = {1, 0, 0, base[0] + sp * t, 0, 1, 0, base[1] + 0.3f * t, 0, 0, 1, base[2]};
             coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, wing, (uint64_t)(uintptr_t)m, 0, 0);
         }
+        static int t1;
+        float w[3], o[3];
+        if (stage >= 2 && ++t1 % 15 == 0 && now < 45 && slots[0].actor && coop_rd(wing + COOP_ACTOR_POS, w, 12) &&
+            coop_rd(slots[0].actor + COOP_ACTOR_POS, o, 12))
+            rt_log("coop: test: ride: %.2f s glider at %.2f %.2f %.2f, the other Link %+.2f %+.2f %+.2f from it", now, w[0], w[1], w[2],
+                   o[0] - w[0], o[1] - w[1], o[2] - w[2]);
         return;
     }
     RideObj objs[64];
@@ -2139,6 +2259,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         st.day_seconds = day_seconds();
         read_weather(c, me);
         st.weather = weather_now;
+        st.ride_owner = (uint8_t)ride_owner_now, st.ride_id = ride_id_now, memcpy(st.ride_off, ride_off_now, 12);
         const char *fw = cfg_get("TOTK_COOP_FAKEWEATHER");   // test: report this weather type instead
         if (fw && *fw) st.weather = atoi(fw);
         coop_net_publish(&st);
@@ -2217,6 +2338,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
             }
         }
         memcpy(s->want_pos, st.pos, 12), memcpy(s->want_rot, st.rot, 36), s->have_want = 1;
+        s->ride_owner = st.ride_owner, s->ride_id = st.ride_id, memcpy(s->ride_off, st.ride_off, 12);
         for (int k = 0; k < COOP_GEAR_SLOTS; k++) {
             memcpy(s->gear_want[k], st.gear[k], 32);
             s->gear_want[k][31] = 0;

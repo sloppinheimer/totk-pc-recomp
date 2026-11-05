@@ -108,6 +108,9 @@ right in the tester's own two-pad session.
   of every actor's reference, at rest too; a copy only when a game has none). Objects go in packets of their own
   (protocol 10), sent when they change: up to 256 a player. Not done: what Zonai devices do (fans, flames), the bomb blast,
   picking up a copy in the other game (unknown whether it can be taken). Re-notes "World objects".
+- **Riding** another player's contraption (protocol 12): this Link is carried by the object it stands on; the copy
+  is moved by physics speed so it holds the Link up; the other games put the rider on their one of the object. Ride
+  test at 5 m/s: on for 50 m on both screens. Not tested with a real glider flown in play, turning, or two riders.
 - Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
 
 ## Plan

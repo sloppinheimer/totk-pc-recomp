@@ -700,3 +700,17 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   sank into it (0.4 m in 2 s) and fell behind (to 1 m in 2 s), and fell off; holding the boarding height took only
   now and then. Off by default. Next: how the game carries a Link on its own moving platforms, or a speed for the
   copy's body.
+- Found (Ghidra, from COOP_FORCE_MATRIX main+0x45ce70): an actor's physics body is [[[actor+0x228] +0x50] +0x20]
+  +0x150; main+0x25a450 (body, float m[12]) sets its transform, main+0x567750 (body, float v[3]) its linear
+  velocity (checked as "next_linear_velocity", clamped to a max speed), main+0x25a1f0 (body, float w[3]) its angular
+  velocity ("next_angular_velocity"). Each queues into a request block (+0x44 linear, +0x50 angular, +0x08 matrix;
+  flags +0xd4: 0x80, 0x100, 0x40).
+- A copy moved by velocity holds a Link standing on it (teleported each tick it sank through). The game does not
+  carry the Link along a moving copy by itself (TOTK_COOP_TEST_NOCARRY): ride_carry moves it by the object's move.
+- The players tick ran twice at one world time; the second ride_carry, reading the Link where it was before the
+  game applied the first forced place, put it back: it fell behind at half the object's speed. Once a frame now.
+- The rider's place in the other games comes from its offset in the object's frame (NetState ride_owner, ride_id,
+  ride_off; protocol 12): at 5 m/s, A shows B on the glider within 0.08 m of where B's own game has it.
+- Objects are sent within 20 m of any Link: a glider flown 20 m from its maker went away under the rider.
+- Ride test at 5 m/s: B rode 50 m in 10 s, 0.1-0.2 m from its boarding place along the way (drifting 0.7 m across),
+  and came down with the glider when A let it fall. Riding is on by default (TOTK_COOP_RIDE=0 off).
