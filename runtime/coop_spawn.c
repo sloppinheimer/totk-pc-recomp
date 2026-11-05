@@ -554,7 +554,76 @@ uint64_t coop_as_template(uint64_t *mgr, uint8_t **name_obj, uint8_t **req, char
     *mgr = as_my_mgr, *name_obj = as_name_obj, *req = as_req, *text = as_text;
     return as_my_mgr;
 }
+// TOTK_COOP_TEST_FLAGCALLER=1 (played; the profiler runs from the world on, slow): each call of the named-bool setter
+// main+0x9fb82c (handle x0: [[[x0+8]+8]+0x200] the bool table, [x0+0xc4] the index, w1 the value) that writes the
+// on bool of the fan coop_players.c watches (coop_fan_flag) is logged with the guest frame chain, up to 12 times: the
+// code a hit runs to turn a Zonai device on.
+uint64_t coop_fan_flag;   // coop_players.c fantoggle / fanwatch: the on bool of the nearest fan
+static int flagcaller = -1;
+// TOTK_COOP_TEST_FANHIT=<hit s> (with TOTK_COOP_TEST_FANSET=9 and fan_hits_3rd.txt): the functions entered with x0 or
+// x1 = the test's fan (coop_fan_actor) in the 0.6 s from the hit, that were not entered so in the 3 s before it, with a
+// frame chain each: where a sword hit reaches a Zonai device.
+uint64_t coop_fan_actor;
+static double fanhit_at = -2;
+static struct { _Atomic uint64_t fn; _Atomic int base, win; char chain[200]; } fh[1024];
+static void fanhit_note(uint64_t addr, Cpu *c) {
+    double t = frame_step_world_us() / 1e6;
+    int base = t > fanhit_at - 3 && t < fanhit_at, win = t >= fanhit_at && t < fanhit_at + 0.6;
+    if (!base && !win) return;
+    uint32_t i = (uint32_t)((addr * 0x9e3779b97f4a7c15ull) >> 54);
+    for (int k = 0; k < 1024; k++, i = (i + 1) & 1023) {
+        uint64_t have = atomic_load(&fh[i].fn);
+        if (!have && atomic_compare_exchange_strong(&fh[i].fn, &have, addr)) have = addr;
+        if (have != addr) continue;
+        if (base) atomic_fetch_add(&fh[i].base, 1);
+        if (win && atomic_fetch_add(&fh[i].win, 1) == 0) {
+            int n = snprintf(fh[i].chain, sizeof fh[i].chain, "lr main+%llx", (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
+            uint64_t fp = c->x[29];
+            for (int d = 0; d < 6 && fp && n < (int)sizeof fh[i].chain - 24; d++) {
+                uint64_t next = rd_ptr(fp), ret = rd_ptr(fp + 8);
+                if (!ret) break;
+                n += snprintf(fh[i].chain + n, sizeof fh[i].chain - n, " <- %llx", (unsigned long long)(ret - MOD_MAIN_BASE));
+                if (next <= fp) break;
+                fp = next;
+            }
+        }
+        return;
+    }
+}
+static void fanhit_report(void) {
+    static int done;
+    if (done || fanhit_at < 0 || frame_step_world_us() / 1e6 < fanhit_at + 1) return;
+    done = 1;
+    int n = 0;
+    for (int i = 0; i < 1024; i++)
+        if (atomic_load(&fh[i].fn) && atomic_load(&fh[i].win) && !atomic_load(&fh[i].base) && n++ < 80)
+            rt_log("coop: test: fanhit: main+%llx x%d (%s)", (unsigned long long)(atomic_load(&fh[i].fn) - MOD_MAIN_BASE),
+                   atomic_load(&fh[i].win), fh[i].chain);
+    rt_log("coop: test: fanhit: %d functions new at the hit", n);
+}
 void coop_fn_args(uint64_t addr, Cpu *c) {
+    if (fanhit_at > 0 && coop_fan_actor && (c->x[0] == coop_fan_actor || c->x[1] == coop_fan_actor)) fanhit_note(addr, c);
+    if (flagcaller > 0 && addr == MOD_MAIN_BASE + 0x9fb82c && coop_fan_flag) {
+        uint64_t h = c->x[0], bb = rd_ptr(rd_ptr(rd_ptr(h + 8) + 8) + 0x200);
+        uint32_t idx = 0;
+        rd(h + 0xc4, &idx, 4);
+        static int said;
+        if (bb && rd_ptr(bb + 0x1a0) + idx == coop_fan_flag && said < 12) {
+            said++;
+            char line[512];
+            int n = snprintf(line, sizeof line, "coop: test: flagcaller %.2f s value %llu lr main+%llx chain", frame_step_world_us() / 1e6,
+                             (unsigned long long)(c->x[1] & 0xff), (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
+            uint64_t fp = c->x[29];
+            for (int d = 0; d < 12 && fp && n < (int)sizeof line - 40; d++) {
+                uint64_t next = rd_ptr(fp), ret = rd_ptr(fp + 8);
+                if (!ret) break;
+                n += snprintf(line + n, sizeof line - n, " <- main+%llx", (unsigned long long)(ret - MOD_MAIN_BASE));
+                if (next <= fp) break;
+                fp = next;
+            }
+            rt_log("%s", line);
+        }
+    }
     if (prof9 && addr == MOD_MAIN_BASE + 0x4dcc1c && calc_actor && calc_actor == player_actor_cached && !as_my_mgr) {
         rd(c->x[1], as_name_obj, 0x10), rd(c->x[2], as_req, sizeof as_req);
         as_my_mgr = c->x[0];
@@ -1278,6 +1347,11 @@ void coop_tick(struct Cpu *c) {
             rt_log("coop: \"Player\" lookups: %d callers in 10 s", n);
         }
     }
+    if (fanhit_at == -2) fanhit_at = cfg_get("TOTK_COOP_TEST_FANHIT") ? atof(cfg_get("TOTK_COOP_TEST_FANHIT")) : -1;
+    if (fanhit_at > 0 && frame_step_world_us() > 0) g_fnprof = 1;
+    fanhit_report();
+    if (flagcaller < 0) flagcaller = cfg_get("TOTK_COOP_TEST_FLAGCALLER") != NULL;
+    if (flagcaller > 0 && frame_step_world_us() > 0) g_fnprof = 1;
     if (prof6) g_fnprof = 1;
     if (prof9 && frame_step_world_us() > 0) g_fnprof = 1;
     if (prof8 && frame_step_world_us() > 0) {   // from the world on (loading is too slow under the profiler)

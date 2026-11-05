@@ -729,3 +729,18 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
 - Logger for a played run: TOTK_COOP_TEST_ZONAILOG=1 logs, for SpObj_ devices within 15 m, every word of the actor
   (0x3000 bytes) and of its first 128 components (0x400 bytes each) that goes between small values (0..3), with the
   device's place and speed ("coop: zonai: ..."). Next: a run where a device is turned on, left to stop, and again.
+- Played dump test (TOTK_COOP_TEST_ZONAIDUMP, a fan hit on, off, on): three words follow the state:
+  [comp11]+0x348 bit 0x2000 (on; 0x4000 when only the on bool is set), [comp28]+0x398 10 / 0 (energy drawn from the
+  Link's battery: the battery is the Link's, not the device's), [comp107]+0x398 0x40 / 0x80 (written every frame by
+  main+0x2f8b70 from the on bool). Writing any of them by hand turns nothing on.
+- The on bool: component 0's +0x10 is a table of named bools (hash table +0x1c8 / +0x1d4 entries of {u32 name hash,
+  u32 index}, bools +0x1a0, +0x198 of them, change counts +0x1f0 / +0x1e8); the device's on bool has hash 0xbcd1015f
+  (coop_players.c dev_on_flag). Its setter main+0x9fb82c (handle x0 with [[[x0+8]+8]+0x200] the table and +0xc4 the
+  index, w1 the value) writes it on every hit, called from the device's own behaviour graph (main+0x1066b20 runs the
+  nodes; chain main+0x9fa920 <- 0x9f91d8 <- 0x1066bb8, TOTK_COOP_TEST_FLAGCALLER). Setting the bool (with its change
+  count) on a fan from a capsule set 0xa000 but drew no energy and did not blow.
+- A scripted sword hit turns a fan on (TOTK_COOP_TEST_FANSET=9, fan_hits_3rd.txt: the Link faces a fan 1 m away on
+  the flat ground at 30.3 1514.5 1510.7; the hit at 34 s, after the first Y draws the sword). The hit reaches the fan
+  from the Link's update: main+0x1b90cb4 (the attack contact, param_4 +0x18 the target) builds the hit and hands it
+  to main+0x1b91844 (TOTK_COOP_TEST_FANHIT lists the functions entered with the fan at the hit). Next: hand a copy
+  such a hit when the owner's device turns on (needs the contact and hit records decoded).

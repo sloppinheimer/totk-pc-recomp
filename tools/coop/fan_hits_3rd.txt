@@ -1,0 +1,14 @@
+# The 100% save (third in the Continue list), nothing equipped: at 14 s equip the first weapon (inventory, A, A); with
+# TOTK_COOP_TEST_FANSET=9 the Link is put facing a fan 1 m away on flat ground at 21-22 s, and the sword hits it at
+# 26 s (on) and 34 s (off). For the Zonai device research.
+300 A 4
+520 DOWN 4
+580 DOWN 4
+640 A 4
+800 A 4
+@14000 PLUS 150
+@15500 A 150
+@16300 A 150
+@17500 PLUS 150
+@26000 Y 150
+@34000 Y 150

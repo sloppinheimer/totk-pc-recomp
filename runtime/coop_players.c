@@ -2247,7 +2247,7 @@ static void zonai_test(Cpu *c, uint64_t me) {
 // Test (TOTK_COOP_TEST_ZONAILOG=1; the tester plays it: drop a Zonai device, hit it to turn it on, let it stop, again):
 // which words turn a device on. Every 10 ticks, for up to 8 devices (actors named SpObj_..., not a capsule) within
 // 15 m of this Link: their first 0x3000 bytes, and 0x400 bytes of each of their first 128 components ([actor+0x228]
-// + 8 * i), are compared with the last look; a word that goes from one small value (0..3) to another is logged as
+// + 8 * i), are compared with the last look; a byte that goes between 0 and 1 is logged as
 // "zonai: <name> <where> a -> b", each place at most 30 times, with the device's place and speed, so the words that
 // go on with the device and off when it stops can be picked out of the log afterwards.
 #define ZL_DEV 8
@@ -2260,7 +2260,7 @@ typedef struct {
     uint32_t act[ZL_ACT / 4];
     uint64_t comp[ZL_COMP];
     uint32_t cw[ZL_COMP][ZL_CB / 4];
-    uint8_t said[ZL_ACT / 4 + ZL_COMP * ZL_CB / 4];
+    uint8_t said[ZL_ACT + ZL_COMP * ZL_CB];   // per byte
     float last[3];
     int seen, have;
 } ZlDev;
@@ -2293,10 +2293,12 @@ static void zl_fn(uint64_t a, void *arg) {
     float sp = z->have ? sqrtf((p[0] - z->last[0]) * (p[0] - z->last[0]) + (p[1] - z->last[1]) * (p[1] - z->last[1]) +
                                (p[2] - z->last[2]) * (p[2] - z->last[2])) * 3 : 0;   // m/s over the 10 ticks (about 1/3 s)
     double now = frame_step_world_us() / 1e6;
-    for (int i = 0; i < ZL_ACT / 4 && z->have; i++)
-        if (buf[i] != z->act[i] && buf[i] < 4 && z->act[i] < 4 && z->said[i] < 30)
-            z->said[i]++, rt_log("coop: zonai: %.2f s %s actor+%#x %u -> %u (at %.1f %.1f %.1f, %.1f m/s)", now, z->name, i * 4,
-                                 z->act[i], buf[i], p[0], p[1], p[2], sp);
+    // Bytes that go between 0 and 1 (a bool): a fan's on state was not a small word (first played run, 2026-11-05).
+    const uint8_t *nb = (const uint8_t *)buf, *ob = (const uint8_t *)z->act;
+    for (int i = 0; i < ZL_ACT && z->have; i++)
+        if (nb[i] != ob[i] && nb[i] < 2 && ob[i] < 2 && z->said[i] < 30)
+            z->said[i]++, rt_log("coop: zonai: %.2f s %s actor+%#x %u -> %u (at %.1f %.1f %.1f, %.1f m/s)", now, z->name, i,
+                                 ob[i], nb[i], p[0], p[1], p[2], sp);
     memcpy(z->act, buf, sizeof buf);
     uint64_t tbl = coop_rd_ptr(a + 0x228);
     for (int k = 0; k < ZL_COMP && tbl; k++) {
@@ -2304,11 +2306,12 @@ static void zl_fn(uint64_t a, void *arg) {
         static uint32_t cb[ZL_CB / 4];
         if (!c || (c & 7) || !coop_rd(c, cb, sizeof cb)) { z->comp[k] = 0; continue; }
         if (z->have && z->comp[k] == c)
-            for (int i = 0; i < ZL_CB / 4; i++) {
-                uint8_t *sd = &z->said[ZL_ACT / 4 + k * (ZL_CB / 4) + i];
-                if (cb[i] != z->cw[k][i] && cb[i] < 4 && z->cw[k][i] < 4 && *sd < 30)
-                    (*sd)++, rt_log("coop: zonai: %.2f s %s comp%d+%#x %u -> %u (at %.1f %.1f %.1f, %.1f m/s)", now, z->name, k, i * 4,
-                                    z->cw[k][i], cb[i], p[0], p[1], p[2], sp);
+            for (int i = 0; i < ZL_CB; i++) {
+                const uint8_t *n8 = (const uint8_t *)cb, *o8 = (const uint8_t *)z->cw[k];
+                uint8_t *sd = &z->said[ZL_ACT + k * ZL_CB + i];
+                if (n8[i] != o8[i] && n8[i] < 2 && o8[i] < 2 && *sd < 30)
+                    (*sd)++, rt_log("coop: zonai: %.2f s %s comp%d+%#x %u -> %u (at %.1f %.1f %.1f, %.1f m/s)", now, z->name, k, i,
+                                    o8[i], n8[i], p[0], p[1], p[2], sp);
             }
         z->comp[k] = c;
         memcpy(z->cw[k], cb, sizeof cb);
@@ -2324,6 +2327,285 @@ static void zonai_log(uint64_t me) {
     if (!zl || !coop_rd(me + COOP_ACTOR_POS, p, 12)) return;
     void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
     coop_actors_live(zl_fn, p);
+}
+// Test (TOTK_COOP_TEST_ZONAIDUMP=1): every 30 ticks, the first device within 15 m of this Link whose name starts
+// SpObj_WindGenerator (a fan) is written to logs/zonai_dump.bin (beside the game): a header {double world seconds, u64 actor, float
+// pos[3], u32 0}, then its first 0x3000 bytes and 0x400 bytes of each of its first 128 components (zeros where a
+// component is missing). The bytes that hold one value while it is on and another while it is off are picked out
+// afterwards (tools/coop/zonai_dump.py) with the hit times from the logger.
+static void zd_fn(uint64_t a, void *arg) {
+    uint64_t *found = arg;
+    char nm[48];
+    if (found[1]) return;
+    coop_actor_name(a, nm, sizeof nm);
+    if (strncmp(nm, "SpObj_WindGenerator", 19)) return;
+    float p[3], q[3];
+    memcpy(q, &found[2], 12);
+    if (!coop_rd(a + COOP_ACTOR_POS, p, 12) ||
+        (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]) > 225) return;
+    found[1] = a;
+}
+static void zonai_dump(uint64_t me) {
+    static int on = -1, t;
+    static FILE *f;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_ZONAIDUMP") != NULL;
+    if (!on || ++t % 30) return;
+    uint64_t found[4] = {0};
+    if (!coop_rd(me + COOP_ACTOR_POS, &found[2], 12)) return;
+    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
+    coop_actors_live(zd_fn, found);
+    uint64_t a = found[1];
+    if (!a) return;
+    if (!f) f = fopen("logs/zonai_dump.bin", "wb");
+    if (!f) return;
+    static uint8_t buf[0x3000 + 128 * 0x400];
+    memset(buf, 0, sizeof buf);
+    coop_rd(a, buf, 0x3000);
+    uint64_t tbl = coop_rd_ptr(a + 0x228);
+    for (int k = 0; k < 128 && tbl; k++) {
+        uint64_t c = coop_rd_ptr(tbl + 8 * (uint64_t)k);
+        if (c && !(c & 7)) coop_rd(c, buf + 0x3000 + k * 0x400, 0x400);
+    }
+    struct { double t; uint64_t actor; float pos[3]; uint32_t pad; } h = {frame_step_world_us() / 1e6, a, {0}, 0};
+    coop_rd(a + COOP_ACTOR_POS, h.pos, 12);
+    fwrite(&h, sizeof h, 1, f), fwrite(buf, sizeof buf, 1, f), fflush(f);
+}
+// Test (TOTK_COOP_TEST_FANSET=<1..9>, one game; 9: no writes, this Link faces the fan for the script's hits): which of a fan's three on/off words (found by the played dump
+// test, 2026-11-05) turns it on. At 21 s this Link is put at 31.5 1514.6 1510.2 (the flat ground where the tester's fans
+// stood still), at 22 s a fan (SpObj_WindGenerator_A_01) is made beside it; at 30 s the chosen word is written to
+// its "on" value (1: [comp11]+0x348 |= 0x2000; 2: [comp28]+0x398 and +0x39c = 10; 3: [comp107]+0x398 = 0x40), at
+// 40 s back to "off"; every 15 ticks from 24 s to 50 s all three are logged, to see whether the others follow.
+// A device's on flag, as main+0x2f8b70 reads it: the actor's component 0, its +0x10 (a table of named bools): a hash
+// table at +0x1c8 of {u32 name hash, u32 index}, +0x1d4 entries, probed from hash % entries; the entry 0xbcd1015f
+// gives the index into the bools at +0x1a0 (+0x198 of them). Its address, or 0.
+static uint64_t dev_on_flag_at(uint64_t actor, uint64_t *bb_out, uint32_t *index_out);
+static uint64_t dev_on_flag(uint64_t actor) { return dev_on_flag_at(actor, NULL, NULL); }
+static uint64_t dev_on_flag_at(uint64_t actor, uint64_t *bb_out, uint32_t *index_out) {
+    uint64_t tbl = coop_rd_ptr(actor + 0x228), c0 = tbl ? coop_rd_ptr(tbl) : 0, bb = c0 ? coop_rd_ptr(c0 + 0x10) : 0;
+    uint32_t n = 0, nb = 0;
+    if (!bb || !coop_rd(bb + 0x1d4, &n, 4) || !n || n > 65536 || !coop_rd(bb + 0x198, &nb, 4)) return 0;
+    uint64_t ht = coop_rd_ptr(bb + 0x1c8), bools = coop_rd_ptr(bb + 0x1a0);
+    if (!ht || !bools) return 0;
+    uint32_t start = 0xbcd1015fu % n, i = start;
+    for (;;) {
+        uint32_t e[2] = {0, 0};
+        if (!coop_rd(ht + 8 * (uint64_t)i, e, 8) || !e[0]) return 0;
+        if (e[0] == 0xbcd1015fu) {
+            if (bb_out) *bb_out = bb;
+            if (index_out) *index_out = e[1];
+            return (int32_t)e[1] >= 0 && e[1] < nb ? bools + e[1] : 0;
+        }
+        i = i + 1 < n ? i + 1 : 0;
+        if (i == start) return 0;
+    }
+}
+static uint64_t fan_comp(uint64_t a, int k) { uint64_t t = coop_rd_ptr(a + 0x228); return t ? coop_rd_ptr(t + 8 * (uint64_t)k) : 0; }
+static void fanset_test(Cpu *c, uint64_t me) {
+    static int which = -1, stage;
+    static _Alignas(16) uint8_t handle[0x40], link[0x40];
+    static uint64_t fan;
+    if (which < 0) which = cfg_get("TOTK_COOP_TEST_FANSET") ? atoi(cfg_get("TOTK_COOP_TEST_FANSET")) : 0;
+    if (!which) return;
+    double now = frame_step_world_us() / 1e6;
+    if (stage == 0 && now > 21) {   // 9: facing -x, 1 m from where the fan will be (scripted sword hits reach it)
+        float m9[12] = {0, 0, -1, 31.3f, 0, 1, 0, 1514.8f, 1, 0, 0, 1510.7f};
+        float m[12] = {1, 0, 0, 31.5f, 0, 1, 0, 1514.8f, 0, 0, 1, 1510.2f};
+        coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)(which == 9 ? m9 : m), 0, 0);
+        stage = 1;
+    }
+    if (stage == 1 && now > 22) {
+        float at[3] = {30.3f, 1515.0f, 1510.7f}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        stage = coop_request_create(c, "SpObj_WindGenerator_A_01", at, rot, handle) ? 2 : 9;
+    }
+    if (stage == 2 && coop_handle_status(handle) == 3) {
+        uint64_t ref;
+        fan = coop_claim(c, handle, link, &ref);
+        stage = fan ? 3 : 9;
+        rt_log("coop: test: fanset: fan %llx", (unsigned long long)fan);
+        extern uint64_t coop_fan_actor;   // coop_spawn.c TOTK_COOP_TEST_FANHIT
+        coop_fan_actor = fan;
+    }
+    // Wind probes: four BombFruits 1.5 m from the fan on each side, made at 25 s; their places are logged with the
+    // rest, so the side the fan blows to shows as one that moves once it is on.
+    static _Alignas(16) uint8_t ph[4][0x40], pl[4][0x40];
+    static uint64_t probe[4];
+    static int probe_stage;
+    static const float off[4][2] = {{1.5f, 0}, {-1.5f, 0}, {0, 1.5f}, {0, -1.5f}};
+    if (fan && probe_stage == 0 && now > 25) {
+        for (int i = 0; i < 4; i++) {
+            float at[3] = {30.3f + off[i][0], 1514.9f, 1510.7f + off[i][1]}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+            coop_request_create(c, "BombFruit", at, rot, ph[i]);
+        }
+        probe_stage = 1;
+    }
+    if (probe_stage == 1) {
+        int all = 1;
+        for (int i = 0; i < 4; i++)
+            if (!probe[i]) {
+                if (coop_handle_status(ph[i]) == 3) { uint64_t ref; probe[i] = coop_claim(c, ph[i], pl[i], &ref); }
+                else all = 0;
+            }
+        if (all) probe_stage = 2;
+    }
+    {
+        static int tp;
+        float q[4][3] = {{0}};
+        if (probe_stage == 2 && ++tp % 30 == 0 && now < 50) {
+            for (int i = 0; i < 4; i++) if (probe[i]) coop_rd(probe[i] + COOP_ACTOR_POS, q[i], 12);
+            rt_log("coop: test: fanset: %.2f s probes +x %.2f %.2f %.2f, -x %.2f %.2f %.2f, +z %.2f %.2f %.2f, -z %.2f %.2f %.2f", now,
+                   q[0][0], q[0][1], q[0][2], q[1][0], q[1][1], q[1][2], q[2][0], q[2][1], q[2][2], q[3][0], q[3][1], q[3][2]);
+        }
+    }
+    if (!fan) return;
+    uint64_t c11 = fan_comp(fan, 11), c28 = fan_comp(fan, 28), c107 = fan_comp(fan, 107);
+    if (!c11 || !c28 || !c107) return;
+    if (which == 9) return;   // 9: no writes; the script's sword hits (zonai_hit_3rd.txt) turn it on and off
+    if (which == 4) {   // 4: which code writes [comp107]+0x398 (the word the game puts back): a write watch for 1 s at 30 s
+        int coop_watch_arm(uint64_t addr, uint64_t len);   // coop_watch_win.c
+        void coop_watch_disarm(void);
+        extern int coop_watch_writes;
+        if (stage == 3 && now > 30) coop_watch_writes = 1, coop_watch_arm(c107 + 0x398, 4), stage = 4, rt_log("coop: test: fanset: watching writes");
+        else if (stage == 4 && now > 31) coop_watch_disarm(), stage = 5;
+        return;
+    }
+    if ((stage == 3 && now > 30) || (stage == 4 && now > 40)) {
+        int set_on = stage == 3;
+        if (which == 1) ST32(c11 + 0x348, set_on ? LD32(c11 + 0x348) | 0x2000 : LD32(c11 + 0x348) & ~0x2000u);
+        if (which == 2) ST32(c28 + 0x398, set_on ? 10 : 0), ST32(c28 + 0x39c, set_on ? 10 : 0);
+        if (which == 3) ST32(c107 + 0x398, set_on ? 0x40 : 0x80);
+        if (which == 7) {   // the bool as the game's setter main+0x9fb82c writes it: the value, then the change count
+            uint64_t bb = 0;   // for that index (bb+0x1f0, bb+0x1e8 of them) goes up by one
+            uint32_t idx = 0, nch = 0;
+            uint64_t f = dev_on_flag_at(fan, &bb, &idx);
+            if (f) {
+                ST8(f, set_on ? 1 : 0);
+                uint64_t chg = coop_rd_ptr(bb + 0x1f0);
+                if (chg && coop_rd(bb + 0x1e8, &nch, 4) && idx < nch) ST8(chg + idx, (uint8_t)(LD8(chg + idx) + 1));
+            }
+        }
+        if (which == 6) {   // the named bool main+0x2f8b70 reads (dev_on_flag)
+            uint64_t f = dev_on_flag(fan);
+            if (f) ST8(f, set_on ? 1 : 0);
+        }
+        if (which == 5) {   // [[comp107]+0x270] +0x878: main+0x2f8b70 sets the on bits from its bit 11 (on) and 21 (off)
+            uint64_t o = coop_rd_ptr(c107 + 0x270);
+            if (o) ST32(o + 0x878, set_on ? (LD32(o + 0x878) | 0x800) & ~0x200000u : (LD32(o + 0x878) & ~0x800u) | 0x200000);
+        }
+        rt_log("coop: test: fanset: %.2f s word %d set %s", now, which, set_on ? "on" : "off");
+        stage++;
+    }
+    static int t;
+    float p[3];
+    if (++t % 15 == 0 && now > 24 && now < 50 && coop_rd(fan + COOP_ACTOR_POS, p, 12))
+        rt_log("coop: test: fanset: %.2f s at %.2f %.2f %.2f: comp11+0x348 %#x, comp28+0x398 %u, comp107+0x398 %#x, on bool %#x", now, p[0], p[1], p[2],
+               LD32(c11 + 0x348), LD32(c28 + 0x398), LD32(c107 + 0x398), dev_on_flag(fan) ? LD8(dev_on_flag(fan)) : 0xff);
+}
+// The object main+0x2f8b70 reads to set a device's on bits: in the actor's component +0xa8 (8 * 21), a table at
+// +0x38 (+0x30 its count) of entries sorted by their first u32, the one 0x9b84ce69; its +8, then +0x150; its +0x7c is
+// compared with 0xd and 0x17 there (2026-11-05). 0 when not found.
+static uint64_t dev_state_obj(uint64_t actor) {
+    uint64_t tbl = coop_rd_ptr(actor + 0x228), comp = tbl ? coop_rd_ptr(tbl + 0xa8) : 0;
+    int32_t n = 0;
+    if (!comp || !coop_rd(comp + 0x30, &n, 4) || n <= 0 || n > 4096) return 0;
+    uint64_t arr = coop_rd_ptr(comp + 0x38);
+    for (int i = 0; arr && i < n; i++) {
+        uint64_t e = coop_rd_ptr(arr + 8 * (uint64_t)i);
+        uint32_t h = 0;
+        if (e && coop_rd(e, &h, 4) && h == 0x9b84ce69u) {
+            uint64_t x = coop_rd_ptr(e + 8);
+            return x ? coop_rd_ptr(x + 0x150) : 0;
+        }
+    }
+    return 0;
+}
+// Test (TOTK_COOP_TEST_FANTOGGLE=1, played): every 10 s the on bool of the nearest fan within 15 m is flipped (with its
+// change count, as main+0x9fb82c writes it); the player sees whether a fan from a capsule starts and stops. A fan
+// made by requestCreateActor showed "on" in its flags but did not blow (no energy, likely).
+static void fan_flag_publish(uint64_t me) {   // for coop_spawn.c's TOTK_COOP_TEST_FLAGCALLER: the nearest fan's on bool
+    extern uint64_t coop_fan_flag;
+    static int t;
+    if (!cfg_get("TOTK_COOP_TEST_FLAGCALLER") || ++t % 30) return;
+    uint64_t found[4] = {0};
+    if (!coop_rd(me + COOP_ACTOR_POS, &found[2], 12)) return;
+    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
+    coop_actors_live(zd_fn, found);
+    coop_fan_flag = found[1] ? dev_on_flag(found[1]) : 0;
+}
+static void fantoggle(uint64_t me) {
+    static int on = -1, t;
+    fan_flag_publish(me);
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_FANTOGGLE") != NULL;
+    if (!on || ++t % 600) return;   // the tick runs twice a frame: about 10 s
+    uint64_t found[4] = {0};
+    if (!coop_rd(me + COOP_ACTOR_POS, &found[2], 12)) return;
+    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
+    coop_actors_live(zd_fn, found);
+    uint64_t bb = 0;
+    uint32_t idx = 0, nch = 0;
+    uint64_t f = found[1] ? dev_on_flag_at(found[1], &bb, &idx) : 0;
+    if (!f) return;
+    uint8_t v = LD8(f) ? 0 : 1;
+    ST8(f, v);
+    uint64_t chg = coop_rd_ptr(bb + 0x1f0);
+    if (chg && coop_rd(bb + 0x1e8, &nch, 4) && idx < nch) ST8(chg + idx, (uint8_t)(LD8(chg + idx) + 1));
+    uint64_t c11 = fan_comp(found[1], 11), c28 = fan_comp(found[1], 28);
+    rt_log("coop: test: fantoggle: %.2f s fan %llx set %s (comp11+0x348 %#x, comp28+0x398 %u)", frame_step_world_us() / 1e6,
+           (unsigned long long)found[1], v ? "on" : "off", c11 ? LD32(c11 + 0x348) : 0, c28 ? LD32(c28 + 0x398) : 0);
+}
+// Test (TOTK_COOP_TEST_FANWATCH=1, played): the code that turns a fan on. While a fan is within 15 m, a write watch
+// is on its on bool (dev_on_flag); when the bool changes (a hit), the watch is taken off, which logs the functions
+// that wrote it ("coop: ... reads/writes by main+..."). Slow while armed (the page faults).
+static void fanwatch(uint64_t me) {
+    static int on = -1, armed, done;
+    static uint64_t flag;
+    static uint8_t was;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_FANWATCH") != NULL;
+    if (!on || done >= 3) return;
+    int coop_watch_arm(uint64_t addr, uint64_t len);   // coop_watch_win.c
+    void coop_watch_disarm(void);
+    extern int coop_watch_writes;
+    if (armed) {
+        static int t;
+        uint8_t v = LD8(flag);
+        if (v != was || ++t > 30 * 60) {   // a change, or a minute without one
+            coop_watch_disarm(), armed = 0, t = 0;
+            rt_log("coop: test: fanwatch: on bool %u -> %u", was, v);
+            if (v != was) done++;
+        }
+        return;
+    }
+    uint64_t found[4] = {0};
+    if (!coop_rd(me + COOP_ACTOR_POS, &found[2], 12)) return;
+    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
+    coop_actors_live(zd_fn, found);
+    if (!found[1] || !(flag = dev_on_flag(found[1]))) return;
+    was = LD8(flag);
+    coop_watch_writes = 1;
+    if (coop_watch_arm(flag, 1)) armed = 1, rt_log("coop: test: fanwatch: watching the on bool (%u) of %llx", was, (unsigned long long)found[1]);
+}
+// Test (TOTK_COOP_TEST_FANSTATE=1, played): every 15 ticks, for the first fan within 15 m, that object's +0x78..+0x8f
+// and the three on/off words, logged when any of them changed.
+static void fanstate_log(uint64_t me) {
+    static int on = -1, t;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_FANSTATE") != NULL;
+    if (!on || ++t % 15) return;
+    uint64_t found[4] = {0};
+    if (!coop_rd(me + COOP_ACTOR_POS, &found[2], 12)) return;
+    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
+    coop_actors_live(zd_fn, found);
+    uint64_t a = found[1];
+    if (!a) return;
+    uint64_t so = dev_state_obj(a), c11 = fan_comp(a, 11), c28 = fan_comp(a, 28), c107 = fan_comp(a, 107);
+    uint32_t w[6] = {0};
+    if (so) coop_rd(so + 0x78, w, 24);
+    uint64_t fo = dev_on_flag(a);
+    uint32_t v[3] = {c11 ? LD32(c11 + 0x348) : 0, c28 ? LD32(c28 + 0x398) : 0, fo ? LD8(fo) : 0xff};
+    static uint32_t last[9];
+    uint32_t now9[9] = {w[0], w[1], w[2], w[3], w[4], w[5], v[0], v[1], v[2]};
+    if (!memcmp(now9, last, sizeof last)) return;
+    memcpy(last, now9, sizeof last);
+    rt_log("coop: fanstate: %.2f s obj %llx +0x78.. %x %x %x %x %x %x | %#x %u %#x", frame_step_world_us() / 1e6,
+           (unsigned long long)so, w[0], w[1], w[2], w[3], w[4], w[5], v[0], v[1], v[2]);
 }
 static int this_paused;   // this game sits in a menu (the clock and this Link both still; set by the tick)
 void coop_players_tick(Cpu *c, int numpad3) {
@@ -2409,6 +2691,11 @@ void coop_players_tick(Cpu *c, int numpad3) {
     stand_test(c, me);
     zonai_test(c, me);
     zonai_log(me);
+    zonai_dump(me);
+    fanset_test(c, me);
+    fanstate_log(me);
+    fanwatch(me);
+    fantoggle(me);
     uint64_t my_eq = eq_of_actor(me);
     keep_player_eq(me, my_eq);
     if (my_eq) read_my_gear(my_eq);
