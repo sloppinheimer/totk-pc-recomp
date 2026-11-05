@@ -117,6 +117,48 @@ void coop_actors_keyed(void (*fn)(uint64_t actor, const char *name, uint32_t key
     }
 }
 
+// Every actor of the game, at rest or not. Each actor has a reference object in one pool, 0x60 bytes apart: +0x40
+// the actor, +0x48 its id, which is its entry number, so the Player's reference and id give the pool's start. About
+// 800 actors in the In-isa save, among them the resting rocks, trees and a sword on the ground that the live list
+// (actors that ran their calc) does not have (TOTK_COOP_TEST_REFPOOL, 2026-11-05). The scan ends after 4096 empty
+// entries in a row. fn gets the actor's name and its key: the enemies' key from where this game first saw it run,
+// else from where it is now (a resting placed object is where the map put it, in every game).
+static int seen_home(uint64_t actor, float out[3]) {
+    uint32_t h = (uint32_t)((actor >> 4) * 2654435761u) & (SEEN_N - 1);
+    for (int k = 0; k < 32; k++, h = (h + 1) & (SEEN_N - 1))
+        if (atomic_load_explicit(&seen[h].actor, memory_order_relaxed) == actor) {
+            if (!atomic_load_explicit(&seen[h].home_ok, memory_order_relaxed)) return 0;
+            memcpy(out, seen[h].home, 12);
+            return 1;
+        }
+    return 0;
+}
+static int name_ok(const char *s) {
+    int n = 0;
+    for (; s[n]; n++)
+        if (!((s[n] >= 'A' && s[n] <= 'Z') || (s[n] >= 'a' && s[n] <= 'z') || (s[n] >= '0' && s[n] <= '9') || s[n] == '_')) return 0;
+    return n >= 3;
+}
+void coop_actors_all(void (*fn)(uint64_t actor, const char *name, uint32_t key, void *arg), void *arg) {
+    uint64_t ref = 0;
+    if (!coop_resident_named("Player", &ref) || !ref) return;
+    uint32_t id = 0;
+    if (!coop_rd(ref + 0x48, &id, 4)) return;
+    uint64_t base = ref - (uint64_t)(id & 0xffff) * 0x60;
+    for (int i = 0, gap = 0; i < 65536 && gap < 4096; i++) {
+        uint64_t r = base + (uint64_t)i * 0x60, a = 0, np = 0;
+        char nm[48] = {0};
+        if (!coop_rd(r + 0x40, &a, 8)) break;
+        if (!a || (a & 7) || !coop_rd(a + COOP_ACTOR_NAME, &np, 8) || !np || !coop_rd(np, nm, 40) || !name_ok(nm)) { gap++; continue; }
+        gap = 0;
+        int32_t st = 0;
+        float home[3];
+        if (!coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6) continue;
+        if (!seen_home(a, home) && !coop_rd(a + COOP_ACTOR_POS, home, 12)) continue;
+        fn(a, nm, enemy_key(nm, home), arg);
+    }
+}
+
 // An enemy this game updates, with its key (0 if not an enemy).
 static uint32_t enemy_of(int cell, uint64_t a, char *nm, size_t n) {
     coop_actor_name(a, nm, n);

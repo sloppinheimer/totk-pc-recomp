@@ -1433,13 +1433,14 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
         snprintf(props[e].name, sizeof props[e].name, "%s", nm);
         if (first && d2 < 36) {
             ps->n_first_near++;
-            if (d2 < dco && !copy_pending_near(p) && ps->n_cand < 32) ps->cand[ps->n_cand++] = e;
+            if (d2 < dco + 1 && !copy_pending_near(p) && ps->n_cand < 32) ps->cand[ps->n_cand++] = e;
         }
     } else {
         float dx = p[0] - props[e].last[0], dy = p[1] - props[e].last[1], dz = p[2] - props[e].last[2];
         if (dx * dx + dy * dy + dz * dz > 1e-4f) props[e].moved = prop_tick, memcpy(props[e].last, p, 12);
     }
-    props[e].seen = prop_tick, props[e].near_me = d2 < dco;
+    // Nearer this Link, or as near within 1 m: two Links on one spot each claimed nothing (props test, 2026-11-05).
+    props[e].seen = prop_tick, props[e].near_me = d2 < dco + 1;
 }
 static int report_props(uint64_t me, CoopObj *out, int max) {
     void coop_actors_keyed(void (*fn)(uint64_t, const char *, uint32_t, int, void *), void *arg);   // coop_world.c
@@ -1496,13 +1497,41 @@ static int report_props(uint64_t me, CoopObj *out, int max) {
 }
 // The objects every game has that co-op players move: this game's own goes where theirs is.
 typedef struct { uint32_t key[COOP_MAX_PLAYERS * COOP_OBJS]; uint64_t actor[COOP_MAX_PLAYERS * COOP_OBJS]; int n; } KeyFind;
-static void keyfind_fn(uint64_t a, const char *nm, uint32_t key, int first, void *arg) {
+static void keyfind_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
     KeyFind *kf = arg;
-    (void)nm, (void)first;
+    (void)nm;
     for (int i = 0; i < kf->n; i++) if (kf->key[i] == (key & ~COOP_OBJ_KEYED) && !kf->actor[i]) kf->actor[i] = a;   // 31 bits sent
 }
+// Keys found here, kept while their actor still has that name: the scan of every actor runs only for new keys, and
+// an object once moved here is no longer where its key says.
+static struct { uint32_t key; uint64_t actor; char name[28]; float pos[3], q[4]; int last; } key_found[128];
+static uint64_t key_cached(uint32_t key, const char *name) {
+    for (int i = 0; i < 128; i++)
+        if (key_found[i].actor && key_found[i].key == key) {
+            char nm[48];
+            int32_t st = 0;
+            if (coop_rd(key_found[i].actor + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6 &&
+                !strcmp(coop_actor_name(key_found[i].actor, nm, sizeof nm), key_found[i].name) && !strncmp(nm, name, 27))
+                return key_found[i].actor;
+            key_found[i].actor = 0;
+        }
+    return 0;
+}
+static void force_to(Cpu *c, uint64_t a, const float pos[3], const float q[4]) {
+    float p[3];
+    if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+    float dx = p[0] - pos[0], dy = p[1] - pos[1], dz = p[2] - pos[2];
+    if (dx * dx + dy * dy + dz * dz < 4e-4f) return;
+    float r[9], m[12];
+    quat_mat(q, r);
+    for (int row = 0; row < 3; row++) {
+        for (int k = 0; k < 3; k++) m[row * 4 + k] = r[row * 3 + k];
+        m[row * 4 + 3] = pos[row];
+    }
+    coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, a, (uint64_t)(uintptr_t)m, 0, 0);
+}
+static void props_hold(Cpu *c);
 static void props_receive(Cpu *c) {
-    void coop_actors_keyed(void (*fn)(uint64_t, const char *, uint32_t, int, void *), void *arg);   // coop_world.c
     static KeyFind kf;
     kf.n = 0;
     const CoopObj *want[COOP_MAX_PLAYERS * COOP_OBJS];
@@ -1514,40 +1543,72 @@ static void props_receive(Cpu *c) {
                 kf.key[kf.n] = slots[i].objs_want[j].id & ~COOP_OBJ_KEYED, kf.actor[kf.n] = 0, kf.n++;
             }
     }
+    props_hold(c);
     if (!kf.n) return;
-    coop_actors_keyed(keyfind_fn, &kf);
+    int need = 0;
+    for (int i = 0; i < kf.n; i++) need |= !(kf.actor[i] = key_cached(kf.key[i], want[i]->name));
+    static int last_scan = -1000;
+    if (need && prop_tick - last_scan >= 15) {   // every actor, at rest too: at most twice a second
+        void coop_actors_all(void (*fn)(uint64_t, const char *, uint32_t, void *), void *arg);   // coop_world.c
+        last_scan = prop_tick;
+        coop_actors_all(keyfind_fn, &kf);
+        for (int i = 0; i < kf.n; i++)
+            if (kf.actor[i] && !key_cached(kf.key[i], want[i]->name)) {
+                static int slot;
+                key_found[slot].key = kf.key[i], key_found[slot].actor = kf.actor[i], key_found[slot].last = 0;
+                coop_actor_name(kf.actor[i], key_found[slot].name, sizeof key_found[slot].name);
+                slot = (slot + 1) % 128;
+            }
+    }
     for (int i = 0; i < kf.n; i++) {
         uint64_t a = kf.actor[i];
         static uint32_t said[64];
         static int n_said;
         int known = 0;
         for (int k = 0; k < n_said; k++) known |= said[k] == kf.key[i];
-        if (!known && n_said < 64) {
+        if (!known && n_said < 64 && (a || last_scan == prop_tick)) {
             said[n_said++] = kf.key[i];
             rt_log("coop: a co-op player moves %s (key %08x)%s", want[i]->name, kf.key[i], a ? "" : ", not updated here: a copy");
         }
         if (!a) {
-            if (!key_missing(kf.key[i])) missing_key[missing_n++ % 64] = kf.key[i], missing_n = missing_n > 64 ? 64 : missing_n;
+            if (last_scan == prop_tick && !key_missing(kf.key[i])) {   // a scan of every actor found none
+                missing_key[missing_n % 64] = kf.key[i];
+                if (missing_n < 64) missing_n++;
+            }
             continue;
         }
+        for (int k = 0; k < 128; k++)   // the last place sent, for after the reports stop
+            if (key_found[k].actor == a) memcpy(key_found[k].pos, want[i]->pos, 12), memcpy(key_found[k].q, want[i]->q, 16), key_found[k].last = prop_tick;
         set_driven(a);
-        float p[3];
-        if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) continue;
-        float dx = p[0] - want[i]->pos[0], dy = p[1] - want[i]->pos[1], dz = p[2] - want[i]->pos[2];
-        if (dx * dx + dy * dy + dz * dz < 4e-4f) continue;
-        float r[9], m[12];
-        quat_mat(want[i]->q, r);
-        for (int row = 0; row < 3; row++) {
-            for (int k = 0; k < 3; k++) m[row * 4 + k] = r[row * 3 + k];
-            m[row * 4 + 3] = want[i]->pos[row];
-        }
-        coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, a, (uint64_t)(uintptr_t)m, 0, 0);
+        force_to(c, a, want[i]->pos, want[i]->q);
+    }
+}
+// The owner sends a moved object until 1 s after it stops; its copy here, moved by this game's physics in between,
+// rolled on for 2 m after; held 2 s, it still slid 1 m down the slope after that (props test, 2026-11-05). For 5 s
+// after the last report it is held at the last place sent.
+static void props_hold(Cpu *c) {
+    for (int k = 0; k < 128; k++) {
+        int age = prop_tick - key_found[k].last;
+        if (!key_found[k].actor || !key_found[k].last || age < 1 || age > 150) continue;
+        if (!key_cached(key_found[k].key, key_found[k].name)) continue;
+        set_driven(key_found[k].actor);
+        force_to(c, key_found[k].actor, key_found[k].pos, key_found[k].q);
     }
 }
 // Test (TOTK_COOP_TEST_PROPS=1, in the game that joined as player 1): at 24 s into the world it makes a BombFruit
-// 1 m above this Link (an object of its own), and from 28 s to 30 s it lifts the nearest placed object within 6 m
-// 1 cm a tick (one every game has); the other game's log shows both arriving. Then every 30 ticks both games log
+// 1 m above this Link (an object of its own), and from 28 s to 30 s it lifts the nearest resting AsbObj_ (a rock)
+// within 20 m by 1.5 m (one every game has); the other game's log shows both arriving. Then every 30 ticks both games log
 // where that object is, for comparing.
+static float lift_from[3], lift_best, lift_at[3];
+static uint64_t lift_obj;
+static uint32_t lift_key;
+static void lift_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
+    (void)arg;
+    float q[3];
+    if (strncmp(nm, "AsbObj_", 7) || !coop_rd(a + COOP_ACTOR_POS, q, 12)) return;
+    float d2 = (q[0] - lift_from[0]) * (q[0] - lift_from[0]) + (q[1] - lift_from[1]) * (q[1] - lift_from[1]) + (q[2] - lift_from[2]) * (q[2] - lift_from[2]);
+    if (d2 < lift_best) lift_best = d2, lift_obj = a, lift_key = key, memcpy(lift_at, q, 12);
+}
 static void props_test(Cpu *c, uint64_t me) {
     static int on = -1, made, picked;
     static uint64_t obj;
@@ -1571,13 +1632,10 @@ static void props_test(Cpu *c, uint64_t me) {
         rt_log("coop: test: props: BombFruit is here (%llx)", (unsigned long long)a);
     }
     if (coop_net_id() == 1 && !picked && now > 28) {
-        float best = 36;
-        for (int e = 0; e < PROPS_N; e++) {
-            float q[3];
-            if (!props[e].actor || props[e].made || prop_tick - props[e].seen > 1 || !coop_rd(props[e].actor + COOP_ACTOR_POS, q, 12)) continue;
-            float d2 = (q[0] - p[0]) * (q[0] - p[0]) + (q[1] - p[1]) * (q[1] - p[1]) + (q[2] - p[2]) * (q[2] - p[2]);
-            if (d2 < best) best = d2, obj = props[e].actor, obj_key = props[e].key & ~COOP_OBJ_KEYED, memcpy(base, q, 12);
-        }
+        void coop_actors_all(void (*fn)(uint64_t, const char *, uint32_t, void *), void *arg);   // coop_world.c
+        memcpy(lift_from, p, 12), lift_best = 400, lift_obj = 0;
+        coop_actors_all(lift_fn, NULL);   // the nearest placed object (AsbObj_ rocks), at rest
+        obj = lift_obj, obj_key = lift_key & ~COOP_OBJ_KEYED, memcpy(base, lift_at, 12);
         picked = 1;
         char nm[48] = "";
         if (obj) coop_actor_name(obj, nm, sizeof nm);
@@ -1603,6 +1661,73 @@ static void props_test_where(void) {
         if (driven[i].actor && driven[i].until >= prop_tick && coop_rd(driven[i].actor + COOP_ACTOR_POS, q, 12))
             rt_log("coop: test: props: driven here %llx at %.2f %.2f %.2f", (unsigned long long)driven[i].actor, q[0], q[1], q[2]);
     }
+}
+// Test (TOTK_COOP_TEST_REFPOOL=1): at 25 s into the world, once, the memory 8 MiB around this Link's reference
+// object is searched for other reference objects (a word at +0x40 that is an actor: a readable name, a state 0..11),
+// to learn whether every actor's reference sits in one pool (then walking it lists the actors at rest too).
+static int plausible_name(const char *s) {
+    int n = 0;
+    for (; s[n]; n++)
+        if (!((s[n] >= 'A' && s[n] <= 'Z') || (s[n] >= 'a' && s[n] <= 'z') || (s[n] >= '0' && s[n] <= '9') || s[n] == '_')) return 0;
+    return n >= 3;
+}
+static void refpool_test(void) {
+    static int on = -1, done;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_REFPOOL") != NULL;
+    if (!on || done || frame_step_world_us() < 25000000) return;
+    done = 1;
+    uint64_t ref = 0, me = coop_resident_named("Player", &ref);
+    if (!me || !ref) return;
+    rt_log("coop: test: refpool: Player %llx ref %llx id %x", (unsigned long long)me, (unsigned long long)ref, (unsigned)LD32(ref + 0x48));
+    int hits = 0, near_me = 0;
+    uint64_t lo = ref - 0x800000, hi = ref + 0x800000, first = 0, last = 0, prev = 0;
+    static uint64_t steps[8];
+    static int step_n[8];
+    for (uint64_t r = lo & ~7ull; r < hi; r += 8) {
+        uint64_t a;
+        if (!coop_rd(r + 0x40, &a, 8) || a < 0x1000 || (a & 7)) continue;
+        uint64_t np;
+        int32_t st;
+        char nm[48];
+        if (!coop_rd(a + COOP_ACTOR_NAME, &np, 8) || !np || !coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 0 || st > 11) continue;
+        memset(nm, 0, sizeof nm);
+        if (!coop_rd(np, nm, 40) || !plausible_name(nm)) continue;
+        // its back link: an actor's reference names it (the Player's does); keep those whose actor points back
+        hits++;
+        if (!first) first = r;
+        last = r;
+        if (prev) {
+            uint64_t d = r - prev;
+            int k = 0;
+            while (k < 8 && step_n[k] && steps[k] != d) k++;
+            if (k < 8) steps[k] = d, step_n[k]++;
+        }
+        prev = r;
+        float p[3], q[3];
+        if (coop_rd(a + COOP_ACTOR_POS, p, 12) && coop_rd(me + COOP_ACTOR_POS, q, 12)) {
+            float d2 = (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]);
+            if (d2 < 400 && near_me++ < 40)
+                rt_log("coop: test: refpool: %+lld %s state %d at %.1f %.1f %.1f (%.1f m)", (long long)(r - ref), nm, st, p[0], p[1], p[2], sqrtf(d2));
+        }
+        if (hits <= 10) rt_log("coop: test: refpool: hit %+lld %s", (long long)(r - ref), nm);
+    }
+    rt_log("coop: test: refpool: %d hits from %+lld to %+lld, %d within 20 m", hits, (long long)(first - ref), (long long)(last - ref), near_me);
+    {   // the pool from its start, if an id is the entry number
+        uint32_t id = LD32(ref + 0x48);
+        uint64_t base = ref - (uint64_t)(id & 0xffff) * 0x60;
+        int valid = 0, last_i = -1, match = 0, shown = 0, gap = 0;
+        for (int i = 0; i < 65536 && gap < 4096; i++) {
+            uint64_t r = base + (uint64_t)i * 0x60, a = 0, np = 0;
+            uint32_t rid = 0;
+            char nm[48] = {0};
+            if (!coop_rd(r + 0x40, &a, 8) || !coop_rd(r + 0x48, &rid, 4)) break;
+            if (!a || (a & 7) || !coop_rd(a + COOP_ACTOR_NAME, &np, 8) || !np || !coop_rd(np, nm, 40) || !plausible_name(nm)) { gap++; continue; }
+            gap = 0, valid++, last_i = i, match += (int)(rid & 0xffff) == i;
+            if (shown++ < 12) rt_log("coop: test: refpool: entry %d id %x %s", i, rid, nm);
+        }
+        rt_log("coop: test: refpool: from base %+lld: %d actors, last entry %d, %d with id == entry", (long long)(base - ref), valid, last_i, match);
+    }
+    for (int k = 0; k < 8 && step_n[k]; k++) rt_log("coop: test: refpool: step %#llx x%d", (unsigned long long)steps[k], step_n[k]);
 }
 static int this_paused;   // this game sits in a menu (the clock and this Link both still; set by the tick)
 void coop_players_tick(Cpu *c, int numpad3) {
@@ -1680,6 +1805,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
     }
     armor_probe(me);
     arrow_log(me);
+    refpool_test();
     uint64_t my_eq = eq_of_actor(me);
     keep_player_eq(me, my_eq);
     if (my_eq) read_my_gear(my_eq);
