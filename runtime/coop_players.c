@@ -60,6 +60,9 @@ typedef struct {
     int have_body;
     float top_last;                    // its highest body bone last frame (jitter watch)
     int have_phys;
+    int live_ticks;                    // ticks since it went LIVE (proxy mode freezes it after PROXY_WARMUP_TICKS)
+    float px_top, px_y, px_root;              // proxy mode: its body top and world height last frame (jump watch)
+    int px_have;
     _Alignas(16) uint8_t gear_str[COOP_GEAR_SLOTS][0x60];   // the names handed to the creates, kept while they run
 } Slot;
 static Slot slots[COOP_MAX_PLAYERS];
@@ -448,6 +451,7 @@ static Slot *slot_new(int source, int net_id) {
             memset(s->gear_want, 0, sizeof s->gear_want), memset(s->gear_have, 0, sizeof s->gear_have);
             memset(s->dye_want, -1, sizeof s->dye_want), memset(s->dye_have, -1, sizeof s->dye_have);
             s->out_want = 0, s->out_have = -1, s->have_phys = 0, s->top_last = -1e9f, s->have_body = 0;
+            s->live_ticks = 0, s->px_have = 0;
             s->state = WANTED;
             rt_log("coop: player slot %d for %s %d", i, source == SRC_NET ? "remote player" : "local pad", net_id);
             return s;
@@ -515,8 +519,91 @@ static int frozen(void) {
     if (at == -2) { const char *e = cfg_get("TOTK_COOP_TEST_FREEZE"); at = e ? atof(e) : -1; }
     return at >= 0 && frame_step_world_us() / 1e6 >= at;
 }
+// ---- proxy mode (TOTK_COOP_PROXY=1, docs/coop/proxy-plan.md stage 1): after PROXY_WARMUP_TICKS of normal updates
+// (its gear and its input pose object are made then) a remote player's Link runs none of its own update: its calc and
+// update phases are skipped. In place of its update phase main+0x245030 the driver below puts it where its owner is
+// (actor transform, model world matrix +0x1f8 with the dirty bit), poses its body (main+0x283c750 with the input pose
+// object kept from before; the hook on it puts the owner's pose in) and pushes the model matrix to the model units
+// (main+0x24cc30 (model), which also places parts hung on body bones).
+#define PROXY_WARMUP_TICKS 180
+#define PROXY_MODEL_PUSH 0x24cc30
+#define PROXY_POSE_WRITER 0x283c750
+static void owner_matrix(Slot *s, float m[12]);
+static float body_top(uint64_t actor);
+static float body_top_root(uint64_t actor, float *root_y);
+static void top_log(const char *who, uint64_t actor);
+int coop_proxy_mode(void);   // coop_world.c
+uint64_t coop_puppet_pose_obj(uint64_t skel);   // coop_world.c
+static uint64_t body_skeleton(uint64_t actor) {
+    static const uint32_t path[8] = {0x48, 0x2a8, 0x20, 0x20, 0, 0xf8, 0x58, 0xb0};
+    uint64_t sk = actor;
+    for (int k = 0; k < 8 && sk; k++) sk = coop_rd_ptr(sk + path[k]);
+    return sk;
+}
+static int proxied(const Slot *s) {
+    return coop_proxy_mode() && s->source == SRC_NET && s->state == LIVE && s->have_want && s->live_ticks > PROXY_WARMUP_TICKS &&
+           coop_puppet_pose_obj(body_skeleton(s->actor));
+}
+static void proxy_drive(Cpu *c, Slot *s) {
+    uint64_t actor = s->actor;
+    float m[12], pos[3], rot[9];
+    owner_matrix(s, m);
+    for (int r = 0; r < 3; r++) {
+        pos[r] = m[r * 4 + 3];
+        for (int k = 0; k < 3; k++) rot[r * 3 + k] = m[r * 4 + k];
+    }
+    memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_POS), pos, 12);
+    memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_ROT), rot, 36);
+    uint64_t model = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x8) + 0x28);
+    if (model) {
+        memcpy((void *)(uintptr_t)(model + 0x1f8), m, sizeof m);
+        ST8(model + 0x240, LD8(model + 0x240) | 1);
+    }
+    uint64_t sk = body_skeleton(actor), pose = coop_puppet_pose_obj(sk);
+    static int no_pose = -1;   // TOTK_COOP_PROXY_NOPOSE=1: the body pose is not driven (control)
+    if (no_pose < 0) no_pose = cfg_get("TOTK_COOP_PROXY_NOPOSE") != NULL;
+    int coop_proxy_put_records(uint64_t skel);   // coop_world.c
+    if (sk && !no_pose && !coop_proxy_put_records(sk) && pose) coop_guest_call(c, MOD_MAIN_BASE + PROXY_POSE_WRITER, pose, sk, 0, 0);
+    if (model) coop_guest_call(c, MOD_MAIN_BASE + PROXY_MODEL_PUSH, model, 0, 0, 0);
+    // Jump watch: its body top (model space, skeleton +0x20) and its world height, frame to frame; standing = the
+    // owner's reported velocity under 5 cm/s with no stick or buttons held. Summary every 600 frames, each standing jump over 1 cm logged.
+    float root_y = 0, top = body_top_root(actor, &root_y);
+    float v2 = s->vel[0] * s->vel[0] + s->vel[1] * s->vel[1] + s->vel[2] * s->vel[2];
+    int standing = v2 < 0.05f * 0.05f && s->idle;   // and no stick or buttons (running into a wall keeps it in place)
+    static int frames, stand_frames, stand_jumps, top_changed, said;
+    static float stand_max;
+    frames++;
+    if (s->px_have) {
+        float dt = fabsf(top - s->px_top), dy = fabsf(pos[1] - s->px_y), dr = fabsf(root_y - s->px_root), d = dt > dy ? dt : dy;
+        if (dr > d) d = dr;
+        if (top != s->px_top) top_changed++;
+        if (standing) {
+            stand_frames++;
+            if (d > stand_max) stand_max = d;
+            if (d > 0.01f && ++stand_jumps <= 100)
+                rt_log("coop: proxy: slot %d standing jump at %.3f s: body top %+.1f cm, root bone %+.1f cm, height %+.1f cm", (int)(s - slots),
+                       frame_step_world_us() / 1e6, (top - s->px_top) * 100, (root_y - s->px_root) * 100, (pos[1] - s->px_y) * 100);
+        }
+    }
+    s->px_top = top, s->px_y = pos[1], s->px_root = root_y, s->px_have = 1;
+    if (frames % 600 == 0) {
+        rt_log("coop: proxy: slot %d: %d frames, body top changed in %d; standing %d frames, %d jumps over 1 cm, largest %.2f cm",
+               (int)(s - slots), frames, top_changed, stand_frames, stand_jumps, stand_max * 100);
+        top_changed = 0, stand_frames = 0, stand_max = 0;
+    }
+    if (!said++) rt_log("coop: proxy: slot %d is driven from %.3f s (its update no longer runs; pose object %llx, model %llx)", (int)(s - slots), frame_step_world_us() / 1e6,
+                        (unsigned long long)pose, (unsigned long long)model);
+    top_log("puppet", actor);
+}
 int coop_players_phase(Cpu *c, uint64_t addr) {
     if (inside || !slot_of_actor(c->x[0])) return 0;
+    {
+        Slot *ps = slot_of_actor(c->x[0]);
+        if (proxied(ps)) {
+            if (addr == MOD_MAIN_BASE + 0x245030) proxy_drive(c, ps);
+            return 1;
+        }
+    }
     // TOTK_COOP_TEST_FREEZE_PHASES=0: the freeze stops the calc only; these phases (model, physics) still run
     static int keep_phases = -1;
     if (keep_phases < 0) { const char *e = cfg_get("TOTK_COOP_TEST_FREEZE_PHASES"); keep_phases = e && *e == '0'; }
@@ -536,8 +623,12 @@ int coop_players_phase(Cpu *c, uint64_t addr) {
 // snap() every tick. Returns 1 when it ran the step.
 static void owner_matrix(Slot *s, float m[12]);
 static int puppet_delay_ms(void);
-// The highest body bone (model space, skeleton +0x20 row 3) of an actor's body skeleton; -1e9 unknown.
-static float body_top(uint64_t actor) {
+// The highest body bone of an actor's body skeleton, above its root bone (bone 0); -1e9 unknown. The skeleton's
+// +0x20 matrices (0x40 a bone, translation in row 3) are world-space but from an origin of the game's own (the
+// numbers differ from the actor position by metres, and by different amounts in two games), so only differences
+// between bones compare across games. root_y (optional): the root bone's own height in those matrices.
+static __thread int top_bone;   // the bone body_top_root found highest
+static float body_top_root(uint64_t actor, float *root_y) {
     static const uint32_t path[8] = {0x48, 0x2a8, 0x20, 0x20, 0, 0xf8, 0x58, 0xb0};
     uint64_t sk = actor;
     for (int k = 0; k < 8 && sk; k++) sk = coop_rd_ptr(sk + path[k]);
@@ -546,22 +637,56 @@ static float body_top(uint64_t actor) {
     static __thread float rec[600][16];
     if (!wb || !coop_rd(sk + 0x48, &nb, 2) || nb == 0 || nb > 600 || !coop_rd(wb, rec, (size_t)nb * 64)) return -1e9f;
     float top = -1e9f;
-    for (int b = 0; b < nb; b++) if (rec[b][13] > top) top = rec[b][13];
-    return top;
+    int tb = 0;
+    for (int b = 0; b < nb; b++) if (rec[b][13] > top) top = rec[b][13], tb = b;
+    if (root_y) *root_y = rec[0][13];
+    top_bone = tb;
+    return top - rec[0][13];
 }
+static float body_top(uint64_t actor) { return body_top_root(actor, NULL); }
 // TOTK_COOP_TOP_LOG=<s>: for 4 s from then, every frame, this PC's Link's and each puppet's body_top (to tell the
 // owner's own movement from jitter: game A's own Link against game B's puppet of it).
+// TOTK_COOP_TOP_LOG=<s>[,<length s>] (default 4 s). Also the actor's position (tools/coop/top_compare.py lines the
+// owner's log up with the other game's).
 static void top_log(const char *who, uint64_t actor) {
-    static double at = -2;
-    if (at == -2) { const char *e = cfg_get("TOTK_COOP_TOP_LOG"); at = e ? atof(e) : -1; }
+    static double at = -2, len = 4;
+    if (at == -2) {
+        const char *e = cfg_get("TOTK_COOP_TOP_LOG");
+        at = e ? atof(e) : -1;
+        if (e && strchr(e, ',')) len = atof(strchr(e, ',') + 1);
+    }
     double s = frame_step_world_us() / 1e6;
-    if (at < 0 || s < at || s > at + 4) return;
-    rt_log("coop: top %s %.3f %.4f", who, s, body_top(actor));
+    if (at < 0 || s < at || s > at + len) return;
+    float p[3] = {0};
+    coop_rd(actor + COOP_ACTOR_POS, p, 12);
+    float root_y = 0, top = body_top_root(actor, &root_y);
+    rt_log("coop: top %s %.3f %.4f %.4f %.4f %.4f %.4f bone %d", who, s, top, p[0], p[1], p[2], root_y, top_bone);
+    static int dumped[2];
+    int w = who[0] == 'm';
+    if (s > at + 1 && !dumped[w]++) {   // a few of the body skeleton's +0x20 records as they are (layout check)
+        uint64_t sk = actor;
+        static const uint32_t path[8] = {0x48, 0x2a8, 0x20, 0x20, 0, 0xf8, 0x58, 0xb0};
+        for (int k = 0; k < 8 && sk; k++) sk = coop_rd_ptr(sk + path[k]);
+        uint64_t wb = sk ? coop_rd_ptr(sk + 0x20) : 0;
+        static const int bones[5] = {0, 1, 2, 50, 100};
+        for (int i = 0; wb && i < 5; i++) {
+            float f[16];
+            if (!coop_rd(wb + bones[i] * 64, f, 64)) break;
+            rt_log("coop: skel %s bone %d: %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f", who, bones[i],
+                   f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11], f[12], f[13], f[14], f[15]);
+        }
+    }
 }
 int coop_puppet_place(Cpu *c, uint64_t addr) {
     static int tl = -1;
     if (tl < 0) tl = cfg_get("TOTK_COOP_TOP_LOG") != NULL;
     if (tl && c->x[0] && c->x[0] == coop_player_actor()) top_log("mine", c->x[0]);
+    void coop_test_ikdiff(uint64_t me);   // coop_world.c
+    if (c->x[0] && c->x[0] == coop_player_actor()) {
+        coop_test_ikdiff(c->x[0]);
+        void coop_proxy_pack_mine(uint64_t me);   // coop_world.c: proxy mode sends this Link's final local records
+        coop_proxy_pack_mine(c->x[0]);
+    }
     Slot *s = slot_of_actor(c->x[0]);
     int coop_puppet_mode(void);   // coop_world.c
     if (!s || s->state != LIVE || s->source != SRC_NET || !s->have_want || !coop_puppet_mode()) return 0;
@@ -662,6 +787,7 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
 int coop_players_calc(Cpu *c, uint64_t addr) {
     Slot *s;
     if (inside || !(s = slot_of_actor(c->x[0]))) return 0;
+    if (proxied(s)) return 1;   // proxy mode: its calc never runs (proxy_drive)
     if (frozen()) {
         static int said;
         if (!said++) rt_log("coop: test: the co-op Links' updates no longer run");
@@ -1012,6 +1138,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
                     rt_log("coop: slot %d: owner's gear slot %d is %s (dye %d)", i, coop_gear_slot[k], s->gear_want[k], s->dye_want[k]);
                     give_gear(c, eq, k, none ? "" : s->gear_want[k], s->dye_want[k], -1, s->gear_str[k]);
                 }
+            if (s->state == LIVE) s->live_ticks++;
             int coop_puppet_mode(void);   // coop_world.c
             // Puppet mode: it gets no input, so it never draws an item itself. The EquipmentUser's per-slot byte
             // +0x4620 (0 weapon, 3 bow, 4 shield) bit 1 is what main+0x3e322c also reads as "in hand"; set while the
@@ -1031,7 +1158,11 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 if ((now | s->out_want << 4) != hand_said)
                     rt_log("coop: puppet: slot %d holds %#x, owner %#x", i, now, s->out_want), hand_said = now | s->out_want << 4;
             }
-            if (s->state == LIVE && s->source == SRC_NET && s->have_want && coop_puppet_mode()) {
+            if (proxied(s)) {   // proxy mode: placed by proxy_drive, no teleports
+                int k = s->nseen++ % 32;
+                if (coop_rd(s->actor + COOP_ACTOR_POS, s->seen[k].pos, 12)) s->seen[k].ns = plat_now_ns();
+                else s->seen[k].ns = 0;
+            } else if (s->state == LIVE && s->source == SRC_NET && s->have_want && coop_puppet_mode()) {
                 // Puppet mode: it gets no input, so its body is moved to its owner, but only once it is 10 cm off:
                 // a teleport every tick makes it lose and find the ground on alternate frames, and the foot
                 // placement then drops its hips (the jitter seen on stairs, 2026-11-05).

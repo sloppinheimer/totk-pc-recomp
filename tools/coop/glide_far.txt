@@ -1,0 +1,13 @@
+# Rito Village Sage save (first in the Continue list): glide.txt from 14 s into the world, so the other game is in by
+# then: walk forward and a little to the right over the tower platform's rail, in front of the other game's camera
+# but clear of its own Link (it plays idle.txt), open
+# the paraglider (X) and glide away for 20 s (a co-op Link far away; proxy tests).
+300 A 4
+520 A 4
+700 A 4
+900 A 4
+@14000 LSTICK 14000 32767 4000
+@17000 X 150
+@17600 X 150
+@18200 X 150
+@18000 LSTICK 14000 32767 20000
