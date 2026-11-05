@@ -1349,12 +1349,15 @@ static void place_copy(Cpu *c, Slot *s, int k) {
 //   while within 20 m, by number, and shown in the other games as a frozen copy, as an arrow. A save load or a
 //   streamed-in area makes many at once: more than 6 new near this Link in one tick are taken as the world's.
 // - One every game has (a placed rock or plank): known everywhere by its key (name and where it was first seen, as
-//   the enemies'). While it moves within 20 m of this Link and nearer it than any co-op Link, it is sent with its
-//   key until 1 s after it stops; the other games force theirs to that place (COOP_FORCE_MATRIX), and do not send
-//   it themselves while they do.
+//   the enemies'). Once it moves in this game within 20 m of this Link while no co-op player's report moves it, it
+//   is sent with its key while within 20 m, at rest too (a game without it shows a copy, which went away 1 s after
+//   the object came to rest when only moves were sent); the other games force theirs to that place
+//   (COOP_FORCE_MATRIX), and do not send it themselves while they do. Taken by the nearer Link only, a rock lifted
+//   by A with B's Link nearer was sent by neither (B's was at rest). Two games sending one: the lower player id's
+//   report wins.
 // Not checked in a game yet: which actors Ultrahand, autobuild and the Zonai devices move or make; the tester tests it.
 #define PROPS_N 256
-static struct { uint64_t actor; uint32_t key, id; int seen, moved, born, made, near_me, said; float last[3]; char name[28]; } props[PROPS_N];
+static struct { uint64_t actor; uint32_t key, id; int seen, moved, born, made, touched, near_me, said; float last[3]; char name[28]; } props[PROPS_N];
 static struct { uint64_t actor; int until; } driven[64];   // actors this game forces to another's report
 static int prop_tick;
 // Keys another game moves that this game does not update (an object at rest runs no per-actor calc, so it is not in
@@ -1428,7 +1431,7 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
     int e = -1, free = -1;
     for (int i = 0; i < PROPS_N && e < 0; i++) {
         if (props[i].actor == a) e = i;
-        else if (free < 0 && (!props[i].actor || (prop_tick - props[i].seen > 30 && !props[i].made))) free = i;
+        else if (free < 0 && (!props[i].actor || (prop_tick - props[i].seen > 30 && !props[i].made && !props[i].touched))) free = i;
     }
     if (e < 0) {
         if (free < 0) return;
@@ -1442,7 +1445,10 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
         }
     } else {
         float dx = p[0] - props[e].last[0], dy = p[1] - props[e].last[1], dz = p[2] - props[e].last[2];
-        if (dx * dx + dy * dy + dz * dz > 1e-4f) props[e].moved = prop_tick, memcpy(props[e].last, p, 12);
+        if (dx * dx + dy * dy + dz * dz > 1e-4f) {
+            props[e].moved = prop_tick, memcpy(props[e].last, p, 12);
+            props[e].touched = 1;   // it moves in this game and no co-op player moves it: sent from now on (report_props)
+        }
     }
     // Nearer this Link, or as near within 1 m: two Links on one spot each claimed nothing (props test, 2026-11-05).
     props[e].seen = prop_tick, props[e].near_me = d2 < dco + 1;
@@ -1463,16 +1469,20 @@ static int report_props(uint64_t me, CoopObj *out, int max) {
     int n = 0;
     for (int e = 0; e < PROPS_N && n < max; e++) {
         if (!props[e].actor) continue;
-        if (props[e].made && props[e].seen != prop_tick) {
+        if ((props[e].made || props[e].touched) && props[e].seen != prop_tick) {
             // At rest it runs no calc and leaves the live list; it is still there until the game takes it away
-            // (state 7..11) or the memory holds another actor. Sent while within 20 m.
+            // (state 7..11) or the memory holds another actor. Sent while within 20 m; one this Link moved is
+            // forgotten beyond that, or once another player moves it (this game forces it then).
             int32_t st = 0;
             char nm[48];
             float q[3];
             if (!coop_rd(props[e].actor + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 ||
                 strcmp(coop_actor_name(props[e].actor, nm, sizeof nm), props[e].name)) { props[e].actor = 0; continue; }
-            if (!coop_rd(props[e].actor + COOP_ACTOR_POS, q, 12) || (q[0] - me_p[0]) * (q[0] - me_p[0]) + (q[1] - me_p[1]) * (q[1] - me_p[1]) +
-                (q[2] - me_p[2]) * (q[2] - me_p[2]) > 400) continue;
+            if (!props[e].made && is_driven(props[e].actor)) { props[e].touched = 0; continue; }
+            int far = !coop_rd(props[e].actor + COOP_ACTOR_POS, q, 12) || (q[0] - me_p[0]) * (q[0] - me_p[0]) + (q[1] - me_p[1]) * (q[1] - me_p[1]) +
+                      (q[2] - me_p[2]) * (q[2] - me_p[2]) > 400;
+            if (far && !props[e].made) props[e].touched = 0;
+            if (far) continue;
         } else if (props[e].seen != prop_tick) continue;
         Slot *cs;
         int ck;
@@ -1481,7 +1491,7 @@ static int report_props(uint64_t me, CoopObj *out, int max) {
             if (prop_tick - props[e].born < 10 || prop_skip(props[e].name)) continue;   // a copy made here is known by now; gear worn again
             if (copy_of(props[e].actor, &cs, &ck)) { props[e].made = 0; continue; }
             id = props[e].id;
-        } else if (prop_tick - props[e].moved <= 30 && props[e].near_me)
+        } else if (props[e].touched)
             id = COOP_OBJ_KEYED | (props[e].key & ~COOP_OBJ_KEYED);
         if (!id) continue;
         CoopObj *o = &out[n];
@@ -1536,15 +1546,20 @@ static void force_to(Cpu *c, uint64_t a, const float pos[3], const float q[4]) {
     coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, a, (uint64_t)(uintptr_t)m, 0, 0);
 }
 static void props_hold(Cpu *c);
+static int my_report(uint64_t a) {   // this game sends a as moved
+    for (int e = 0; e < PROPS_N; e++) if (props[e].actor == a) return props[e].touched && !props[e].made;
+    return 0;
+}
 static void props_receive(Cpu *c) {
     static KeyFind kf;
     kf.n = 0;
     const CoopObj *want[COOP_MAX_PLAYERS * COOP_OBJS];
+    static int want_from[COOP_MAX_PLAYERS * COOP_OBJS];
     for (int i = 0; i < COOP_MAX_PLAYERS; i++) {
         if (slots[i].state != LIVE || slots[i].source != SRC_NET) continue;
         for (int j = 0; j < COOP_OBJS; j++)
             if (slots[i].objs_want[j].id & COOP_OBJ_KEYED) {
-                want[kf.n] = &slots[i].objs_want[j];
+                want[kf.n] = &slots[i].objs_want[j], want_from[kf.n] = slots[i].net_id;
                 kf.key[kf.n] = slots[i].objs_want[j].id & ~COOP_OBJ_KEYED, kf.actor[kf.n] = 0, kf.n++;
             }
     }
@@ -1582,6 +1597,7 @@ static void props_receive(Cpu *c) {
             }
             continue;
         }
+        if (coop_net_id() < want_from[i] && my_report(a)) continue;   // this game sends it too, and wins
         for (int k = 0; k < 128; k++)   // the last place sent, for after the reports stop
             if (key_found[k].actor == a) memcpy(key_found[k].pos, want[i]->pos, 12), memcpy(key_found[k].q, want[i]->q, 16), key_found[k].last = prop_tick;
         set_driven(a);

@@ -678,3 +678,8 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
 - Pair test with bow_fuse_3rd.txt and TOTK_COOP_TEST_PROPS: B has copies of all four arrows and the fused
   BombFruit, places arrow 1 through its flight, finds and moves the lifted rock, and shows a copy of an object it
   does not have.
+- Moved objects are now sent while within 20 m once they moved, at rest too: a game without the object showed a
+  copy that went away 1 s after it came to rest (the test BombFruit, made again and again). And they are taken by
+  the game they move in, not the nearer Link: with B's Link nearer, A's lifted rock was sent by neither (B's was
+  at rest there). Two games sending one object: the lower player id wins. Props test, both idle on one spot: B's
+  rock ends 0.15 m from A's and stays; nothing else sent.
