@@ -1,0 +1,27 @@
+# The 100% save (third in the Continue list), at In-isa Shrine: the abilities for the other game's co-op Link
+# (tools/coop/run_pair.ps1 -ScriptB): the current one (tap L), then the wheel (hold L) up, right, down, left, each
+# cancelled with B; then climbing the stair's side wall to the left, jumps, and the quick item menu (hold UP).
+300 A 4
+520 DOWN 4
+580 DOWN 4
+640 A 4
+800 A 4
+@12000 L 150
+@14000 B 150
+@16000 L 1200
+@16200 RSTICK 0 32767 1000
+@18500 B 150
+@20000 L 1200
+@20200 RSTICK 32767 0 1000
+@22500 B 150
+@24000 L 1200
+@24200 RSTICK 0 -32767 1000
+@26500 B 150
+@28000 L 1200
+@28200 RSTICK -32767 0 1000
+@30500 B 150
+@32000 LSTICK -32767 0 5000
+@37500 X 150
+@38500 X 150
+@40000 UP 1500
+@42000 B 150

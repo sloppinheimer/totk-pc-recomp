@@ -282,3 +282,12 @@ instead of by action:
   TOTK_COOP_TRACE=gdata (game-data enum writes), TOTK_COOP_TEST_GDATA_KEEP / TEST_LIFE_KEEP (controls).
 - Not covered: shared systems the tour did not reach (swimming, climbing, riding, abilities, cooking, enemies hitting
   a co-op Link); sound and effects were not looked at.
+- Abilities tour (tools/coop/tour2.txt on the 100% save at In-isa Shrine: ability, wheel up/right/down/left, climbing,
+  jumps, the quick item menu; A plays tools/coop/idle_3rd.txt): A's view took the red Ultrahand tint (4-5 frames;
+  tipcheck.py now counts it) and its object highlight (main+0x585a30 from the model update main+0x580ff0, outside the
+  co-op Link's calc). A co-op Link has no L now (coop_fill_controller): its abilities would run in this game on this
+  game's objects, which are not shared. After: no tint in A (30 frames). No wheel, no ability change, no item menu
+  showed in A before either. Also skipped now: game-data setters main+0x16ee70, 0x31d824, and the ability screen
+  effects [main+0x3a5e878] (start main+0x2056f3c, end 0x205719c, focus 0x2057384) inside a co-op Link's update.
+  Controls: TOTK_COOP_TEST_ABILITY_KEEP.
+- Still not covered by a tour: swimming, riding, cooking, an enemy hitting a co-op Link, sound.
