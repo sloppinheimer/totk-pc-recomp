@@ -111,6 +111,10 @@ right in the tester's own two-pad session.
 - **Riding** another player's contraption (protocol 12): this Link is carried by the object it stands on; the copy
   is moved by physics speed so it holds the Link up; the other games put the rider on their one of the object. Ride
   test at 5 m/s: on for 50 m on both screens. Not tested with a real glider flown in play, turning, or two riders.
+- **Zonai devices** on the other screens: copies of devices run their own logic, and a player's attack makes their
+  proxy swing in the other games, so a hit turns the copy on there too (a fan in the pair test). Effects are the
+  copies' own (not yet looked at on screen). Not covered: devices turned on other ways (arrows, a steering stick,
+  contact for rockets), the copy drawing the other player's battery, the swing hitting other things there.
 - Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
 
 ## Plan

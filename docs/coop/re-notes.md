@@ -751,3 +751,9 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   over), it is taken the same way but does not turn the fan on; whole, it overwrote the fan's own links. So the hit
   also goes elsewhere (likely the attack object those links point to). A NormalArrow given a speed toward a fan moved
   0.5 m and stopped (an arrow flies only when a bow shoots it).
+- The proxy's sword works (the tester's pick): when a player presses attack (Y), its proxy in the other games runs its
+  own update for 40 frames with Y let through (the rest of its input stays off), so its sword swings there and the
+  game's own hit lands on what it reaches. A Zonai device's copy now runs its own update (still placed at its owner's
+  place every tick). Pair test (TOTK_COOP_TEST_FANSET=9 in A, fan_hits_3rd.txt): A's hit turns A's fan on (0xa000,
+  energy 10) and B's proxy's swing turns B's copy on the same way 1.2 s later in B's clock. The copy draws on B's
+  Link's battery (the game's rule), and the proxy's swing hits what else is there too. TOTK_COOP_PROXY_SWING=0 off.

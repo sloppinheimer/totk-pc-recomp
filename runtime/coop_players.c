@@ -77,7 +77,8 @@ typedef struct {
     float top_last;                    // its highest body bone last frame (jitter watch)
     int have_phys;
     int live_ticks;
-    int thaw;                          // proxy mode: frames of its own update still to run (a gear change)                    // ticks since it went LIVE (proxy mode freezes it after PROXY_WARMUP_TICKS)
+    int thaw;                          // proxy mode: frames of its own update still to run (a gear change)
+    int atk_thaw;                      // proxy mode: of those, frames the owner's attack button is let through                    // ticks since it went LIVE (proxy mode freezes it after PROXY_WARMUP_TICKS)
     float px_top, px_y, px_root;              // proxy mode: its body top and world height last frame (jump watch)
     int px_have;
     _Alignas(16) uint8_t gear_str[COOP_GEAR_SLOTS][0x60];   // the names handed to the creates, kept while they run
@@ -683,7 +684,7 @@ int coop_players_phase(Cpu *c, uint64_t addr) {
                 inside = 0;
                 // Counted down here, in frames its update ran: counted per tick, a change that came while this game
                 // was in a menu (no updates) ran out unseen and the proxy kept its old armor (menu_3rd.txt, 2026-11-05).
-                if (addr == MOD_MAIN_BASE + 0x245030) ps->thaw--;
+                if (addr == MOD_MAIN_BASE + 0x245030) ps->thaw--, ps->atk_thaw -= ps->atk_thaw > 0;
             }
             if (addr == MOD_MAIN_BASE + 0x245030) proxy_drive(c, ps);
             return 1;
@@ -896,7 +897,9 @@ int coop_players_calc(Cpu *c, uint64_t addr) {
     static int noinput = -1;
     int coop_puppet_mode(void);   // coop_world.c: puppet mode gives no input either
     if (noinput < 0) noinput = cfg_get("TOTK_COOP_TEST_NOINPUT") != NULL || coop_puppet_mode();
-    if (noinput) buttons = 0, memset(stick, 0, sizeof stick);
+    // Proxy mode: no input, except the owner's attack button in an attack thaw, so its sword really swings here and
+    // what it hits (a Zonai device's copy) gets the game's own hit (the tester: "try the proxy's sword", 2026-11-05).
+    if (noinput) buttons = s->atk_thaw > 0 ? buttons & (1ull << 3) : 0, memset(stick, 0, sizeof stick);
     coop_fill_controller(own, buttons, stick, &s->prev, s->held);
     ST64(mgr + 0xa0, own);
     static int diff_on = -1;   // TOTK_COOP_TRACE=diff: main's writable data the co-op Link's calc changes
@@ -1021,6 +1024,11 @@ static void snap(Cpu *c, Slot *s) {
     coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, s->actor, (uint64_t)(uintptr_t)m, 0, 0);
 }
 
+static int attack_thaw_on(void) {   // TOTK_COOP_PROXY_SWING=0: the proxy does not swing here when its owner attacks
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_PROXY_SWING"); on = !(e && *e == '0'); }
+    return on;
+}
 static void set_input(Slot *s, uint64_t buttons, const int32_t sticks[4]) {
     plat_mutex_lock(&lock);
     s->buttons = buttons;
@@ -1324,7 +1332,9 @@ static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc) {
     Slot *s;
     int k;
     (void)c, (void)addr, (void)calc;
-    return copy_of(actor, &s, &k) && s->mir[k].ticks >= COPY_WARMUP;
+    // A Zonai device's copy runs its own update, so a hit here (the proxy's sword) turns it on, with its effects;
+    // it is still put at the owner's place every tick (place_copy).
+    return copy_of(actor, &s, &k) && s->mir[k].ticks >= COPY_WARMUP && strncmp(s->mir[k].name, "SpObj_", 6);
 }
 // Each tick, a copy is put where its arrow is: actor position and rotation, model matrix and the push to the model
 // units, as the proxy. Done from the tick, not in one of its own updates: the game stopped calling a frozen arrow's
@@ -2342,7 +2352,7 @@ static void zd_fn(uint64_t a, void *arg) {
     float p[3], q[3];
     memcpy(q, &found[2], 12);
     if (!coop_rd(a + COOP_ACTOR_POS, p, 12) ||
-        (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]) > 225) return;
+        (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]) > 625) return;   // 25 m
     found[1] = a;
 }
 static void zonai_dump(uint64_t me) {
@@ -2405,7 +2415,7 @@ static void fanset_test(Cpu *c, uint64_t me) {
     static _Alignas(16) uint8_t handle[0x40], link[0x40];
     static uint64_t fan;
     if (which < 0) which = cfg_get("TOTK_COOP_TEST_FANSET") ? atoi(cfg_get("TOTK_COOP_TEST_FANSET")) : 0;
-    if (!which) return;
+    if (!which || (coop_net_on() && coop_net_id() != 1)) return;   // on a relay, only in the game that joined first
     double now = frame_step_world_us() / 1e6;
     if (stage == 0 && now > 21) {   // 9: facing -x, 1 m from where the fan will be (scripted sword hits reach it)
         float m9[12] = {0, 0, -1, 31.3f, 0, 1, 0, 1514.8f, 1, 0, 0, 1510.7f};
@@ -2431,7 +2441,7 @@ static void fanset_test(Cpu *c, uint64_t me) {
     static uint64_t probe[4];
     static int probe_stage;
     static const float off[4][2] = {{1.5f, 0}, {-1.5f, 0}, {0, 1.5f}, {0, -1.5f}};
-    if (fan && probe_stage == 0 && now > 25) {
+    if (fan && probe_stage == 0 && now > 25 && (which == 6 || which == 7)) {
         for (int i = 0; i < 4; i++) {
             float at[3] = {30.3f + off[i][0], 1514.9f, 1510.7f + off[i][1]}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
             coop_request_create(c, "BombFruit", at, rot, ph[i]);
@@ -2468,7 +2478,7 @@ static void fanset_test(Cpu *c, uint64_t me) {
         static _Alignas(16) uint8_t h2[0x40], l2[0x40];
         static uint64_t fan2;
         static int f2;
-        if (f2 == 0) {
+        if (f2 == 0 && !coop_net_on()) {   // alone only (the replay test)
             float at[3] = {30.3f, 1515.0f, 1512.5f}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
             f2 = coop_request_create(c, "SpObj_WindGenerator_A_01", at, rot, h2) ? 1 : 9;
         }
@@ -2892,6 +2902,17 @@ void coop_players_tick(Cpu *c, int numpad3) {
             sticks[k] = (int32_t)(lx * 32767.0f), sticks[k + 1] = (int32_t)(ly * 32767.0f);
         }
         set_input(s, st.buttons, sticks);
+        {   // the owner presses attack (Y): its proxy runs its own update for 40 frames with Y let through
+            static uint64_t was[COOP_MAX_PLAYERS];
+            int k = (int)(s - slots);
+            int ride_on(void);
+            if (proxied(s) && (st.buttons >> 3 & 1) && !(was[k] >> 3 & 1) && attack_thaw_on()) {
+                if (s->thaw < 40) s->thaw = 40;
+                s->atk_thaw = 40;
+                rt_log("coop: proxy: slot %d swings (its own update for 40 frames, Y through)", k);
+            }
+            was[k] = st.buttons;
+        }
         s->idle = !st.buttons && abs(st.sticks[0]) < 3000 && abs(st.sticks[1]) < 3000;
     }
     int others = 0;
