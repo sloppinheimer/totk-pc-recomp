@@ -556,6 +556,23 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   now Armor_1043_Upper" (dye 10) and from the other "owner's gear slot 10 is Armor_1043_Upper (dye 10)"; on both
   screens both Links wear the In-isa tunic and trousers in dye 10 (pink). Passed.
 
+## Proxy mode in a play session (2026-11-05)
+- Report: weapons showed on the other screen only once that game had equipped something in the same slot too; the
+  proxy held its shield with the bow; fused weapons showed without their material.
+- From the session's logs: every gear change arrived and was made on the proxy at once ("owner's gear slot 0 is
+  Weapon_Sword_070", a thaw, "holds 0x1, owner 0x1"). Reproduced none of the first issue in four pair runs: a faked
+  sword at 25 s, faked sword and bow after walking, and real menu equips (tools/coop/equip_3rd.txt,
+  equip_bow_3rd.txt) all show on the proxy with the other game's own slots empty. Open: what differs in play.
+- Shield with the bow: the session's log has "holds 0x4, owner 0" after sword and shield were put away together, and
+  it stayed. Now a thaw is repeated (up to 4 times) while the proxy holds other items than its owner once a thaw is
+  over. Test: with the put-away thaw skipped (TOTK_COOP_TEST_NOTHAW_PUTAWAY=1, TOTK_COOP_TEST_NORETRY=1) the shield
+  stays out of place to the end; with the retry "holds 0, owner 0" after one re-run, shield on the back.
+- Fused weapons: the weapon create's 7th argument (main+0xaf100c, a string object) is the material's actor name
+  (AsbObj_RockParts_C_S_01 for the save's rock-fused stick; TOTK_COOP_TEST_EQLOG now logs it). This Link's are read
+  from its own weapon creates and sent in NetState.fuse (protocol 7, 400 bytes); a proxy's weapon is made with it, and
+  a change of material alone rebuilds it. Test: tools/coop/equip_fused_3rd.txt; B's view shows A's proxy with the
+  rock-fused stick, as A's own Link.
+
 ## Proxy mode, head and hair (stage 3, 2026-11-05)
 - There is no separate head or hair skeleton on these Links: the model ([[actor+0x228]+8]+0x28) has one unit, the
   127-bone body (its +0x110 is the SkeletonObj itself, not +0x38 of it as coop_link_skeletons assumes, so that

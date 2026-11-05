@@ -52,6 +52,8 @@ typedef struct {
     int have_want, idle, snap_wait;
     unsigned snaps;
     char gear_want[COOP_GEAR_SLOTS][32], gear_have[COOP_GEAR_SLOTS][32];   // the owner's gear; what this Link was given
+    char fuse_want[3][32], fuse_have[3][32];   // weapon, bow, shield: the owner's fused material; as last made here
+    _Alignas(16) uint8_t att_str[3][0x60];     // the material names handed to the weapon creates
     int8_t dye_want[COOP_GEAR_SLOTS], dye_have[COOP_GEAR_SLOTS];   // the armor's dye colour, the same way (-1 none)
     int out_want, out_have;            // puppet mode: bits 0..2 weapon, bow, shield in the owner's hands; as last made
     float phys_pos[3];                 // puppet mode: where its physics step put it (before placement), for snap
@@ -149,6 +151,10 @@ static char my_gear[COOP_GEAR_SLOTS][32];
 // This PC's armor dye colours, from its own armor creates (main+0xc4961c's 4th argument; the slot build main+0xc4a5f4
 // reads it from the save: -1 undyed, else a colour index 0..14).
 static int8_t my_dye[COOP_GEAR_SLOTS] = {-1, -1, -1, -1, -1, -1};
+// This PC's weapon, bow and shield's fused materials, from its own weapon creates (main+0xaf100c's 7th argument, a
+// string object: AsbObj_RockParts_C_S_01 for a rock-fused stick; "" none). The proxy's copy was made with "" and
+// showed no material (a play session, 2026-11-05).
+static char my_fuse[3][32];
 
 // ---- the host's world. Time of day: the world manager [main+0x3a83968] +0x98 is the time object; +0x28 the second
 // of the day now (float, 0..86400), +0x48 the last time asked for. main+0x21cd794 (world manager, s0 = second of the
@@ -293,15 +299,15 @@ static uint64_t gear_string(uint8_t st[0x60], const char *text) {
 
 // Makes slot k of a remote Link's EquipmentUser the item name ("" empties a weapon slot), as c4a5f4 would from a save.
 // out (weapons): 1 in hand, 0 put away, -1 as this Link has it now.
-static void give_gear(Cpu *c, uint64_t eq, int k, const char *name, int dye, int out_want, uint8_t st[0x60]) {
+static void give_gear(Cpu *c, uint64_t eq, int k, const char *name, int dye, int out_want, uint8_t st[0x60], const char *fuse,
+                      uint8_t att_st[0x60]) {
     uint64_t slot = (uint64_t)coop_gear_slot[k], np = gear_string(st, name);
     uint64_t saved_x[31], sp0 = c->sp;
     memcpy(saved_x, c->x, sizeof saved_x);
     if (k <= 2) {
         static const uint64_t hand_of[3] = {0, 3, 4};
         int out = out_want >= 0 ? out_want : (int)(coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, eq, hand_of[k], 0, 0) & 1);
-        static _Alignas(16) uint8_t no_attachment[0x60];
-        uint64_t att = gear_string(no_attachment, "");
+        uint64_t att = gear_string(att_st, fuse ? fuse : "");
         uint64_t sp = (sp0 - 0x100) & ~0xfull;
         uint64_t stack[6] = {0, 0, 0, (uint64_t)(uint32_t)-1, 0, (uint64_t)(uint32_t)-1};   // arguments 9..14
         memcpy((void *)(uintptr_t)sp, stack, sizeof stack);
@@ -420,6 +426,15 @@ int coop_players_gear(Cpu *c, uint64_t addr) {
             my_dye[k] = (int8_t)(int32_t)c->x[3];
             rt_log("coop: my gear slot %d (%s) has dye %d", coop_gear_slot[k], name, my_dye[k]);
         }
+        if (k <= 2 && addr == MOD_MAIN_BASE + GEAR_WEAPON_CREATE) {   // the fused material
+            char att[32] = "";
+            uint64_t ap = coop_rd_ptr(c->x[6]);
+            if (ap) coop_rd(ap, att, sizeof att - 1);
+            if (strcmp(att, my_fuse[k])) {
+                memcpy(my_fuse[k], att, 32);
+                rt_log("coop: my gear slot %d (%s) is fused with %s", coop_gear_slot[k], name, att[0] ? att : "nothing");
+            }
+        }
         return 0;
     }
     // A remote Link's own build (its first gear, or the game rebuilding a slot): the owner's item in place of the save's.
@@ -427,6 +442,7 @@ int coop_players_gear(Cpu *c, uint64_t addr) {
     if (!s || !s->gear_want[k][0]) return 0;
     const char *want = strcmp(s->gear_want[k], GEAR_NONE) ? s->gear_want[k] : "";
     if (k > 2 && addr == MOD_MAIN_BASE + 0xc4961c && want[0]) c->x[3] = (uint64_t)(uint32_t)(int32_t)s->dye_want[k];   // the owner's dye
+    if (k <= 2 && addr == MOD_MAIN_BASE + GEAR_WEAPON_CREATE && want[0]) c->x[6] = gear_string(s->att_str[k], s->fuse_want[k]);   // its material
     if (!strcmp(want, name) || (!want[0] && k > 2)) return 0;   // armor always has a piece: none is the save's default
     c->x[2] = gear_string(s->gear_str[k], want);
     rt_log("coop: slot %d's Link gets %s in gear slot %d (this save has %s)", (int)(s - slots), want[0] ? want : "nothing",
@@ -475,6 +491,7 @@ static Slot *slot_new(int source, int net_id) {
             s->nhist = 0, s->jit_n = 0, s->jit_have = 0;
             memset(s->held, 0, sizeof s->held);
             memset(s->gear_want, 0, sizeof s->gear_want), memset(s->gear_have, 0, sizeof s->gear_have);
+            memset(s->fuse_want, 0, sizeof s->fuse_want), memset(s->fuse_have, 0, sizeof s->fuse_have);
             memset(s->dye_want, -1, sizeof s->dye_want), memset(s->dye_have, -1, sizeof s->dye_have);
             s->out_want = 0, s->out_have = -1, s->have_phys = 0, s->top_last = -1e9f, s->have_body = 0;
             s->live_ticks = 0, s->px_have = 0, s->thaw = 0;
@@ -1110,6 +1127,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         st.buttons = local_buttons;
         memcpy(st.gear, my_gear, sizeof st.gear);
         memcpy(st.dye, my_dye, sizeof st.dye);
+        for (int k = 0; k < 3; k++) memcpy(st.fuse[k], strcmp(my_gear[k], GEAR_NONE) ? my_fuse[k] : "", 32);   // none when unequipped
         match_my_eq(me);
         uint64_t my_eq = eq_of_actor(me);   // weapon, bow, shield in hand
         static const uint64_t hand_of[3] = {0, 3, 4};
@@ -1232,6 +1250,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
             memcpy(s->gear_want[k], st.gear[k], 32);
             s->gear_want[k][31] = 0;
             s->dye_want[k] = st.dye[k];
+            if (k < 3) memcpy(s->fuse_want[k], st.fuse[k], 32), s->fuse_want[k][31] = 0;
             if (k < 3) s->out_want = (s->out_want & ~(1 << k)) | (int)((st.flags >> (8 + k)) & 1) << k;
         }
         // The owner's stick in world space (their camera), then in this PC's camera frame.
@@ -1292,13 +1311,17 @@ void coop_players_tick(Cpu *c, int numpad3) {
             char held[COOP_GEAR_SLOTS][32];
             if (eq) eq_gear(eq, held);
             for (int k = 0; eq && k < COOP_GEAR_SLOTS; k++)
-                if (s->gear_want[k][0] && (strcmp(s->gear_want[k], s->gear_have[k]) || (k > 2 && s->dye_want[k] != s->dye_have[k]))) {
-                    int redye = k > 2 && s->dye_want[k] != s->dye_have[k];
+                if (s->gear_want[k][0] && (strcmp(s->gear_want[k], s->gear_have[k]) || (k > 2 && s->dye_want[k] != s->dye_have[k]) ||
+                                           (k <= 2 && strcmp(s->fuse_want[k], s->fuse_have[k])))) {
+                    int redye = (k > 2 && s->dye_want[k] != s->dye_have[k]) || (k <= 2 && strcmp(s->fuse_want[k], s->fuse_have[k]));
                     memcpy(s->gear_have[k], s->gear_want[k], 32), s->dye_have[k] = s->dye_want[k];
+                    if (k <= 2) memcpy(s->fuse_have[k], s->fuse_want[k], 32);
                     int none = !strcmp(s->gear_want[k], GEAR_NONE);
                     if ((none && k > 2) || (!strcmp(held[k], s->gear_want[k]) && !redye)) continue;   // nothing to change
-                    rt_log("coop: slot %d: owner's gear slot %d is %s (dye %d)", i, coop_gear_slot[k], s->gear_want[k], s->dye_want[k]);
-                    give_gear(c, eq, k, none ? "" : s->gear_want[k], s->dye_want[k], -1, s->gear_str[k]);
+                    rt_log("coop: slot %d: owner's gear slot %d is %s (dye %d%s%s)", i, coop_gear_slot[k], s->gear_want[k], s->dye_want[k],
+                           k <= 2 && s->fuse_want[k][0] ? ", fused with " : "", k <= 2 ? s->fuse_want[k] : "");
+                    give_gear(c, eq, k, none ? "" : s->gear_want[k], s->dye_want[k], -1, s->gear_str[k], k <= 2 ? s->fuse_want[k] : NULL,
+                              s->att_str[k < 3 ? k : 0]);
                     // Proxy mode: armor made on the frozen proxy did not show (the hood and tunic stayed as they
                     // were; the default mode shows them, 2026-11-05). Its own update runs for a while to take it.
                     if (proxied(s)) s->thaw = PROXY_THAW_TICKS, rt_log("coop: proxy: slot %d runs its own update for %d ticks (gear)", i, PROXY_THAW_TICKS);
