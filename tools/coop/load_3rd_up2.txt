@@ -1,0 +1,18 @@
+# load_3rd.txt, then at 65 s into the world walk up the stairs for 2 s, past the other game's Link (it plays
+# load_3rd_up1.txt), into its camera's view (the second-save gear test).
+300 A 4
+520 A 4
+700 A 4
+900 A 4
+@14000 PLUS 150
+@15000 R 150
+@15800 R 150
+@16600 R 150
+@17600 DOWN 150
+@18400 A 150
+@19600 DOWN 150
+@20400 DOWN 150
+@21400 A 150
+@22400 UP 150
+@23200 A 150
+@65000 LSTICK 0 32767 2000

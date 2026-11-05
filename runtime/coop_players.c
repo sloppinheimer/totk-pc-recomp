@@ -369,8 +369,10 @@ static void learn_eq_off(uint64_t me, uint64_t eq) {
     rt_log("coop: no pointer to the EquipmentUser in the Player's first 0x4000 bytes");
 }
 
+static void keep_player_eq(uint64_t me, uint64_t my_eq);
 int coop_players_gear(Cpu *c, uint64_t addr) {
     uint64_t eq = c->x[0], me = coop_player_actor();
+    if (me) keep_player_eq(me, eq_of_actor(me));   // a new Player's gear is being built: the field may just have moved
     int k = gear_index((int)(uint32_t)c->x[1]);
     if (k < 0) return 0;
     uint64_t owner = me ? gear_owner(eq, me) : 0;
@@ -1084,14 +1086,12 @@ static void keep_player_eq(uint64_t me, uint64_t my_eq) {
         rt_log("coop: the player's EquipmentUser ([[[main+0x39601e8]]+0x480]) is now %llx (%s; this Link's %llx)", (unsigned long long)g, who, (unsigned long long)my_eq);
         last = g;
     }
+    // Any EquipmentUser that is not this Link's is put back: in one of two games the field changed before the new
+    // co-op Link was claimed, so a check for "a co-op Link's" let it pass and the rebuild ran on it first.
     if (!g || !my_eq || g == my_eq || !eq_points_to(my_eq, me) || eq_points_to(g, me)) return;
-    for (int i = 0; i < COOP_MAX_PLAYERS; i++)
-        if (slots[i].actor && (slots[i].state == LIVE || slots[i].state == LET_GO) && eq_points_to(g, slots[i].actor)) {
-            ST64(var, my_eq);
-            if (++fixes <= 20) rt_log("coop: the player's EquipmentUser was a co-op Link's: this Link's put back (%u)", fixes);
-            last = my_eq;
-            return;
-        }
+    ST64(var, my_eq);
+    if (++fixes <= 20) rt_log("coop: the player's EquipmentUser was another Player's (%llx): this Link's put back (%u)", (unsigned long long)g, fixes);
+    last = my_eq;
 }
 void coop_players_tick(Cpu *c, int numpad3) {
     if (frame_step_world_us() <= 0) return;   // not in the world yet

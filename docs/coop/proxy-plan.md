@@ -80,12 +80,11 @@ right in the tester's own two-pad session.
   drawing far away is shown only to 24 m; the glide test could not frame the Link in either mode.
 - What it took beyond the plan: the pose sent is made from the owner's final bone matrices (feet on stairs, hand on
   a wall), not the writer's input, and it is shown from the same delayed moment as the position.
-- **Stage 2 mostly passed**: held items and outfit / dye changes work with a thaw (the proxy's own update runs for
-  30 ticks after each change; a 1-3 cm twitch for about 6 frames). Loading a second save: traced and half fixed.
-  The load re-dresses "the player's" EquipmentUser ([[[main+0x39601e8]]+0x480]), which the re-made co-op Link had
-  taken over; it is now put back. In load_3rd.txt game A re-dresses and game B shows A's proxy in the new outfit
-  and dye; game B's own Link still keeps the old one (a timing case, two fixes used; next step in re-notes
-  "Second-save gear, traced").
+- **Stage 2 passed**: held items and outfit / dye changes work with a thaw (the proxy's own update runs for 30 ticks
+  after each change; a 1-3 cm twitch for about 6 frames). Loading a second save: the load re-dresses "the player's"
+  EquipmentUser ([[[main+0x39601e8]]+0x480]), which the re-made co-op Link had taken over; this Link's is put back.
+  load_3rd_up1 / up2: both Links in the new outfit and dye on both screens, proxy and default mode
+  (re-notes "Second-save gear, traced").
 - **Stage 3 needs nothing**: head and hair are bones of the 127-bone body, which the proxy already copies.
 - **Stage 4 (research) found the call**: main+0x4dcc1c plays an AS by name in a slot on the Player's AS manager; its
   calls line up with every action of tour.txt (re-notes "Animation by name"). Replaying one on the co-op Link's

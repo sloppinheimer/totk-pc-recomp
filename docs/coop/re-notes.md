@@ -549,8 +549,12 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   rebuild ran first.
 - Fix 2: the same check also right before each co-op Link's calc and update phase. Same result in game B (the
   rebuild happens before the claim, when no slot names that actor yet). Stopped after two fixes.
-- Next: put back whenever the field holds an EquipmentUser that does not point at this Link (drop the co-op-Link
-  test), and also check it in the create hook (coop_players_gear), which runs as the new Player's gear is built.
+- Fix 3 (from that trace): put back whenever the field holds an EquipmentUser that does not point at this Link (no
+  co-op-Link test), also from the create hook (coop_players_gear), as the new Player's gear is built. Test:
+  tools/coop/load_3rd_up1.txt in game A, load_3rd_up2.txt in game B (both load In-isa, then walk up the stairs so
+  each is in the other's view). Proxy mode and default mode both: in each game "put back (1)", "my gear slot 10 is
+  now Armor_1043_Upper" (dye 10) and from the other "owner's gear slot 10 is Armor_1043_Upper (dye 10)"; on both
+  screens both Links wear the In-isa tunic and trousers in dye 10 (pink). Passed.
 
 ## Proxy mode, head and hair (stage 3, 2026-11-05)
 - There is no separate head or hair skeleton on these Links: the model ([[actor+0x228]+8]+0x28) has one unit, the
