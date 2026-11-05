@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define COOP_MAX_PLAYERS 8
-#define COOP_NET_VERSION 10   // packet header version: games and relays of another version ignore each other
+#define COOP_NET_VERSION 11   // packet header version: games and relays of another version ignore each other
 
 // One player's state, sent about 30 times a second. Positions and directions are world space; the sticks are as the
 // player's own camera saw them, with the camera's horizontal forward and right so a receiver can turn them into its
@@ -15,11 +15,11 @@
 // Sent in OBJS packets of their own (coop_net_objs_send): one when it changes, again once a second, and once with an
 // empty name when it is gone. COOP_OBJS a player at most; COOP_OBJS_PER_PACKET in one packet.
 #define COOP_OBJS 256
-#define COOP_OBJS_PER_PACKET 20
+#define COOP_OBJS_PER_PACKET 16
 #define COOP_OBJ_KEYED 0x80000000u
 typedef struct {
     uint32_t id;                      // the owner's number for it, or COOP_OBJ_KEYED | key (0: an empty entry)
-    char name[28];                    // its actor name (NormalArrow, BombFruit...)
+    char name[48];                    // its actor name (NormalArrow, SpObj_LiftGeneratorWing_A_01...)
     float pos[3], q[4];               // world position, rotation as a quaternion x y z w
 } CoopObj;
 typedef struct {

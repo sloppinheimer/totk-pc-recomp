@@ -683,3 +683,20 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   the game they move in, not the nearer Link: with B's Link nearer, A's lifted rock was sent by neither (B's was
   at rest there). Two games sending one object: the lower player id wins. Props test, both idle on one spot: B's
   rock ends 0.15 m from A's and stays; nothing else sent.
+
+## Riding a co-op player's object (research, 2026-11-05)
+- Zonai device actors: SpObj_LiftGeneratorWing_A_01 (glider), SpObj_WindGenerator_A_01 (fan), SpObj_Rocket_A_01,
+  SpObj_Cart_A_01, SpObj_FastWheel_A_01, SpObj_BalloonEnvelope_A_0x, SpObj_FlameThrower_A_01, SpObj_SlipBoard_A_01
+  (romfs Pack/Actor; 68 SpObj_ in all). A glider made by requestCreateActor makes several actors in one tick: the
+  "a load makes many at once" guard for made objects is now 20, not 6.
+- Object names reach 29+ characters (SpObj_LiftGeneratorWing_A_01): CoopObj.name is 48 now (protocol 11), 16
+  objects a packet.
+- What Link stands on: with the Link standing on a glider (0.45 m above its origin), no word in its first 0x4000
+  bytes or 0x1000 into each block they point to holds the glider's actor or reference (TOTK_COOP_TEST_STAND; one
+  run found it in a list at [Link+0x3b8]+0xd68 that turned out to be a list of actors that never changed). It is
+  likely kept by the physics (a body, not the actor): not found.
+- Carrying by the object's move each tick (ride_carry, TOTK_COOP_RIDE=1; the copy's body put with
+  COOP_FORCE_MATRIX too): with the glider moved 1 m/s and up 0.3 m/s in A, B's Link on B's copy was carried but
+  sank into it (0.4 m in 2 s) and fell behind (to 1 m in 2 s), and fell off; holding the boarding height took only
+  now and then. Off by default. Next: how the game carries a Link on its own moving platforms, or a speed for the
+  copy's body.
