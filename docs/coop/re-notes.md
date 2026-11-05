@@ -744,3 +744,10 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   from the Link's update: main+0x1b90cb4 (the attack contact, param_4 +0x18 the target) builds the hit and hands it
   to main+0x1b91844 (TOTK_COOP_TEST_FANHIT lists the functions entered with the fan at the hit). Next: hand a copy
   such a hit when the owner's device turns on (needs the contact and hit records decoded).
+- The hit's mark on the device: its damage component ([actor+0x228]+0x2f8) gets a record at +0x1a0..+0x2ff the frame
+  the sword lands (+0x1a4 = 4, +0x1c0 the attacker's reference (this Link's), +0x1c8 its id, +0x1d0 attack flags,
+  +0x1d8 type, +0x1dc power, +0x1fc the hit place, then its direction; list links at +0x260..+0x270); it is taken the
+  next frame (+0x1a4 back to 0). Written into a second fan (only the 65 words the hit changed, its own addresses moved
+  over), it is taken the same way but does not turn the fan on; whole, it overwrote the fan's own links. So the hit
+  also goes elsewhere (likely the attack object those links point to). A NormalArrow given a speed toward a fan moved
+  0.5 m and stopped (an arrow flies only when a bow shoots it).

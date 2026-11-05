@@ -2459,7 +2459,117 @@ static void fanset_test(Cpu *c, uint64_t me) {
     if (!fan) return;
     uint64_t c11 = fan_comp(fan, 11), c28 = fan_comp(fan, 28), c107 = fan_comp(fan, 107);
     if (!c11 || !c28 || !c107) return;
-    if (which == 9) return;   // 9: no writes; the script's sword hits (zonai_hit_3rd.txt) turn it on and off
+    if (which == 9) {   // 9: no writes; the script's sword hits (fan_hits_3rd.txt, 34 s) turn it on. From 33.5 s to 35 s,
+        // every frame, the words of its damage component ([actor+0x228]+0x2f8, 0x2000 bytes) that changed are logged
+        // Replay: the frame the hit record appears (+0x1a4 nonzero), dc+0x1a0..+0x300 is kept; at 38 s it is written
+        // into a second fan made at 22 s 1.8 m to +z (its hit position moved with it), to see whether that turns it on.
+        static uint8_t rec[0x160], prev[0x160], chg[0x160 / 4];
+        static int have_rec, replayed, have_prev;
+        static _Alignas(16) uint8_t h2[0x40], l2[0x40];
+        static uint64_t fan2;
+        static int f2;
+        if (f2 == 0) {
+            float at[3] = {30.3f, 1515.0f, 1512.5f}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+            f2 = coop_request_create(c, "SpObj_WindGenerator_A_01", at, rot, h2) ? 1 : 9;
+        }
+        if (f2 == 1 && coop_handle_status(h2) == 3) { uint64_t ref; fan2 = coop_claim(c, h2, l2, &ref); f2 = fan2 ? 2 : 9; }
+        {
+            uint64_t d0 = coop_rd_ptr(coop_rd_ptr(fan + 0x228) + 0x2f8);
+            uint32_t flag = 0;
+            if (!have_rec && d0 && coop_rd(d0 + 0x1a4, &flag, 4) && flag && have_prev) {
+                coop_rd(d0 + 0x1a0, rec, sizeof rec), have_rec = 1;
+                int n = 0;
+                for (int i = 0; i < 0x160 / 4; i++) n += chg[i] = memcmp(rec + 4 * i, prev + 4 * i, 4) != 0;
+                rt_log("coop: test: fanset: hit record kept at %.3f s, %d words changed", now, n);
+            } else if (!have_rec && d0 && coop_rd(d0 + 0x1a0, prev, sizeof prev)) have_prev = 1;
+            uint64_t d2 = fan2 ? coop_rd_ptr(coop_rd_ptr(fan2 + 0x228) + 0x2f8) : 0;
+            if (have_rec && !replayed && now > 38 && d2) {
+                float p1[3], p2[3], hp[3];
+                coop_rd(fan + COOP_ACTOR_POS, p1, 12), coop_rd(fan2 + COOP_ACTOR_POS, p2, 12);
+                memcpy(hp, rec + 0x5c, 12);   // dc+0x1fc: where it was hit
+                for (int k = 0; k < 3; k++) hp[k] += p2[k] - p1[k];
+                memcpy(rec + 0x5c, hp, 12);
+                // only the words the hit changed; an address inside fan 1's damage component or actor is moved to fan 2's
+                for (int i = 0; i < 0x160 / 4; i++) {
+                    if (!chg[i]) continue;
+                    if (i % 2 == 0 && i + 1 < 0x160 / 4 && chg[i + 1]) {   // a 64-bit word that may be such an address
+                        uint64_t v;
+                        memcpy(&v, rec + 4 * i, 8);
+                        if (v >= d0 && v < d0 + 0x2000) v = v - d0 + d2;
+                        else if (v >= fan && v < fan + 0x3000) v = v - fan + fan2;
+                        memcpy(rec + 4 * i, &v, 8);
+                    }
+                    memcpy((void *)(uintptr_t)(d2 + 0x1a0 + 4 * i), rec + 4 * i, 4);
+                }
+                replayed = 1;
+                rt_log("coop: test: fanset: hit record written into fan 2 at %.3f s", now);
+            }
+            {   // fan 2's dc words that change in the 0.5 s after the write: is the record read (cleared) at all?
+                static uint32_t l2w[0x400 / 4];
+                static int h2w;
+                static int64_t lu;
+                int64_t us2 = frame_step_world_us();
+                if (d2 && now > 37.9 && now < 38.6 && us2 != lu) {
+                    static uint32_t cw[0x400 / 4];
+                    lu = us2;
+                    if (coop_rd(d2 + 0x100, cw, sizeof cw)) {
+                        int n = 0;
+                        for (int i = 0; i < 0x400 / 4 && h2w && n < 40; i++)
+                            if (cw[i] != l2w[i]) rt_log("coop: test: fan2dc: %.3f s dc+%#x %#x -> %#x", now, 0x100 + i * 4, l2w[i], cw[i]), n++;
+                        memcpy(l2w, cw, sizeof cw), h2w = 1;
+                    }
+                }
+            }
+            static int t2;
+            if (fan2 && ++t2 % 30 == 0 && now > 36 && now < 46) {
+                uint64_t f = dev_on_flag(fan2), c28 = fan_comp(fan2, 28), c11 = fan_comp(fan2, 11);
+                rt_log("coop: test: fanset: %.2f s fan 2 on bool %d, comp11+0x348 %#x, comp28+0x398 %u", now, f ? LD8(f) : -1,
+                       c11 ? LD32(c11 + 0x348) : 0, c28 ? LD32(c28 + 0x398) : 0);
+            }
+        }
+        static uint32_t last[0x2000 / 4];
+        static int have;
+        static int64_t last_us;
+        int64_t us = frame_step_world_us();
+        uint64_t dc = coop_rd_ptr(coop_rd_ptr(fan + 0x228) + 0x2f8);
+        if (now > 33.5 && now < 35 && dc && us != last_us) {
+            static uint32_t cur[0x2000 / 4];
+            last_us = us;
+            if (coop_rd(dc, cur, sizeof cur)) {
+                int n = 0;
+                for (int i = 0; i < 0x2000 / 4 && have && n < 80; i++)
+                    if (cur[i] != last[i]) rt_log("coop: test: fanhitdc: %.3f s dc+%#x %#x -> %#x", now, i * 4, last[i], cur[i]), n++;
+                memcpy(last, cur, sizeof cur), have = 1;
+            }
+        }
+        return;
+    }
+    if (which == 10) {   // 10: at 30 s an arrow made 2 m from the fan (+z) and sent at it at 30 m/s: does a hit by a
+        static _Alignas(16) uint8_t ah[0x40], al[0x40];   // thrown arrow turn it on? (fanstate logs it)
+        static uint64_t arrow;
+        static int ast, av;
+        float fp[3];
+        if (ast == 0 && now > 30 && coop_rd(fan + COOP_ACTOR_POS, fp, 12)) {
+            float at[3] = {fp[0], fp[1] + 0.3f, fp[2] + 2.0f}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+            ast = coop_request_create(c, "NormalArrow", at, rot, ah) ? 1 : 9;
+        }
+        if (ast == 1 && coop_handle_status(ah) == 3) {
+            uint64_t ref;
+            arrow = coop_claim(c, ah, al, &ref);
+            ast = arrow ? 2 : 9;
+            rt_log("coop: test: fanset: arrow %llx", (unsigned long long)arrow);
+        }
+        if (ast == 2 && av++ < 6) {
+            uint64_t phys = coop_rd_ptr(coop_rd_ptr(arrow + 0x228) + 0x50), ctl = phys ? coop_rd_ptr(phys + 0x20) : 0;
+            uint64_t body = ctl ? coop_rd_ptr(ctl + 0x150) : 0;
+            _Alignas(16) float v[4] = {0, 0, -30, 0};
+            if (body) coop_guest_call(c, MOD_MAIN_BASE + 0x567750, body, (uint64_t)(uintptr_t)v, 0, 0);
+            float q[3] = {0};
+            coop_rd(arrow + COOP_ACTOR_POS, q, 12);
+            rt_log("coop: test: fanset: arrow body %llx at %.2f %.2f %.2f", (unsigned long long)body, q[0], q[1], q[2]);
+        }
+        return;
+    }
     if (which == 4) {   // 4: which code writes [comp107]+0x398 (the word the game puts back): a write watch for 1 s at 30 s
         int coop_watch_arm(uint64_t addr, uint64_t len);   // coop_watch_win.c
         void coop_watch_disarm(void);
