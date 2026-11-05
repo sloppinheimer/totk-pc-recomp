@@ -815,7 +815,29 @@ static int create_trace(Cpu *c) {
     return 0;
 }
 
+// main+0x916860 (x0 an Ultrahand part of a Player): draws the Ultrahand beam into one global pool of segments
+// ([main+0x395f6f8]: +0x1f0 count, +0x1f4 capacity, +0x1f8 the used list, +0x200 the free list), first putting every
+// used segment back on the free list. With a co-op Link there are two Players, and both ran it at once on two worker
+// threads while a player held something with Ultrahand: the free list broke (a read of -1 in main+0x19164e0, the
+// push; both games of a play session, 2026-11-05). One thread at a time runs it now.
+static PlatMutex beam_lock = PLAT_MUTEX_INIT;
+static _Atomic int beam_waits;
+static int beam_hook(Cpu *c, uint64_t addr) {
+    static __thread int inside;
+    if (inside) return 0;
+    if (!plat_mutex_trylock(&beam_lock)) {
+        if (atomic_fetch_add(&beam_waits, 1) < 5) rt_log("coop: the Ultrahand beam was drawn by two threads at once; one waits");
+        plat_mutex_lock(&beam_lock);
+    }
+    inside = 1;
+    c->pc = addr;
+    rt_dispatch(c);
+    inside = 0;
+    plat_mutex_unlock(&beam_lock);
+    return 1;
+}
 int coop_hook(Cpu *c, uint64_t addr) {
+    if (addr == MOD_MAIN_BASE + 0x916860) return beam_hook(c, addr);
     if (addr == MOD_MAIN_BASE + 0x599670) return create_trace(c);
     // HUD control guide (bottom-right prompts such as "Dive R"): main+0x2192c50 (type) shows one, main+0x4cb540 (type)
     // hides one, on the one CtrlGuide screen. Every Player's calc calls them; a co-op Link's must not change this

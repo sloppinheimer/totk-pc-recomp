@@ -761,3 +761,9 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   job, main+0x915a90's object +0xcf40) while holding its fan with Ultrahand; B's log stops just after it made a copy
   of "Parasail" (A's paraglider, sent as a made object). The paraglider is no longer sent. A's crash is not
   understood: scripted L / A (fan_ultra_3rd.txt) did not grab the fan, so it was not reproduced.
+- The Ultrahand crash, likely cause: main+0x916860 (a Player's Ultrahand part, x0) draws the Ultrahand beam into one
+  global pool of segments ([main+0x395f6f8]: +0x1f0 count, +0x1f4 capacity, +0x1f8 used, +0x200 free list), first
+  giving every used segment back; the crash is its push (main+0x19164e0) reading a free-list link of -1. With a
+  co-op Link there are two Players; both running it at once on two worker threads breaks the list. It is hooked
+  now and run by one thread at a time (coop_spawn.c beam_hook, logs "drawn by two threads at once" when that
+  happens). Not yet confirmed in play.
