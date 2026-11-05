@@ -240,3 +240,6 @@ evidence), guess.
   +8 -> +0x150), a hard-wired local-player lookup; 45 places read that registry. Untested lead.
 - An enemy's own perception data +0xf8/+0xfc and +0x138/+0x13c (IDs the per-actor calc resets to -1) stay -1 with
   a Bokoblin 1-4 m from both Links (TRACE=target "target slots"): not where it keeps its target.
+- The registry [main+0x3a75a40] is small (27 entries); its key 0x5d5d398d entry and that object's +0x150 hold no
+  pointer to either Link, its ref, or its perception component or data, even one level down (TRACE=target
+  "registry"). It is a module or parameter object; main+0x72b4e8 only takes a scale factor from it. Not the player.
