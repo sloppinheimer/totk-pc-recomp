@@ -581,6 +581,16 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // hides one, on the one CtrlGuide screen. Every Player's calc calls them; a co-op Link's must not change this
     // PC's HUD, so they do nothing inside one (2026-11-04).
     if (addr == MOD_MAIN_BASE + 0x2192c50 || addr == MOD_MAIN_BASE + 0x4cb540) return coop_in_remote_calc();
+    // main+0x923d20 (game data, 1, &key, value) sets a game-data enum. A Player's calc records its actions in this
+    // game's data with it (main+0x207eba0: the last action, e.g. a shield surf), and the instant tips show from those
+    // ("To shield surf..."). A co-op Link's actions are its own player's, so nothing is written inside one (2026-11-04).
+    if (addr == MOD_MAIN_BASE + 0x923d20 && coop_in_remote_calc()) {
+        static _Atomic int skipped;
+        char from[96];
+        if (atomic_fetch_add(&skipped, 1) < 8) rt_log("coop: a co-op Link's game-data write skipped (from %s)", ldr_describe(c->x[30], from, sizeof from));
+        c->x[0] = 1;
+        return 1;
+    }
     // main+0x1a30670 (actor system, out link, &name): the one actor of that name (the resident "Player" for AI that
     // wants the player, e.g. QueryTestGetPlayerActor). TOTK_COOP_TRACE=player counts its callers for "Player".
     // main+0x446a84 (emitter object: +0x18 its actor, +0x70 what main+0x45b930 gets): one perception emitter's
