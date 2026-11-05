@@ -31,6 +31,10 @@ int coop_net_remote(int id, NetState *out, uint64_t *age_ns);  // player id's la
 // The shared world (coop_world.c): the host sends its enemies (latest wins), guests send hits on them (queued).
 void coop_net_world_send(const void *data, int len);               // up to 1800 bytes
 int coop_net_world(void *out, int max, int *from, uint64_t *age_ns);   // the latest from the host; 0 if none
+// The skeleton pose (POSE packets, coop_world.c packs and applies them): at most COOP_POSE_MAX bytes.
+#define COOP_POSE_MAX 4000
+void coop_net_pose_send(const void *data, int len);
+int coop_net_pose(int id, void *out, int max, uint64_t *age_ns);   // the latest from player id; its length (0 none)
 void coop_net_hit_send(const void *data, int len);                 // up to 64 bytes
 int coop_net_hit_take(void *out, int max, int *from);              // the oldest hit received; 0 when none
 

@@ -342,3 +342,14 @@ instead of by action:
   The idle body + copied pose design works. Not done: the head skeleton, held items, sending the pose over the net
   (the body is 127 bones x 0x30 world + 0x40 local; the local matrices alone may do), finding the co-op Link's
   bindings without elimination.
+- Puppet mode over the network (TOTK_COOP_PUPPET=1, 2026-11-05, in progress): main+0x283c750's x0 is the body's
+  input pose: u16 bones at +0xa, [x0] 0x50 a bone: +0x00 scale, +0x10 translation, +0x20 / +0x30 the first two
+  rotation rows, +0x40 other. ([SkeletonObj+0x18] is not 3x4 world matrices as first assumed: 0x60 records.)
+  POSE packet (type 8, relays forward it; buffers 8 KB): u16 bones, u16 scaled count, 12 bytes a bone (smallest-
+  three quaternion + translation at 1/4096 m), then u16 index + 3 floats for scales that are not 1: 1948 bytes for
+  127 bones. Sent with the state packets (about 30 a second). The receiver runs main+0x283c750 for the co-op Link
+  as usual, then again with the player's pose in the input (written before the first run it did not show).
+  The co-op Link gets no input (no L, no A, nothing) and is teleported (ForceSetMatrix) every tick.
+  State: poses go out, arrive (127 bones, 0-6 ms old) and are put on; the screenshots do not yet show the co-op Link
+  where its player is (tools/coop/show.txt: B walks ahead, A does not see it there). Next: check what the per-tick
+  ForceSetMatrix does to a no-input Link, then the pose on screen.

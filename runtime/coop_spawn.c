@@ -392,7 +392,10 @@ void coop_pose_copy_now(void);   // coop_world.c: the copied pose onto it
 int coop_pose_wanted(void);   // coop_world.c: a co-op Link to copy a pose onto
 void coop_pose_saw(uint64_t binding);   // coop_world.c: an animation binding main+0x2e9c80 posed
 void coop_pose_before_anim(uint64_t binding);
-int coop_pose_arg_match(const uint64_t *args, int n);   // coop_world.c: x0..x3 name the co-op Link's skeleton or model   // coop_world.c: this Link's animation pose onto the co-op Link's
+int coop_pose_arg_match(const uint64_t *args, int n);
+int coop_pose_after_writer(const uint64_t *args, int n);
+int coop_puppet_before_writer(uint64_t pose, uint64_t skel);   // coop_world.c: pose out / a player's pose in
+int coop_puppet_mode(void);   // coop_world.c: TOTK_COOP_PUPPET   // coop_world.c: copies onto the co-op Link's part skeleton named   // coop_world.c: x0..x3 name the co-op Link's skeleton or model   // coop_world.c: this Link's animation pose onto the co-op Link's
 void coop_actor_seen(uint64_t actor);   // coop_world.c
 uint64_t coop_nearest_link_data(uint64_t enemy);   // coop_world.c: a co-op Link's perception data when nearer, else 0
 static int prof3;
@@ -685,10 +688,53 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // The later writers of a body skeleton's world matrices (write watch, re-notes): main+0x283c750, 0x289620,
     // 0x2925e0, 0x43e450. When one is called for the co-op Link's skeleton or model (an argument names it), the
     // copied pose goes on after it (TOTK_COOP_TEST_SKELCOPY) (2026-11-05).
+    // Puppet mode: main+0x283c750 (x0 the input pose, x1 the SkeletonObj) builds a body's local matrices. This
+    // Link's input goes out; a co-op Link's is replaced by its player's before it runs (2026-11-05).
+    if (addr == MOD_MAIN_BASE + 0x283c750 && coop_puppet_mode()) {
+        // This Link's pose is packed here (before writer returns 0 for it). For a co-op Link's skeleton the call runs
+        // as usual first, then once more with its player's pose put into the input: written before the first run
+        // it did not show (2026-11-05).
+        static __thread int in4;
+        if (in4) return 0;
+        int coop_puppet_is_co_skeleton(uint64_t skel);   // coop_world.c
+        if (!coop_puppet_is_co_skeleton(c->x[1])) { coop_puppet_before_writer(c->x[0], c->x[1]); return 0; }
+        static __thread Cpu saved;
+        saved = *c;
+        in4 = 1;
+        c->pc = addr;
+        rt_dispatch(c);
+        static __thread Cpu after;
+        after = *c;
+        *c = saved;
+        if (coop_puppet_before_writer(c->x[0], c->x[1])) {
+            c->pc = addr;
+            rt_dispatch(c);
+            static _Atomic int said_p;
+            if (atomic_fetch_add(&said_p, 1) == 0) rt_log("coop: puppet mode: a player's pose went onto their co-op Link (second run)");
+        } else *c = after;
+        in4 = 0;
+        return 1;
+    }
     if ((addr == MOD_MAIN_BASE + 0x283c750 || addr == MOD_MAIN_BASE + 0x289620 || addr == MOD_MAIN_BASE + 0x2925e0 ||
          addr == MOD_MAIN_BASE + 0x43e450) && coop_pose_wanted()) {
         static __thread int in2;
         int m = in2 ? 0 : coop_pose_arg_match(c->x, 4);
+        uint64_t args[4] = {c->x[0], c->x[1], c->x[2], c->x[3]};
+        if (!in2 && addr == MOD_MAIN_BASE + 0x283c750) {   // every part of the co-op Link (body, head, hair...)
+            in2 = 1;
+            c->pc = addr;
+            rt_dispatch(c);
+            in2 = 0;
+            if (coop_pose_after_writer(args, 4)) {
+                static _Atomic int said_parts;
+                if (atomic_fetch_add(&said_parts, 1) == 0) rt_log("coop: test: part poses copied after main+0x283c750");
+            } else if (m) {
+                coop_pose_copy_now();
+                static _Atomic int said_body;
+                if (atomic_fetch_add(&said_body, 1) == 0) rt_log("coop: test: pose copied after main+0x283c750 (body)");
+            }
+            return 1;
+        }
         if (m) {
             in2 = 1;
             c->pc = addr;
