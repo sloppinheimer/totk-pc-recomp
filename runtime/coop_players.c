@@ -42,6 +42,10 @@ typedef struct {
     uint32_t last_seq;
     uint64_t last_ns;                  // when that report was sent, as plat_now_ns
     struct { uint64_t ns; float pos[3]; } seen[32];   // puppet mode: where the puppet was, for the error log
+    struct { uint64_t ns; float pos[3], q[4]; } hist[16];   // puppet mode: the owner's last reports (arrival time)
+    unsigned nhist;                    // under lock
+    float jit_prev[2][3], jit_sum, jit_max;   // puppet mode: frame-to-frame jerk of the placed position (log)
+    int jit_n, jit_have;
     int nseen;
     float err_max, err_sum;
     int err_n;
@@ -383,6 +387,7 @@ static Slot *slot_new(int source, int net_id) {
             Slot *s = &slots[i];
             s->source = source, s->net_id = net_id, s->prev = 0, s->have_want = 0;
             memset(s->vel, 0, sizeof s->vel), s->last_seq = 0, s->last_ns = 0, s->nseen = 0, s->err_n = 0;
+            s->nhist = 0, s->jit_n = 0, s->jit_have = 0;
             memset(s->held, 0, sizeof s->held);
             memset(s->gear_want, 0, sizeof s->gear_want), memset(s->gear_have, 0, sizeof s->gear_have);
             s->state = WANTED;
@@ -472,6 +477,7 @@ int coop_players_phase(Cpu *c, uint64_t addr) {
 // bit makes main+0x24cc30 push it to the model units later in the same phase. The body itself is still moved by
 // snap() every tick. Returns 1 when it ran the step.
 static void owner_matrix(Slot *s, float m[12]);
+static int puppet_delay_ms(void);
 int coop_puppet_place(Cpu *c, uint64_t addr) {
     Slot *s = slot_of_actor(c->x[0]);
     int coop_puppet_mode(void);   // coop_world.c
@@ -501,6 +507,21 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
         memcpy((void *)(uintptr_t)(model + 0x1f8), m, sizeof m);
         ST8(model + 0x240, LD8(model + 0x240) | 1);
     }
+    // Jerk: how far each frame's placed position is from the straight line through the two frames before it.
+    if (s->jit_have >= 2) {
+        float e = 0;
+        for (int k = 0; k < 3; k++) { float d = pos[k] - 2 * s->jit_prev[1][k] + s->jit_prev[0][k]; e += d * d; }
+        e = sqrtf(e);
+        s->jit_sum += e, s->jit_n++;
+        if (e > s->jit_max) s->jit_max = e;
+        if (s->jit_n >= 60) {
+            rt_log("coop: puppet: slot %d jerk per frame: mean %.1f mm, max %.1f mm (delay %d ms)", (int)(s - slots),
+                   s->jit_sum / s->jit_n * 1000, s->jit_max * 1000, puppet_delay_ms());
+            s->jit_sum = s->jit_max = 0, s->jit_n = 0;
+        }
+    }
+    memcpy(s->jit_prev[0], s->jit_prev[1], 12), memcpy(s->jit_prev[1], pos, 12);
+    if (s->jit_have < 2) s->jit_have++;
     static int said;
     if (!said++) rt_log("coop: puppet: slot %d is placed at its owner after its physics step", (int)(s - slots));
     return 1;
@@ -558,7 +579,80 @@ static void spawn_slot(Cpu *c, Slot *s) {
 // The owner's transform as a ForceSetMatrix argument: rows of rotation | position. In puppet mode the position is
 // where the owner will be when the move lands: their last report moved on by its age and one tick (the move is
 // applied in the puppet's next update) at their velocity, at most 0.25 s ahead.
+// Rotation matrix (rows, as actor +0x2c0 holds it) to a unit quaternion x y z w, and back.
+static void mat_quat(const float *r, float q[4]) {
+    float tr = r[0] + r[4] + r[8], s;
+    if (tr > 0) s = sqrtf(tr + 1) * 2, q[3] = s / 4, q[0] = (r[7] - r[5]) / s, q[1] = (r[2] - r[6]) / s, q[2] = (r[3] - r[1]) / s;
+    else if (r[0] > r[4] && r[0] > r[8]) s = sqrtf(1 + r[0] - r[4] - r[8]) * 2, q[3] = (r[7] - r[5]) / s, q[0] = s / 4, q[1] = (r[1] + r[3]) / s, q[2] = (r[2] + r[6]) / s;
+    else if (r[4] > r[8]) s = sqrtf(1 + r[4] - r[0] - r[8]) * 2, q[3] = (r[2] - r[6]) / s, q[0] = (r[1] + r[3]) / s, q[1] = s / 4, q[2] = (r[5] + r[7]) / s;
+    else s = sqrtf(1 + r[8] - r[0] - r[4]) * 2, q[3] = (r[3] - r[1]) / s, q[0] = (r[2] + r[6]) / s, q[1] = (r[5] + r[7]) / s, q[2] = s / 4;
+    float l = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+    for (int k = 0; k < 4; k++) q[k] = l > 0 ? q[k] / l : k == 3;
+}
+static void quat_mat(const float q[4], float *r) {
+    float x = q[0], y = q[1], z = q[2], w = q[3];
+    r[0] = 1 - 2 * (y * y + z * z), r[1] = 2 * (x * y - z * w), r[2] = 2 * (x * z + y * w);
+    r[3] = 2 * (x * y + z * w), r[4] = 1 - 2 * (x * x + z * z), r[5] = 2 * (y * z - x * w);
+    r[6] = 2 * (x * z - y * w), r[7] = 2 * (y * z + x * w), r[8] = 1 - 2 * (x * x + y * y);
+}
+// Puppet mode, smoothing (TOTK_COOP_PUPPET_DELAY_MS, default 60; 0 = the latest report, predicted): the puppet is
+// shown where its owner was that long ago, interpolated between the two reports around that moment (position
+// linearly, rotation by normalised quaternion blend). Past the newest report it carries on at the owner's velocity
+// for at most 0.1 s. Reports arrive about 30 times a second and frames do not line up with them, so taking the latest
+// one each frame moves the puppet in uneven steps (the jitter).
+static int puppet_delay_ms(void) {
+    static int d = -1;
+    if (d < 0) { const char *e = cfg_get("TOTK_COOP_PUPPET_DELAY_MS"); d = e ? atoi(e) : 60; }
+    return d;
+}
+static int owner_smoothed(Slot *s, float m[12]) {
+    int coop_puppet_mode(void);   // coop_world.c
+    if (!coop_puppet_mode() || puppet_delay_ms() <= 0) return 0;
+    uint64_t t = plat_now_ns() - (uint64_t)puppet_delay_ms() * 1000000ull;
+    float pos[3], q[4];
+    int ok = 0;
+    plat_mutex_lock(&lock);
+    unsigned n = s->nhist < 16 ? s->nhist : 16;
+    if (n) {
+        unsigned newest = (s->nhist - 1) % 16;
+        if (t >= s->hist[newest].ns) {   // past the newest: carry on at its velocity, briefly
+            double a = (double)(t - s->hist[newest].ns) / 1e9;
+            if (a > 0.1) a = 0.1;
+            for (int k = 0; k < 3; k++) pos[k] = s->hist[newest].pos[k] + s->vel[k] * (float)a;
+            memcpy(q, s->hist[newest].q, sizeof q);
+            ok = 1;
+        } else {
+            for (unsigned i = 1; i < n && !ok; i++) {   // newest pair first
+                unsigned b = (s->nhist - i) % 16, a = (s->nhist - i - 1) % 16;
+                if (s->hist[a].ns > t) continue;
+                float f = s->hist[b].ns > s->hist[a].ns ? (float)((double)(t - s->hist[a].ns) / (double)(s->hist[b].ns - s->hist[a].ns)) : 1;
+                const float *qa = s->hist[a].q, *qb = s->hist[b].q;
+                float dot = qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2] + qa[3] * qb[3], sg = dot < 0 ? -1.0f : 1.0f, l = 0;
+                for (int k = 0; k < 3; k++) pos[k] = s->hist[a].pos[k] + (s->hist[b].pos[k] - s->hist[a].pos[k]) * f;
+                for (int k = 0; k < 4; k++) q[k] = qa[k] * (1 - f) + qb[k] * sg * f, l += q[k] * q[k];
+                l = sqrtf(l);
+                for (int k = 0; k < 4; k++) q[k] = l > 0 ? q[k] / l : k == 3;
+                ok = 1;
+            }
+            if (!ok) {   // older than everything kept: the oldest
+                unsigned o = (s->nhist - n) % 16;
+                memcpy(pos, s->hist[o].pos, 12), memcpy(q, s->hist[o].q, 16);
+                ok = 1;
+            }
+        }
+    }
+    plat_mutex_unlock(&lock);
+    if (!ok) return 0;
+    float r[9];
+    quat_mat(q, r);
+    for (int i = 0; i < 3; i++) {
+        for (int k = 0; k < 3; k++) m[i * 4 + k] = r[i * 3 + k];
+        m[i * 4 + 3] = pos[i];
+    }
+    return 1;
+}
 static void owner_matrix(Slot *s, float m[12]) {
+    if (owner_smoothed(s, m)) return;
     float ahead = 0;
     int coop_puppet_mode(void);   // coop_world.c
     static int predict = -1;   // TOTK_COOP_PUPPET_PREDICT=0: no prediction (for comparing)
@@ -672,6 +766,14 @@ void coop_players_tick(Cpu *c, int numpad3) {
             float d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
             for (int k = 0; k < 3; k++) s->vel[k] = dt > 0.005 && dt < 0.5 && d2 < 100 ? (float)(d[k] / dt) : 0;   // 10 m: a warp
             s->last_seq = st.seq, s->last_ns = at;
+            plat_mutex_lock(&lock);
+            unsigned w = s->nhist % 16;
+            if (d2 >= 100) s->nhist = 0, w = 0;   // a warp: no blending across it
+            s->hist[w].ns = at;
+            memcpy(s->hist[w].pos, st.pos, 12);
+            mat_quat(st.rot, s->hist[w].q);
+            s->nhist++;
+            plat_mutex_unlock(&lock);
             // Puppet mode: how far the puppet was from where its owner was at the same moment (the report's send time).
             int best = -1;
             for (int k = 0; k < 32 && k < s->nseen; k++) {
