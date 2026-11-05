@@ -528,6 +528,30 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   - Next: write-watch the worn upper armor's model or find what builds armor at a load (the frame tracer on the
     loading Link), or read the equipped items from the save's game data instead of the EquipmentUser table.
 
+## Second-save gear, traced (2026-11-05, later)
+- Control first: one game alone (no relay) with load_3rd.txt re-dresses this Link after the load: the creates run
+  on the same EquipmentUser as before (it is not replaced at a load), Armor_999_Head, Armor_1043_Upper / Lower with
+  dye 10, frame chain main+0xc4aba4 <- 0xd97e08 / 0xd97dfc <- 0xd97d90 <- 0x1fe4ed4 <- ... 0x244d48 (a Player's
+  update). TOTK_COOP_TEST_EQLOG=1 logs every gear create with that chain; TOTK_COOP_TEST_ARMORPROBE=1 lists the armor
+  actors on this Link and what points at them 20 s and 40 s after a load.
+- In co-op the same three creates land on the new co-op Link's EquipmentUser (the co-op Link is made again after
+  the load) and none on this Link's: this Link keeps the first save's armor actors (probe: Armor_999_Head,
+  Armor_Default_Upper / Lower 40 s after the load, no Armor_1043 anywhere) and screenshots show it bare-chested.
+  The earlier "new outfit" screenshot was the proxy standing on the same spot.
+- Why: main+0xd97d70 rebuilds the gear of the player's EquipmentUser held at [[[main+0x39601e8]] +0x480]
+  (main+0xd97dac: slots 0, 8, 7, 9, 10, 11 through main+0xc4a5f4), not the calling Link's. A newly made Player
+  takes that field over (it went 0, then the new co-op Link's), so the load's rebuild went to the co-op Link.
+- Fix 1 (coop_players.c keep_player_eq, every tick): when the field holds a co-op Link's EquipmentUser, write this
+  Link's back. Game A: put back once, then "my gear slot 10 (Armor_1043_Upper) has dye 10", reported to B as
+  Armor_1043_Upper / Lower dye 10; B's screenshots show A's proxy in the new save's tunic and trousers, dye 10
+  (pink). Game B in the same run: put back too, but its own Link kept the old armor: there the field changed before
+  the new co-op Link was claimed (logged as "another", not "a co-op Link's"), so the check let it pass, and the
+  rebuild ran first.
+- Fix 2: the same check also right before each co-op Link's calc and update phase. Same result in game B (the
+  rebuild happens before the claim, when no slot names that actor yet). Stopped after two fixes.
+- Next: put back whenever the field holds an EquipmentUser that does not point at this Link (drop the co-op-Link
+  test), and also check it in the create hook (coop_players_gear), which runs as the new Player's gear is built.
+
 ## Proxy mode, head and hair (stage 3, 2026-11-05)
 - There is no separate head or hair skeleton on these Links: the model ([[actor+0x228]+8]+0x28) has one unit, the
   127-bone body (its +0x110 is the SkeletonObj itself, not +0x38 of it as coop_link_skeletons assumes, so that

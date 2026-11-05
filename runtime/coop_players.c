@@ -374,6 +374,27 @@ int coop_players_gear(Cpu *c, uint64_t addr) {
     int k = gear_index((int)(uint32_t)c->x[1]);
     if (k < 0) return 0;
     uint64_t owner = me ? gear_owner(eq, me) : 0;
+    static int eqdbg = -1;   // TOTK_COOP_TEST_EQLOG=1: every gear create seen here
+    if (eqdbg < 0) eqdbg = cfg_get("TOTK_COOP_TEST_EQLOG") != NULL;
+    if (eqdbg) {
+        uint64_t np0 = coop_rd_ptr(c->x[2]);
+        char nm0[32] = "";
+        if (np0) coop_rd(np0, nm0, sizeof nm0 - 1);
+        char chain[300];
+        int m = 0;
+        uint64_t fp = c->x[29];
+        for (int d = 0; d < 12 && fp && m < 280; d++) {   // the guest frame chain (x29 links), return addresses
+            uint64_t next = coop_rd_ptr(fp), ret = coop_rd_ptr(fp + 8);
+            if (!ret) break;
+            m += snprintf(chain + m, sizeof chain - m, " %llx", (unsigned long long)(ret - MOD_MAIN_BASE));
+            if (next <= fp) break;
+            fp = next;
+        }
+        chain[m] = 0;
+        rt_log("coop: test: create main+%#llx eq %llx slot %d %s dye %d, me %llx, owner %llx%s; from%s", (unsigned long long)(addr - MOD_MAIN_BASE),
+               (unsigned long long)eq, (int)(uint32_t)c->x[1], nm0, (int)(int32_t)c->x[3], (unsigned long long)me, (unsigned long long)owner,
+               owner && owner != me ? " (a co-op Link)" : "", chain);
+    }
     if (!owner) {   // a Player not claimed yet (a new co-op Link builds its gear first, or this PC's Link while a
                     // save loads): matched after its claim or by match_my_eq; its armor dyes are kept for then
         for (int i = 0; i < 16; i++)
@@ -598,8 +619,13 @@ static void proxy_drive(Cpu *c, Slot *s) {
                         (unsigned long long)pose, (unsigned long long)model);
     top_log("puppet", actor);
 }
+static void keep_player_eq(uint64_t me, uint64_t my_eq);
 int coop_players_phase(Cpu *c, uint64_t addr) {
     if (inside || !slot_of_actor(c->x[0])) return 0;
+    {   // before any co-op Link's update: the save-load rebuild runs in one (keep_player_eq)
+        uint64_t me = coop_player_actor();
+        if (me) keep_player_eq(me, eq_of_actor(me));
+    }
     {
         Slot *ps = slot_of_actor(c->x[0]);
         if (proxied(ps)) {
@@ -796,6 +822,10 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
 int coop_players_calc(Cpu *c, uint64_t addr) {
     Slot *s;
     if (inside || !(s = slot_of_actor(c->x[0]))) return 0;
+    {
+        uint64_t me = coop_player_actor();
+        if (me) keep_player_eq(me, eq_of_actor(me));
+    }
     if (proxied(s) && s->thaw <= 0) return 1;   // proxy mode: its calc never runs (proxy_drive), but in a thaw
     if (frozen()) {
         static int said;
@@ -947,6 +977,122 @@ static void set_input(Slot *s, uint64_t buttons, const int32_t sticks[4]) {
     plat_mutex_unlock(&lock);
 }
 
+// Test (TOTK_COOP_TEST_ARMORPROBE=1): what holds this Link's worn armor after a save loads. Once before (12 s into
+// the world) and 3 s and 10 s after this Link moves more than 100 m in a tick (a load): the live armor and shield
+// actors within 5 m of it, and for each the words in guest memory pointing at it and at its reference object (the
+// word 0x40 before such a pointer), placed against this Link's known EquipmentUser and its table rows.
+void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
+struct probe_list { uint64_t me, a[16]; int n; };
+static void probe_fn(uint64_t a, void *arg) {
+    struct probe_list *pl = arg;
+    char nm[48];
+    coop_actor_name(a, nm, sizeof nm);
+    if (!strcmp(nm, "Player")) {
+        float pp[3] = {0};
+        coop_rd(a + COOP_ACTOR_POS, pp, 12);
+        rt_log("coop: test: armorprobe: live Player %llx at %.1f %.1f %.1f%s", (unsigned long long)a, pp[0], pp[1], pp[2],
+               a == pl->me ? " (this Link)" : slot_of_actor(a) ? " (a co-op Link)" : "");
+    }
+    if (strncmp(nm, "Armor_", 6) || strstr(nm, "Extra") || pl->n >= 16) return;
+    float p[3], q[3];
+    if (!coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(pl->me + COOP_ACTOR_POS, q, 12)) return;
+    float d2 = (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]);
+    if (d2 < 25) pl->a[pl->n++] = a;
+    else if (strstr(nm, "_Upper")) rt_log("coop: test: armorprobe: %s %llx at %.1f %.1f %.1f, %.1f m from this Link", nm, (unsigned long long)a, p[0], p[1], p[2], sqrtf(d2));
+}
+static int heap_holders(uint64_t v, uint64_t *out, int max) {
+    static uint64_t buf[0x10000 / 8];
+    int n = 0;
+    for (uint64_t a = 0x100000000ull; a < 0x240000000ull && n < max; a += sizeof buf) {
+        if (!plat_mem_read(a, buf, sizeof buf)) continue;
+        for (size_t i = 0; i < sizeof buf / 8 && n < max; i++) if (buf[i] == v) out[n++] = a + i * 8;
+    }
+    return n;
+}
+static void where(char *o, size_t n, uint64_t h, uint64_t eq) {
+    if (eq && h >= eq && h < eq + 0x5000) {
+        uint64_t off = h - eq;
+        if (off >= GEAR_TABLE && off < GEAR_TABLE + 24 * 0x18) snprintf(o, n, "eq+%#llx (row %llu +%#llx)", (unsigned long long)off,
+                 (unsigned long long)((off - GEAR_TABLE) / 0x18), (unsigned long long)((off - GEAR_TABLE) % 0x18));
+        else snprintf(o, n, "eq+%#llx", (unsigned long long)off);
+    } else snprintf(o, n, "%llx", (unsigned long long)h);
+}
+static void armor_probe(uint64_t me) {
+    static int on = -1, done[3];
+    static uint64_t load_ns;
+    static float last[3];
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_ARMORPROBE") != NULL;
+    if (!on) return;
+    float p[3];
+    if (!coop_rd(me + COOP_ACTOR_POS, p, 12)) return;
+    float d2 = (p[0] - last[0]) * (p[0] - last[0]) + (p[1] - last[1]) * (p[1] - last[1]) + (p[2] - last[2]) * (p[2] - last[2]);
+    if (last[0] != 0 && d2 > 100 * 100 && !load_ns) load_ns = plat_now_ns(), rt_log("coop: test: armorprobe: this Link moved %.0f m (a load)", sqrtf(d2));
+    memcpy(last, p, 12);
+    int which = -1;
+    if (load_ns && !done[1] && plat_now_ns() - load_ns > 20000000000ull) which = 1;
+    else if (load_ns && !done[2] && plat_now_ns() - load_ns > 40000000000ull) which = 2;
+    if (which < 0) return;
+    done[which] = 1;
+    uint64_t eq = eq_of_actor(me);
+    struct probe_list pl = {me, {0}, 0};
+    coop_actors_live(probe_fn, &pl);
+    rt_log("coop: test: armorprobe %d: Link %llx, EquipmentUser %llx, %d armor / shield actors within 5 m", which, (unsigned long long)me,
+           (unsigned long long)eq, pl.n);
+    for (int i = 0; i < pl.n; i++) {
+        char nm[48];
+        int32_t st = -1;
+        coop_actor_name(pl.a[i], nm, sizeof nm);
+        coop_rd(pl.a[i] + COOP_ACTOR_STATE, &st, 4);
+        static uint64_t h[32], h2[32];
+        int n = heap_holders(pl.a[i], h, 32);
+        char line[900];
+        int m = snprintf(line, sizeof line, "coop: test: armorprobe %d %s %llx state %d, held by %d:", which, nm, (unsigned long long)pl.a[i], st, n);
+        for (int k = 0; k < n && m < 860; k++) {
+            char w[64];
+            where(w, sizeof w, h[k], eq);
+            m += snprintf(line + m, sizeof line - m, " %s", w);
+            {   // h[k] - 0x40 may be its reference object (a gear table row's first word is one)
+                int n2 = heap_holders(h[k] - 0x40, h2, 32);
+                if (n2) m += snprintf(line + m, sizeof line - m, " [ref %llx held by", (unsigned long long)(h[k] - 0x40));
+                for (int j = 0; j < n2 && m < 860; j++) {
+                    where(w, sizeof w, h2[j], eq);
+                    m += snprintf(line + m, sizeof line - m, " %s", w);
+                }
+                if (n2) m += snprintf(line + m, sizeof line - m, "]");
+            }
+        }
+        rt_log("%s", line);
+    }
+}
+// The player's EquipmentUser as the game knows it: [[[main+0x39601e8]] +0x480]. After a save loads, main+0xd97d70
+// rebuilds the gear of that one from the save (main+0xd97dac: c4a5f4 for slots 0, 8, 7, 9, 10, 11; called from
+// main+0x1fe4ed4 in a Player's update). A co-op Link made
+// later takes the global over, so the load's rebuild went to the co-op Link and this Link kept the first save's armor
+// (load_3rd.txt: the 999 / 1043 / 1043 creates landed on the co-op Link's EquipmentUser, frame chain through
+// main+0xd97d90; alone they land on this Link's, 2026-11-05). So whenever the global holds a co-op Link's
+// EquipmentUser it is given this Link's back: every tick, and right before each co-op Link's calc and update phase
+// (from the tick alone it came too late in one of two games: the rebuild had run on the new co-op Link already).
+#define PLAYER_EQ_GLOBAL 0x39601e8
+static void keep_player_eq(uint64_t me, uint64_t my_eq) {
+    uint64_t obj = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + PLAYER_EQ_GLOBAL)), var = obj ? obj + 0x480 : 0, g = var ? coop_rd_ptr(var) : 0;
+    static uint64_t last = 1;
+    static unsigned fixes;
+    if (g != last) {
+        const char *who = !g ? "none" : g == my_eq ? "this Link's" : "another";
+        for (int i = 0; i < COOP_MAX_PLAYERS; i++)
+            if (slots[i].actor && (slots[i].state == LIVE || slots[i].state == LET_GO) && eq_points_to(g, slots[i].actor)) who = "a co-op Link's";
+        rt_log("coop: the player's EquipmentUser ([[[main+0x39601e8]]+0x480]) is now %llx (%s; this Link's %llx)", (unsigned long long)g, who, (unsigned long long)my_eq);
+        last = g;
+    }
+    if (!g || !my_eq || g == my_eq || !eq_points_to(my_eq, me) || eq_points_to(g, me)) return;
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++)
+        if (slots[i].actor && (slots[i].state == LIVE || slots[i].state == LET_GO) && eq_points_to(g, slots[i].actor)) {
+            ST64(var, my_eq);
+            if (++fixes <= 20) rt_log("coop: the player's EquipmentUser was a co-op Link's: this Link's put back (%u)", fixes);
+            last = my_eq;
+            return;
+        }
+}
 void coop_players_tick(Cpu *c, int numpad3) {
     if (frame_step_world_us() <= 0) return;   // not in the world yet
     coop_session_tests(frame_step_world_us());
@@ -1014,7 +1160,9 @@ void coop_players_tick(Cpu *c, int numpad3) {
         if (fw && *fw) st.weather = atoi(fw);
         coop_net_publish(&st);
     }
+    armor_probe(me);
     uint64_t my_eq = eq_of_actor(me);
+    keep_player_eq(me, my_eq);
     if (my_eq) read_my_gear(my_eq);
     float fwd[2], right[2];
     int have_cam = camera_frame(fwd, right);
