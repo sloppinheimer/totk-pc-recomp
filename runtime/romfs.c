@@ -621,6 +621,134 @@ static Restbl *restbl_unpack(const void *z, size_t n) {
     return t;
 }
 
+// ---- the files inside a mod's actor packs
+// An actor pack (Pack/**/*.pack.zs) is a SARC archive compressed with the dictionary pack.zsdic of Pack/ZsDic.pack.zs
+// (camera_speed.c reads it the same way). The table sizes every member by its own path, and the game allocates a
+// member from that entry: a mod's pack whose members grew (or that adds members) needs those entries raised too, or
+// the allocation fails and the game writes through a null pointer (seen with the Playable Riju mod: Player.pack's
+// ActorParam and PointLightParam, main+0x10584a0 and main+0x173130). Mod managers (TKMM, the RESTBL calculators)
+// write such entries into a table they ship; a mod without one gets them here.
+#define PACK_MAX (64u << 20)
+
+typedef struct { const char *name; const uint8_t *data; size_t size; } PackMember;
+
+// The members of SARC p[0..n), in *out (malloc'd; names and data point into p); their count, 0 when p is no SARC.
+static size_t sarc_list(const uint8_t *p, size_t n, PackMember **out) {
+    uint16_t head, count, bom;
+    uint32_t data;
+    *out = NULL;
+    if (n < 0x14 || memcmp(p, "SARC", 4)) return 0;
+    memcpy(&head, p + 4, 2), memcpy(&bom, p + 6, 2), memcpy(&data, p + 12, 4);
+    if (bom != 0xfeff || head + 12u > n || memcmp(p + head, "SFAT", 4)) return 0;
+    memcpy(&count, p + head + 6, 2);
+    size_t names = head + 12 + (size_t)count * 16;
+    if (names + 8 > n || memcmp(p + names, "SFNT", 4) || !count) return 0;
+    names += 8;
+    PackMember *m = malloc(count * sizeof *m);
+    if (!m) return 0;
+    size_t k = 0;
+    for (unsigned i = 0; i < count; i++) {
+        uint32_t attr, lo, hi;
+        size_t e = head + 12 + (size_t)i * 16;
+        memcpy(&attr, p + e + 4, 4), memcpy(&lo, p + e + 8, 4), memcpy(&hi, p + e + 12, 4);
+        size_t s = names + (size_t)(attr & 0xffffff) * 4;
+        if (!(attr >> 24) || s >= n || !memchr(p + s, 0, n - s) || lo > hi || data + (size_t)hi > n) continue;
+        m[k++] = (PackMember){(const char *)p + s, p + data + lo, hi - lo};
+    }
+    *out = m;
+    return k;
+}
+
+// The decompressor of the packs' dictionary, from the game's Pack/ZsDic.pack.zs (a SARC compressed without one); NULL
+// when it cannot be read.
+static ZSTD_DDict *pack_ddict(void) {
+    static int tried;
+    static ZSTD_DDict *dd;
+    if (tried) return dd;
+    tried = 1;
+    uint64_t i = lower("Pack/ZsDic.pack.zs");
+    if (i == UINT64_MAX) return NULL;
+    Entry e = entry(i);
+    uint8_t *z = e.size < PACK_MAX ? malloc((size_t)e.size) : NULL, *raw = NULL;
+    unsigned long long rn = 0;
+    if (z && read_at(image, z, (uint32_t)e.size, e.offset) == (int64_t)e.size) {
+        rn = ZSTD_getFrameContentSize(z, (size_t)e.size);
+        if (rn != ZSTD_CONTENTSIZE_UNKNOWN && rn != ZSTD_CONTENTSIZE_ERROR && rn < PACK_MAX && (raw = malloc((size_t)rn)) &&
+            ZSTD_decompress(raw, (size_t)rn, z, (size_t)e.size) != rn) {
+            free(raw);
+            raw = NULL;
+        }
+    }
+    PackMember *m;
+    size_t c = raw ? sarc_list(raw, (size_t)rn, &m) : 0;
+    for (size_t k = 0; k < c; k++)
+        if (!strcmp(m[k].name, "pack.zsdic")) dd = ZSTD_createDDict(m[k].data, m[k].size);   // copies the dictionary
+    if (c) free(m);
+    free(raw);
+    free(z);
+    if (!dd) rt_log("RomFS: no pack.zsdic in Pack/ZsDic.pack.zs; a mod's grown pack members keep the game's sizes");
+    return dd;
+}
+
+// A pack's SARC from its zstd bytes (with or without the pack dictionary); NULL when they are not one.
+static uint8_t *pack_unpack(const void *z, size_t n, size_t *raw_n) {
+    unsigned long long rn = ZSTD_getFrameContentSize(z, n);
+    if (rn == ZSTD_CONTENTSIZE_UNKNOWN || rn == ZSTD_CONTENTSIZE_ERROR || rn > PACK_MAX) return NULL;
+    unsigned id = ZSTD_getDictID_fromFrame(z, n);
+    ZSTD_DDict *dd = id ? pack_ddict() : NULL;
+    if (id && (!dd || id != ZSTD_getDictID_fromDDict(dd))) return NULL;
+    uint8_t *raw = malloc((size_t)rn ? (size_t)rn : 1);
+    ZSTD_DCtx *dctx = raw ? ZSTD_createDCtx() : NULL;
+    size_t got = !dctx ? 0 : dd ? ZSTD_decompress_usingDDict(dctx, raw, (size_t)rn, z, n, dd)
+                                : ZSTD_decompressDCtx(dctx, raw, (size_t)rn, z, n);
+    ZSTD_freeDCtx(dctx);
+    if (!raw || ZSTD_isError(got) || got != rn) {
+        free(raw);
+        return NULL;
+    }
+    *raw_n = (size_t)rn;
+    return raw;
+}
+
+// The entries of the members of served pack o that differ from the game's pack (or that it adds) raised to what they
+// need: restbl_grow over the game's entry for a member the game's pack has, restbl_estimate otherwise. The number of
+// entries raised; *changed counts the members looked at.
+static int pack_members_raise(Restbl *out, const Restbl *base, const Overlay *o, int *changed) {
+    uint64_t n = 0;
+    void *z = plat_file_read(o->path, &n);
+    size_t mn = 0, on = 0;
+    uint8_t *mod = z ? pack_unpack(z, (size_t)n, &mn) : NULL, *orig = NULL;
+    free(z);
+    if (!mod) return 0;
+    if (o->index != ADDED) {
+        Entry e = entry(o->index);
+        void *oz = e.size < PACK_MAX ? malloc((size_t)e.size) : NULL;
+        if (oz && read_at(image, oz, (uint32_t)e.size, e.offset) == (int64_t)e.size) orig = pack_unpack(oz, (size_t)e.size, &on);
+        free(oz);
+    }
+    PackMember *mm, *om = NULL;
+    size_t mc = sarc_list(mod, mn, &mm), oc = orig ? sarc_list(orig, on, &om) : 0;
+    int raised = 0;
+    for (size_t i = 0; i < mc; i++) {
+        const PackMember *was = NULL;
+        for (size_t j = 0; j < oc && !was; j++)
+            if (!strcmp(om[j].name, mm[i].name)) was = &om[j];
+        if (was && was->size == mm[i].size && !memcmp(was->data, mm[i].data, mm[i].size)) continue;
+        (*changed)++;
+        uint32_t entry_size, want;
+        if (was && restbl_get(base, mm[i].name, &entry_size))
+            want = restbl_grow(mm[i].name, entry_size, was->size, mm[i].size, 0);
+        else
+            want = restbl_estimate(mm[i].name, mm[i].size);
+        raised += want && restbl_raise(out, mm[i].name, want);
+    }
+    if (mc) free(mm);
+    if (oc) free(om);
+    free(orig);
+    free(mod);
+    return raised;
+}
+
 // With a player mod (or the TOTK_ROMFS_MODS manifest) serving files: the game's table with every shipped table of this
 // version merged in (an entry larger than the game's wins), the entries a mod's table for another version gives for
 // that mod's files, and each served mod file's entry raised to what its size needs (restbl_grow for a file the game
@@ -647,7 +775,7 @@ static void restbl_overlay(void) {
         restbl_free(out);
         return;
     }
-    int tables = 0, merged = 0, raised = 0, estimated = 0;
+    int tables = 0, merged = 0, raised = 0, estimated = 0, members = 0, packs = 0;
     for (size_t s = 0; s < nshipped; s++) {
         uint64_t n = 0;
         void *z = plat_file_read(shipped[s].file, &n);
@@ -676,6 +804,10 @@ static void restbl_overlay(void) {
         if ((!o->mod && o->prio != 1 && o->index != ADDED) || o->index == gi) continue;
         char key[4200];
         restbl_key(o->name, key, sizeof key);
+        if (ends_with(o->name, ".pack.zs")) {   // the files inside it (pack_members_raise)
+            int r = pack_members_raise(out, base, o, &members);
+            raised += r, packs += r > 0;
+        }
         int mc = ends_with(o->name, ".mc");
         PlatFile *f = open_read(o->path);
         uint64_t now = mc ? o->size : content_size(f, 0, o->size, o->name);
@@ -712,7 +844,8 @@ static void restbl_overlay(void) {
     }
     if (serve_generated(restbl_rel, served, z, zn, "mods", "merged resource sizes", keeps))
         rt_log("RomFS: resource size table: %d tables merged (%d entries), %d entries raised for mod files (%d "
-               "added files estimated), %.0f ms", tables, merged, raised, estimated, (now_s() - t0) * 1000);
+               "added files estimated; %d changed files inside %d packs), %.0f ms", tables, merged, raised, estimated,
+               members, packs, (now_s() - t0) * 1000);
 }
 
 // The HeapDef table a bigger game resolution needs (resolution.c): its texture heap and that heap's parent grow. The
