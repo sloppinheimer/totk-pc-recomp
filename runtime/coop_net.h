@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define COOP_MAX_PLAYERS 8
-#define COOP_NET_VERSION 5   // packet header version: games and relays of another version ignore each other
+#define COOP_NET_VERSION 6   // packet header version: games and relays of another version ignore each other
 
 // One player's state, sent about 30 times a second. Positions and directions are world space; the sticks are as the
 // player's own camera saw them, with the camera's horizontal forward and right so a receiver can turn them into its
@@ -18,8 +18,10 @@ typedef struct {
     char gear[6][32];                 // equipped actor names: weapon, bow, shield, head, body, legs ("" unknown, "-" none)
     float day_seconds;                // time of day, 0..86400 (-1 unknown): the host's is followed
     int32_t weather;                  // weather type at the player (-1 unknown): the host's is followed
+    int8_t dye[6];                    // per gear slot: the armor's dye colour (the create's 4th argument; -1 none)
+    uint8_t pad[2];
 } NetState;
-_Static_assert(sizeof(NetState) == 296, "NetState wire size");
+_Static_assert(sizeof(NetState) == 304, "NetState wire size");
 #define COOP_GEAR_SLOTS 6
 extern const int coop_gear_slot[COOP_GEAR_SLOTS];   // the EquipmentUser slots they are (coop_players.c)
 

@@ -403,3 +403,12 @@ instead of by action:
 - Mistake made while testing: a run whose screenshots started at 16 s (B's clock) missed the jumps, which happen at
   14–16 s there, and looked like a frozen puppet. Each game's world clock starts at its own load, so screenshot
   windows need a second or two of slack on each side.
+
+## Armor dye (2026-11-05)
+- The armor create main+0xc48ac0 / main+0xc4961c takes the dye as its 4th argument. The slot build main+0xc4a5f4
+  reads it from the save (an enum mapped to 0..14, else -1 undyed). This PC's dyes are taken from its own armor
+  creates (the gear hook on main+0xc4961c), sent in NetState.dye (COOP_NET_VERSION 6, 304 bytes), passed to a
+  co-op Link's armor creates, and a dye change alone rebuilds that piece.
+- Checked: on the 3rd save the tunic and trousers are dye 10 and go over as 10. With game A faking dye 3
+  (run_pair -FakeDyeA ",,,,3,3", TOTK_COOP_FAKEDYE) game B shows A's Link in a darker tunic than its own white one.
+  Not checked: dyeing at the shop during a session. That should go through the same create, but it's untested.

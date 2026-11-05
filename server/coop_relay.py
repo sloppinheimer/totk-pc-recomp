@@ -17,7 +17,7 @@ import struct
 import sys
 import time
 
-MAGIC, VERSION = b'TKCO', 5
+MAGIC, VERSION = b'TKCO', 6
 HELLO, WELCOME, STATE, LEAVE, BYE, WORLD, HIT, POSE = 1, 2, 3, 4, 5, 6, 7, 8
 MAX_PLAYERS, TIMEOUT = 8, 5.0
 HEADER = struct.Struct('<4sBBBB')
