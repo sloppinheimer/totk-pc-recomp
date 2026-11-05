@@ -1,0 +1,11 @@
+# The second save (Paraglider + All Towers), Lookout Landing at night: run left and forward toward the moat, sprinting,
+# with jumps, then keep swimming forward.
+300 A 4
+520 DOWN 4
+640 A 4
+800 A 4
+@40000 LSTICK -26000 20000 14000
+@40000 B 6000
+@44000 X 150
+@47000 X 150
+@54000 LSTICK 0 32767 8000

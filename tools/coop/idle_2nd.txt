@@ -1,0 +1,5 @@
+# Title to the second save in the list (Paraglider + All Towers), then nothing.
+300 A 4
+520 DOWN 4
+640 A 4
+800 A 4
