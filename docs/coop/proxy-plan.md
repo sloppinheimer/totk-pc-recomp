@@ -85,6 +85,8 @@ right in the tester's own two-pad session.
   game's Link keeps its EquipmentUser, whose table keeps the first save's items, and no armor create runs at the load
   (re-notes "Proxy mode, gear"). Two fixes failed.
 - **Stage 3 needs nothing**: head and hair are bones of the 127-bone body, which the proxy already copies.
+- **Stage 4 (research) found the call**: main+0x4dcc1c plays an AS by name in a slot on the Player's AS manager; its
+  calls line up with every action of tour.txt (re-notes "Animation by name"). Replaying them on a proxy is not tried.
 - Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
 
 ## Plan

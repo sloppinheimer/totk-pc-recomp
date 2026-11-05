@@ -524,6 +524,80 @@ static void p7_refresh(void) {
     atomic_store(&p7_n, k);
 }
 
+// TOTK_COOP_PROF=8 (with TOTK_COOP_TRACE=calc, which tracks whose calc a thread runs): every function entered inside
+// this PC's Link's calc with a name-like string in x1..x3 (a char pointer, or a string object's +0 / +8 pointer to
+// one), kept as distinct (function, string) pairs and reported every 10 s by function, most strings first: where
+// the Player starts animations (AS) by name, for a proxy that replays them (docs/coop/proxy-plan.md stage 4).
+static int prof8;
+static struct { _Atomic uint64_t fn; uint32_t hash, hits; char s[40]; } p8[8192];
+static __thread uint64_t calc_actor;   // the Player whose ACTOR_CALC this thread runs (TOTK_COOP_TRACE set)
+static int name_like(uint64_t p, char out[40]) {
+    if (p < 0x100000000ull || p >= 0x8000000000ull) return 0;
+    char b[40];
+    if (!rd(p, b, sizeof b)) return 0;
+    int n = 0;
+    while (n < 39 && ((b[n] >= 'A' && b[n] <= 'Z') || (b[n] >= 'a' && b[n] <= 'z') || (b[n] >= '0' && b[n] <= '9') || b[n] == '_')) n++;
+    if (n < 3 || n >= 39 || b[n] != 0) return 0;
+    memcpy(out, b, n + 1);
+    return 1;
+}
+// TOTK_COOP_PROF=9: every call of main+0x4dcc1c (x0 an AS manager, x1 the AS name as a string object, x2 the
+// request: +0x28 slot, +0x34 blend time) inside this PC's Link's calc, logged with the world time.
+static int prof9;
+void coop_fn_args(uint64_t addr, Cpu *c) {
+    if (prof9 && addr == MOD_MAIN_BASE + 0x4dcc1c && calc_actor && calc_actor == player_actor_cached) {
+        char nm[40] = "?";
+        if (!name_like(rd_ptr(c->x[1]), nm)) name_like(c->x[1], nm);
+        int32_t slot = -1;
+        float blend = 0;
+        rd(c->x[2] + 0x28, &slot, 4), rd(c->x[2] + 0x34, &blend, 4);
+        rt_log("coop: as %.3f %s slot %d blend %.2f mgr %llx (actor+%#llx)", frame_step_world_us() / 1e6, nm, slot, blend,
+               (unsigned long long)c->x[0], (unsigned long long)(c->x[0] - calc_actor));
+    }
+    if (!prof8 || !calc_actor || calc_actor != player_actor_cached) return;
+    for (int r = 1; r <= 3; r++) {
+        char nm[40];
+        uint64_t p = c->x[r];
+        if (!name_like(p, nm) && !name_like(rd_ptr(p), nm) && !name_like(rd_ptr(p + 8), nm)) continue;
+        uint32_t h = 2166136261u;
+        for (const char *q = nm; *q; q++) h = (h ^ (uint8_t)*q) * 16777619u;
+        h ^= (uint32_t)r;
+        uint32_t i = (uint32_t)(((addr * 0x9e3779b97f4a7c15ull) >> 40) ^ h) & 8191;
+        for (int k = 0; k < 64; k++, i = (i + 1) & 8191) {
+            uint64_t have = atomic_load_explicit(&p8[i].fn, memory_order_relaxed);
+            if (have == addr && p8[i].hash == h) { p8[i].hits++; break; }
+            if (!have && atomic_compare_exchange_strong(&p8[i].fn, &have, addr)) {
+                p8[i].hash = h, p8[i].hits = 1;
+                snprintf(p8[i].s, sizeof p8[i].s, "x%d:%s", r, nm);
+                break;
+            }
+        }
+    }
+}
+static void p8_report(void) {
+    static uint64_t fns[512];
+    static int cnt[512];
+    int nf = 0;
+    for (int i = 0; i < 8192; i++) {
+        uint64_t f = atomic_load(&p8[i].fn);
+        if (!f) continue;
+        int k = 0;
+        while (k < nf && fns[k] != f) k++;
+        if (k == nf && nf < 512) fns[nf] = f, cnt[nf++] = 0;
+        if (k < nf) cnt[k]++;
+    }
+    for (int shown = 0; shown < 25; shown++) {
+        int best = -1;
+        for (int k = 0; k < nf; k++) if (cnt[k] > 0 && (best < 0 || cnt[k] > cnt[best])) best = k;
+        if (best < 0 || cnt[best] < 3) break;
+        char line[700], d[160];
+        int m = snprintf(line, sizeof line, "coop: prof8 %s: %d strings:", ldr_describe(fns[best], d, sizeof d), cnt[best]);
+        for (int i = 0; i < 8192 && m < 650; i++)
+            if (atomic_load(&p8[i].fn) == fns[best]) m += snprintf(line + m, sizeof line - m, " %s(%u)", p8[i].s, p8[i].hits);
+        rt_log("%s", line);
+        cnt[best] = -cnt[best];
+    }
+}
 void coop_fn_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
     if (prof6) { p6_hit(addr, lr); return; }
     if (prof7) {
@@ -628,7 +702,6 @@ static int calc_wrap(Cpu *c, uint64_t addr) {
 
 // requestCreateActor calls (TOTK_COOP_TRACE=create): the actor name and whose calc it ran in (calc_actor: the actor
 // whose ACTOR_CALC encloses the call on this thread, tracked for Players only).
-static __thread uint64_t calc_actor;
 static int create_trace(Cpu *c) {
     static int on = -1;
     if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "create"); }
@@ -1166,6 +1239,8 @@ void coop_tick(struct Cpu *c) {
         if (e && *e == '3') prof3 = 1, g_fnprof = 1;
     if (e && *e == '4') prof3 = prof4 = 1;   // the profiler from the world on (loading is too slow under it)
         if (e && *e == '7') prof7 = prof3 = 1, g_fnprof = 1;
+        if (e && *e == '8') prof8 = 1;
+        if (e && *e == '9') prof9 = 1;
         if (e && *e == '6') {
             const char *a = cfg_get("TOTK_COOP_PROF_AFTER");
             prof6 = 1, g_fnprof = 1;
@@ -1190,6 +1265,12 @@ void coop_tick(struct Cpu *c) {
         }
     }
     if (prof6) g_fnprof = 1;
+    if (prof9 && frame_step_world_us() > 0) g_fnprof = 1;
+    if (prof8 && frame_step_world_us() > 0) {   // from the world on (loading is too slow under the profiler)
+        static int t8;
+        g_fnprof = 1;
+        if (++t8 % 300 == 0) p8_report();
+    }
     if (prof7) p7_refresh();   // resolution.c switches it off once the render size is set
     if (prof3) {   // reported every 10 s (coop_tick runs at 30 Hz)
         static int t;

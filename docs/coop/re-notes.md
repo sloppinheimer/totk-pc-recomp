@@ -536,3 +536,24 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
 - So head and hair are body bones (the highest bone is 83 or 84 in both games) and the proxy already gets them from
   the owner's final matrices (stage 1). In every proxy screenshot the head and hair sit in place and move with the
   body. Nothing else to do for stage 3.
+
+## Animation by name (stage 4 research, 2026-11-05)
+- TOTK_COOP_PROF=8 with TOTK_COOP_TRACE=calc (coop_spawn.c coop_fn_args): every function entered inside this PC's
+  Link's calc with a name-like string in x1..x3, by function. Two layers show up:
+  - Animation clips (Nml_Move_Run_St_F_L020, Sword_Guard_Wait, Equip_Shield_Off_Natural, Face_Default...):
+    main+0x5baeb4, main+0x5bad18, main+0xe24484, main+0x2bb7460 / 0x2bb7570 (string compares inside).
+  - AS (animation sequence) names (Wait, Move, Jump, Crouch, LockOnWait, WeaponEquipOn, SideStep, SurfingOn...):
+    main+0x4dcc1c, main+0x4dd2a4, main+0x4e1bdc, main+0xac87e4, main+0xac718c / 0xac7184.
+- main+0x4dcc1c (x0 the Player's AS manager, x1 the AS name as a string object, x2 a request: +0x28 slot, +0x2c an
+  int it may overwrite from manager +0x148, +0x32 a flag byte, +0x34 blend time, negative = the manager's default
+  +0x11c) is the request to play an AS in a slot: it calls main+0x4dd2a4 (manager, name, slot), then, unless the
+  slot's entry (manager +0x20, 0x48 a slot; its [+0] +200 bit 0) blocks it, main+0x4e1bdc on that slot.
+- TOTK_COOP_PROF=9 logs each call with the world time ("coop: as <s> <name> slot <n>"). On tour.txt it lines up with
+  every scripted action, to the frame: Move at 14.0 s (stick), WeaponEquipNG* at 16.0 / 17.2 / 21.0 (Y with no
+  weapon), LockOnWait + WeaponEquipOn at 18.5 (ZL), WeaponEquipOff* at 20.5 (ZL let go), Jump 24.5 and Land 24.9
+  (X), Crouch / CrouchMove 25.5-26.8 (stick click), HorseCall 28.0 (whistle), LockOnWait 32.0, SideStep 33.0. Slots:
+  0 the body, 1 the upper body, 2 and 3 weapon layers, 4 the face. All on one manager (19b496680 that run).
+- So a player's animation could go over the network as a few (slot, name) events a second instead of 127 bones 30
+  times a second. Not tried: calling main+0x4dcc1c on a proxy's AS manager (where it is kept, a copied request),
+  and whether a frozen proxy's AS then advances (its animation binding main+0x2e9c80 runs while frozen; the writer
+  main+0x283c750 that turns it into a pose does not).
