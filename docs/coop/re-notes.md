@@ -714,3 +714,18 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
 - Objects are sent within 20 m of any Link: a glider flown 20 m from its maker went away under the rider.
 - Ride test at 5 m/s: B rode 50 m in 10 s, 0.1-0.2 m from its boarding place along the way (drifting 0.7 m across),
   and came down with the glider when A let it fall. Riding is on by default (TOTK_COOP_RIDE=0 off).
+
+## Zonai devices: what turns one on (research, 2026-11-05)
+- A device made by requestCreateActor can turn itself on at once: a SpObj_Rocket_A_01 made 1.6 m from the Link
+  flew off 27 m in 3 s (its parameter ThrustIsChangeStateWhenContact, game__component__ZonauGearControlParam:
+  contact turns it on); a SpObj_WindGenerator_A_01 (fan) made on the stairs moved 30 m in 6 s. Scripted sword
+  hits (zonai_hit_3rd.txt, TOTK_COOP_TEST_ZONAI=<name>) never reached a device at rest: on the In-isa stairs it
+  rolls away first.
+- In the actor's first 0x3000 bytes only +0x404 / +0x418 (0 -> 1 or 2) changed between before and after; they
+  changed when the rocket landed at the stairs' foot, so they are contact state, not "on".
+- Ghidra: the device logic is in a component, game::component::ZonauGearControl (its parameter class
+  ZonauGearControlParam). AI nodes with IsChangeState / IsOn / IsWorking (main+0x230b928 binds them) are a generic
+  switch (WaitOn / WaitOff, SwitchOn), not the device. The state word was not found.
+- Logger for a played run: TOTK_COOP_TEST_ZONAILOG=1 logs, for SpObj_ devices within 15 m, every word of the actor
+  (0x3000 bytes) and of its first 128 components (0x400 bytes each) that goes between small values (0..3), with the
+  device's place and speed ("coop: zonai: ..."). Next: a run where a device is turned on, left to stop, and again.

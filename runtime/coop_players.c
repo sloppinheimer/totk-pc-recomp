@@ -2188,6 +2188,143 @@ static void ride_test(Cpu *c, uint64_t me) {
         rt_log("coop: test: ride: %.2f s copy at %.2f %.2f %.2f, Link %+.2f %+.2f %+.2f from it", now, g->pos[0], g->pos[1], g->pos[2],
                p[0] - g->pos[0], p[1] - g->pos[1], p[2] - g->pos[2]);
 }
+// Test (TOTK_COOP_TEST_ZONAI=<actor name>, one game, tools/coop/zonai_hit_3rd.txt): what turns a Zonai device on.
+// At 21 s this Link is turned to face +x, at 22 s the device is made 1.1 m in front of it; its first 0x3000 bytes are kept at 24 s (before the hits
+// at 25 s), at 28 s (on) and at 45 s (off again, if it stopped); each word that is one thing before, another while
+// on and the first again after (or that only changed on) is logged, with the device's place every 30 ticks.
+static void zonai_test(Cpu *c, uint64_t me) {
+    static const char *name;
+    static int stage;
+    static _Alignas(16) uint8_t handle[0x40], link[0x40];
+    static uint64_t dev;
+    static uint32_t snap[3][0x3000 / 4];
+    if (!name) name = cfg_get("TOTK_COOP_TEST_ZONAI") ? cfg_get("TOTK_COOP_TEST_ZONAI") : "";
+    if (!*name) return;
+    double now = frame_step_world_us() / 1e6;
+    float p[3], r[9];
+    if (!coop_rd(me + COOP_ACTOR_POS, p, 12) || !coop_rd(me + COOP_ACTOR_ROT, r, 36)) return;
+    static int turned;
+    if (!turned && now > 21) {   // face +x (its forward is the rotation's third column), where the stairs go on level
+        float m[12] = {0, 0, 1, p[0], 0, 1, 0, p[1], -1, 0, 0, p[2]};
+        coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
+        turned = 1;
+        return;
+    }
+    if (stage == 0 && now > 22) {
+        float at[3] = {p[0] + 1.1f, p[1] + 0.3f, p[2]}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        rt_log("coop: test: zonai: this Link faces %.2f %.2f %.2f", r[2], r[5], r[8]);
+        stage = coop_request_create(c, name, at, rot, handle) ? 1 : 9;
+        rt_log("coop: test: zonai: %s asked for at %.2f %.2f %.2f", name, at[0], at[1], at[2]);
+    }
+    if (stage == 1 && coop_handle_status(handle) == 3) {
+        uint64_t ref;
+        dev = coop_claim(c, handle, link, &ref);
+        stage = dev ? 2 : 9;
+        rt_log("coop: test: zonai: %s is %llx", name, (unsigned long long)dev);
+    }
+    if (!dev) return;
+    static int t;
+    float q[3];
+    uint32_t w[8] = {0};
+    if (++t % 15 == 0 && now < 50 && coop_rd(dev + COOP_ACTOR_POS, q, 12) && coop_rd(dev + 0x400, w, 32))
+        rt_log("coop: test: zonai: %.2f s at %.2f %.2f %.2f, +0x400.. %x %x %x %x %x %x %x %x", now, q[0], q[1], q[2],
+               w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+    int k = stage == 2 && now > 24 ? 0 : stage == 3 && now > 28 ? 1 : stage == 4 && now > 45 ? 2 : -1;
+    if (k < 0) return;
+    coop_rd(dev, snap[k], sizeof snap[k]);
+    stage++;
+    if (k == 0) return;
+    int n = 0;
+    for (int i = 0; i < 0x3000 / 4 && n < 120; i++) {
+        uint32_t a = snap[0][i], b = snap[1][i], cc = snap[2][i];
+        if (k == 1 && a != b && a < 0x10000 && b < 0x10000)
+            rt_log("coop: test: zonai: on: +%#x %#x -> %#x", i * 4, a, b), n++;
+        if (k == 2 && a != b && cc == a && a < 0x10000 && b < 0x10000)
+            rt_log("coop: test: zonai: on and back: +%#x %#x -> %#x -> %#x", i * 4, a, b, cc), n++;
+    }
+    rt_log("coop: test: zonai: snapshot %d, %d words logged", k, n);
+}
+// Test (TOTK_COOP_TEST_ZONAILOG=1; the tester plays it: drop a Zonai device, hit it to turn it on, let it stop, again):
+// which words turn a device on. Every 10 ticks, for up to 8 devices (actors named SpObj_..., not a capsule) within
+// 15 m of this Link: their first 0x3000 bytes, and 0x400 bytes of each of their first 128 components ([actor+0x228]
+// + 8 * i), are compared with the last look; a word that goes from one small value (0..3) to another is logged as
+// "zonai: <name> <where> a -> b", each place at most 30 times, with the device's place and speed, so the words that
+// go on with the device and off when it stops can be picked out of the log afterwards.
+#define ZL_DEV 8
+#define ZL_ACT 0x3000
+#define ZL_COMP 128
+#define ZL_CB 0x400
+typedef struct {
+    uint64_t actor;
+    char name[48];
+    uint32_t act[ZL_ACT / 4];
+    uint64_t comp[ZL_COMP];
+    uint32_t cw[ZL_COMP][ZL_CB / 4];
+    uint8_t said[ZL_ACT / 4 + ZL_COMP * ZL_CB / 4];
+    float last[3];
+    int seen, have;
+} ZlDev;
+static ZlDev *zl;
+static int zl_tick;
+static void zl_fn(uint64_t a, void *arg) {
+    const float *me = arg;
+    char nm[48];
+    coop_actor_name(a, nm, sizeof nm);
+    if (strncmp(nm, "SpObj_", 6) || strstr(nm, "Capsule")) return;
+    float p[3];
+    if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+    if ((p[0] - me[0]) * (p[0] - me[0]) + (p[1] - me[1]) * (p[1] - me[1]) + (p[2] - me[2]) * (p[2] - me[2]) > 225) return;
+    int d = -1, free = -1;
+    for (int i = 0; i < ZL_DEV && d < 0; i++) {
+        if (zl[i].actor == a) d = i;
+        else if (free < 0 && (!zl[i].actor || zl_tick - zl[i].seen > 300)) free = i;
+    }
+    if (d < 0) {
+        if (free < 0) return;
+        d = free;
+        memset(&zl[d], 0, sizeof zl[d]);
+        zl[d].actor = a, snprintf(zl[d].name, sizeof zl[d].name, "%s", nm);
+        rt_log("coop: zonai: watching %s %llx at %.2f %.2f %.2f", nm, (unsigned long long)a, p[0], p[1], p[2]);
+    }
+    ZlDev *z = &zl[d];
+    z->seen = zl_tick;
+    static uint32_t buf[ZL_ACT / 4];
+    if (!coop_rd(a, buf, sizeof buf)) return;
+    float sp = z->have ? sqrtf((p[0] - z->last[0]) * (p[0] - z->last[0]) + (p[1] - z->last[1]) * (p[1] - z->last[1]) +
+                               (p[2] - z->last[2]) * (p[2] - z->last[2])) * 3 : 0;   // m/s over the 10 ticks (about 1/3 s)
+    double now = frame_step_world_us() / 1e6;
+    for (int i = 0; i < ZL_ACT / 4 && z->have; i++)
+        if (buf[i] != z->act[i] && buf[i] < 4 && z->act[i] < 4 && z->said[i] < 30)
+            z->said[i]++, rt_log("coop: zonai: %.2f s %s actor+%#x %u -> %u (at %.1f %.1f %.1f, %.1f m/s)", now, z->name, i * 4,
+                                 z->act[i], buf[i], p[0], p[1], p[2], sp);
+    memcpy(z->act, buf, sizeof buf);
+    uint64_t tbl = coop_rd_ptr(a + 0x228);
+    for (int k = 0; k < ZL_COMP && tbl; k++) {
+        uint64_t c = coop_rd_ptr(tbl + 8 * (uint64_t)k);
+        static uint32_t cb[ZL_CB / 4];
+        if (!c || (c & 7) || !coop_rd(c, cb, sizeof cb)) { z->comp[k] = 0; continue; }
+        if (z->have && z->comp[k] == c)
+            for (int i = 0; i < ZL_CB / 4; i++) {
+                uint8_t *sd = &z->said[ZL_ACT / 4 + k * (ZL_CB / 4) + i];
+                if (cb[i] != z->cw[k][i] && cb[i] < 4 && z->cw[k][i] < 4 && *sd < 30)
+                    (*sd)++, rt_log("coop: zonai: %.2f s %s comp%d+%#x %u -> %u (at %.1f %.1f %.1f, %.1f m/s)", now, z->name, k, i * 4,
+                                    z->cw[k][i], cb[i], p[0], p[1], p[2], sp);
+            }
+        z->comp[k] = c;
+        memcpy(z->cw[k], cb, sizeof cb);
+    }
+    memcpy(z->last, p, 12), z->have = 1;
+}
+static void zonai_log(uint64_t me) {
+    static int on = -1;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_ZONAILOG") != NULL;
+    if (!on || ++zl_tick % 10) return;
+    if (!zl) zl = calloc(ZL_DEV, sizeof *zl);
+    float p[3];
+    if (!zl || !coop_rd(me + COOP_ACTOR_POS, p, 12)) return;
+    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
+    coop_actors_live(zl_fn, p);
+}
 static int this_paused;   // this game sits in a menu (the clock and this Link both still; set by the tick)
 void coop_players_tick(Cpu *c, int numpad3) {
     if (frame_step_world_us() <= 0) return;   // not in the world yet
@@ -2270,6 +2407,8 @@ void coop_players_tick(Cpu *c, int numpad3) {
     arrow_log(me);
     refpool_test();
     stand_test(c, me);
+    zonai_test(c, me);
+    zonai_log(me);
     uint64_t my_eq = eq_of_actor(me);
     keep_player_eq(me, my_eq);
     if (my_eq) read_my_gear(my_eq);
