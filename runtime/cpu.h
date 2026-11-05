@@ -71,7 +71,7 @@ typedef uint8_t __attribute__((may_alias)) u8a;
 
 // Function-entry profiler (runtime/fnprof.c, LARECOMP_FNPROF): one predictable branch per call when off.
 extern volatile int g_fnprof;
-void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0);
+void fnprof_hit(uint64_t addr, Cpu *c);   // the entry registers too (the co-op frame tracer reads x0..x3)
 // Co-op entry hooks (runtime/coop_spawn.c coop_hook): a call with the function's registers at the entry of the functions
 // COOP_HOOKED names, before the body loads them, so the hook may change arguments. a is a constant in every generated
 // function, so the test folds away everywhere else.
@@ -79,7 +79,7 @@ void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0);
 // entry returns 0), so this entry returns at once with the registers the inner call left.
 #define COOP_HOOKED(a) ((a) == 0x700037ccc0ull || (a) == 0x700037d330ull || (a) == 0x700041bb20ull || (a) == 0x70002804d0ull || (a) == 0x70002e27b0ull || (a) == 0x7000245030ull || (a) == 0x7000257310ull || (a) == 0x70002f7f70ull || (a) == 0x70019557fcull || (a) == 0x70006c9ad0ull || (a) == 0x70001afbe4ull || (a) == 0x7000599670ull || (a) == 0x7000c4961cull || (a) == 0x7000af100cull || (a) == 0x7000923d20ull || (a) == 0x70002e9c80ull || (a) == 0x700283c750ull || (a) == 0x7000289620ull || (a) == 0x70002925e0ull || (a) == 0x700043e450ull || (a) == 0x700016ee70ull || (a) == 0x700031d824ull || (a) == 0x7002056f3cull || (a) == 0x700205719cull || (a) == 0x7002057384ull || (a) == 0x7000170210ull || (a) == 0x700016fdccull || (a) == 0x7000170490ull || (a) == 0x7000282280ull || (a) == 0x7002aabf84ull || (a) == 0x70004400b0ull || (a) == 0x700207ea50ull || (a) == 0x7000245030ull || (a) == 0x70002f9910ull || (a) == 0x700194fd7cull || (a) == 0x7002192c50ull || (a) == 0x70004cb540ull || (a) == 0x7001a30670ull || (a) == 0x7000446a84ull || (a) == 0x700049f5f8ull || (a) == 0x700045b930ull)   // getController, its input copy, actor calc, ActorLink getActor
 int coop_hook(Cpu *c, uint64_t addr);
-#define FN_ENTER(a) do { if (COOP_HOOKED(a) && coop_hook(c, a)) return; if (__builtin_expect(g_fnprof, 0)) fnprof_hit(a, c->x[30], c->x[0]); } while (0)
+#define FN_ENTER(a) do { if (COOP_HOOKED(a) && coop_hook(c, a)) return; if (__builtin_expect(g_fnprof, 0)) fnprof_hit(a, c); } while (0)
 
 #define LD8(a)  (*(const u8a *)(uintptr_t)(a))
 #define LD16(a) (*(const u16u *)(uintptr_t)(a))

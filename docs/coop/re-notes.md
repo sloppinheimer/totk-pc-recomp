@@ -353,3 +353,28 @@ instead of by action:
   State: poses go out, arrive (127 bones, 0-6 ms old) and are put on; the screenshots do not yet show the co-op Link
   where its player is (tools/coop/show.txt: B walks ahead, A does not see it there). Next: check what the per-tick
   ForceSetMatrix does to a no-input Link, then the pose on screen.
+
+## Frame tracer (2026-11-05)
+- Tool: `TOTK_COOP_TRACE_AT=8,14.6,30` (world seconds, the same clock as `@ms` script lines), `TOTK_COOP_TRACE_MS`
+  (default 70). runtime/coop_trace.c records every guest call whose x0..x3 points into one of a Link's objects, with
+  thread, time, caller and stack depth, and checks the actor position and rotation, model world matrix and dirty
+  word, and skeleton bone records at each recorded call. Writes logs/trace_<n>_<s>s_<tid>.csv;
+  `tools/coop/trace_report.py <csv>` writes .report.txt (value changes, functions run for one Link only, the display
+  chain) and .timeline.txt (per thread, in order, indented by depth).
+- Object map: actor (0x4000), component table [actor+0x228] and its entries, model [[[actor+0x228]+8]+0x28], the body
+  skeleton path, every skeleton within 7 pointers (tagged by the actor that owns it), then 3 pointer levels of
+  everything else. It doesn't walk into other actors (they get a label only). Objects main's globals hold are tagged
+  "global-held"; objects both Links reach are "shared" and are left out of the diff. Each window costs about 50–110k
+  records and a short hitch to build the map.
+- Gaps: paths are first-found, so the two Links can label one object differently. The skeleton search is not
+  deterministic (2–5 skeletons from one run to the next; head and hair are not always found). The bone translation
+  values in the report read 0 (the record offsets are a guess); the changes themselves are real.
+- First finding, from the tour (game A) and puppet mode (game B):
+  - A puppet matches its owner exactly while both are on the ground (8 s, 19 s).
+  - Once the owner is in the air it drifts (30 s: 2.3 m off). At 39 s the owner glides at y 318 and the puppet has
+    fallen to y 276.
+  - ForceSetMatrix (main+0x45ce70) is called about every 25 ms from coop_players.c snap(), and has no visible
+    effect then.
+  - The puppet's position is written inside update phase main+0x245030, then main+0x257310, then main+0x25a91c, on
+    its comp+0x18 (>+0x370>+0x150): its physics body sets the actor position each frame. Its physics, not snap,
+    owns where it is.

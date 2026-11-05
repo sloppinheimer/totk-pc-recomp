@@ -396,6 +396,7 @@ int coop_pose_arg_match(const uint64_t *args, int n);
 int coop_pose_after_writer(const uint64_t *args, int n);
 int coop_puppet_before_writer(uint64_t pose, uint64_t skel);   // coop_world.c: pose out / a player's pose in
 int coop_puppet_mode(void);   // coop_world.c: TOTK_COOP_PUPPET   // coop_world.c: copies onto the co-op Link's part skeleton named   // coop_world.c: x0..x3 name the co-op Link's skeleton or model   // coop_world.c: this Link's animation pose onto the co-op Link's
+void coop_trace_tick(uint64_t me);   // coop_trace.c
 void coop_actor_seen(uint64_t actor);   // coop_world.c
 uint64_t coop_nearest_link_data(uint64_t enemy);   // coop_world.c: a co-op Link's perception data when nearer, else 0
 static int prof3;
@@ -1098,6 +1099,7 @@ int coop_p2_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32
 void coop_tick(struct Cpu *c) {
     if (getenv("TOTK_COOP_TRACE")) log_callers(c);
     player_actor_cached = player_actor();
+    coop_trace_tick(player_actor_cached);   // coop_trace.c: TOTK_COOP_TRACE_AT
     if (prof4) resident_named("Player", &prof4_ref);
     static int report_ticks;
     if (getenv("TOTK_COOP_TRACE") && ++report_ticks % 300 == 0) report_callers();   // input tracing only
