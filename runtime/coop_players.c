@@ -1361,6 +1361,14 @@ void coop_players_tick(Cpu *c, int numpad3) {
                             give_gear(c, eq, k, s->gear_want[k], -1, 1, s->gear_str[k], s->fuse_want[k], s->att_str[k]);
                             rt_log("coop: proxy: slot %d: %s made again in hand", i, s->gear_want[k]);
                         }
+                    // ... and one put away is made again put away (the create's "2"): made in hand, the thaw no longer
+                    // took it out of the hand ("holds 0x5, owner 0" through four retries; the next item drawn was held
+                    // with it, a play session, 2026-11-05).
+                    for (int k = 0; k < 3 && !no_remake; k++)
+                        if ((s->out_have & ~s->out_want) >> k & 1 && s->gear_want[k][0] && strcmp(s->gear_want[k], GEAR_NONE)) {
+                            give_gear(c, eq, k, s->gear_want[k], -1, 0, s->gear_str[k], s->fuse_want[k], s->att_str[k]);
+                            rt_log("coop: proxy: slot %d: %s made again put away", i, s->gear_want[k]);
+                        }
                 }
                 s->out_have = s->out_want;
             }
