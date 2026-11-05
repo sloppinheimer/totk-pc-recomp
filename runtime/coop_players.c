@@ -54,6 +54,12 @@ typedef struct {
     char gear_want[COOP_GEAR_SLOTS][32], gear_have[COOP_GEAR_SLOTS][32];   // the owner's gear; what this Link was given
     int8_t dye_want[COOP_GEAR_SLOTS], dye_have[COOP_GEAR_SLOTS];   // the armor's dye colour, the same way (-1 none)
     int out_want, out_have;            // puppet mode: bits 0..2 weapon, bow, shield in the owner's hands; as last made
+    float phys_pos[3];                 // puppet mode: where its physics step put it (before placement), for snap
+    int since_snap;                    // ticks since its body was last teleported
+    float body_pos[3];                 // its physics body's position (mLastTransform)
+    int have_body;
+    float top_last;                    // its highest body bone last frame (jitter watch)
+    int have_phys;
     _Alignas(16) uint8_t gear_str[COOP_GEAR_SLOTS][0x60];   // the names handed to the creates, kept while they run
 } Slot;
 static Slot slots[COOP_MAX_PLAYERS];
@@ -405,7 +411,7 @@ static Slot *slot_new(int source, int net_id) {
             memset(s->held, 0, sizeof s->held);
             memset(s->gear_want, 0, sizeof s->gear_want), memset(s->gear_have, 0, sizeof s->gear_have);
             memset(s->dye_want, -1, sizeof s->dye_want), memset(s->dye_have, -1, sizeof s->dye_have);
-            s->out_want = 0, s->out_have = -1;
+            s->out_want = 0, s->out_have = -1, s->have_phys = 0, s->top_last = -1e9f, s->have_body = 0;
             s->state = WANTED;
             rt_log("coop: player slot %d for %s %d", i, source == SRC_NET ? "remote player" : "local pad", net_id);
             return s;
@@ -494,7 +500,32 @@ int coop_players_phase(Cpu *c, uint64_t addr) {
 // snap() every tick. Returns 1 when it ran the step.
 static void owner_matrix(Slot *s, float m[12]);
 static int puppet_delay_ms(void);
+// The highest body bone (model space, skeleton +0x20 row 3) of an actor's body skeleton; -1e9 unknown.
+static float body_top(uint64_t actor) {
+    static const uint32_t path[8] = {0x48, 0x2a8, 0x20, 0x20, 0, 0xf8, 0x58, 0xb0};
+    uint64_t sk = actor;
+    for (int k = 0; k < 8 && sk; k++) sk = coop_rd_ptr(sk + path[k]);
+    uint16_t nb = 0;
+    uint64_t wb = sk ? coop_rd_ptr(sk + 0x20) : 0;
+    static __thread float rec[600][16];
+    if (!wb || !coop_rd(sk + 0x48, &nb, 2) || nb == 0 || nb > 600 || !coop_rd(wb, rec, (size_t)nb * 64)) return -1e9f;
+    float top = -1e9f;
+    for (int b = 0; b < nb; b++) if (rec[b][13] > top) top = rec[b][13];
+    return top;
+}
+// TOTK_COOP_TOP_LOG=<s>: for 4 s from then, every frame, this PC's Link's and each puppet's body_top (to tell the
+// owner's own movement from jitter: game A's own Link against game B's puppet of it).
+static void top_log(const char *who, uint64_t actor) {
+    static double at = -2;
+    if (at == -2) { const char *e = cfg_get("TOTK_COOP_TOP_LOG"); at = e ? atof(e) : -1; }
+    double s = frame_step_world_us() / 1e6;
+    if (at < 0 || s < at || s > at + 4) return;
+    rt_log("coop: top %s %.3f %.4f", who, s, body_top(actor));
+}
 int coop_puppet_place(Cpu *c, uint64_t addr) {
+    static int tl = -1;
+    if (tl < 0) tl = cfg_get("TOTK_COOP_TOP_LOG") != NULL;
+    if (tl && c->x[0] && c->x[0] == coop_player_actor()) top_log("mine", c->x[0]);
     Slot *s = slot_of_actor(c->x[0]);
     int coop_puppet_mode(void);   // coop_world.c
     if (!s || s->state != LIVE || s->source != SRC_NET || !s->have_want || !coop_puppet_mode()) return 0;
@@ -504,12 +535,38 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
     static __thread int in;
     if (in) return 0;
     uint64_t actor = c->x[0];
-    in = 1;
-    c->pc = addr;
-    rt_dispatch(c);
-    in = 0;
+    // Test (TOTK_COOP_PUPPET_SKIPPHYS=1): the step does not run for a puppet. Worse (2026-11-05): the skeleton's
+    // matrices then jump by up to 2.8 m from frame to frame; the step does more than copy the body's transform.
+    static int skip = -1;
+    if (skip < 0) { const char *e = cfg_get("TOTK_COOP_PUPPET_SKIPPHYS"); skip = e && *e == '1'; }
+    if (!skip) {
+        in = 1;
+        c->pc = addr;
+        rt_dispatch(c);
+        in = 0;
+    } else c->x[0] = 1;   // as when it moved the actor
+    {   // the physics body's own position (main+0x45ce70's [[actor+0x228]+0x50]+0x20 -> +0x150; its mLastTransform at
+        // +0x98, 3x4 rows, main+0x25a91c), for snap's distance check
+        uint64_t ctl = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x50) + 0x20), body = ctl ? coop_rd_ptr(ctl + 0x150) : 0;
+        float bm[12];
+        if (body && coop_rd(body + 0x98, bm, sizeof bm)) s->body_pos[0] = bm[3], s->body_pos[1] = bm[7], s->body_pos[2] = bm[11], s->have_body = 1;
+    }
     float m[12], pos[3] = {0}, rot[9];
     owner_matrix(s, m);
+    {   // how far the physics step's transform is from the owner's (what placement covers), logged every 60 frames
+        float pp[3], pr[9];
+        static float dp_max, dr_max;
+        static int dn;
+        if (coop_rd(actor + COOP_ACTOR_POS, pp, 12) && coop_rd(actor + COOP_ACTOR_ROT, pr, 36)) {
+            memcpy(s->phys_pos, pp, 12), s->have_phys = 1;
+            for (int k = 0; k < 3; k++) { float d = fabsf(pp[k] - m[k * 4 + 3]); if (d > dp_max) dp_max = d; }
+            for (int r = 0; r < 3; r++) for (int k = 0; k < 3; k++) { float d = fabsf(pr[r * 3 + k] - m[r * 4 + k]); if (d > dr_max) dr_max = d; }
+            if (++dn % 60 == 0) {
+                rt_log("coop: puppet: physics vs owner before placement: position %.1f mm, rotation %.4f (max over 60 frames)", dp_max * 1000, dr_max);
+                dp_max = dr_max = 0;
+            }
+        }
+    }
     for (int r = 0; r < 3; r++) {
         pos[r] = m[r * 4 + 3];
         for (int k = 0; k < 3; k++) rot[r * 3 + k] = m[r * 4 + k];
@@ -522,6 +579,26 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
     if (model) {
         memcpy((void *)(uintptr_t)(model + 0x1f8), m, sizeof m);
         ST8(model + 0x240, LD8(model + 0x240) | 1);
+    }
+    {   // Jitter watch: the puppet's highest body bone (model space, skeleton +0x20, row 3) frame to frame; a jump
+        // over 3 cm is logged with what this frame did (whether its body was teleported since, the pose's age).
+        static const uint32_t path[8] = {0x48, 0x2a8, 0x20, 0x20, 0, 0xf8, 0x58, 0xb0};
+        uint64_t sk = actor;
+        for (int k = 0; k < 8 && sk; k++) sk = coop_rd_ptr(sk + path[k]);
+        uint16_t nb = 0;
+        uint64_t wb = sk ? coop_rd_ptr(sk + 0x20) : 0;
+        static float rec[127][16];
+        static int jumps, frames;
+        if (wb && coop_rd(sk + 0x48, &nb, 2) && nb == 127 && coop_rd(wb, rec, sizeof rec)) {
+            float top = -1e9f;
+            for (int b = 0; b < 127; b++) if (rec[b][13] > top) top = rec[b][13];
+            frames++;
+            if (s->top_last > -1e8f && fabsf(top - s->top_last) > 0.03f && ++jumps <= 200)
+                rt_log("coop: puppet: slot %d body top moved %+.1f cm in a frame at %.3f s (body teleported %d ticks ago)",
+                       (int)(s - slots), (top - s->top_last) * 100, frame_step_world_us() / 1e6, s->since_snap);
+            if (frames % 1800 == 0) rt_log("coop: puppet: slot %d: %d body jumps over 3 cm in %d frames", (int)(s - slots), jumps, frames);
+            s->top_last = top;
+        }
     }
     // Jerk: how far each frame's placed position is from the straight line through the two frames before it.
     if (s->jit_have >= 2) {
@@ -538,6 +615,7 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
     }
     memcpy(s->jit_prev[0], s->jit_prev[1], 12), memcpy(s->jit_prev[1], pos, 12);
     if (s->jit_have < 2) s->jit_have++;
+    top_log("puppet", actor);
     static int said;
     if (!said++) rt_log("coop: puppet: slot %d is placed at its owner after its physics step", (int)(s - slots));
     return 1;
@@ -714,6 +792,8 @@ void coop_players_tick(Cpu *c, int numpad3) {
         static const uint64_t hand_of[3] = {0, 3, 4};
         for (int k = 0; my_eq && k < 3; k++)
             if (coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, my_eq, hand_of[k], 0, 0) & 1) st.flags |= 1u << (8 + k);
+        const char *fh = cfg_get("TOTK_COOP_FAKEHAND");   // test: these in hand instead (bits 0..2 weapon, bow, shield)
+        if (fh) st.flags = (st.flags & ~0x700u) | (uint32_t)(atoi(fh) & 7) << 8;
         const char *fdye = cfg_get("TOTK_COOP_FAKEDYE");   // test: report these dyes instead (slot order, comma-separated)
         for (int k = 0; fdye && *fdye && k < COOP_GEAR_SLOTS; k++) {
             if (*fdye != ',') st.dye[k] = (int8_t)atoi(fdye);
@@ -893,20 +973,39 @@ void coop_players_tick(Cpu *c, int numpad3) {
                     give_gear(c, eq, k, none ? "" : s->gear_want[k], s->dye_want[k], -1, s->gear_str[k]);
                 }
             int coop_puppet_mode(void);   // coop_world.c
-            // Puppet mode: it gets no input, so it never draws or puts away an item itself. When the owner's hands
-            // change, each changed item is made again in hand or put away (the weapon create's 4th argument).
-            if (eq && coop_puppet_mode() && s->out_want != s->out_have) {
+            // Puppet mode: it gets no input, so it never draws an item itself. The EquipmentUser's per-slot byte
+            // +0x4620 (0 weapon, 3 bow, 4 shield) bit 1 is what main+0x3e322c also reads as "in hand"; set while the
+            // owner holds that item, the item goes to the puppet's hand (checked with the sword, 2026-11-05).
+            if (eq && coop_puppet_mode()) {
+                static const int slot_of[3] = {0, 3, 4};
                 for (int k = 0; k < 3; k++) {
-                    int w = (s->out_want >> k) & 1;
-                    if (s->out_have >= 0 && ((s->out_have >> k) & 1) == w) continue;
-                    if (!s->gear_have[k][0] || !strcmp(s->gear_have[k], GEAR_NONE)) continue;
-                    give_gear(c, eq, k, s->gear_have[k], -1, w, s->gear_str[k]);
-                    rt_log("coop: puppet: slot %d's %s is %s", i, s->gear_have[k], w ? "in hand" : "put away");
+                    uint8_t *f = (uint8_t *)(uintptr_t)(eq + 0x4620 + slot_of[k]);
+                    if ((s->out_want >> k) & 1) *f |= 2; else *f &= (uint8_t)~2;
                 }
-                s->out_have = s->out_want;
+            }
+            static int hand_ticks, hand_said = -1;
+            if (eq && coop_puppet_mode() && ++hand_ticks % 30 == 0) {
+                static const uint64_t hand_of[3] = {0, 3, 4};
+                int now = 0;
+                for (int k = 0; k < 3; k++) now |= (int)(coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, eq, hand_of[k], 0, 0) & 1) << k;
+                if ((now | s->out_want << 4) != hand_said)
+                    rt_log("coop: puppet: slot %d holds %#x, owner %#x", i, now, s->out_want), hand_said = now | s->out_want << 4;
             }
             if (s->state == LIVE && s->source == SRC_NET && s->have_want && coop_puppet_mode()) {
-                snap(c, s);   // puppet mode: it gets no input, so it is moved to its owner every tick
+                // Puppet mode: it gets no input, so its body is moved to its owner, but only once it is 10 cm off:
+                // a teleport every tick makes it lose and find the ground on alternate frames, and the foot
+                // placement then drops its hips (the jitter seen on stairs, 2026-11-05).
+                float om[12];
+                owner_matrix(s, om);
+                const float *bp = s->have_body ? s->body_pos : s->phys_pos;
+                float dx = bp[0] - om[3], dy = bp[1] - om[7], dz = bp[2] - om[11];
+                static int said_body;
+                if (s->have_body && said_body++ % 300 == 0)
+                    rt_log("coop: puppet: slot %d body %.2f %.2f %.2f, owner %.2f %.2f %.2f", i, bp[0], bp[1], bp[2], om[3], om[7], om[11]);
+                static float lim = -1;   // TOTK_COOP_PUPPET_SNAP_M: that distance in m (default 0.1; 0 every tick)
+                if (lim < 0) { const char *e = cfg_get("TOTK_COOP_PUPPET_SNAP_M"); lim = e ? (float)atof(e) : 0.1f; }
+                if ((!s->have_phys && !s->have_body) || dx * dx + dy * dy + dz * dz > lim * lim) snap(c, s), s->since_snap = 0;
+                else s->since_snap++;
                 static int said_snap;
                 if (!said_snap++) rt_log("coop: puppet: slot %d follows its owner every tick", i);
                 int k = s->nseen++ % 32;

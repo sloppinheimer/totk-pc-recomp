@@ -6,7 +6,7 @@
 #   -ShotsA / -ShotsB w20-30:2 -ShotsDir <dir>: that game saves screenshots (TOTK_SHOTS syntax, boot.c) in <dir>\A or \B
 #   -FakeDyeA ",,,,3,3": game A reports these armor dyes (slot order; empty keeps the real one)
 #   -QuitBAfter 60: game B is closed 60 s after it starts (a player leaving)
-param([int]$Seconds = 90, [string]$ScriptA = "tools\coop\walk.txt", [string]$ScriptB = "tools\coop\idle.txt", [string]$FakeGearA = "", [string]$FakeDyeA = "",
+param([int]$Seconds = 90, [string]$ScriptA = "tools\coop\walk.txt", [string]$ScriptB = "tools\coop\idle.txt", [string]$FakeGearA = "", [string]$FakeDyeA = "", [string]$FakeHandA = "",
       [string]$ShotsA = "", [string]$ShotsB = "", [string]$ShotsDir = "", [int]$QuitBAfter = 0)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -40,6 +40,7 @@ foreach ($g in @(@{dir = $a; prof = 'build\prof-coop-a'; script = $ScriptA; name
     if ($g.input) { $env:TOTK_INPUT = $g.input } else { Remove-Item Env:TOTK_INPUT -ErrorAction SilentlyContinue }
     if ($g.name -eq 'A' -and $FakeGearA) { $env:TOTK_COOP_FAKEGEAR = $FakeGearA } else { Remove-Item Env:TOTK_COOP_FAKEGEAR -ErrorAction SilentlyContinue }
     if ($g.name -eq 'A' -and $FakeDyeA) { $env:TOTK_COOP_FAKEDYE = $FakeDyeA } else { Remove-Item Env:TOTK_COOP_FAKEDYE -ErrorAction SilentlyContinue }
+    if ($g.name -eq 'A' -and $FakeHandA) { $env:TOTK_COOP_FAKEHAND = $FakeHandA } else { Remove-Item Env:TOTK_COOP_FAKEHAND -ErrorAction SilentlyContinue }
     $shots = if ($g.name -eq 'A') { $ShotsA } else { $ShotsB }
     if ($shots) { $sd = Join-Path $ShotsDir $g.name; New-Item -ItemType Directory -Force $sd | Out-Null; $env:TOTK_SHOTS = $shots; $env:TOTK_SHOTS_DIR = $sd; $env:TOTK_SHOTS_FULL = '1' }
     else { Remove-Item Env:TOTK_SHOTS, Env:TOTK_SHOTS_DIR, Env:TOTK_SHOTS_FULL -ErrorAction SilentlyContinue }

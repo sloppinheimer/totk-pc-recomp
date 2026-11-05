@@ -943,10 +943,23 @@ int coop_puppet_is_co_skeleton(uint64_t skel) {
         if (skel == atomic_load_explicit(&puppet_skel[i], memory_order_relaxed)) return 1;
     return 0;
 }
+// TOTK_COOP_POSE_LOG=<s>: for 3 s from that world time, bones 0..3's translation in each pose sent and put on.
+static void pose_log(const char *what, uint64_t pose) {
+    static double at = -2;
+    if (at == -2) { const char *e = cfg_get("TOTK_COOP_POSE_LOG"); at = e ? atof(e) : -1; }
+    double s = frame_step_world_us() / 1e6;
+    if (at < 0 || s < at || s > at + 3) return;
+    uint64_t arr = coop_rd_ptr(pose);
+    float f[4][20];
+    if (!arr || !coop_rd(arr, f, sizeof f)) return;
+    rt_log("coop: pose %s %.3f s: b0 %.3f %.3f %.3f  b1 %.3f %.3f %.3f  b2 %.3f %.3f %.3f  b3 %.3f %.3f %.3f", what, s,
+           f[0][4], f[0][5], f[0][6], f[1][4], f[1][5], f[1][6], f[2][4], f[2][5], f[2][6], f[3][4], f[3][5], f[3][6]);
+}
 int coop_puppet_before_writer(uint64_t pose, uint64_t skel) {
     if (skel && skel == atomic_load_explicit(&my_body_skel, memory_order_relaxed)) {
         static __thread uint8_t tmp[COOP_POSE_MAX];
         int len = pose_pack_input(pose, tmp, sizeof tmp);
+        pose_log("out", pose);
         if (len) {
             plat_mutex_lock(&pose_lock);
             memcpy(pose_latest, tmp, len), atomic_store(&pose_latest_len, len);
@@ -961,6 +974,7 @@ int coop_puppet_before_writer(uint64_t pose, uint64_t skel) {
         uint64_t age = 0;
         int len = coop_net_pose(atomic_load(&puppet_id[i]), in, sizeof in, &age);
         int ok = len && age < 2000000000ull ? pose_unpack_input(in, len, pose) : 0;
+        if (ok) pose_log("on", pose);
         static _Atomic int said_u, said_f;
         uint16_t have = 0, n2 = 0;
         coop_rd(pose + 0xa, &have, 2);

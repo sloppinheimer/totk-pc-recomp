@@ -420,3 +420,27 @@ instead of by action:
 - Checked: shield (1st save, show.txt). The log shows put away -> in hand -> put away around ZL, and game B's shot
   has the shield on the puppet's forearm. Not checked: sword and bow, because neither test save has one equipped.
   Each change rebuilds the item, which may show for a frame.
+- Correction (2026-11-05, the tester's two-pad session): rebuilding the item "in hand" did not hold it. The puppet's own
+  state put it straight back (main+0x3e322c read 0). What works: main+0x3e322c also reads the EquipmentUser's per-slot
+  byte +0x4620 (0 weapon, 3 bow, 4 shield) bit 1 as "in hand". Puppet mode sets it while the owner holds the item
+  and clears it otherwise. Checked with a faked Master Sword (run_pair -FakeGearA Weapon_Sword_070 -FakeHandA 1):
+  without the flag the hilt sticks up over the shoulder, with it the sword is in the right hand. The other route,
+  [[item+0x228]+0x208] +0x3d0 bit 0 / +0x3d4 == 1, is the item's own hold state and is left alone.
+- Not checked: the owner's arm and lean while holding a real sword. the tester saw the puppet leaning back with its arm
+  out, which may have been the puppet's own state (not holding) fighting the owner's holding pose. Bow and shield
+  use the same flag.
+
+## Puppet shake (2026-11-05)
+- the tester's capture: a puppet standing on stairs dips about 7 cm on irregular frames. Its placed position doesn't
+  move, and the poses sent and applied are smooth (TOTK_COOP_POSE_LOG), so the dip comes after both.
+- Measured with TOTK_COOP_TOP_LOG (the highest bone in skeleton +0x20, every frame): standing still, the owner moves
+  0.01 cm per frame and its puppet 0.1-0.55 cm (runs vary), up to about 2 cm.
+- Likely cause: main+0x257310 writes the physics body's transform into the model before placement overwrites it.
+  Anything reading it in between sees the body, and when the body was teleported every tick it was falling a few cm
+  after each teleport.
+- Change: the body is teleported only once it is 10 cm from the owner (TOTK_COOP_PUPPET_SNAP_M, 0 = every tick),
+  measured on the body's own mLastTransform (body +0x98 translation; body = [[[actor+0x228]+0x50]+0x20]+0x150).
+  Not proven against the 7 cm case: my pair runs don't reproduce it at that size.
+- Skipping the step for a puppet (TOTK_COOP_PUPPET_SKIPPHYS=1) is worse: frame-to-frame jumps of up to 2.8 m.
+- A jitter watch logs every frame where a puppet's highest bone moves more than 3 cm, plus a count every 1800
+  frames. It also counts real animation (sword swings).
