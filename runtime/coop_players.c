@@ -63,7 +63,7 @@ typedef struct {
     float top_last;                    // its highest body bone last frame (jitter watch)
     int have_phys;
     int live_ticks;
-    int thaw;                          // proxy mode: ticks left in which its own update runs again (a gear change)                    // ticks since it went LIVE (proxy mode freezes it after PROXY_WARMUP_TICKS)
+    int thaw;                          // proxy mode: frames of its own update still to run (a gear change)                    // ticks since it went LIVE (proxy mode freezes it after PROXY_WARMUP_TICKS)
     float px_top, px_y, px_root;              // proxy mode: its body top and world height last frame (jump watch)
     int px_have;
     _Alignas(16) uint8_t gear_str[COOP_GEAR_SLOTS][0x60];   // the names handed to the creates, kept while they run
@@ -562,7 +562,7 @@ static int frozen(void) {
     if (at == -2) { const char *e = cfg_get("TOTK_COOP_TEST_FREEZE"); at = e ? atof(e) : -1; }
     return at >= 0 && frame_step_world_us() / 1e6 >= at;
 }
-// ---- proxy mode (TOTK_COOP_PROXY=1, docs/coop/proxy-plan.md stage 1): after PROXY_WARMUP_TICKS of normal updates
+// ---- proxy mode (the default; TOTK_COOP_PROXY=0 off, docs/coop/proxy-plan.md stage 1): after PROXY_WARMUP_TICKS of normal updates
 // (its gear and its input pose object are made then) a remote player's Link runs none of its own update: its calc and
 // update phases are skipped (but for a short thaw after the owner changes gear or takes out or puts away an item:
 // that is the update's own work). In place of its update phase main+0x245030 the driver below puts it where its owner is
@@ -655,6 +655,9 @@ int coop_players_phase(Cpu *c, uint64_t addr) {
                 c->pc = addr;
                 rt_dispatch(c);
                 inside = 0;
+                // Counted down here, in frames its update ran: counted per tick, a change that came while this game
+                // was in a menu (no updates) ran out unseen and the proxy kept its old armor (menu_3rd.txt, 2026-11-05).
+                if (addr == MOD_MAIN_BASE + 0x245030) ps->thaw--;
             }
             if (addr == MOD_MAIN_BASE + 0x245030) proxy_drive(c, ps);
             return 1;
@@ -1115,6 +1118,7 @@ static void keep_player_eq(uint64_t me, uint64_t my_eq) {
     if (++fixes <= 20) rt_log("coop: the player's EquipmentUser was another Player's (%llx): this Link's put back (%u)", (unsigned long long)g, fixes);
     last = my_eq;
 }
+static int this_paused;   // this game sits in a menu (the clock and this Link both still; set by the tick)
 void coop_players_tick(Cpu *c, int numpad3) {
     if (frame_step_world_us() <= 0) return;   // not in the world yet
     coop_session_tests(frame_step_world_us());
@@ -1166,6 +1170,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         float dpx = st.pos[0] - last_p[0], dpy = st.pos[1] - last_p[1], dpz = st.pos[2] - last_p[2];
         if (dpx * dpx + dpy * dpy + dpz * dpz > 0.0004f) memcpy(last_p, st.pos, 12), p_moved = now_ns;
         int paused = now_ns - t_moved > 150000000ull && now_ns - p_moved > 150000000ull;
+        this_paused = paused;
         static int was_paused = -1;
         if (paused != was_paused)
             rt_log("coop: this Link %s (input sent %s; clock still %.2f s, Link still %.2f s, time %.2f, at %.3f %.3f %.3f)",
@@ -1311,6 +1316,10 @@ void coop_players_tick(Cpu *c, int numpad3) {
             }
             // The owner changed an item: make that slot the owner's item.
             uint64_t eq = s->state == LIVE && s->source == SRC_NET ? eq_of_actor(s->actor) : 0;
+            // Proxy mode: no gear is made while this game is in a menu; it waits until the game runs again. Made
+            // then, armor did not show on the proxy after the menu closed, also when made again later (menu_3rd.txt,
+            // a play session, 2026-11-05).
+            if (this_paused && proxied(s)) eq = 0;
             char held[COOP_GEAR_SLOTS][32];
             if (eq) eq_gear(eq, held);
             for (int k = 0; eq && k < COOP_GEAR_SLOTS; k++)
@@ -1330,7 +1339,6 @@ void coop_players_tick(Cpu *c, int numpad3) {
                     if (proxied(s)) s->thaw = PROXY_THAW_TICKS, rt_log("coop: proxy: slot %d runs its own update for %d ticks (gear)", i, PROXY_THAW_TICKS);
                 }
             if (s->state == LIVE) s->live_ticks++;
-            if (s->thaw > 0) s->thaw--;
             int coop_puppet_mode(void);   // coop_world.c
             // Puppet mode: it gets no input, so it never draws an item itself. The EquipmentUser's per-slot byte
             // +0x4620 (0 weapon, 3 bow, 4 shield) bit 1 is what main+0x3e322c also reads as "in hand"; set while the
@@ -1383,6 +1391,26 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 // shield were put away together, and the shield was then held with the bow, 2026-11-05). Once a thaw is
                 // over and the proxy still holds something else than its owner, its own update runs again (at most 4
                 // times for one mismatch).
+                // Proxy mode, gear by state: what the proxy's EquipmentUser holds against what its owner reports,
+                // each slot, and any that differs made again with a thaw (at most 4 times in a row). A change made
+                // while this game sat in a menu stayed unseen (menu_3rd.txt, a play session, 2026-11-05).
+                static int gear_fixes;
+                if (proxied(s) && s->thaw <= 0 && gear_fixes < 4) {
+                    char held2[COOP_GEAR_SLOTS][32];
+                    eq_gear(eq, held2);
+                    int fixed = 0;
+                    for (int k = 0; k < COOP_GEAR_SLOTS; k++) {
+                        if (!s->gear_want[k][0] || (k > 2 && !strcmp(s->gear_want[k], GEAR_NONE))) continue;
+                        if (!strcmp(held2[k], s->gear_want[k])) continue;
+                        rt_log("coop: proxy: slot %d gear slot %d holds %s, owner %s: made again", i, coop_gear_slot[k], held2[k], s->gear_want[k]);
+                        int none = !strcmp(s->gear_want[k], GEAR_NONE);
+                        give_gear(c, eq, k, none ? "" : s->gear_want[k], s->dye_want[k], k <= 2 ? (s->out_want >> k & 1) : -1, s->gear_str[k],
+                                  k <= 2 ? s->fuse_want[k] : NULL, s->att_str[k < 3 ? k : 0]);
+                        fixed = 1;
+                    }
+                    if (fixed) s->thaw = PROXY_THAW_TICKS, gear_fixes++;
+                    else gear_fixes = 0;
+                }
                 static int retries;
                 if (proxied(s) && s->thaw <= 0 && now != s->out_want && retries < 4 && !cfg_get("TOTK_COOP_TEST_NORETRY")) {
                     s->thaw = PROXY_THAW_TICKS, retries++;

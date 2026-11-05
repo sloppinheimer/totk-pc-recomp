@@ -573,6 +573,18 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   a change of material alone rebuilds it. Test: tools/coop/equip_fused_3rd.txt; B's view shows A's proxy with the
   rock-fused stick, as A's own Link.
 
+## Proxy mode, gear while a game is in a menu (2026-11-05)
+- the tester: both players in the equipment menu, one changes armor, both leave: the other screen keeps the old armor.
+  Test: tools/coop/menu_3rd.txt in game B (inventory open 22-32 s), tools/coop/step_up_3rd.txt in game A with
+  -FakeGearA ,,,Armor_001_Head,Armor_001_Upper,Armor_001_Lower -FakeAtA 26. Before: B's view after the menu shows
+  A's proxy in the old outfit, although the changes arrived and were made during the menu.
+- Three changes, all kept: the thaw counts frames in which the proxy's update ran, not ticks; every 0.5 s the proxy's
+  EquipmentUser is compared with its owner's report, and a slot that differs is made again with a thaw (at most 4
+  in a row; "gear slot 10 holds Armor_1043_Upper, owner Armor_001_Upper: made again"); no gear is made while this
+  game seems to be in a menu (the clock and this Link both still), it waits. The first alone failed, the first two
+  failed twice, all three passed twice (hood and new tunic on the proxy after the menu), plus the regression runs
+  (equip_bow_3rd.txt: holds follow the owner; TOTK_COOP_PROXY=0: gear sync as before).
+
 ## Proxy mode, head and hair (stage 3, 2026-11-05)
 - There is no separate head or hair skeleton on these Links: the model ([[actor+0x228]+8]+0x28) has one unit, the
   127-bone body (its +0x110 is the SkeletonObj itself, not +0x38 of it as coop_link_skeletons assumes, so that

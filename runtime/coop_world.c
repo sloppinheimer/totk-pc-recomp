@@ -822,12 +822,13 @@ void coop_puppet_dump_input(uint64_t pose, uint64_t skel) {
                f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11], f[12], f[13], f[14], f[15], f[16], f[17], f[18], f[19]);
     }
 }
-// Proxy mode (TOTK_COOP_PROXY=1): a display-only co-op Link. Its own update does not run at all; coop_players.c
-// drives its model transform and body pose every frame (docs/coop/proxy-plan.md). It uses puppet mode's pose
-// packets and gives no input, so it counts as puppet mode too.
+// Proxy mode, the default (TOTK_COOP_PROXY=0 turns it off: the co-op Links then follow their owners' buttons, or
+// with TOTK_COOP_PUPPET=1 are puppets): a display-only co-op Link. Its own update does not run at all; coop_players.c
+// drives its model transform and body pose every frame (docs/coop/proxy-plan.md). It uses puppet mode's pose packets
+// and gives no input, so it counts as puppet mode too.
 int coop_proxy_mode(void) {
     static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_PROXY"); on = e && *e == '1'; }
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_PROXY"); on = !(e && *e == '0'); }
     return on;
 }
 int coop_puppet_mode(void) {

@@ -1,0 +1,8 @@
+# The 100% save (third in the Continue list): at 14 s into the world walk up the stairs for 0.8 s and stand there,
+# in front of the other game's camera when it plays idle_3rd.txt or menu_3rd.txt (proxy tests).
+300 A 4
+520 DOWN 4
+580 DOWN 4
+640 A 4
+800 A 4
+@14000 LSTICK 0 32767 800

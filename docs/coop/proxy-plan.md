@@ -92,6 +92,8 @@ right in the tester's own two-pad session.
 - **Stage 5 (research) stopped**: a heap diff finds the words that start pointing at this Link when an enemy appears,
   but rewriting them changed nothing, and a spawned Bokoblin never made a real fight to test against (re-notes
   "Enemy targets, heap scan"). Needs a save next to a placed camp.
+- **Proxy mode is the default** (2026-11-05, the tester's call after playing it): TOTK_COOP_PROXY=0 brings back button
+  mirroring (TOTK_COOP_PUPPET=1 with it: the puppet).
 - Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
 
 ## Plan
