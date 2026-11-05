@@ -728,6 +728,18 @@ void coop_pose_before_anim(uint64_t binding) {
     static _Atomic int said;
     if (atomic_fetch_add(&said, 1) == 0) rt_log("coop: test: animation pose copied before the co-op Link's: %u bones (%u, %u)", n, ns, nd);
 }
+// The co-op Link's objects a bone writer may be called with (x0..x3): its body skeleton, both world matrix
+// buffers, its model component and model object, the actor. 0: none.
+int coop_pose_arg_match(const uint64_t *args, int n) {
+    uint64_t s1 = atomic_load_explicit(&pose_dst, memory_order_relaxed);
+    if (!s1) return 0;
+    uint64_t comp = atomic_load_explicit(&pose_comp, memory_order_relaxed);
+    uint64_t set[6] = {s1, coop_rd_ptr(s1 + 0x18), coop_rd_ptr(s1 + 0x58), comp, comp ? coop_rd_ptr(comp + 0x28) : 0, 0};
+    for (int i = 0; i < n; i++)
+        for (int k = 0; k < 5; k++)
+            if (args[i] && args[i] == set[k]) return 1 + i * 8 + k;
+    return 0;
+}
 int coop_pose_wanted(void) { return atomic_load_explicit(&pose_comp, memory_order_relaxed) != 0; }
 int coop_pose_is_target(uint64_t binding) {
     return binding && binding == atomic_load_explicit(&pose_binding, memory_order_relaxed);

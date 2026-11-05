@@ -334,3 +334,11 @@ instead of by action:
   matrices while its update runs (write watch, TOTK_COOP_TEST_WATCHWHAT=coopskel, WATCHWRITES=1): main+0x2e9c80,
   main+0x283c750 (most), main+0x289620, main+0x2925e0, main+0x43e450, main+0x41bb20 (calc). Next: put the copy after
   the last of these for the co-op Link's skeleton (likely main+0x283c750 or the IK ones).
+- Pose timing solved (2026-11-05): main+0x283c750 is called with x1 = a body skeleton (SkeletonObj) and is the
+  writer that recomputes its world matrices after the animation step. Hooked: when x1 (or x0..x3) names the co-op
+  Link's skeleton / buffers / model, the copied pose goes on right after it. Test (NOINPUT + SKELCOPY, A plays
+  tools/coop/pose_walk.txt): the co-op Link, its update running and no input, holds this Link's poses (shield up,
+  crouched swing, idle) at its own place; its head / hair (the separate 95-bone skeleton, not copied) sits off.
+  The idle body + copied pose design works. Not done: the head skeleton, held items, sending the pose over the net
+  (the body is 127 bones x 0x30 world + 0x40 local; the local matrices alone may do), finding the co-op Link's
+  bindings without elimination.
