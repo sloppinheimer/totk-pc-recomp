@@ -323,3 +323,7 @@ instead of by action:
   +0x5b0 (MOVE=4) does not move it. With the calc frozen but main+0x245030 running
   (TOTK_COOP_TEST_FREEZE_PHASES=0) and MOVE=6 (owner position into +0x1f8, dirty bit set): head / hair and shield
   follow the owner; the body (the 127-bone skeleton's model) does not show at all. Open: what places the body.
+- Idle body (2026-11-05): the co-op Link's update running, no input (TOTK_COOP_TEST_NOINPUT), this Link's skeleton
+  copied onto it every tick (SKELCOPY): mostly its own idle pose shows, with a copied arm now and then. Its own
+  animation (Havok pose to g3d, main+0x2e9c80; it runs outside the calc, also when frozen) overwrites the copy
+  before the frame is drawn. Next: write the pose right after that function for the co-op Link's model.

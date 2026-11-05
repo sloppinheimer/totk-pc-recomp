@@ -475,6 +475,10 @@ int coop_players_calc(Cpu *c, uint64_t addr) {
     float stick[4];
     memcpy(stick, s->stick, sizeof stick);
     plat_mutex_unlock(&lock);
+    // Test (TOTK_COOP_TEST_NOINPUT): the co-op Link gets no buttons and no stick (the idle body for a copied pose)
+    static int noinput = -1;
+    if (noinput < 0) noinput = cfg_get("TOTK_COOP_TEST_NOINPUT") != NULL;
+    if (noinput) buttons = 0, memset(stick, 0, sizeof stick);
     coop_fill_controller(own, buttons, stick, &s->prev, s->held);
     ST64(mgr + 0xa0, own);
     static int diff_on = -1;   // TOTK_COOP_TRACE=diff: main's writable data the co-op Link's calc changes
