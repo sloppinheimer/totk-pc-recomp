@@ -299,3 +299,20 @@ instead of by action:
   scenes and dialogue boxes (dark text, red); read those runs by eye.
 - Still not covered: swimming (the run did not reach the moat), an enemy hitting a co-op Link, sound. Riding and
   cooking start with A, so they no longer run in other games; a riding player's Link is seen without its horse there.
+
+## Puppet spike: a co-op Link shown without running it (2026-11-05)
+- Freeze (TOTK_COOP_TEST_FREEZE=<s>): from then a co-op Link's calc (main+0x41bb20) and main+0x245030 do not run.
+  It stays drawn in its last pose, the game runs on (60 s+), but ForceSetMatrix (main+0x45ce70) no longer moves it
+  (the distance to its owner grows, tools/coop/freeze_walk.txt): the move is applied inside its update.
+- Position copies: 13 near the actor (scan TOTK_COOP_TEST_MODELSCAN); writing all of them every tick
+  (TOTK_COOP_TEST_FOLLOW) does not move the frozen model. Its draw matrix is elsewhere. Open.
+- g3d: ModelObj::Initialize is main+0x1f38c8 (ModelObj +0x38 SkeletonObj; SkeletonObj::SetupBlockBuffer
+  main+0x1f378c). SkeletonObj: +0 ResSkeleton, +0x18 world matrices (3x4, 0x30 each; again at +0x58), +0x20 local
+  ones (0x40 each; +0x60), +0x48 u16 bone count. Link's body skeleton: actor +0x48, +0x2a8, +0x20, +0x20, +0,
+  +0xf8, +0x58, +0xb0 (127 bones, per instance, root at 0,0,0: model space). Other Link skeletons have 95 bones
+  (head / hair and others, paths in the scan); one 95-bone one is shared between both Links (a resource).
+- Pose copy (TOTK_COOP_TEST_SKELCOPY=1 with FREEZE): this Link's 127 body bones (both world buffers and the local
+  one) copied onto the frozen co-op Link every tick: it takes this Link's poses (shield up, crouch, arms, idle),
+  facing its own frozen way; its head / hair (a separate skeleton, not copied) floats out of place. Verdict: a
+  pose can be shown on a co-op Link whose update does not run. Not done: the other skeletons, the model's position
+  and rotation while frozen, held items, the network.

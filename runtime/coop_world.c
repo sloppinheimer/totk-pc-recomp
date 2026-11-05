@@ -479,9 +479,241 @@ uint64_t coop_nearest_link_data(uint64_t enemy) {
     return pick;
 }
 
+// Test (TOTK_COOP_TEST_MODELSCAN=<s>): once, that many seconds into the world, where each Link's position is kept
+// besides the actor: the actor (0x4000), its components (the table at +0x228, 0x1000 each) and what they point to
+// (0x800 each), as 3 floats in a row or with a stride of 16 (the last column of a 3x4 row matrix). For the frozen
+// Link spike: the copies the model draws from.
+static int near3(const float *a, const float *p) {
+    return fabsf(a[0] - p[0]) < 0.02f && fabsf(a[1] - p[1]) < 0.02f && fabsf(a[2] - p[2]) < 0.02f && fabsf(p[0]) + fabsf(p[2]) > 1;
+}
+static uint64_t cand[256];   // the co-op Link's position copies (absolute), for TOTK_COOP_TEST_FOLLOW
+static uint8_t cand_col[256];   // 1: a matrix column (stride 16), 0: 3 floats in a row
+static int ncand, scanning_coop;
+static void add_cand(uint64_t a, int col) {
+    for (int i = 0; i < ncand; i++) if (cand[i] == a) return;
+    if (ncand < 256) cand[ncand] = a, cand_col[ncand] = (uint8_t)col, ncand++;
+}
+static void scan_block(const char *who, const char *path, uint64_t base, size_t len, const float p[3], int *n) {
+    static uint8_t buf[0x4000];
+    if (len > sizeof buf || !coop_rd(base, buf, len)) return;
+    for (size_t o = 0; o + 12 <= len && *n < 200; o += 4) {
+        float a[3], b[3];
+        memcpy(a, buf + o, 12);
+        if (o + 36 <= len) memcpy(&b[0], buf + o, 4), memcpy(&b[1], buf + o + 16, 4), memcpy(&b[2], buf + o + 32, 4);
+        if (near3(a, p)) { if (scanning_coop) add_cand(base + o, 0); else rt_log("coop: modelscan %s %s+%#zx: position (3 floats)", who, path, o); ++*n; }
+        else if (o + 36 <= len && near3(b, p)) { if (scanning_coop) add_cand(base + o, 1); else rt_log("coop: modelscan %s %s+%#zx: position (matrix column)", who, path, o); ++*n; }
+    }
+}
+// Runs of 3x4 row matrices (stride 0x30, or 0x40) whose translation is within 2.5 m of p, at least 30 long: bone
+// world matrices. Logged with the block path, the start and the count.
+static uint64_t bone_runs[2][8];
+static int bone_counts[2][8], bone_stride[2][8], nbone[2];
+static uint64_t visited[1 << 16];
+static int first_visit(uint64_t a) {
+    uint32_t h = (uint32_t)((a >> 4) * 2654435761u) & 0xffff;
+    for (int i = 0; i < 0x10000; i++, h = (h + 1) & 0xffff) {
+        if (visited[h] == a) return 0;
+        if (!visited[h]) { visited[h] = a; return 1; }
+    }
+    return 0;
+}
+static int scan_bones(int k, const char *who, const char *path, uint64_t base, size_t len, const float p[3]) {
+    static uint8_t buf[0x8000];
+    if (!first_visit(base)) return 0;
+    if (len > sizeof buf || !coop_rd(base, buf, len)) return 1;
+    for (int stride = 0x30; stride <= 0x40; stride += 0x10)
+        for (size_t s0 = 0; s0 < (size_t)stride; s0 += 4) {
+            int run = 0;
+            size_t start = 0;
+            for (size_t o = s0; o + stride <= len; o += stride) {
+                float m[12];
+                memcpy(m, buf + o, 48);
+                // translation as a row matrix (m[3], m[7], m[11]) or a column one (m[9..11]); near Link (world) or
+                // near the origin (model space, not all zero)
+                float r0 = m[0] * m[0] + m[1] * m[1] + m[2] * m[2];
+                int ok = 0;
+                for (int lay = 0; lay < 2 && !ok; lay++) {
+                    float tx = lay ? m[9] : m[3], ty = lay ? m[10] : m[7], tz = lay ? m[11] : m[11];
+                    float dx = tx - p[0], dy = ty - p[1], dz = tz - p[2];
+                    float t2 = tx * tx + ty * ty + tz * tz;
+                    ok = (dx * dx + dy * dy + dz * dz < 2.5f * 2.5f || (t2 < 2.5f * 2.5f && t2 > 1e-6f)) && r0 > 0.8f && r0 < 1.2f;
+                }
+                if (ok) { if (!run) start = o; run++; }
+                if (!ok || o + 2 * stride > len) {
+                    if (run >= 30) {
+                        rt_log("coop: bonescan %s %s+%#zx: %d matrices, stride %#x", who, path, start, run, stride);
+                        if (nbone[k] < 8) bone_runs[k][nbone[k]] = base + start, bone_counts[k][nbone[k]] = run, bone_stride[k][nbone[k]] = stride, nbone[k]++;
+                    }
+                    run = 0;
+                }
+            }
+        }
+    return 1;
+}
+// A g3d SkeletonObj (ModelObj::Initialize main+0x1f38c8 sets it up): +0x18 world matrices (3x4, 0x30 each) right
+// after +0x20 local ones (0x40 each), both again at +0x58 / +0x60, the bone count u16 at +0x48. Found per Link.
+static uint64_t skel_of[2][4];
+static int nskel[2];
+static int is_skeleton(uint64_t s) {
+    uint64_t w[0xd];
+    uint16_t n = 0;
+    if (!coop_rd(s, w, sizeof w) || !coop_rd(s + 0x48, &n, 2)) return 0;
+    return n >= 20 && n <= 600 && w[4] && w[4] == w[0xc] && (w[3] - w[4] == (uint64_t)n * 0x40 || w[0xb] - w[4] == (uint64_t)n * 0x40);
+}
+static void find_skeletons(int k, uint64_t obj, int depth, const char *path) {
+    static uint64_t w[0x400 / 8];
+    if (depth > 7) return;
+    uint64_t buf[0x400 / 8];
+    if (!coop_rd(obj, buf, sizeof buf)) return;
+    (void)w;
+    for (int i = 0; i < 0x400 / 8; i++) {
+        uint64_t q = buf[i];
+        if (q < 0x100000000ull || q >= 0x8000000000ull || !first_visit(q)) continue;
+        char p2[160];
+        snprintf(p2, sizeof p2, "%s+%#x", path, i * 8);
+        if (is_skeleton(q)) {
+            uint16_t n = 0;
+            coop_rd(q + 0x48, &n, 2);
+            uint64_t wm = coop_rd_ptr(q + 0x18);
+            float m[12] = {0};
+            coop_rd(wm, m, 48);
+            rt_log("coop: skeleton %s %s -> %llx: %u bones, world matrices %llx, first at %.2f %.2f %.2f",
+                   k ? "co-op Link" : "this Link", p2, (unsigned long long)q, n, (unsigned long long)wm, m[3], m[7], m[11]);
+            if (nskel[k] < 4) skel_of[k][nskel[k]++] = q;
+            continue;
+        }
+        find_skeletons(k, q, depth + 1, p2);
+    }
+}
+static void model_scan(uint64_t me) {
+    const char *e = cfg_get("TOTK_COOP_TEST_MODELSCAN");
+    static int done;
+    if (!e || done || frame_step_world_us() / 1e6 < atof(e)) return;
+    done = 1;
+    uint64_t links[2] = {me, 0};
+    int ids[1];
+    coop_player_actors(&links[1], ids, 1);
+    for (int k = 0; k < 2 && links[k]; k++) {
+        uint64_t a = links[k];
+        float p[3];
+        if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) continue;
+        const char *who = k ? "co-op Link" : "this Link";
+        scanning_coop = k;
+        memset(visited, 0, sizeof visited);
+        find_skeletons(k, a, 0, "actor");
+        rt_log("coop: skeleton %s: %d found", k ? "co-op Link" : "this Link", nskel[k]);
+        memset(visited, 0, sizeof visited);
+        int n = 0;
+        rt_log("coop: modelscan %s %llx at %.2f %.2f %.2f", who, (unsigned long long)a, p[0], p[1], p[2]);
+        scan_block(who, "actor", a, 0x4000, p, &n);
+        uint64_t table = coop_rd_ptr(a + 0x228);
+        for (int j = 0; table && j < 0x100; j++) {
+            uint64_t comp = coop_rd_ptr(table + j * 8);
+            if (comp < 0x100000000ull || comp >= 0x8000000000ull) continue;
+            char path[64];
+            snprintf(path, sizeof path, "comp[+%#x]", j * 8);
+            scan_block(who, path, comp, 0x1000, p, &n);
+            static uint64_t w[0x1000 / 8];
+            if (!coop_rd(comp, w, sizeof w)) continue;
+            for (int i = 0; i < 0x1000 / 8; i++) {
+                uint64_t q = w[i];
+                if (q < 0x100000000ull || q >= 0x8000000000ull || q == a) continue;
+                snprintf(path, sizeof path, "[comp[+%#x]+%#x]", j * 8, i * 8);
+                scan_block(who, path, q, 0x800, p, &n);
+                if (!scan_bones(k, who, path, q, 0x8000, p)) continue;
+                // and one level further: bone arrays hang off model objects
+                static uint64_t w2[0x400 / 8];
+                if (!coop_rd(q, w2, sizeof w2)) continue;
+                for (int i2 = 0; i2 < 0x400 / 8; i2++) {
+                    uint64_t q2 = w2[i2];
+                    if (q2 < 0x100000000ull || q2 >= 0x8000000000ull || q2 == a || q2 == q) continue;
+                    char p2[96];
+                    snprintf(p2, sizeof p2, "[[comp[+%#x]+%#x]+%#x]", j * 8, i * 8, i2 * 8);
+                    scan_bones(k, who, p2, q2, 0x8000, p);
+                }
+            }
+        }
+        rt_log("coop: modelscan %s: %d places", who, n);
+        if (k) rt_log("coop: modelscan co-op Link: %d unique copies", ncand);
+    }
+}
+
 void coop_world_tick(Cpu *c, uint64_t me) {
     cache_links(me);
     watch_slot5();
+    model_scan(me);
+    // Test (TOTK_COOP_TEST_SKELCOPY=1): every tick, this Link's body skeleton (the g3d SkeletonObj at actor +0x48,
+    // +0x2a8, +0x20, +0x20, +0, +0xf8, +0x58, +0xb0: 127 bones) copied onto the first co-op Link's: its world matrices
+    // (both buffers, +0x18 and +0x58) and local ones (+0x20). With TOTK_COOP_TEST_FREEZE: a pose shown without the
+    // co-op Link's update running.
+    if (cfg_get("TOTK_COOP_TEST_SKELCOPY")) {
+        static const uint32_t path[8] = {0x48, 0x2a8, 0x20, 0x20, 0, 0xf8, 0x58, 0xb0};
+        uint64_t ol[1];
+        int oi[1];
+        if (coop_player_actors(ol, oi, 1) == 1) {
+            uint64_t s0 = me, s1 = ol[0];
+            for (int i = 0; i < 8 && s0 && s1; i++) s0 = coop_rd_ptr(s0 + path[i]), s1 = coop_rd_ptr(s1 + path[i]);
+            uint16_t n0 = 0, n1 = 0;
+            if (s0 && s1 && is_skeleton(s0) && is_skeleton(s1) && coop_rd(s0 + 0x48, &n0, 2) && coop_rd(s1 + 0x48, &n1, 2) && n0 == n1) {
+                static uint8_t tmp[600 * 0x40];
+                static const int fields[3][2] = {{0x18, 0x30}, {0x58, 0x30}, {0x20, 0x40}};
+                for (int f = 0; f < 3; f++) {
+                    uint64_t from = coop_rd_ptr(s0 + fields[f][0]), to = coop_rd_ptr(s1 + fields[f][0]);
+                    size_t len = (size_t)n0 * fields[f][1];
+                    if (from && to && len <= sizeof tmp && coop_rd(from, tmp, len)) memcpy((void *)(uintptr_t)to, tmp, len);
+                }
+                static int said;
+                if (!said++) rt_log("coop: test: skeleton copy %llx -> %llx, %u bones", (unsigned long long)s0, (unsigned long long)s1, n0);
+            }
+        }
+    }
+    // Test (TOTK_COOP_TEST_POSECOPY=<offset>,<count>,<stride>): every tick, the matrices at [[comp table +0x8] +0x28]
+    // + offset (the bone scan's candidate) copied from this Link to the first co-op Link, raw.
+    const char *pc = cfg_get("TOTK_COOP_TEST_POSECOPY");
+    uint64_t other[1];
+    int oid[1];
+    if (pc && coop_player_actors(other, oid, 1) == 1) {
+        unsigned off = (unsigned)strtoul(pc, NULL, 0), cnt = 127, str = 0x40;
+        const char *q = strchr(pc, ',');
+        if (q) cnt = (unsigned)strtoul(q + 1, NULL, 0), q = strchr(q + 1, ',');
+        if (q) str = (unsigned)strtoul(q + 1, NULL, 0);
+        uint64_t src = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(me + 0x228) + 0x8) + 0x28);
+        uint64_t dst = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(other[0] + 0x228) + 0x8) + 0x28);
+        // TOTK_COOP_TEST_POSEPATH=<o1>,<o2>...: more pointer steps from there before the offset
+        for (const char *pp = cfg_get("TOTK_COOP_TEST_POSEPATH"); pp && *pp && src && dst;) {
+            unsigned o = (unsigned)strtoul(pp, NULL, 0);
+            src = coop_rd_ptr(src + o), dst = coop_rd_ptr(dst + o);
+            pp = strchr(pp, ',');
+            if (pp) pp++;
+        }
+        static int said;
+        if (src && dst) {
+            static uint8_t tmp[0x8000];
+            size_t len = (size_t)cnt * str;
+            if (len <= sizeof tmp && coop_rd(src + off, tmp, len)) {
+                if (!said++) {
+                    float *m = (float *)tmp;
+                    rt_log("coop: test: pose copy %#x x%u from %llx to %llx; first matrix %.2f %.2f %.2f %.2f | %.2f %.2f %.2f %.2f | %.2f %.2f %.2f %.2f | %.2f %.2f %.2f %.2f",
+                           off, cnt, (unsigned long long)src, (unsigned long long)dst, m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7],
+                           m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+                }
+                memcpy((void *)(uintptr_t)(dst + off), tmp, len);
+            }
+        }
+    }
+    // Test (TOTK_COOP_TEST_FOLLOW=lo-hi): after the scan, the co-op Link's position copies lo..hi (indices) take its
+    // owner's position every tick (with TOTK_COOP_TEST_FREEZE: which copy the frozen model is drawn at).
+    const char *fl = cfg_get("TOTK_COOP_TEST_FOLLOW");
+    float want[1][3];
+    if (fl && ncand && coop_player_positions(want, 1) == 1) {
+        int lo = atoi(fl), hi = strchr(fl, '-') ? atoi(strchr(fl, '-') + 1) : ncand - 1;
+        static int said;
+        if (!said++) rt_log("coop: test: copies %d..%d of %d follow the owner", lo, hi, ncand);
+        for (int i = lo; i <= hi && i < ncand; i++) {
+            if (cand_col[i]) ST32(cand[i], *(uint32_t *)&want[0][0]), ST32(cand[i] + 16, *(uint32_t *)&want[0][1]), ST32(cand[i] + 32, *(uint32_t *)&want[0][2]);
+            else memcpy((void *)(uintptr_t)cand[i], want[0], 12);
+        }
+    }
     static int ton = -1, tt;
     if (ton < 0) { const char *e = getenv("TOTK_COOP_TRACE"); ton = e && strstr(e, "target"); }
     if (ton && ++tt % 60 == 0) {

@@ -1,0 +1,15 @@
+# Rito Village Sage save (first in the Continue list), on the tower platform: from 14 s, swing the sword, raise the
+# shield, turn on the spot (stick in small circles) and jump, staying on the platform (for the pose copy test).
+300 A 4
+520 A 4
+700 A 4
+900 A 4
+@14000 Y 150
+@15000 Y 150
+@16000 ZL 2000
+@18500 LSTICK -32767 0 300
+@19000 LSTICK 32767 0 300
+@19500 LSTICK 0 -32767 300
+@20500 X 150
+@22000 Y 150
+@23000 Y 150

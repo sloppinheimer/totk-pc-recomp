@@ -437,8 +437,16 @@ int coop_in_remote_calc(void) { return inside; }   // this thread runs a co-op L
 // The actor's other per-frame update phases (coop_spawn.c hooks them): run as inside a co-op Link's calc when x0 is
 // one, so what keeps a co-op Link from changing this game (HUD, game data, tips) covers them too. No controller swap:
 // the calc alone reads the pad.
+// Test (TOTK_COOP_TEST_FREEZE=<s>): from that many seconds into the world, a co-op Link's update phases do not run at
+// all: whether it still shows, and follows ForceSetMatrix, with none of its gameplay running.
+static int frozen(void) {
+    static double at = -2;
+    if (at == -2) { const char *e = cfg_get("TOTK_COOP_TEST_FREEZE"); at = e ? atof(e) : -1; }
+    return at >= 0 && frame_step_world_us() / 1e6 >= at;
+}
 int coop_players_phase(Cpu *c, uint64_t addr) {
     if (inside || !slot_of_actor(c->x[0])) return 0;
+    if (frozen()) return 1;
     static _Atomic int said;
     if (atomic_fetch_add(&said, 1) < 4) rt_log("coop: a co-op Link's update phase main+%#llx counts as its calc", (unsigned long long)(addr - MOD_MAIN_BASE));
     inside = 1;
@@ -450,6 +458,11 @@ int coop_players_phase(Cpu *c, uint64_t addr) {
 int coop_players_calc(Cpu *c, uint64_t addr) {
     Slot *s;
     if (inside || !(s = slot_of_actor(c->x[0]))) return 0;
+    if (frozen()) {
+        static int said;
+        if (!said++) rt_log("coop: test: the co-op Links' updates no longer run");
+        return 1;
+    }
     uint64_t mgr = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + COOP_INPUT_MGR_SLOT));
     if (!mgr) return 0;
     uint64_t real = LD64(mgr + 0xa0), own = (uint64_t)(uintptr_t)s->ctl;

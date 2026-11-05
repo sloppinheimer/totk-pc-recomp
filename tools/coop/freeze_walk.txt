@@ -1,0 +1,10 @@
+# Rito Village Sage save (first in the Continue list), on the tower platform: stand until 16 s, then walk left 2 s,
+# right 3 s, back 1.5 s, with a jump (for the freeze test: the other game's copy of this Link stops updating at 12 s).
+300 A 4
+520 A 4
+700 A 4
+900 A 4
+@16000 LSTICK -32767 0 2000
+@18500 LSTICK 32767 0 3000
+@22000 LSTICK 0 -32767 1500
+@24000 X 150
