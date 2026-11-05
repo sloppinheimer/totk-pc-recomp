@@ -327,3 +327,10 @@ instead of by action:
   copied onto it every tick (SKELCOPY): mostly its own idle pose shows, with a copied arm now and then. Its own
   animation (Havok pose to g3d, main+0x2e9c80; it runs outside the calc, also when frozen) overwrites the copy
   before the frame is drawn. Next: write the pose right after that function for the co-op Link's model.
+- Pose timing (2026-11-05): main+0x2e9c80 is called per animation binding (vtable main+0x3927130); each Link has
+  one, but the co-op Link's is not referenced from its actor or components (one level), so the test takes it by
+  elimination. Its pose input is [binding+8] +0x38 (0x1c a bone, count at +0x30), only 27 bones: not the body.
+  Copying the body skeleton right after main+0x2e9c80 does not stick either. Writers of the co-op Link's body world
+  matrices while its update runs (write watch, TOTK_COOP_TEST_WATCHWHAT=coopskel, WATCHWRITES=1): main+0x2e9c80,
+  main+0x283c750 (most), main+0x289620, main+0x2925e0, main+0x43e450, main+0x41bb20 (calc). Next: put the copy after
+  the last of these for the co-op Link's skeleton (likely main+0x283c750 or the IK ones).
