@@ -456,3 +456,57 @@ instead of by action:
 - Now unmatched creates are kept along with their armor dyes. match_my_eq pairs them with this PC's Link on the next
   tick, and eq_of_actor drops an entry whose EquipmentUser no longer points at its actor.
 - Not tested: loading another save in a pair run (no script does it yet).
+
+## Proxy mode, stage 1 (2026-11-05)
+`TOTK_COOP_PROXY=1` (docs/coop/proxy-plan.md stage 1; separate from `TOTK_COOP_PUPPET`, which it implies for the pose
+packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy_pack_mine / coop_proxy_put_records.
+- Freeze: after 180 ticks LIVE (and once the input pose object of its body skeleton was seen) a remote Link's calc
+  and update phases are skipped. In place of main+0x245030 the driver writes the owner's transform (60 ms behind,
+  blended) into the actor (+0x2b4/+0x2c0) and the model (+0x1f8, dirty bit), writes the body pose, then calls
+  main+0x24cc30 (model). That push sets each model unit's world matrix: units with no parent bone from +0x1f8, units
+  hung on a bone (head, hair) from that bone's +0x20 matrix in the parent unit. Something outside the frozen update
+  still turns the skeleton's +0x18 records into its +0x20 matrices every frame (body top changes in ~598 of 600
+  frames), so writing the records is enough; main+0x283c750 need not run.
+- Skeleton buffers, corrected: +0x18 local records 0x60 a bone (scale +0x10, the rotation's columns at +0x20 / +0x30
+  / +0x40, translation +0x50; the rotation is stored transposed against the input pose's rows). +0x20 final matrices
+  0x40 a bone: rows 0..2 rotation of a row-vector matrix, row 3 translation, in world space from an origin of the
+  game's own: the numbers are metres off the actor position, by different amounts in two games, so only bone-to-bone
+  differences compare across games. body_top now reads the highest bone above bone 0.
+- The pose has to come from the owner's final matrices. The writer's input (what puppet mode sends) misses later
+  steps: 30 bones differ between input and records even standing (TOTK_COOP_TEST_IKDIFF), and the final matrices
+  carry more (feet on stairs: owner body top 1.55 m, proxy 1.60 m; a hand on the shrine wall: 1.90 against 1.60).
+  The owner now sends, at its main+0x257310, locals made from its final matrices (each bone relative to its parent;
+  the parents are found once by matching parent matrix x record against the bone's matrix: 126 of 126 within 2 mm).
+  The bone count's top bit marks such a packet. TOTK_COOP_PROXY_POSE=input and TOTK_COOP_PROXY_FINAL=0 are controls.
+- Pose timing: poses are kept (8 per player) and shown from the same delayed moment as the position, blended. With
+  the newest pose put on as it came, it ran ~40 ms ahead of the position.
+- Measuring: TOTK_COOP_TOP_LOG=<s>,<length> on both games, then tools/coop/top_compare.py (A log, B log). It lines the
+  two clocks up by the position, then reports position error, body-top difference, and per frame how far the
+  proxy's step differs from its owner's ("standing": the owner's position, body top and root still). Screenshot runs
+  stall game B's clock, so take numbers from runs without screenshots.
+- Results (final build, b0a3969):
+  - In-isa stairs (A walk_up_3rd.txt, B idle_3rd.txt): standing 0 of 1569 frames over 1 cm (largest 0.53 cm);
+    position error mean 0.5 cm; body top mean 0.7 cm (15.3 cm sending the records, 2.2 cm sending the writer's
+    input). Max 30 cm in single frames where the owner stops running.
+  - tour.txt: position mean 0.9 cm (max 39 cm at the fall and respawn), body top mean 1.1 cm; 4 "standing" frames
+    over 1 cm, largest 2.7 cm, all at sword / shield moves where the owner's own step is momentarily zero.
+  - Sword (show.txt, -FakeGearA Weapon_Sword_070 -FakeHandA 1): in the right hand in all 6 screenshots, swings too.
+  - Far: drawn at 24 m (A at the top of the stairs, B walked down, walk_away_3rd.txt). A glide away from the Rito
+    tower (glide_far.txt) was not seen from B in proxy mode nor in the default mode (control): that camera cannot
+    frame it, so longer distances are untested.
+  - The in-game jump watch ("proxy: ... standing jump") counts owner actions too (it knows no animation); use the
+    comparer for shake.
+
+## Proxy mode, held items (stage 2, stopped 2026-11-05)
+- Test: A show.txt (shield up with ZL 18.5-20.5 s, jump 22.5 s), B idle.txt, screenshots w15-25:2.
+- As committed: the shield is on the back, goes to the hand when raised, stays in the hand after the owner lowers it
+  (still in the jump), then is gone from hand and back. The hold query (main+0x3e322c) reads 0x4 while the owner
+  reports 0.
+- Attempt 1: on each change of the owner's in-hand bit, make the item again with the weapon create's 1 in hand / 2
+  put away. The shield left the hand on time but did not come back onto the back; the query still read in hand.
+- Attempt 2: empty the slot first, then make it. Same as before the attempts (in hand during the jump, then gone).
+- Both reverted. Being put away is done by the Link's own update (the equipment state, or what places a sheathed
+  item), which the proxy does not run. Next: find what places a put-away item on the back (main+0x25cf88 /
+  main+0x269f70 and their callers, with the frame tracer on a live Link putting its shield away) and call that from
+  proxy_drive, or let only the equipment part of the update run.
+- Not tested yet (stage 2 stopped): outfit and dye changes while frozen, and loading a second save.

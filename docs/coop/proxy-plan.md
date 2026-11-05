@@ -73,8 +73,20 @@ right in the tester's own two-pad session.
 - If a stage fails its test twice, stop and write up the results for the tester. Don't keep trying.
 - Button mirroring stays the default until stages 1 and 2 pass.
 
+## Status (2026-11-05, overnight session)
+- **Stage 1 passed** (`TOTK_COOP_PROXY=1`, commit b0a3969; numbers in re-notes "Proxy mode, stage 1"): on the In-isa
+  stairs no standing frame steps more than 1 cm off its owner (largest 0.53 cm of 1569), position error mean 0.5 cm,
+  body top mean 0.7 cm; on tour.txt position mean 0.9 cm, body top mean 1.1 cm; the faked sword is in hand. One gap:
+  drawing far away is shown only to 24 m; the glide test could not frame the Link in either mode.
+- What it took beyond the plan: the pose sent is made from the owner's final bone matrices (feet on stairs, hand on
+  a wall), not the writer's input, and it is shown from the same delayed moment as the position.
+- **Stage 2 stopped** after two failed attempts at held items: a shield put away after being raised vanishes from
+  the proxy (re-notes "Proxy mode, held items"). Outfit / dye changes while frozen and the second-save test were not
+  reached. Button mirroring stays the default.
+- Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
+
 ## Plan
-1. **Frozen proxy (make or break).** The co-op Link's own update is fully off in proxy mode. Each frame we drive:
+1. **Frozen proxy (make or break).** Passed (see Status). The co-op Link's own update is fully off in proxy mode. Each frame we drive:
    - its model transform, and the push to the model's parts;
    - its body pose (main+0x283c750 with the received pose);
    - its held items.
@@ -87,7 +99,7 @@ right in the tester's own two-pad session.
 
    If it can't draw or pose with the update off, record that and fall back: switch off only physics, foot
    placement and equipment logic, one at a time, each with the same tests.
-2. **Gear on the proxy:** outfit, dye and held items, including after a save load, with a test that loads a second
+2. **Gear on the proxy** (stopped at held items, see Status): outfit, dye and held items, including after a save load, with a test that loads a second
    save.
 3. **Head and hair skeleton.**
 4. **Animation state instead of bones** (research): find how the Player plays animations by name, so a proxy can
