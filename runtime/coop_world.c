@@ -385,6 +385,7 @@ void coop_watch_disarm(void);
 
 // Test (TOTK_COOP_TEST_WATCH5=<s>): from that many seconds into the world, for 10 s, the game functions that read
 // slot 5 ([main+0x3ad9830] +0x250, this Link's perception data where enemies seem to take the player from).
+static const uint32_t skel_path[8] = {0x48, 0x2a8, 0x20, 0x20, 0, 0xf8, 0x58, 0xb0};   // actor to its body skeleton (g3d)
 static void watch_slot5(void) {
     const char *e = cfg_get("TOTK_COOP_TEST_WATCH5");
     static int phase;
@@ -396,6 +397,31 @@ static void watch_slot5(void) {
         if (what && !strcmp(what, "slot3")) {   // the perception manager's player emitter field
             uint64_t m = coop_rd_ptr(MOD_MAIN_BASE + 0x3a6ea80);
             if (m && coop_watch_arm(m + 0x58, 8)) phase = 1, rt_log("coop: test: watching the perception manager's player field %llx", (unsigned long long)(m + 0x58));
+            else phase = 2;
+            return;
+        }
+        if (what && !strcmp(what, "coopmodel")) {   // who reads the first co-op Link's model world matrix
+            extern int coop_watch_writes;
+            uint64_t ca[1]; int ci[1];
+            uint64_t m = coop_player_actors(ca, ci, 1) ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(ca[0] + 0x228) + 0x8) + 0x28) : 0;
+            coop_watch_writes = 0;
+            if (m && coop_watch_arm(m + 0x1f8, 0x30)) phase = 1, rt_log("coop: test: watching the co-op Link's model %llx world matrix", (unsigned long long)m);
+            else if (!m) return;
+            else phase = 2;
+            return;
+        }
+        if (what && !strcmp(what, "coopskel")) {   // who reads the first co-op Link's body skeleton world matrices
+            extern int coop_watch_writes;
+            uint64_t ca[1]; int ci[1];
+            uint64_t s = 0;
+            if (coop_player_actors(ca, ci, 1)) {
+                s = ca[0];
+                for (int i = 0; i < 8 && s; i++) s = coop_rd_ptr(s + skel_path[i]);
+            }
+            uint64_t wm = s ? coop_rd_ptr(s + 0x18) : 0;
+            coop_watch_writes = 0;
+            if (wm && coop_watch_arm(wm, 127 * 0x30)) phase = 1, rt_log("coop: test: watching the co-op Link's skeleton %llx world matrices %llx", (unsigned long long)s, (unsigned long long)wm);
+            else if (!wm) return;
             else phase = 2;
             return;
         }
@@ -585,6 +611,25 @@ static void find_skeletons(int k, uint64_t obj, int depth, const char *path) {
         find_skeletons(k, q, depth + 1, p2);
     }
 }
+// The objects on the way from a Link to its body skeleton (the path in TOTK_COOP_TEST_SKELCOPY): each one's first
+// 0x1000 bytes searched for the Link's position (3 floats, or a 3x4 row matrix's last column), logged by step.
+static void path_scan(const char *who, uint64_t a) {
+    float p[3];
+    if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+    uint64_t node = a;
+    for (int step = 0; step <= 8 && node; step++) {
+        static uint8_t buf[0x1000];
+        if (coop_rd(node, buf, sizeof buf))
+            for (size_t o = 0; o + 36 <= sizeof buf; o += 4) {
+                float c3[3], col[3];
+                memcpy(c3, buf + o, 12);
+                memcpy(&col[0], buf + o, 4), memcpy(&col[1], buf + o + 16, 4), memcpy(&col[2], buf + o + 32, 4);
+                if (near3(c3, p)) rt_log("coop: pathscan %s step %d (%llx) +%#zx: position (3 floats)", who, step, (unsigned long long)node, o);
+                else if (near3(col, p)) rt_log("coop: pathscan %s step %d (%llx) +%#zx: position (matrix column)", who, step, (unsigned long long)node, o);
+            }
+        if (step < 8) node = coop_rd_ptr(node + skel_path[step]);
+    }
+}
 static void model_scan(uint64_t me) {
     const char *e = cfg_get("TOTK_COOP_TEST_MODELSCAN");
     static int done;
@@ -601,6 +646,7 @@ static void model_scan(uint64_t me) {
         scanning_coop = k;
         memset(visited, 0, sizeof visited);
         find_skeletons(k, a, 0, "actor");
+        path_scan(k ? "co-op Link" : "this Link", a);
         rt_log("coop: skeleton %s: %d found", k ? "co-op Link" : "this Link", nskel[k]);
         memset(visited, 0, sizeof visited);
         int n = 0;
@@ -642,6 +688,62 @@ void coop_world_tick(Cpu *c, uint64_t me) {
     cache_links(me);
     watch_slot5();
     model_scan(me);
+    // Test (TOTK_COOP_TEST_MOVE=1|2|3): every tick, the first co-op Link's owner position written into the two 3x4
+    // matrices on the way to its skeleton: [actor+0x48] +0xa34 (1), [[actor+0x48]+0x2a8] +0x26c (2), or both (3)
+    // (translation column: +0xc, +0x1c, +0x2c). With TOTK_COOP_TEST_FREEZE: what moves the frozen model.
+    const char *mv = cfg_get("TOTK_COOP_TEST_MOVE");
+    float owner[1][3];
+    uint64_t ma[1];
+    int mi[1];
+    if (mv && atoi(mv) == 6 && coop_player_actors(ma, mi, 1) == 1 && coop_player_positions(owner, 1) == 1) {
+        // =6: the model (component +0x8, +0x28): its world matrix +0x1f8 (3x4 rows) takes the owner's position, and
+        // its dirty bit (+0x240 bit 0) is set so main+0x24cc30 pushes it to the model units (needs that phase to run:
+        // TOTK_COOP_TEST_FREEZE_PHASES=0).
+        uint64_t model = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(ma[0] + 0x228) + 0x8) + 0x28);
+        if (model) {
+            ST32(model + 0x1f8 + 0xc, *(uint32_t *)&owner[0][0]);
+            ST32(model + 0x1f8 + 0x1c, *(uint32_t *)&owner[0][1]);
+            ST32(model + 0x1f8 + 0x2c, *(uint32_t *)&owner[0][2]);
+            ST8(model + 0x240, LD8(model + 0x240) | 1);
+        }
+        static int said6;
+        if (!said6++) rt_log("coop: test: move 6: model %llx follows the owner", (unsigned long long)model);
+    } else if (mv && atoi(mv) == 5 && coop_player_actors(ma, mi, 1) == 1 && coop_player_positions(owner, 1) == 1) {
+        // =5: the actor's own position (+0x2b4) set to the owner's every tick
+        memcpy((void *)(uintptr_t)(ma[0] + COOP_ACTOR_POS), owner[0], 12);
+        static int said5;
+        if (!said5++) rt_log("coop: test: move 5: the co-op Link's actor position follows its owner");
+    } else if (mv && atoi(mv) == 4 && coop_player_actors(ma, mi, 1) == 1 && coop_player_positions(owner, 1) == 1) {
+        // =4: the 4x4 row-vector draw matrices at [[comp table +0x8] +0x28] +0x5b0 (127, 0x40 each; translation in
+        // the last row, from a world origin), shifted by the owner's movement since the first tick (snapshot kept).
+        static uint8_t snap4[127 * 0x40];
+        static float base[3];
+        static uint64_t arr4;
+        uint64_t arr = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(ma[0] + 0x228) + 0x8) + 0x28);
+        if (arr && arr4 != arr + 0x5b0) {
+            arr4 = arr + 0x5b0;
+            coop_rd(arr4, snap4, sizeof snap4);
+            coop_rd(ma[0] + COOP_ACTOR_POS, base, 12);
+            rt_log("coop: test: move 4: draw matrices %llx taken at %.2f %.2f %.2f", (unsigned long long)arr4, base[0], base[1], base[2]);
+        }
+        if (arr4) {
+            static uint8_t out[127 * 0x40];
+            memcpy(out, snap4, sizeof out);
+            for (int i = 0; i < 127; i++) {
+                float *m = (float *)(out + i * 0x40);
+                for (int k = 0; k < 3; k++) m[12 + k] += owner[0][k] - base[k];
+            }
+            memcpy((void *)(uintptr_t)arr4, out, sizeof out);
+        }
+    } else if (mv && coop_player_actors(ma, mi, 1) == 1 && coop_player_positions(owner, 1) == 1) {
+        int which = atoi(mv);
+        uint64_t n1 = coop_rd_ptr(ma[0] + 0x48), n2 = n1 ? coop_rd_ptr(n1 + 0x2a8) : 0;
+        uint64_t mats[2] = {(which & 1) && n1 ? n1 + 0xa34 : 0, (which & 2) && n2 ? n2 + 0x26c : 0};
+        for (int i = 0; i < 2; i++)
+            if (mats[i]) ST32(mats[i] + 0xc, *(uint32_t *)&owner[0][0]), ST32(mats[i] + 0x1c, *(uint32_t *)&owner[0][1]), ST32(mats[i] + 0x2c, *(uint32_t *)&owner[0][2]);
+        static int said;
+        if (!said++) rt_log("coop: test: moving the co-op Link's matrices %llx %llx", (unsigned long long)mats[0], (unsigned long long)mats[1]);
+    }
     // Test (TOTK_COOP_TEST_SKELCOPY=1): every tick, this Link's body skeleton (the g3d SkeletonObj at actor +0x48,
     // +0x2a8, +0x20, +0x20, +0, +0xf8, +0x58, +0xb0: 127 bones) copied onto the first co-op Link's: its world matrices
     // (both buffers, +0x18 and +0x58) and local ones (+0x20). With TOTK_COOP_TEST_FREEZE: a pose shown without the

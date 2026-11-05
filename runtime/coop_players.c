@@ -446,7 +446,10 @@ static int frozen(void) {
 }
 int coop_players_phase(Cpu *c, uint64_t addr) {
     if (inside || !slot_of_actor(c->x[0])) return 0;
-    if (frozen()) return 1;
+    // TOTK_COOP_TEST_FREEZE_PHASES=0: the freeze stops the calc only; these phases (model, physics) still run
+    static int keep_phases = -1;
+    if (keep_phases < 0) { const char *e = cfg_get("TOTK_COOP_TEST_FREEZE_PHASES"); keep_phases = e && *e == '0'; }
+    if (frozen() && !keep_phases) return 1;
     static _Atomic int said;
     if (atomic_fetch_add(&said, 1) < 4) rt_log("coop: a co-op Link's update phase main+%#llx counts as its calc", (unsigned long long)(addr - MOD_MAIN_BASE));
     inside = 1;
