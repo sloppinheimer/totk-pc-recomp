@@ -444,3 +444,15 @@ instead of by action:
 - Skipping the step for a puppet (TOTK_COOP_PUPPET_SKIPPHYS=1) is worse: frame-to-frame jumps of up to 2.8 m.
 - A jitter watch logs every frame where a puppet's highest bone moves more than 3 cm, plus a count every 1800
   frames. It also counts real animation (sword swings).
+- Follow-up from a play session: game 2's puppet body stayed turned about 12 degrees from its owner (rotation off
+  0.211), because the 10 cm rule never fired for a body that had only turned. That game logged 130 shake frames
+  per 3600; game 1, whose body matched, logged 4. The body is now also teleported once any rotation element differs
+  by more than 0.02. Checked with pose_walk.txt (the owner turns on the spot): rotation off 0.000 afterwards.
+
+## Gear after loading another save (2026-11-05)
+- a play session: after both games loaded another save, game 1 kept reporting the first save's default armor.
+  Causes: (1) the new Link's gear is built while coop_player_actor() is still 0, so the gear hook dropped those
+  creates; (2) an eq_owner entry could outlive its EquipmentUser.
+- Now unmatched creates are kept along with their armor dyes. match_my_eq pairs them with this PC's Link on the next
+  tick, and eq_of_actor drops an entry whose EquipmentUser no longer points at its actor.
+- Not tested: loading another save in a pair run (no script does it yet).

@@ -56,7 +56,7 @@ typedef struct {
     int out_want, out_have;            // puppet mode: bits 0..2 weapon, bow, shield in the owner's hands; as last made
     float phys_pos[3];                 // puppet mode: where its physics step put it (before placement), for snap
     int since_snap;                    // ticks since its body was last teleported
-    float body_pos[3];                 // its physics body's position (mLastTransform)
+    float body_pos[3], body_rot[9];    // its physics body's position and rotation (mLastTransform)
     int have_body;
     float top_last;                    // its highest body bone last frame (jitter watch)
     int have_phys;
@@ -312,6 +312,8 @@ static void give_gear(Cpu *c, uint64_t eq, int k, const char *name, int dye, int
     memcpy(c->x, saved_x, sizeof saved_x);
 }
 static uint64_t unplaced_eq[16];   // EquipmentUsers whose Player was not known when their gear was made
+static int8_t unplaced_dye[16][COOP_GEAR_SLOTS];   // their armor creates' dyes, kept until they are matched
+static uint8_t unplaced_dye_set[16];               // which of those were seen (bit per gear slot)
 static struct { uint64_t eq, actor; } eq_owner[32];   // EquipmentUser -> its Player, learned from their creates
 
 static int gear_index(int slot) {
@@ -322,9 +324,36 @@ static int gear_index(int slot) {
 static uint64_t gear_owner(uint64_t eq, uint64_t me);
 static Slot *slot_of_actor(uint64_t actor);
 static int eq_off = -1;   // where a Player keeps its EquipmentUser: found on this PC's Link once its gear is built
+// An EquipmentUser still belongs to this actor: a word in its first 0x400 bytes is the actor (a reloaded save makes
+// new ones, and an actor can come back at an old address).
+static int eq_points_to(uint64_t eq, uint64_t actor) {
+    uint64_t words[0x400 / 8];
+    if (!actor || !coop_rd(eq, words, sizeof words)) return 0;
+    for (int w = 0; w < 0x400 / 8; w++) if (words[w] == actor) return 1;
+    return 0;
+}
 static uint64_t eq_of_actor(uint64_t actor) {
-    for (int i = 0; i < 32; i++) if (eq_owner[i].actor == actor) return eq_owner[i].eq;
+    for (int i = 0; i < 32; i++)
+        if (eq_owner[i].actor == actor && actor) {
+            if (eq_points_to(eq_owner[i].eq, actor)) return eq_owner[i].eq;
+            eq_owner[i].eq = eq_owner[i].actor = 0;   // stale: that EquipmentUser is gone
+        }
     return eq_off >= 0 && actor ? coop_rd_ptr(actor + (uint64_t)eq_off) : 0;
+}
+// This PC's Link's EquipmentUser when the game built its gear before it was known (a save loading): matched now,
+// and the dyes its armor creates had become this PC's.
+static void match_my_eq(uint64_t me) {
+    if (!me || eq_of_actor(me)) return;
+    for (int u = 0; u < 16; u++) {
+        if (!unplaced_eq[u] || gear_owner(unplaced_eq[u], me) != me) continue;
+        for (int k = 0; k < COOP_GEAR_SLOTS; k++)
+            if (unplaced_dye_set[u] >> k & 1) {
+                my_dye[k] = unplaced_dye[u][k];
+                rt_log("coop: my gear slot %d has dye %d (made before this Link was known)", coop_gear_slot[k], my_dye[k]);
+            }
+        unplaced_eq[u] = 0, unplaced_dye_set[u] = 0;
+        return;
+    }
 }
 static void learn_eq_off(uint64_t me, uint64_t eq) {
     if (eq_off != -1) return;
@@ -339,11 +368,18 @@ static void learn_eq_off(uint64_t me, uint64_t eq) {
 int coop_players_gear(Cpu *c, uint64_t addr) {
     uint64_t eq = c->x[0], me = coop_player_actor();
     int k = gear_index((int)(uint32_t)c->x[1]);
-    if (k < 0 || !me) return 0;
-    uint64_t owner = gear_owner(eq, me);
-    if (!owner) {   // a Player not claimed yet (a new co-op Link builds its gear first): matched after its claim
+    if (k < 0) return 0;
+    uint64_t owner = me ? gear_owner(eq, me) : 0;
+    if (!owner) {   // a Player not claimed yet (a new co-op Link builds its gear first, or this PC's Link while a
+                    // save loads): matched after its claim or by match_my_eq; its armor dyes are kept for then
         for (int i = 0; i < 16; i++)
-            if (unplaced_eq[i] == eq || !unplaced_eq[i]) { unplaced_eq[i] = eq; break; }
+            if (unplaced_eq[i] == eq || !unplaced_eq[i]) {
+                if (unplaced_eq[i] != eq) unplaced_dye_set[i] = 0;
+                unplaced_eq[i] = eq;
+                if (k > 2 && addr == MOD_MAIN_BASE + 0xc4961c)
+                    unplaced_dye[i][k] = (int8_t)(int32_t)c->x[3], unplaced_dye_set[i] |= (uint8_t)(1 << k);
+                break;
+            }
         return 0;
     }
     uint64_t np = coop_rd_ptr(c->x[2]);
@@ -549,7 +585,10 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
         // +0x98, 3x4 rows, main+0x25a91c), for snap's distance check
         uint64_t ctl = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x50) + 0x20), body = ctl ? coop_rd_ptr(ctl + 0x150) : 0;
         float bm[12];
-        if (body && coop_rd(body + 0x98, bm, sizeof bm)) s->body_pos[0] = bm[3], s->body_pos[1] = bm[7], s->body_pos[2] = bm[11], s->have_body = 1;
+        if (body && coop_rd(body + 0x98, bm, sizeof bm)) {
+            s->body_pos[0] = bm[3], s->body_pos[1] = bm[7], s->body_pos[2] = bm[11], s->have_body = 1;
+            for (int r = 0; r < 3; r++) for (int k = 0; k < 3; k++) s->body_rot[r * 3 + k] = bm[r * 4 + k];
+        }
     }
     float m[12], pos[3] = {0}, rot[9];
     owner_matrix(s, m);
@@ -788,6 +827,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         st.buttons = local_buttons;
         memcpy(st.gear, my_gear, sizeof st.gear);
         memcpy(st.dye, my_dye, sizeof st.dye);
+        match_my_eq(me);
         uint64_t my_eq = eq_of_actor(me);   // weapon, bow, shield in hand
         static const uint64_t hand_of[3] = {0, 3, 4};
         for (int k = 0; my_eq && k < 3; k++)
@@ -999,12 +1039,19 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 owner_matrix(s, om);
                 const float *bp = s->have_body ? s->body_pos : s->phys_pos;
                 float dx = bp[0] - om[3], dy = bp[1] - om[7], dz = bp[2] - om[11];
-                static int said_body;
-                if (s->have_body && said_body++ % 300 == 0)
-                    rt_log("coop: puppet: slot %d body %.2f %.2f %.2f, owner %.2f %.2f %.2f", i, bp[0], bp[1], bp[2], om[3], om[7], om[11]);
+
                 static float lim = -1;   // TOTK_COOP_PUPPET_SNAP_M: that distance in m (default 0.1; 0 every tick)
                 if (lim < 0) { const char *e = cfg_get("TOTK_COOP_PUPPET_SNAP_M"); lim = e ? (float)atof(e) : 0.1f; }
-                if ((!s->have_phys && !s->have_body) || dx * dx + dy * dy + dz * dz > lim * lim) snap(c, s), s->since_snap = 0;
+                // ... or once it faces another way: the step writes the body's rotation before placement goes over
+                // it, and a body left turned 12 degrees away flickered between the two (a play session, 2026-11-05).
+                float rd = 0;
+                for (int r = 0; s->have_body && r < 3; r++)
+                    for (int k = 0; k < 3; k++) { float d = fabsf(s->body_rot[r * 3 + k] - om[r * 4 + k]); if (d > rd) rd = d; }
+                static int said_body;
+                if (s->have_body && said_body++ % 300 == 0)
+                    rt_log("coop: puppet: slot %d body %.2f %.2f %.2f, owner %.2f %.2f %.2f, rotation off %.3f", i, bp[0], bp[1], bp[2],
+                           om[3], om[7], om[11], rd);
+                if ((!s->have_phys && !s->have_body) || dx * dx + dy * dy + dz * dz > lim * lim || rd > 0.02f) snap(c, s), s->since_snap = 0;
                 else s->since_snap++;
                 static int said_snap;
                 if (!said_snap++) rt_log("coop: puppet: slot %d follows its owner every tick", i);
