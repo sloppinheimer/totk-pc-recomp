@@ -553,6 +553,12 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   weapon), LockOnWait + WeaponEquipOn at 18.5 (ZL), WeaponEquipOff* at 20.5 (ZL let go), Jump 24.5 and Land 24.9
   (X), Crouch / CrouchMove 25.5-26.8 (stick click), HorseCall 28.0 (whistle), LockOnWait 32.0, SideStep 33.0. Slots:
   0 the body, 1 the upper body, 2 and 3 weapon layers, 4 the face. All on one manager (19b496680 that run).
+- Replay test (TOTK_COOP_TEST_ASPLAY=<name>,<slot>@<s>, coop_world.c as_play_test, with PROF=9 and TRACE=calc): this
+  Link's AS manager is at [[[actor+0x228]+0x8]+0x378]+0x18; the co-op Link's at the same path. A copied request and
+  name object with "HorseCall" in slot 1, sent to the co-op Link's manager (default mode, its own update running):
+  main+0x4dcc1c returns 1 every time, once or every tick for 1.5 s (90 calls), but no screenshot (6 at 0.5 s) shows
+  the whistle pose. Failed twice; stopped. Not known yet: whether the request is wrong (the name object, the
+  request's other fields), or the Player's own state machine replaces it in the same frame.
 - So a player's animation could go over the network as a few (slot, name) events a second instead of 127 bones 30
   times a second. Not tried: calling main+0x4dcc1c on a proxy's AS manager (where it is kept, a copied request),
   and whether a frozen proxy's AS then advances (its animation binding main+0x2e9c80 runs while frozen; the writer

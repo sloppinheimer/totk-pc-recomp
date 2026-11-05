@@ -86,7 +86,8 @@ right in the tester's own two-pad session.
   (re-notes "Proxy mode, gear"). Two fixes failed.
 - **Stage 3 needs nothing**: head and hair are bones of the 127-bone body, which the proxy already copies.
 - **Stage 4 (research) found the call**: main+0x4dcc1c plays an AS by name in a slot on the Player's AS manager; its
-  calls line up with every action of tour.txt (re-notes "Animation by name"). Replaying them on a proxy is not tried.
+  calls line up with every action of tour.txt (re-notes "Animation by name"). Replaying one on the co-op Link's
+  manager is accepted (returns 1) but shows nothing on screen: two attempts, stopped.
 - **Stage 5 (research) stopped**: a heap diff finds the words that start pointing at this Link when an enemy appears,
   but rewriting them changed nothing, and a spawned Bokoblin never made a real fight to test against (re-notes
   "Enemy targets, heap scan"). Needs a save next to a placed camp.

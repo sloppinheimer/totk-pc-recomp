@@ -1474,8 +1474,54 @@ static void target_swap(uint64_t me) {
     rt_log("coop: test: targetswap %.1f s: enemy %.1f m from this Link, %.1f m from the co-op Link; life %d; %d writes (co-op ref %llx); words:%s",
            now, ne.best ? ne.d : -1.0f, ne.best ? dc : -1.0f, life_of(me), writes, (unsigned long long)co_ref, vals);
 }
+// TOTK_COOP_TEST_ASPLAY (see coop_spawn.c coop_as_template): the AS manager's place on a Player, learned from this
+// Link's (a word in one of its components, or in an object a component points to, equal to the manager), then the
+// call for the co-op Link's.
+static void as_play_test(Cpu *c, uint64_t me) {
+    const char *e = cfg_get("TOTK_COOP_TEST_ASPLAY");
+    static int done, comp = -1, off = -1, off2 = -1, calls;
+    double at = e && strchr(e, '@') ? atof(strchr(e, '@') + 1) : 0, now = frame_step_world_us() / 1e6;
+    if (!e || !strchr(e, '@') || now < at || now > at + 1.5) return;   // every tick for 1.5 s (its AI may undo one)
+    uint64_t coop_as_template(uint64_t *mgr, uint8_t **name_obj, uint8_t **req, char **text);   // coop_spawn.c
+    uint64_t mgr;
+    uint8_t *nobj, *req;
+    char *text;
+    if (!coop_as_template(&mgr, &nobj, &req, &text)) return;
+    (void)done;
+    uint64_t table = coop_rd_ptr(me + 0x228);
+    static uint64_t w[0x1000 / 8], w2[0x400 / 8];
+    for (int j = 0; table && j < 0x100 && comp == -1; j++) {
+        uint64_t cp = coop_rd_ptr(table + j * 8);
+        if (cp < 0x100000000ull || cp >= 0x8000000000ull || !coop_rd(cp, w, sizeof w)) continue;
+        for (int i = 0; i < 0x1000 / 8 && comp < 0; i++) {
+            if (w[i] == mgr) comp = j * 8, off = i * 8;
+            else if (w[i] > 0x100000000ull && w[i] < 0x8000000000ull && coop_rd(w[i], w2, sizeof w2))
+                for (int k = 0; k < 0x400 / 8; k++) if (w2[k] == mgr) { comp = j * 8, off = i * 8, off2 = k * 8; break; }
+        }
+    }
+    uint64_t co[1];
+    int ids[1];
+    if (comp < 0 || coop_player_actors(co, ids, 1) != 1) { rt_log("coop: test: asplay: manager not found on this Link (%d)", comp); return; }
+    uint64_t x = coop_rd_ptr(coop_rd_ptr(co[0] + 0x228) + (uint64_t)comp);
+    x = x ? coop_rd_ptr(x + (uint64_t)off) : 0;
+    if (off2 >= 0) x = x ? coop_rd_ptr(x + (uint64_t)off2) : 0;
+    char nm[40] = "";
+    int slot = 0;
+    sscanf(e, "%39[^,],%d", nm, &slot);
+    snprintf(text, 48, "%s", nm);
+    uint64_t tp = (uint64_t)(uintptr_t)text;
+    memcpy(nobj + 8, &tp, 8);   // the string object's text pointer (+8 as name_like found it, or +0)
+    if (coop_rd_ptr((uint64_t)(uintptr_t)nobj) < 0x7000000000ull) memcpy(nobj, &tp, 8);
+    int32_t sl = slot;
+    memcpy(req + 0x28, &sl, 4);
+    uint64_t r = x ? coop_guest_call(c, MOD_MAIN_BASE + 0x4dcc1c, x, (uint64_t)(uintptr_t)nobj, (uint64_t)(uintptr_t)req, 0) : 0;
+    if (calls++ % 15) return;
+    rt_log("coop: test: asplay %s slot %d on the co-op Link's manager %llx (this Link's %llx at comp +%#x +%#x +%#x): returned %llu",
+           nm, slot, (unsigned long long)x, (unsigned long long)mgr, comp, off, off2, (unsigned long long)r);
+}
 void coop_world_tick(Cpu *c, uint64_t me) {
     refscan(me);
+    as_play_test(c, me);
     target_swap(me);
     cache_links(me);
     watch_slot5();

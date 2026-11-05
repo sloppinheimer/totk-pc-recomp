@@ -544,7 +544,21 @@ static int name_like(uint64_t p, char out[40]) {
 // TOTK_COOP_PROF=9: every call of main+0x4dcc1c (x0 an AS manager, x1 the AS name as a string object, x2 the
 // request: +0x28 slot, +0x34 blend time) inside this PC's Link's calc, logged with the world time.
 static int prof9;
+// TOTK_COOP_TEST_ASPLAY=<name>,<slot>@<s> (with PROF=9): this Link's AS manager, name string object and request are
+// copied from one of its own calls; at that world time main+0x4dcc1c is called for the first co-op Link's manager
+// (found at the same component path as this Link's) with that name in that slot: can a Link be made to play an AS.
+static _Alignas(16) uint8_t as_name_obj[0x40], as_req[0x80];
+static uint64_t as_my_mgr;
+static char as_text[48];
+uint64_t coop_as_template(uint64_t *mgr, uint8_t **name_obj, uint8_t **req, char **text) {
+    *mgr = as_my_mgr, *name_obj = as_name_obj, *req = as_req, *text = as_text;
+    return as_my_mgr;
+}
 void coop_fn_args(uint64_t addr, Cpu *c) {
+    if (prof9 && addr == MOD_MAIN_BASE + 0x4dcc1c && calc_actor && calc_actor == player_actor_cached && !as_my_mgr) {
+        rd(c->x[1], as_name_obj, 0x10), rd(c->x[2], as_req, sizeof as_req);
+        as_my_mgr = c->x[0];
+    }
     if (prof9 && addr == MOD_MAIN_BASE + 0x4dcc1c && calc_actor && calc_actor == player_actor_cached) {
         char nm[40] = "?";
         if (!name_like(rd_ptr(c->x[1]), nm)) name_like(c->x[1], nm);
