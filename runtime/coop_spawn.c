@@ -385,6 +385,7 @@ static struct { _Atomic uint64_t fn; _Atomic uint32_t hits; uint32_t off; uint64
 // main holds (a singleton), and cleared.
 int coop_in_remote_calc(void);   // coop_players.c
 void coop_actor_seen(uint64_t actor);   // coop_world.c
+uint64_t coop_nearest_link_data(uint64_t enemy);   // coop_world.c: a co-op Link's perception data when nearer, else 0
 static int prof3;
 // TOTK_COOP_PROF=4: inside an enemy's calc (enemy_calc), the functions entered with x0 = this PC's Link or its reference
 // object, with their call site: where enemy AI uses the player it fetched.
@@ -582,6 +583,114 @@ int coop_hook(Cpu *c, uint64_t addr) {
     if (addr == MOD_MAIN_BASE + 0x2192c50 || addr == MOD_MAIN_BASE + 0x4cb540) return coop_in_remote_calc();
     // main+0x1a30670 (actor system, out link, &name): the one actor of that name (the resident "Player" for AI that
     // wants the player, e.g. QueryTestGetPlayerActor). TOTK_COOP_TRACE=player counts its callers for "Player".
+    // main+0x446a84 (emitter object: +0x18 its actor, +0x70 what main+0x45b930 gets): one perception emitter's
+    // update. TOTK_COOP_TRACE=emit counts the calls per Link and logs the objects once.
+    // main+0x49f5f8 (emitter component: +0x18 its actor, +0x70 its data, +0x88 a sub-object whose virtual +0x10 says
+    // skip): the per-actor calc's emitter update (main+0x41bb20). TOTK_COOP_TRACE=emit: per Link, the calls and the
+    // skip check's answer.
+    // main+0x45b930: one perception receiver's check of the player. It takes the player emitter's data from the
+    // perception manager [main+0x3a6ea80] +0x58 (this Link's, the one player the game knows). Its caller (the emitter
+    // updates main+0x446a84 / main+0x49f5f8) keeps the receiver's component in x19, whose +0x18 is its actor. For an
+    // enemy whose nearest Link is a co-op one, the manager holds that Link's data for this call only: enemies then
+    // sense, chase and attack the player nearest to them (coop_world.c coop_nearest_link).
+    if (addr == MOD_MAIN_BASE + 0x45b930) {
+        static int redirect = -1;   // off by default: it did not change whom enemies attack (re-notes); TOTK_COOP_ENEMY_REDIRECT=1
+        if (redirect < 0) redirect = cfg_get("TOTK_COOP_ENEMY_REDIRECT") != NULL;
+        if (!redirect) return 0;
+        static __thread int inside45;
+        if (inside45) return 0;
+        uint64_t mgr = rd_ptr(MOD_MAIN_BASE + 0x3a6ea80), actor = rd_ptr(c->x[19] + 0x18);
+        uint64_t other = mgr && actor ? coop_nearest_link_data(actor) : 0;
+        if (!other) return 0;
+        static _Atomic uint32_t redirects, checks;
+        uint32_t r = atomic_fetch_add(&redirects, 1);
+        if (!(r & 1023)) rt_log("coop: perception: %u checks taken to a co-op Link so far", r + 1);
+        (void)checks;
+        uint64_t mine = rd_ptr(mgr + 0x58);
+        inside45 = 1;
+        ST64(mgr + 0x58, other);
+        c->pc = addr;
+        rt_dispatch(c);
+        ST64(mgr + 0x58, mine);
+        inside45 = 0;
+        return 1;
+    }    if (addr == MOD_MAIN_BASE + 0x49f5f8) {
+        static int on = -1;
+        if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "emit"); }
+        if (on) {
+            static _Atomic int raw;
+            if (atomic_fetch_add(&raw, 1) < 8) {
+                uint64_t o = c->x[0];
+                char line[512];
+                int n = snprintf(line, sizeof line, "coop: emitter2 %llx:", (unsigned long long)o);
+                for (int k = 0; k < 0x30; k += 8) {
+                    char nm[16];
+                    uint64_t v = rd_ptr(o + k);
+                    n += snprintf(line + n, sizeof line - n, " +%#x=%llx(%s)", k, (unsigned long long)v, actor_name(v, nm, 16));
+                }
+                rt_log("%s; this Link %llx", line, (unsigned long long)player_actor_cached);
+            }
+            uint64_t o = c->x[0], act = rd_ptr(o + 0x18);
+            char nm[16];
+            actor_name(act, nm, sizeof nm);
+            if (!strcmp(nm, "Player")) {
+                int mine = act == player_actor_cached;
+                static _Atomic uint32_t calls[2];
+                static _Atomic int shown[2];
+                atomic_fetch_add(&calls[mine], 1);
+                if (atomic_fetch_add(&shown[mine], 1) < 3) {
+                    uint64_t sub = o + 0x88, fn = rd_ptr(rd_ptr(sub) + 0x10);
+                    uint64_t skip = guest_call(c, fn, sub, 0, 0, 0);
+                    char d[96];
+                    rt_log("coop: player emitter update for %s Link: component %llx, data %llx, skip check %s says %llu",
+                           mine ? "this" : "a co-op", (unsigned long long)o, (unsigned long long)rd_ptr(o + 0x70),
+                           ldr_describe(fn, d, sizeof d), (unsigned long long)(skip & 1));
+                }
+                static uint64_t last;
+                uint64_t now = plat_now_ns();
+                if (now - last > 10000000000ull) {
+                    last = now;
+                    rt_log("coop: player emitter updates in 10 s: this Link %u, co-op Links %u", atomic_exchange(&calls[1], 0), atomic_exchange(&calls[0], 0));
+                }
+            }
+        }
+        return 0;
+    }
+    if (addr == MOD_MAIN_BASE + 0x446a84) {
+        static int on = -1;
+        if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "emit"); }
+        if (on) {
+            uint64_t o = c->x[0], act = rd_ptr(o + 0x18);
+            static _Atomic int raw;
+            if (atomic_fetch_add(&raw, 1) < 6) {
+                char n1[16], n2[16], n3[16];
+                rt_log("coop: emitter object %llx: +0x10 %llx (%s / [+0x150] %s), +0x18 %llx (%s), +0x70 %llx; this Link %llx", (unsigned long long)o,
+                       (unsigned long long)rd_ptr(o + 0x10), actor_name(rd_ptr(o + 0x10), n1, 16), actor_name(rd_ptr(rd_ptr(o + 0x10) + 0x150), n2, 16),
+                       (unsigned long long)act, actor_name(act, n3, 16), (unsigned long long)rd_ptr(o + 0x70), (unsigned long long)player_actor_cached);
+            }
+            char nm[16];
+            actor_name(act, nm, sizeof nm);
+            if (!strcmp(nm, "Player")) {
+                int mine = act == player_actor_cached;
+                static _Atomic uint32_t calls[2];
+                static _Atomic int shown[2];
+                atomic_fetch_add(&calls[mine], 1);
+                if (atomic_fetch_add(&shown[mine], 1) < 2) {
+                    uint64_t comp = rd_ptr(rd_ptr(act + 0x228) + 0x378);
+                    rt_log("coop: emitter update for %s Link %llx: object %llx (+0x70 %llx), perception comp %llx (+0x30 %llx)",
+                           mine ? "this" : "a co-op", (unsigned long long)act, (unsigned long long)o,
+                           (unsigned long long)rd_ptr(o + 0x70), (unsigned long long)comp, (unsigned long long)rd_ptr(comp + 0x30));
+                }
+                static uint64_t last;
+                uint64_t now = plat_now_ns();
+                if (now - last > 10000000000ull) {
+                    last = now;
+                    rt_log("coop: emitter updates in 10 s: this Link %u, co-op Links %u", atomic_exchange(&calls[1], 0), atomic_exchange(&calls[0], 0));
+                }
+            }
+        }
+        return 0;
+    }
     if (addr == MOD_MAIN_BASE + 0x1a30670) {
         static int on = -1;
         if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "player"); }
