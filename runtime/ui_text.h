@@ -243,6 +243,9 @@ typedef enum {
     UI_MENU_COOP_ALONE,
     UI_MENU_COOP_FAILED,      // "%s": why
     UI_MENU_COOP_NOTE,
+    UI_MENU_COOP_COPY_LAN, UI_MENU_COOP_COPY_LAN_DESC, UI_MENU_COOP_COPY_NET, UI_MENU_COOP_COPY_NET_DESC,
+    UI_MENU_COOP_COPIED,      // a copy button's label for a moment after it was pressed
+    UI_MENU_COOP_JOIN_NEED,   // Join pressed with no address
     // the router (coop_upnp.c): "%s" the internet address, or (FAILED) why, in English
     UI_MENU_COOP_UPNP_WORKING, UI_MENU_COOP_UPNP_OPEN, UI_MENU_COOP_UPNP_OPEN_NOIP, UI_MENU_COOP_UPNP_SHARED,
     UI_MENU_COOP_UPNP_FAILED,

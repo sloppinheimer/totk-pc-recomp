@@ -12,6 +12,7 @@ extern "C" {
 #include "cfg.h"
 #include "coop_net.h"
 #include "ui_text.h"
+#include "platform/platform.h"
 void menu_page_modal(bool on);   // ui/menu.cpp: B and the tab keys stay with the keyboard while it is open
 }
 
@@ -117,7 +118,11 @@ static void field(const char *id, UiTextId label, char *buf, size_t n, float sca
 // An action that looks like one: a filled button the width of the page, with what it does under it.
 static bool action(const char *id, UiTextId label, UiTextId desc, float scale, bool danger = false) {
     char l[160];
-    snprintf(l, sizeof l, "%s%s", menu_text(label), id);
+    // A copy button reads "Copied" for 2 s after it was pressed (copied_id, copied_at: ImGui's clock).
+    extern const char *copied_id;
+    extern double copied_at;
+    bool copied = copied_id && !strcmp(copied_id, id) && ImGui::GetTime() - copied_at < 2;
+    snprintf(l, sizeof l, "%s%s", menu_text(copied ? UI_MENU_COOP_COPIED : label), id);
     ImVec4 base = danger ? ImVec4(0.55f, 0.20f, 0.18f, 1) : ImVec4(0.80f, 0.60f, 0.20f, 1);
     ImGui::PushStyleColor(ImGuiCol_Button, base);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(base.x + 0.12f, base.y + 0.12f, base.z + 0.08f, 1));
@@ -131,6 +136,13 @@ static bool action(const char *id, UiTextId label, UiTextId desc, float scale, b
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
     return pressed;
+}
+
+const char *copied_id;
+double copied_at;
+// A button that puts text on the clipboard (the tester: the host's address with a copy button).
+static void copy_button(const char *id, UiTextId label, UiTextId desc, const char *text, float scale) {
+    if (action(id, label, desc, scale) && plat_clipboard_set(text)) copied_id = id, copied_at = ImGui::GetTime();
 }
 
 extern "C" void tab_coop(float scale) {
@@ -150,6 +162,15 @@ extern "C" void tab_coop(float scale) {
                                          UI_MENU_COOP_UPNP_OPEN_NOIP, UI_MENU_COOP_UPNP_SHARED, UI_MENU_COOP_UPNP_FAILED};
         snprintf(line, sizeof line, menu_text(kUpnp[up]), detail);
         opt_text_str(line, up == COOP_UPNP_FAILED || up == COOP_UPNP_SHARED);
+        char addr[80];   // what a joining player types: the address, and the port when it is not the usual one
+        if (coop_relay_port() == COOP_PORT) snprintf(addr, sizeof addr, "%s", ip);
+        else snprintf(addr, sizeof addr, "%s:%d", ip, coop_relay_port());
+        if (coop_local_address(ip, sizeof ip)) copy_button("##coop_copy_lan", UI_MENU_COOP_COPY_LAN, UI_MENU_COOP_COPY_LAN_DESC, addr, scale);
+        if (up == COOP_UPNP_OPEN && detail[0]) {
+            if (coop_relay_port() == COOP_PORT) snprintf(addr, sizeof addr, "%s", detail);
+            else snprintf(addr, sizeof addr, "%s:%d", detail, coop_relay_port());
+            copy_button("##coop_copy_net", UI_MENU_COOP_COPY_NET, UI_MENU_COOP_COPY_NET_DESC, addr, scale);
+        }
     } else if (*target && id) {
         snprintf(line, sizeof line, menu_text(UI_MENU_COOP_JOINED), target, id);
         opt_text_str(line);
@@ -185,10 +206,16 @@ extern "C" void tab_coop(float scale) {
             coop_host(g_name);
         }
         field("##coop_addr", UI_MENU_COOP_ADDRESS, g_addr, sizeof g_addr, scale);
-        if (g_addr[0] && action("##coop_join", UI_MENU_COOP_JOIN, UI_MENU_COOP_JOIN_DESC, scale)) {
-            save_fields();
-            coop_net_join(g_addr, g_name);
+        // Join shows from the start (the tester); pressed with no address, it says to type one.
+        static double need_at = -10;
+        if (action("##coop_join", UI_MENU_COOP_JOIN, UI_MENU_COOP_JOIN_DESC, scale)) {
+            if (!g_addr[0]) need_at = ImGui::GetTime();
+            else {
+                save_fields();
+                coop_net_join(g_addr, g_name);
+            }
         }
+        if (!g_addr[0] && ImGui::GetTime() - need_at < 4) opt_text(UI_MENU_COOP_JOIN_NEED);
     }
     // Show player names (coop_tags; drawn by ui/coop_tags.cpp): on unless set to off.
     const char *tags = cfg_get("TOTK_COOP_TAGS");
