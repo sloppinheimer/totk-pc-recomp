@@ -231,3 +231,12 @@ evidence), guess.
 - Putting the nearest co-op Link's data in that field for each enemy's call of main+0x45b930
   (TOTK_COOP_ENEMY_REDIRECT=1, about 2000 times in a run) does not change whom a Bokoblin attacks; the field itself
   is not read at all in 10 s of fighting (read watch). The choice is made from something cached elsewhere. Open.
+- Static read of the readers (lifted C), none is the target choice: main+0x3020e0 / 0x328d80 publish an actor's own
+  state into its perception data; main+0x4cbc28 builds the emitter's interest-type mask at data+0x1d8;
+  main+0x484b14 (called only from main+0x45b930) is a yes/no check that drops a source whose perception ID is
+  missing from the receiver's candidate list; main+0x488258 drops a receiver's own events; main+0x4c2bb0 is Link's
+  state machine and queues its perception events in the ring at manager +0xda0 (through main+0x4cac5c).
+  main+0x72b4e8 takes "the player" from the registry [main+0x3a75a40] (binary search for key 0x5d5d398d, entry
+  +8 -> +0x150), a hard-wired local-player lookup; 45 places read that registry. Untested lead.
+- An enemy's own perception data +0xf8/+0xfc and +0x138/+0x13c (IDs the per-actor calc resets to -1) stay -1 with
+  a Bokoblin 1-4 m from both Links (TRACE=target "target slots"): not where it keeps its target.

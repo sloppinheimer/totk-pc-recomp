@@ -354,6 +354,17 @@ static void target_probe_one(int cell, uint64_t a, void *arg) {
                 if (link_of(cw[j])) n += snprintf(line + n, sizeof line - n, " comp[+%#x]+%#x=%s", k * 8, j * 8, link_of(cw[j]));
         }
     rt_log("%s", line);
+    // The enemy's own perception data: the id slots its per-actor calc resets to -1 (+0xf8/+0xfc, +0x138/+0x13c)
+    // and the words and flags reset with them; one of them may be the id of the player it is after.
+    uint64_t pd = coop_rd_ptr(coop_rd_ptr(table + 0x378) + 0x30);
+    if (pd) {
+        uint32_t u[0x160 / 4] = {0};
+        coop_rd(pd, u, sizeof u);
+        const uint8_t *b = (const uint8_t *)u;
+        rt_log("coop: target slots %s: id %#x; +f8 %#x +fc %#x +110 %#x +138 %#x +13c %#x +150 %#x; flags f5 %d 105 %d 135 %d 146 %d",
+               nm, u[0x10 / 4], u[0xf8 / 4], u[0xfc / 4], u[0x110 / 4], u[0x138 / 4], u[0x13c / 4], u[0x150 / 4],
+               b[0xf5], b[0x105], b[0x135], b[0x146]);
+    }
     // The enemy's components around its perception one (table +0x360..+0x3a0): their u32s equal to this Link's id.
     for (int k = 0x360 / 8; table && k < 0x3a0 / 8; k++) {
         uint64_t comp = tw[k];
