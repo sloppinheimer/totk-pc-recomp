@@ -160,6 +160,12 @@ void coop_fill_controller(uint64_t ctl, uint64_t buttons, const float stick[4], 
     static int keep_l = -1;
     if (keep_l < 0) keep_l = cfg_get("TOTK_COOP_TEST_ABILITY_KEEP") != NULL;
     if (!keep_l) hold &= ~(1u << 13);
+    // No A for a co-op Link unless ZL is held: A talks, picks up, opens and checks, on this game's NPCs, items, chests
+    // and doors (its talk to Purah started the talk in this game too, tools/coop/tour3.txt); its own game does those.
+    // With ZL (shield) A starts a shield surf, kept. TOTK_COOP_TEST_INTERACT_KEEP: A passes (a control) (2026-11-04).
+    static int keep_a = -1;
+    if (keep_a < 0) keep_a = cfg_get("TOTK_COOP_TEST_INTERACT_KEEP") != NULL;
+    if (!keep_a && !(hold & 1u << 2)) hold &= ~1u;
     if (stick[1] > 0.5f) hold |= 1u << 20;
     if (stick[1] < -0.5f) hold |= 1u << 21;
     if (stick[0] < -0.5f) hold |= 1u << 22;

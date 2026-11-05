@@ -291,3 +291,11 @@ instead of by action:
   effects [main+0x3a5e878] (start main+0x2056f3c, end 0x205719c, focus 0x2057384) inside a co-op Link's update.
   Controls: TOTK_COOP_TEST_ABILITY_KEEP.
 - Still not covered by a tour: swimming, riding, cooking, an enemy hitting a co-op Link, sound.
+- Lookout Landing tour (the second save; tools/coop/tour3.txt, swim.txt; A plays idle_2nd.txt): the co-op Link's A
+  next to Purah started Purah's talk in this game too, and this game stayed in it. A co-op Link has no A now unless ZL
+  is held (coop_fill_controller; ZL + A starts a shield surf): talking, picking up, opening, checking, cooking and
+  mounting all run on this game's NPCs and objects. After: no talk in A, B keeps its own. Sprinting, climbing a wall
+  and the stamina wheel showed nothing in A. Control: TOTK_COOP_TEST_INTERACT_KEEP. tipcheck.py misreads night
+  scenes and dialogue boxes (dark text, red); read those runs by eye.
+- Still not covered: swimming (the run did not reach the moat), an enemy hitting a co-op Link, sound. Riding and
+  cooking start with A, so they no longer run in other games; a riding player's Link is seen without its horse there.
