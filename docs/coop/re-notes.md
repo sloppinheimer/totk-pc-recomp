@@ -669,3 +669,12 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
 - TOTK_COOP_TEST_PROPS=1 (the game that joined as player 1 makes a BombFruit 1 m above its Link at 24 s): "I made
   BombFruit" there, one copy in the other game, no copy churn, and an equipped weapon is not sent (equip_3rd.txt).
   (The moved-object half: see "Props test" above.)
+
+## World objects in packets of their own (protocol 10, 2026-11-05)
+- Objects left the 30-a-second state (24 of them made it 1840 bytes, over one internet packet) for OBJS packets
+  (kind 9, both relays forward them): an object goes out when it moved 1 cm or turned, again once a second at
+  rest, and once with an empty name when gone; up to 100 entries a tick, 20 a packet; a receiver forgets one not
+  heard of for 2.5 s. Up to 256 a player. The state is 400 bytes again.
+- Pair test with bow_fuse_3rd.txt and TOTK_COOP_TEST_PROPS: B has copies of all four arrows and the fused
+  BombFruit, places arrow 1 through its flight, finds and moves the lifted rock, and shows a copy of an object it
+  does not have.

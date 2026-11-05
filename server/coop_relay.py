@@ -17,8 +17,8 @@ import struct
 import sys
 import time
 
-MAGIC, VERSION = b'TKCO', 9
-HELLO, WELCOME, STATE, LEAVE, BYE, WORLD, HIT, POSE = 1, 2, 3, 4, 5, 6, 7, 8
+MAGIC, VERSION = b'TKCO', 10
+HELLO, WELCOME, STATE, LEAVE, BYE, WORLD, HIT, POSE, OBJS = 1, 2, 3, 4, 5, 6, 7, 8, 9
 MAX_PLAYERS, TIMEOUT = 8, 5.0
 HEADER = struct.Struct('<4sBBBB')
 
@@ -75,7 +75,7 @@ def main():
             me['seen'] = now
             others = b''.join(struct.pack('<B16s', p['id'], p['name'].encode()[:16]) for k, p in players.items() if k != addr)
             sock.sendto(header(WELCOME, me['id']) + others, addr)
-        elif kind in (STATE, WORLD, HIT, POSE) and addr in players:
+        elif kind in (STATE, WORLD, HIT, POSE, OBJS) and addr in players:
             me = players[addr]
             me['seen'] = now
             out = header(kind, me['id']) + data[HEADER.size:]

@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define COOP_MAX_PLAYERS 8
-#define COOP_NET_VERSION 9   // packet header version: games and relays of another version ignore each other
+#define COOP_NET_VERSION 10   // packet header version: games and relays of another version ignore each other
 
 // One player's state, sent about 30 times a second. Positions and directions are world space; the sticks are as the
 // player's own camera saw them, with the camera's horizontal forward and right so a receiver can turn them into its
@@ -12,7 +12,10 @@
 // A world object the player shot, made or moved (coop_players.c, "world objects"). Its own (arrows, fused materials,
 // dropped and made objects): shown in the other games as a copy, by the owner's number. One every game has (a
 // placed rock it moves): COOP_OBJ_KEYED | its key, and the other games move their own to match.
-#define COOP_OBJS 24
+// Sent in OBJS packets of their own (coop_net_objs_send): one when it changes, again once a second, and once with an
+// empty name when it is gone. COOP_OBJS a player at most; COOP_OBJS_PER_PACKET in one packet.
+#define COOP_OBJS 256
+#define COOP_OBJS_PER_PACKET 20
 #define COOP_OBJ_KEYED 0x80000000u
 typedef struct {
     uint32_t id;                      // the owner's number for it, or COOP_OBJ_KEYED | key (0: an empty entry)
@@ -32,9 +35,8 @@ typedef struct {
     uint8_t pad[2];
     char fuse[3][32];                 // weapon, bow, shield: the fused material's actor name ("" none; the weapon
                                       // create's 7th argument, e.g. AsbObj_RockParts_C_S_01)
-    CoopObj objs[COOP_OBJS];          // the player's arrows, made and moved objects (coop_players.c)
 } NetState;
-_Static_assert(sizeof(NetState) == 1840, "NetState wire size");
+_Static_assert(sizeof(NetState) == 400, "NetState wire size");
 #define COOP_GEAR_SLOTS 6
 extern const int coop_gear_slot[COOP_GEAR_SLOTS];   // the EquipmentUser slots they are (coop_players.c)
 
@@ -50,6 +52,10 @@ int coop_net_world(void *out, int max, int *from, uint64_t *age_ns);   // the la
 #define COOP_POSE_MAX 4000
 void coop_net_pose_send(const void *data, int len);
 int coop_net_pose(int id, void *out, int max, uint64_t *age_ns);   // the latest from player id; its length (0 none)
+// World objects (OBJS packets, coop_players.c): a u16 count, u16 0, then that many CoopObj. Queued both ways.
+#define COOP_OBJS_PACKET_MAX (4 + COOP_OBJS_PER_PACKET * (int)sizeof(CoopObj))
+void coop_net_objs_send(const void *data, int len);
+int coop_net_objs_take(void *out, int max, int *from);             // the oldest received; its length, 0 when none
 void coop_net_hit_send(const void *data, int len);                 // up to 64 bytes
 int coop_net_hit_take(void *out, int max, int *from);              // the oldest hit received; 0 when none
 

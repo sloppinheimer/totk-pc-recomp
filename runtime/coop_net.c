@@ -29,7 +29,7 @@ typedef int Sock;
 #include "host.h"
 #include "platform/platform.h"
 
-enum { HELLO = 1, WELCOME = 2, STATE = 3, LEAVE = 4, BYE = 5, WORLD = 6, HIT = 7, POSE = 8, VERSION = COOP_NET_VERSION, HEADER = 8 };
+enum { HELLO = 1, WELCOME = 2, STATE = 3, LEAVE = 4, BYE = 5, WORLD = 6, HIT = 7, POSE = 8, OBJS = 9, VERSION = COOP_NET_VERSION, HEADER = 8 };
 
 static PlatMutex lock = PLAT_MUTEX_INIT;
 static NetState mine;                 // lock
@@ -51,6 +51,9 @@ static uint64_t world_in_at;   // lock
 static uint8_t pose_out[COOP_POSE_MAX];   // lock
 static int pose_out_len, pose_out_new;   // lock
 static struct { uint8_t d[COOP_POSE_MAX]; int len; uint64_t at_ns; } pose_in[COOP_MAX_PLAYERS + 1];   // lock; by id
+#define OBJQ 64   // world-object packets, queued both ways
+static struct { uint8_t d[COOP_OBJS_PACKET_MAX]; int len, from; } objs_out[OBJQ], objs_in[OBJQ];   // lock
+static int objs_out_n, objs_in_n;   // lock
 #define HITQ 64
 static struct { uint8_t d[64]; int len, from; } hit_out[HITQ], hit_in[HITQ];   // lock
 static int hit_out_n, hit_in_n;   // lock
@@ -141,6 +144,20 @@ static void net_thread(void *arg) {
             if (pose_out_new) memcpy(pp + HEADER, pose_out, pose_out_len), pl = pose_out_len, pose_out_new = 0;
             plat_mutex_unlock(&lock);
             if (pl) header(pp, POSE), sendto(s, (const char *)pp, HEADER + pl, 0, res->ai_addr, (int)res->ai_addrlen);
+            {   // world objects: every queued packet
+                static uint8_t ob[HEADER + COOP_OBJS_PACKET_MAX];
+                for (;;) {
+                    int ol = 0;
+                    plat_mutex_lock(&lock);
+                    if (objs_out_n) {
+                        memcpy(ob + HEADER, objs_out[0].d, objs_out[0].len), ol = objs_out[0].len;
+                        memmove(objs_out, objs_out + 1, (size_t)(objs_out_n - 1) * sizeof objs_out[0]), objs_out_n--;
+                    }
+                    plat_mutex_unlock(&lock);
+                    if (!ol) break;
+                    header(ob, OBJS), sendto(s, (const char *)ob, HEADER + ol, 0, res->ai_addr, (int)res->ai_addrlen);
+                }
+            }
             for (int i = 0; i < nh; i++) {
                 header(w, HIT);
                 memcpy(w + HEADER, hits[i].d, hits[i].len);
@@ -194,6 +211,11 @@ static void net_thread(void *arg) {
             plat_mutex_lock(&lock);
             memcpy(pose_in[id].d, buf + HEADER, n - HEADER), pose_in[id].len = n - HEADER, pose_in[id].at_ns = plat_now_ns();
             plat_mutex_unlock(&lock);
+        } else if (kind == OBJS && id >= 1 && id <= COOP_MAX_PLAYERS && n - HEADER <= COOP_OBJS_PACKET_MAX) {
+            plat_mutex_lock(&lock);
+            if (objs_in_n < OBJQ) memcpy(objs_in[objs_in_n].d, buf + HEADER, n - HEADER), objs_in[objs_in_n].len = n - HEADER,
+                                  objs_in[objs_in_n].from = id, objs_in_n++;
+            plat_mutex_unlock(&lock);
         } else if (kind == HIT && n - HEADER <= 64) {
             plat_mutex_lock(&lock);
             if (hit_in_n < HITQ) memcpy(hit_in[hit_in_n].d, buf + HEADER, n - HEADER), hit_in[hit_in_n].len = n - HEADER,
@@ -222,7 +244,7 @@ void coop_net_leave(void) {
     my_id = 0;
     plat_mutex_lock(&lock);
     for (int i = 0; i <= COOP_MAX_PLAYERS; i++) others[i].live = 0;
-    mine_set = 0, world_in_len = 0, hit_out_n = hit_in_n = 0;
+    mine_set = 0, world_in_len = 0, hit_out_n = hit_in_n = 0, objs_out_n = objs_in_n = 0;
     plat_mutex_unlock(&lock);
 }
 
@@ -306,6 +328,27 @@ int coop_net_pose(int id, void *out, int max, uint64_t *age_ns) {
     plat_mutex_lock(&lock);
     int n = pose_in[id].len <= max ? pose_in[id].len : 0;
     if (n) memcpy(out, pose_in[id].d, n), *age_ns = plat_now_ns() - pose_in[id].at_ns;
+    plat_mutex_unlock(&lock);
+    return n;
+}
+
+void coop_net_objs_send(const void *data, int len) {
+    if (len <= 0 || len > COOP_OBJS_PACKET_MAX) return;
+    plat_mutex_lock(&lock);
+    if (objs_out_n < OBJQ) memcpy(objs_out[objs_out_n].d, data, len), objs_out[objs_out_n].len = len, objs_out_n++;
+    plat_mutex_unlock(&lock);
+}
+
+int coop_net_objs_take(void *out, int max, int *from) {
+    plat_mutex_lock(&lock);
+    int n = 0;
+    if (objs_in_n) {
+        n = objs_in[0].len <= max ? objs_in[0].len : 0;
+        if (n) memcpy(out, objs_in[0].d, n);
+        *from = objs_in[0].from;
+        memmove(objs_in, objs_in + 1, (size_t)(objs_in_n - 1) * sizeof objs_in[0]), objs_in_n--;
+        if (!n) n = -1;
+    }
     plat_mutex_unlock(&lock);
     return n;
 }

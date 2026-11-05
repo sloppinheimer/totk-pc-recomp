@@ -53,7 +53,8 @@ typedef struct {
     unsigned snaps;
     char gear_want[COOP_GEAR_SLOTS][32], gear_have[COOP_GEAR_SLOTS][32];   // the owner's gear; what this Link was given
     char fuse_want[3][32], fuse_have[3][32];   // weapon, bow, shield: the owner's fused material; as last made here
-    CoopObj objs_want[COOP_OBJS];      // the owner's arrows, latest report
+    CoopObj objs_want[COOP_OBJS];      // the owner's objects, as its OBJS packets last said (objs_receive)
+    int objs_heard[COOP_OBJS];         // when each was last heard of
     struct {                           // their copies here (arrow_copies)
         uint32_t id;
         int state;                     // 0 free, 1 wanted, 2 requested, 3 live
@@ -1174,9 +1175,10 @@ static int arrow_tick;
 // ZR is not this Link's: each game made two arrows 0.45 m from each Link at load, and one with no other Link in yet
 // took them as its own.
 static int zr_tick = -1000;
+static int copies_live[COOP_MAX_PLAYERS];   // per slot, its copies in state 3 (arrow_copies): copy_of runs for every actor
 static int copy_of(uint64_t actor, Slot **out_s, int *out_k) {
     for (int i = 0; i < COOP_MAX_PLAYERS; i++)
-        for (int k = 0; k < COOP_OBJS && actor; k++)
+        for (int k = 0; k < COOP_OBJS && actor && copies_live[i]; k++)
             if (slots[i].mir[k].state == 3 && slots[i].mir[k].actor == actor) { *out_s = &slots[i], *out_k = k; return 1; }
     return 0;
 }
@@ -1293,15 +1295,18 @@ static void arrow_copies(Cpu *c, Slot *s) {
             s->mir[k].state = 2;
         else if (s->mir[k].state == 2) {
             int st = coop_handle_status(s->mir[k].handle);
-            if (st == 4) { rt_log("coop: slot %d: the copy of arrow %u could not be made", (int)(s - slots), s->mir[k].id); s->mir[k].state = 0; }
+            if (st == 4) { rt_log("coop: slot %d: the copy of object %u could not be made", (int)(s - slots), s->mir[k].id); s->mir[k].state = 0; }
             else if (st == 3) {
                 s->mir[k].actor = coop_claim(c, s->mir[k].handle, s->mir[k].link, &s->mir[k].ref);
                 s->mir[k].state = s->mir[k].actor ? 3 : 0;
                 static int said;
-                if (s->mir[k].actor && said++ < 20) rt_log("coop: slot %d: a copy of arrow %u (%s) is here", (int)(s - slots), s->mir[k].id, s->mir[k].name);
+                if (s->mir[k].actor && said++ < 20) rt_log("coop: slot %d: a copy of object %u (%s) is here", (int)(s - slots), s->mir[k].id, s->mir[k].name);
             }
         } else if (s->mir[k].state == 3 && ++s->mir[k].ticks >= COPY_WARMUP) place_copy(c, s, k);
     }
+    int live = 0;
+    for (int k = 0; k < COOP_OBJS; k++) live += s->mir[k].state == 3;
+    copies_live[s - slots] = live;
 }
 // A copy after its warmup runs no calc and no update phase (the hooks' part; returns 1 when actor is such a copy).
 static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc) {
@@ -1729,6 +1734,91 @@ static void refpool_test(void) {
     }
     for (int k = 0; k < 8 && step_n[k]; k++) rt_log("coop: test: refpool: step %#llx x%d", (unsigned long long)steps[k], step_n[k]);
 }
+// ---- world objects on the network (OBJS packets, coop_net.c). In the 30-a-second state, 24 objects were already
+// 1.8 KB a packet; now an object is sent when it moved (1 cm) or turned, again once a second while it rests, and
+// once with an empty name when it is gone; up to 100 entries a tick, COOP_OBJS_PER_PACKET to a packet. A receiver
+// forgets an object not heard of for 2.5 s (a lost "gone").
+#define OBJS_REFRESH 30
+#define OBJS_PER_TICK 100
+static struct { uint32_t id; float pos[3], q[4]; int tick, here; } objs_sent[COOP_OBJS];
+static int objs_sent_n, objs_tick;
+static void objs_send(const CoopObj *cur, int n) {
+    static uint8_t pk[COOP_OBJS_PACKET_MAX];
+    int in_pk = 0, budget = OBJS_PER_TICK;
+    objs_tick++;
+#define OBJS_PUT(o) do { memcpy(pk + 4 + in_pk * sizeof(CoopObj), (o), sizeof(CoopObj)); \
+        if (++in_pk == COOP_OBJS_PER_PACKET) { uint16_t h[2] = {(uint16_t)in_pk, 0}; memcpy(pk, h, 4); \
+            coop_net_objs_send(pk, 4 + in_pk * (int)sizeof(CoopObj)); in_pk = 0; } budget--; } while (0)
+    for (int j = 0; j < objs_sent_n; j++) objs_sent[j].here = 0;
+    for (int pass = 0; pass < 2; pass++)   // what changed first, then the once-a-second refreshes
+        for (int i = 0; i < n && budget > 0; i++) {
+            const CoopObj *o = &cur[i];
+            int j = 0;
+            while (j < objs_sent_n && objs_sent[j].id != o->id) j++;
+            if (j < objs_sent_n) objs_sent[j].here = 1;
+            int changed = j == objs_sent_n;
+            if (!changed) {
+                float dx = o->pos[0] - objs_sent[j].pos[0], dy = o->pos[1] - objs_sent[j].pos[1], dz = o->pos[2] - objs_sent[j].pos[2];
+                float dq = fabsf(o->q[0] - objs_sent[j].q[0]) + fabsf(o->q[1] - objs_sent[j].q[1]) + fabsf(o->q[2] - objs_sent[j].q[2]) +
+                           fabsf(o->q[3] - objs_sent[j].q[3]);
+                changed = dx * dx + dy * dy + dz * dz > 1e-4f || dq > 2e-3f;
+            }
+            int due = !changed && objs_tick - objs_sent[j].tick >= OBJS_REFRESH;
+            if (pass == 0 ? !changed : !due) continue;
+            if (j == objs_sent_n) {
+                if (objs_sent_n == COOP_OBJS) continue;
+                objs_sent_n++, objs_sent[j].here = 1;
+            }
+            objs_sent[j].id = o->id, objs_sent[j].tick = objs_tick;
+            memcpy(objs_sent[j].pos, o->pos, 12), memcpy(objs_sent[j].q, o->q, 16);
+            OBJS_PUT(o);
+        }
+    for (int j = 0; j < objs_sent_n;) {   // gone: said once, then forgotten
+        if (objs_sent[j].here) { j++; continue; }
+        CoopObj gone = {.id = objs_sent[j].id};
+        if (budget > 0) OBJS_PUT(&gone);
+        objs_sent[j] = objs_sent[--objs_sent_n];
+    }
+    if (in_pk) {
+        uint16_t h[2] = {(uint16_t)in_pk, 0};
+        memcpy(pk, h, 4);
+        coop_net_objs_send(pk, 4 + in_pk * (int)sizeof(CoopObj));
+    }
+#undef OBJS_PUT
+}
+static void objs_receive(void) {
+    static int rtick;
+    static uint8_t pk[COOP_OBJS_PACKET_MAX];
+    int from = 0, n;
+    rtick++;
+    while ((n = coop_net_objs_take(pk, sizeof pk, &from)) != 0) {
+        if (n < 4) continue;
+        uint16_t h[2];
+        memcpy(h, pk, 4);
+        if (h[0] > COOP_OBJS_PER_PACKET || 4 + h[0] * (int)sizeof(CoopObj) > n) continue;
+        Slot *s = slot_for(SRC_NET, from);
+        if (!s) continue;
+        for (int e = 0; e < h[0]; e++) {
+            CoopObj o;
+            memcpy(&o, pk + 4 + e * sizeof(CoopObj), sizeof o);
+            if (!o.id) continue;
+            o.name[sizeof o.name - 1] = 0;
+            int j = 0, free = -1;
+            for (; j < COOP_OBJS && s->objs_want[j].id != o.id; j++)
+                if (free < 0 && !s->objs_want[j].id) free = j;
+            if (!o.name[0]) {   // gone
+                if (j < COOP_OBJS) s->objs_want[j].id = 0;
+                continue;
+            }
+            if (j == COOP_OBJS) j = free;
+            if (j < 0) continue;
+            s->objs_want[j] = o, s->objs_heard[j] = rtick;
+        }
+    }
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++)
+        for (int j = 0; j < COOP_OBJS; j++)
+            if (slots[i].objs_want[j].id && rtick - slots[i].objs_heard[j] > 75) slots[i].objs_want[j].id = 0;
+}
 static int this_paused;   // this game sits in a menu (the clock and this Link both still; set by the tick)
 void coop_players_tick(Cpu *c, int numpad3) {
     if (frame_step_world_us() <= 0) return;   // not in the world yet
@@ -1745,8 +1835,11 @@ void coop_players_tick(Cpu *c, int numpad3) {
         st.buttons = local_buttons;
         memcpy(st.gear, my_gear, sizeof st.gear);
         memcpy(st.dye, my_dye, sizeof st.dye);
-        int n_objs = report_arrows(me, st.objs);
-        report_props(me, st.objs + n_objs, COOP_OBJS - n_objs);
+        static CoopObj cur[COOP_OBJS];
+        int n_objs = report_arrows(me, cur);
+        n_objs += report_props(me, cur + n_objs, COOP_OBJS - n_objs);
+        objs_send(cur, n_objs);
+        objs_receive();
         for (int k = 0; k < 3; k++) memcpy(st.fuse[k], strcmp(my_gear[k], GEAR_NONE) ? my_fuse[k] : "", 32);   // none when unequipped
         match_my_eq(me);
         uint64_t my_eq = eq_of_actor(me);   // weapon, bow, shield in hand
@@ -1879,7 +1972,6 @@ void coop_players_tick(Cpu *c, int numpad3) {
             s->gear_want[k][31] = 0;
             s->dye_want[k] = st.dye[k];
             if (k < 3) memcpy(s->fuse_want[k], st.fuse[k], 32), s->fuse_want[k][31] = 0;
-            if (k == 0) memcpy(s->objs_want, st.objs, sizeof s->objs_want);
             if (k < 3) s->out_want = (s->out_want & ~(1 << k)) | (int)((st.flags >> (8 + k)) & 1) << k;
         }
         // The owner's stick in world space (their camera), then in this PC's camera frame.

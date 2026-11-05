@@ -1,5 +1,5 @@
 // The co-op relay inside the game (the Host button): the same protocol as server/coop_relay.py, on a thread of its
-// own. It hands out player ids on HELLO, forwards STATE / WORLD / HIT / POSE packets to everyone else and drops players
+// own. It hands out player ids on HELLO, forwards STATE / WORLD / HIT / POSE / OBJS packets to everyone else and drops players
 // that stay quiet for 5 s. The hosting game joins it itself through 127.0.0.1 like any other player.
 #include <stdint.h>
 #include <stdio.h>
@@ -27,7 +27,7 @@ typedef int Sock;
 #include "host.h"
 #include "platform/platform.h"
 
-enum { HELLO = 1, WELCOME = 2, STATE = 3, LEAVE = 4, BYE = 5, WORLD = 6, HIT = 7, POSE = 8, HEADER = 8 };
+enum { HELLO = 1, WELCOME = 2, STATE = 3, LEAVE = 4, BYE = 5, WORLD = 6, HIT = 7, POSE = 8, OBJS = 9, HEADER = 8 };
 
 static volatile int relay_gen;    // a new value stops the running relay thread
 static volatile int relay_port;   // nonzero while a relay runs here
@@ -105,7 +105,7 @@ static void relay_thread(void *arg) {
             for (int i = 0; i < np; i++)
                 if (i != at) out[o] = (uint8_t)peers[i].id, memcpy(out + o + 1, peers[i].name, 16), o += 17;
             sendto(s, (const char *)out, o, 0, (struct sockaddr *)&from, sizeof from);
-        } else if ((kind == STATE || kind == WORLD || kind == HIT || kind == POSE) && at >= 0) {
+        } else if ((kind == STATE || kind == WORLD || kind == HIT || kind == POSE || kind == OBJS) && at >= 0) {
             peers[at].seen_ns = now;
             memcpy(out, buf, n);
             put_header(out, kind, peers[at].id);
