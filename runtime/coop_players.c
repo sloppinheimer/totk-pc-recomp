@@ -434,6 +434,19 @@ static void diff_after(void) {
     diff_calcs = 0;
 }
 int coop_in_remote_calc(void) { return inside; }   // this thread runs a co-op Link's calc (coop_spawn.c profiler)
+// The actor's other per-frame update phases (coop_spawn.c hooks them): run as inside a co-op Link's calc when x0 is
+// one, so what keeps a co-op Link from changing this game (HUD, game data, tips) covers them too. No controller swap:
+// the calc alone reads the pad.
+int coop_players_phase(Cpu *c, uint64_t addr) {
+    if (inside || !slot_of_actor(c->x[0])) return 0;
+    static _Atomic int said;
+    if (atomic_fetch_add(&said, 1) < 4) rt_log("coop: a co-op Link's update phase main+%#llx counts as its calc", (unsigned long long)(addr - MOD_MAIN_BASE));
+    inside = 1;
+    c->pc = addr;
+    rt_dispatch(c);
+    inside = 0;
+    return 1;
+}
 int coop_players_calc(Cpu *c, uint64_t addr) {
     Slot *s;
     if (inside || !(s = slot_of_actor(c->x[0]))) return 0;

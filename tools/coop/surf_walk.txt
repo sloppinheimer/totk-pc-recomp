@@ -1,0 +1,26 @@
+# Rito Village Sage save (first in the Continue list): shield surfs while running across the tower platform, every
+# 6 s from 14 s, turning between them (hold ZL, jump X, A in the air), then running off the edge with ZL held.
+300 A 4
+520 A 4
+700 A 4
+900 A 4
+@14000 LSTICK 0 32767 2500
+@14000 ZL 2400
+@15000 X 150
+@15400 A 150
+@20000 LSTICK 32767 0 2500
+@20000 ZL 2400
+@21000 X 150
+@21400 A 150
+@26000 LSTICK 0 -32767 2500
+@26000 ZL 2400
+@27000 X 150
+@27400 A 150
+@32000 LSTICK -32767 0 2500
+@32000 ZL 2400
+@33000 X 150
+@33400 A 150
+@38000 LSTICK 0 32767 6000
+@38000 ZL 6000
+@40000 X 150
+@40400 A 150

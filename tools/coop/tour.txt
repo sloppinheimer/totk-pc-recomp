@@ -1,0 +1,28 @@
+# Rito Village Sage save (first in the Continue list), on the tower platform: an action tour for the other game's
+# co-op Link (tools/coop/run_pair.ps1 -ScriptB): walk, sword swings, shield, bow, jump, crouch, whistle, sprint, shield
+# surf, then off the edge: glide, let go, fall (the fall kills this Link).
+300 A 4
+520 A 4
+700 A 4
+900 A 4
+@14000 LSTICK 0 -32767 1500
+@16000 Y 150
+@16600 Y 150
+@17200 Y 150
+@18500 ZL 2000
+@19000 Y 150
+@21000 ZR 2500
+@24500 X 150
+@25500 LCLICK 100
+@25800 LSTICK 0 -32767 1000
+@27000 LCLICK 100
+@28000 DOWN 150
+@29000 LSTICK -32767 0 2000
+@29000 B 2000
+@32000 ZL 2400
+@33000 X 150
+@33400 A 150
+@36000 RSTICK 32767 0 600
+@38000 LSTICK 0 32767 9000
+@40500 X 150
+@42500 X 150

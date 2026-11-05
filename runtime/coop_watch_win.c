@@ -18,6 +18,7 @@ static volatile LONG armed;
 static uint64_t lo, hi, page_lo, page_hi;   // the watched range and its pages
 static DWORD old_prot;
 static struct { volatile LONG64 fn; volatile LONG hits; volatile LONG min_off, max_off; } seen[SLOTS];
+int coop_watch_writes;   // set: only writes to the range are counted
 static volatile LONG outside;                // faults on the pages outside the range
 static __declspec(thread) int stepping;      // this thread runs one instruction with the page open
 
@@ -48,7 +49,7 @@ static LONG CALLBACK veh(EXCEPTION_POINTERS *ep) {
     if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
     uint64_t a = (uint64_t)er->ExceptionInformation[1];
     if (a < page_lo || a >= page_hi || !page_lo) return EXCEPTION_CONTINUE_SEARCH;
-    if (a >= lo && a < hi && coop_watch_counts()) note(rt_lifted_function((uintptr_t)ep->ContextRecord->Rip), a);
+    if (a >= lo && a < hi && coop_watch_counts() && (!coop_watch_writes || er->ExceptionInformation[0] == 1)) note(rt_lifted_function((uintptr_t)ep->ContextRecord->Rip), a);
     else InterlockedIncrement(&outside);
     DWORD o;
     VirtualProtect((void *)(uintptr_t)page_lo, page_hi - page_lo, old_prot, &o);

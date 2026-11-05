@@ -399,6 +399,16 @@ static void watch_slot5(void) {
             else phase = 2;
             return;
         }
+        if (what && !strcmp(what, "cooplife")) {   // who writes the first co-op Link's life (writes only)
+            extern int coop_watch_writes;
+            uint64_t ca[1]; int ci[1];
+            uint64_t w = coop_player_actors(ca, ci, 1) ? life_word(ca[0], 0) : 0;
+            coop_watch_writes = 1;
+            if (w && coop_watch_arm(w, 4)) phase = 1, rt_log("coop: test: watching writes to the co-op Link's life %llx (%d)", (unsigned long long)w, life_of(ca[0]));
+            else if (!w) return;
+            else phase = 2;
+            return;
+        }
         if (what && !strcmp(what, "coopdata")) {   // the first co-op Link's perception data
             uint64_t ca[1]; int ci[1];
             uint64_t d = coop_player_actors(ca, ci, 1) ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(ca[0] + 0x228) + 0x378) + 0x30) : 0;
@@ -427,6 +437,7 @@ static void watch_slot5(void) {
 static _Atomic uint64_t near_me;
 static struct { _Atomic uint64_t actor, data; } near_links[COOP_MAX_PLAYERS];
 static _Atomic int near_n;
+static _Atomic uint64_t coop_life_comps[COOP_MAX_PLAYERS];   // the co-op Links' life components, for coop_spawn.c
 static void cache_links(uint64_t me) {
     uint64_t acts[COOP_MAX_PLAYERS];
     int ids[COOP_MAX_PLAYERS];
@@ -434,9 +445,17 @@ static void cache_links(uint64_t me) {
     for (int i = 0; i < n; i++) {
         uint64_t d = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(acts[i] + 0x228) + 0x378) + 0x30);
         atomic_store(&near_links[i].actor, acts[i]), atomic_store(&near_links[i].data, d);
+        atomic_store(&coop_life_comps[i], coop_rd_ptr(coop_rd_ptr(acts[i] + 0x228) + 0x2f8));
     }
+    for (int i = n; i < COOP_MAX_PLAYERS; i++) atomic_store(&coop_life_comps[i], 0);
     atomic_store(&near_n, n);
     atomic_store(&near_me, me);
+}
+// A co-op Link's life component: its life update (main+0x4400b0) must not take life in this game (coop_spawn.c).
+int coop_is_coop_life(uint64_t comp) {
+    for (int i = 0; comp && i < COOP_MAX_PLAYERS; i++)
+        if (atomic_load_explicit(&coop_life_comps[i], memory_order_relaxed) == comp) return 1;
+    return 0;
 }
 uint64_t coop_nearest_link_data(uint64_t enemy) {
     int n = atomic_load_explicit(&near_n, memory_order_relaxed);
