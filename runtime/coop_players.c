@@ -1446,8 +1446,10 @@ static void set_driven(uint64_t a) {
 }
 // Not world objects: Links and what they wear and carry, people, animals, enemies (synced on their own), arrows.
 static int prop_skip(const char *nm) {
+    // Parasail: the Link's paraglider, made when it opens; a copy of it in the other game took that game down with
+    // the Ultrahand crash (a play session, 2026-11-05)
     static const char *pre[] = {"Player", "Armor_", "Accessory_", "PlayerRaul", "Npc", "Animal_", "Enemy_",
-                                "Weapon_Sheath", "Weapon_Quiver"};
+                                "Weapon_Sheath", "Weapon_Quiver", "Parasail"};
     for (size_t i = 0; i < sizeof pre / sizeof *pre; i++) if (!strncmp(nm, pre[i], strlen(pre[i]))) return 1;
     if (strstr(nm, "Arrow")) return 1;
     // Helpers that go with this Link and are not things in the world: EventCamera and CameraXLinkControl were sent

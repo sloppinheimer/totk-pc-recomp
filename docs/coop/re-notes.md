@@ -757,3 +757,7 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   place every tick). Pair test (TOTK_COOP_TEST_FANSET=9 in A, fan_hits_3rd.txt): A's hit turns A's fan on (0xa000,
   energy 10) and B's proxy's swing turns B's copy on the same way 1.2 s later in B's clock. The copy draws on B's
   Link's battery (the game's rule), and the proxy's swing hits what else is there too. TOTK_COOP_PROXY_SWING=0 off.
+- the tester's Ultrahand crash (both games): A crashed in a pool's free list (main+0x19164e0, read of -1, from the actor
+  job, main+0x915a90's object +0xcf40) while holding its fan with Ultrahand; B's log stops just after it made a copy
+  of "Parasail" (A's paraglider, sent as a made object). The paraglider is no longer sent. A's crash is not
+  understood: scripted L / A (fan_ultra_3rd.txt) did not grab the fan, so it was not reproduced.
