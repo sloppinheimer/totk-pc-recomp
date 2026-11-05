@@ -80,9 +80,11 @@ right in the tester's own two-pad session.
   drawing far away is shown only to 24 m; the glide test could not frame the Link in either mode.
 - What it took beyond the plan: the pose sent is made from the owner's final bone matrices (feet on stairs, hand on
   a wall), not the writer's input, and it is shown from the same delayed moment as the position.
-- **Stage 2 stopped** after two failed attempts at held items: a shield put away after being raised vanishes from
-  the proxy (re-notes "Proxy mode, held items"). Outfit / dye changes while frozen and the second-save test were not
-  reached. Button mirroring stays the default.
+- **Stage 2 partly passed**: held items and outfit / dye changes work with a thaw (the proxy's own update runs for
+  30 ticks after each change; a 1-3 cm twitch for about 6 frames). Loading a second save is still broken: this
+  game's Link keeps its EquipmentUser, whose table keeps the first save's items, and no armor create runs at the load
+  (re-notes "Proxy mode, gear"). Two fixes failed.
+- **Stage 3 needs nothing**: head and hair are bones of the 127-bone body, which the proxy already copies.
 - Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
 
 ## Plan
@@ -99,9 +101,9 @@ right in the tester's own two-pad session.
 
    If it can't draw or pose with the update off, record that and fall back: switch off only physics, foot
    placement and equipment logic, one at a time, each with the same tests.
-2. **Gear on the proxy** (stopped at held items, see Status): outfit, dye and held items, including after a save load, with a test that loads a second
+2. **Gear on the proxy** (partly passed, see Status): outfit, dye and held items, including after a save load, with a test that loads a second
    save.
-3. **Head and hair skeleton.**
+3. **Head and hair skeleton.** Not needed (see Status).
 4. **Animation state instead of bones** (research): find how the Player plays animations by name, so a proxy can
    replay them and get effects and sounds for free.
 5. **Enemies targeting the other player** (separate research; see "Enemy targets: not found").

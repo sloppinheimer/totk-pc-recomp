@@ -497,16 +497,42 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   - The in-game jump watch ("proxy: ... standing jump") counts owner actions too (it knows no animation); use the
     comparer for shake.
 
-## Proxy mode, held items (stage 2, stopped 2026-11-05)
-- Test: A show.txt (shield up with ZL 18.5-20.5 s, jump 22.5 s), B idle.txt, screenshots w15-25:2.
-- As committed: the shield is on the back, goes to the hand when raised, stays in the hand after the owner lowers it
-  (still in the jump), then is gone from hand and back. The hold query (main+0x3e322c) reads 0x4 while the owner
-  reports 0.
-- Attempt 1: on each change of the owner's in-hand bit, make the item again with the weapon create's 1 in hand / 2
-  put away. The shield left the hand on time but did not come back onto the back; the query still read in hand.
-- Attempt 2: empty the slot first, then make it. Same as before the attempts (in hand during the jump, then gone).
-- Both reverted. Being put away is done by the Link's own update (the equipment state, or what places a sheathed
-  item), which the proxy does not run. Next: find what places a put-away item on the back (main+0x25cf88 /
-  main+0x269f70 and their callers, with the frame tracer on a live Link putting its shield away) and call that from
-  proxy_drive, or let only the equipment part of the update run.
-- Not tested yet (stage 2 stopped): outfit and dye changes while frozen, and loading a second save.
+## Proxy mode, gear (stage 2, 2026-11-05)
+- Held items, test: A show.txt (shield up with ZL 18.5-20.5 s, jump 22.5 s), B idle.txt, screenshots w15-25:2.
+  - With the in-hand flag alone (as in b0a3969): the shield went to the hand when raised, stayed there after the
+    owner lowered it (still in the jump), then was gone from hand and back; the hold query main+0x3e322c read 0x4
+    while the owner reported 0.
+  - Failed 1: make the item again with the weapon create's 1 in hand / 2 put away on each change. It left the hand
+    on time but never came back onto the back. Failed 2: empty the slot first, then make it. Same as no fix.
+  - Works: a thaw. On each change of the owner's in-hand bits the proxy's own calc and update phases run for 30 ticks
+    (PROXY_THAW_TICKS, about 0.5 s), the driver still placing and posing it after each phase. Screenshots: shield on
+    the back, in hand while raised, on the back again for the jump and after; the hold query settles to 0 with the
+    owner's 0. Cost on tour.txt: about 6 frames per change where the proxy steps 1-3 cm off its owner (largest
+    4.3 cm), against 4 frames over 1 cm in the whole tour without thaws.
+- Outfit and dye while frozen, test: A idle.txt with -FakeGearA ,,,Armor_001_Head,Armor_001_Upper,Armor_001_Lower
+  -FakeDyeA ,,,,3,3 -FakeAtA 24 (the fakes apply from 24 s; TOTK_COOP_FAKE_AT), B idle.txt.
+  - Frozen proxy: the gear creates run (logged) but the hood and tunic do not show. Control (default mode): they do.
+  - Fixed with the same thaw on each gear change: before the switch the default outfit, after it the hood and the
+    dye-3 tunic, as in the control; 0 standing frames over 1 cm in the 1200 frames around it (largest 0.21 cm).
+- Loading a second save (tools/coop/load_3rd.txt in both games: Rito save, then System > Load > In-isa Shrine):
+  reproduces the tester's bug. After the load neither game logs its own gear again, and each gives the other's new
+  co-op Link the first save's armor ("gets Armor_Default_Upper ... this save has Armor_1043_Upper"). Not fixed.
+  - Found: this game's Link keeps the same actor and the same EquipmentUser across the load; that EquipmentUser's
+    gear table still names the first save's items (alive, state 4) while the Link visibly wears the new save's
+    armor (screenshot). No armor create (main+0xc4961c / 0xaf100c) runs for this Link during the load (TOTK_COOP_
+    TEST_EQLOG-style logging of every create: only the co-op Link's EquipmentUser gets Armor_1043). So the new
+    armor is built by another path, and the table read here is not where the worn armor is listed after a load.
+  - Failed 1: adopt an unplaced EquipmentUser that points at this Link even when one is known (none appears).
+    Failed 2: re-read the EquipmentUser pointer from the Player's components each tick (it is in none of their first
+    0x2000 bytes). Both removed.
+  - Next: write-watch the worn upper armor's model or find what builds armor at a load (the frame tracer on the
+    loading Link), or read the equipped items from the save's game data instead of the EquipmentUser table.
+
+## Proxy mode, head and hair (stage 3, 2026-11-05)
+- There is no separate head or hair skeleton on these Links: the model ([[actor+0x228]+8]+0x28) has one unit, the
+  127-bone body (its +0x110 is the SkeletonObj itself, not +0x38 of it as coop_link_skeletons assumes, so that
+  function finds nothing); the three armor actors in the EquipmentUser table hold no SkeletonObj within 6 pointer
+  steps; the 95- and 113-bone skeletons the model scan finds hang off actor +0x140 / +0x178 (other actors, one shared).
+- So head and hair are body bones (the highest bone is 83 or 84 in both games) and the proxy already gets them from
+  the owner's final matrices (stage 1). In every proxy screenshot the head and hair sit in place and move with the
+  body. Nothing else to do for stage 3.

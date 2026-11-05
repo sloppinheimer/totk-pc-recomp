@@ -1,0 +1,18 @@
+# Rito Village Sage save (first in the Continue list), then at 14 s into the world load another save from the
+# menu: System tab (PLUS, R three times), Load, the third save (In-isa Shrine), then Load in the dialog (its cursor
+# starts on Cancel). Run in both games: the second-save gear test (proxy mode).
+300 A 4
+520 A 4
+700 A 4
+900 A 4
+@14000 PLUS 150
+@15000 R 150
+@15800 R 150
+@16600 R 150
+@17600 DOWN 150
+@18400 A 150
+@19600 DOWN 150
+@20400 DOWN 150
+@21400 A 150
+@22400 UP 150
+@23200 A 150
