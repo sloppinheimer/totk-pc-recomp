@@ -4,11 +4,19 @@
 #include <stdint.h>
 
 #define COOP_MAX_PLAYERS 8
-#define COOP_NET_VERSION 7   // packet header version: games and relays of another version ignore each other
+#define COOP_NET_VERSION 8   // packet header version: games and relays of another version ignore each other
 
 // One player's state, sent about 30 times a second. Positions and directions are world space; the sticks are as the
 // player's own camera saw them, with the camera's horizontal forward and right so a receiver can turn them into its
 // own camera's frame.
+// A world object of the player's own (its arrows, held and in flight, and fused arrows' materials): shown in the
+// other games as a copy.
+#define COOP_OBJS 8
+typedef struct {
+    uint32_t id;                      // the owner's number for it (0: an empty entry)
+    char name[28];                    // its actor name (NormalArrow, BombFruit...)
+    float pos[3], q[4];               // world position, rotation as a quaternion x y z w
+} CoopObj;
 typedef struct {
     uint32_t seq, flags;              // flags bits 8..10: weapon, bow, shield in hand (puppet mode draws them)
     float pos[3], rot[9];
@@ -22,8 +30,9 @@ typedef struct {
     uint8_t pad[2];
     char fuse[3][32];                 // weapon, bow, shield: the fused material's actor name ("" none; the weapon
                                       // create's 7th argument, e.g. AsbObj_RockParts_C_S_01)
+    CoopObj objs[COOP_OBJS];          // the player's arrows and their fused materials (coop_players.c)
 } NetState;
-_Static_assert(sizeof(NetState) == 400, "NetState wire size");
+_Static_assert(sizeof(NetState) == 880, "NetState wire size");
 #define COOP_GEAR_SLOTS 6
 extern const int coop_gear_slot[COOP_GEAR_SLOTS];   // the EquipmentUser slots they are (coop_players.c)
 

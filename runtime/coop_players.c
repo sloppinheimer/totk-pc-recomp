@@ -53,6 +53,16 @@ typedef struct {
     unsigned snaps;
     char gear_want[COOP_GEAR_SLOTS][32], gear_have[COOP_GEAR_SLOTS][32];   // the owner's gear; what this Link was given
     char fuse_want[3][32], fuse_have[3][32];   // weapon, bow, shield: the owner's fused material; as last made here
+    CoopObj objs_want[COOP_OBJS];      // the owner's arrows, latest report
+    struct {                           // their copies here (arrow_copies)
+        uint32_t id;
+        int state;                     // 0 free, 1 wanted, 2 requested, 3 live
+        char name[28];
+        float pos[3], rot[9];
+        _Alignas(16) uint8_t handle[0x40], link[0x40];
+        uint64_t actor, ref;
+        int ticks;
+    } mir[COOP_OBJS];
     _Alignas(16) uint8_t att_str[3][0x60];     // the material names handed to the weapon creates
     int8_t dye_want[COOP_GEAR_SLOTS], dye_have[COOP_GEAR_SLOTS];   // the armor's dye colour, the same way (-1 none)
     int out_want, out_have;            // puppet mode: bits 0..2 weapon, bow, shield in the owner's hands; as last made
@@ -492,6 +502,7 @@ static Slot *slot_new(int source, int net_id) {
             memset(s->held, 0, sizeof s->held);
             memset(s->gear_want, 0, sizeof s->gear_want), memset(s->gear_have, 0, sizeof s->gear_have);
             memset(s->fuse_want, 0, sizeof s->fuse_want), memset(s->fuse_have, 0, sizeof s->fuse_have);
+            memset(s->objs_want, 0, sizeof s->objs_want), memset(s->mir, 0, sizeof s->mir);
             memset(s->dye_want, -1, sizeof s->dye_want), memset(s->dye_have, -1, sizeof s->dye_have);
             s->out_want = 0, s->out_have = -1, s->have_phys = 0, s->top_last = -1e9f, s->have_body = 0;
             s->live_ticks = 0, s->px_have = 0, s->thaw = 0;
@@ -641,7 +652,10 @@ static void proxy_drive(Cpu *c, Slot *s) {
     top_log("puppet", actor);
 }
 static void keep_player_eq(uint64_t me, uint64_t my_eq);
+static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc);
+static void place_copy(Cpu *c, Slot *s, int k);
 int coop_players_phase(Cpu *c, uint64_t addr) {
+    if (!inside && copy_place(c, c->x[0], addr, 0)) return 1;
     if (inside || !slot_of_actor(c->x[0])) return 0;
     {   // before any co-op Link's update: the save-load rebuild runs in one (keep_player_eq)
         uint64_t me = coop_player_actor();
@@ -845,6 +859,7 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
 }
 int coop_players_calc(Cpu *c, uint64_t addr) {
     Slot *s;
+    if (!inside && copy_place(c, c->x[0], addr, 1)) return 1;
     if (inside || !(s = slot_of_actor(c->x[0]))) return 0;
     {
         uint64_t me = coop_player_actor();
@@ -1118,6 +1133,209 @@ static void keep_player_eq(uint64_t me, uint64_t my_eq) {
     if (++fixes <= 20) rt_log("coop: the player's EquipmentUser was another Player's (%llx): this Link's put back (%u)", (unsigned long long)g, fixes);
     last = my_eq;
 }
+// Test (TOTK_COOP_TEST_ARROWLOG=<from s>,<to s>): every 15 ticks in that window, each live actor with "Arrow" in its
+// name: address, name, position, distance to this Link (what a bow's arrows are, held and in flight).
+static void arrow_fn(uint64_t a, void *arg) {
+    char nm[48];
+    coop_actor_name(a, nm, sizeof nm);
+    float p[3] = {0}, q[3] = {0};
+    coop_rd(a + COOP_ACTOR_POS, p, 12);
+    coop_rd(*(uint64_t *)arg + COOP_ACTOR_POS, q, 12);
+    float d = sqrtf((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
+    if (!strstr(nm, "Arrow") && (d > 3 || !strcmp(nm, "Player"))) return;   // arrows, and anything near this Link
+    int32_t st = -1;
+    coop_rd(a + COOP_ACTOR_STATE, &st, 4);
+    rt_log("coop: test: arrow %.2f s %llx %s at %.2f %.2f %.2f, %.2f m from this Link, state %d", frame_step_world_us() / 1e6,
+           (unsigned long long)a, nm, p[0], p[1], p[2], d, st);
+}
+static void arrow_log(uint64_t me) {
+    const char *e = cfg_get("TOTK_COOP_TEST_ARROWLOG");
+    static int t;
+    if (!e || ++t % 15) return;
+    double now = frame_step_world_us() / 1e6, a = atof(e), b = strchr(e, ',') ? atof(strchr(e, ',') + 1) : a + 10;
+    if (now < a || now > b) return;
+    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);
+    coop_actors_live(arrow_fn, &me);
+}
+// ---- arrows (the tester's list, 2026-11-05). A bow's arrow is an actor (NormalArrow...): made at the bow when it is drawn
+// (1.4 m from Link), held there, and on release it flies (21 m in 0.12 s) and sticks where it hits (TOTK_COOP_TEST_
+// ARROWLOG, bow_shoot_3rd.txt). Each game reports the arrows that were first seen within 3 m of its own Link, up to
+// COOP_OBJS, with position and rotation, in its state, and a fused arrow's material with them; the other games show a
+// copy of each: made with the same name, then after COPY_WARMUP ticks its own update is off and it is put where the
+// owner's is every tick (place_copy), so it does not fly, hit or get picked up here. A copy goes when its arrow is no
+// longer reported.
+#define COPY_WARMUP 5
+static struct { uint64_t actor; uint32_t id; int mine, seen, fused_to; } my_arrows[32];
+static struct { uint64_t actor; int seen; } near_actors[64];   // other actors within 3 m of this Link, last tick seen
+static uint32_t next_arrow_id = 1;
+static int arrow_tick;
+// Last tick ZR (npad bit 9) was held here. A bow is drawn with ZR: the first arrow is made on the press, and the next
+// one goes on the bow 46 ticks after the release (bow_shoot_3rd.txt, 2026-11-05). An arrow made more than 3 s after
+// ZR is not this Link's: each game made two arrows 0.45 m from each Link at load, and one with no other Link in yet
+// took them as its own.
+static int zr_tick = -1000;
+static int copy_of(uint64_t actor, Slot **out_s, int *out_k) {
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++)
+        for (int k = 0; k < COOP_OBJS && actor; k++)
+            if (slots[i].mir[k].state == 3 && slots[i].mir[k].actor == actor) { *out_s = &slots[i], *out_k = k; return 1; }
+    return 0;
+}
+static void arrow_track_fn(uint64_t a, void *arg) {
+    char nm[48];
+    coop_actor_name(a, nm, sizeof nm);
+    Slot *cs;
+    int ck;
+    if (copy_of(a, &cs, &ck)) return;   // not one of the copies made here
+    for (int i = 0; i < 32; i++) if (my_arrows[i].actor == a) { my_arrows[i].seen = arrow_tick; return; }
+    float p[3], q[3];
+    if (!coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(*(uint64_t *)arg + COOP_ACTOR_POS, q, 12)) return;
+    float d2 = (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]), dco = 1e18f;
+    if (!strstr(nm, "Arrow")) {
+        // A fused arrow's material is an actor of its own: on choosing BombFruit while drawing, a BombFruit was made
+        // 1.0 m from the arrow, moved with it, and was gone once the arrow hit (bow_fuse_3rd.txt, 2026-11-05). An
+        // actor first seen within 1.5 m of an arrow of this Link, while ZR is in use, is sent with the arrows. The
+        // actors near this Link are kept, so one that was already there (the Link's own gear) is not taken.
+        if (d2 >= 9) return;
+        int free = -1;
+        for (int i = 0; i < 64; i++) {
+            if (near_actors[i].actor == a) { near_actors[i].seen = arrow_tick; return; }
+            if (free < 0 && (!near_actors[i].actor || arrow_tick - near_actors[i].seen > 30)) free = i;
+        }
+        if (free >= 0) near_actors[free].actor = a, near_actors[free].seen = arrow_tick;
+        if (arrow_tick - zr_tick > 90 || arrow_tick < 30 || !strcmp(nm, "Player") || !strncmp(nm, "Armor_", 6) ||
+            !strncmp(nm, "Weapon_", 7) || !strncmp(nm, "Accessory_", 10) || !strncmp(nm, "PlayerRaul", 10)) return;
+        int by = 0;
+        for (int i = 0; i < 32 && !by; i++) {
+            float r[3];
+            if (my_arrows[i].actor && my_arrows[i].mine && my_arrows[i].fused_to == 0 && coop_rd(my_arrows[i].actor + COOP_ACTOR_POS, r, 12))
+                by = (p[0] - r[0]) * (p[0] - r[0]) + (p[1] - r[1]) * (p[1] - r[1]) + (p[2] - r[2]) * (p[2] - r[2]) < 2.25f ? (int)my_arrows[i].id : 0;
+        }
+        if (!by) return;
+        for (int i = 0; i < 32; i++)
+            if (!my_arrows[i].actor) {
+                my_arrows[i].actor = a, my_arrows[i].mine = 1, my_arrows[i].seen = arrow_tick, my_arrows[i].fused_to = by;
+                my_arrows[i].id = next_arrow_id++;
+                rt_log("coop: my arrow %d is fused with %s (%u, %llx)", by, nm, my_arrows[i].id, (unsigned long long)a);
+                return;
+            }
+        return;
+    }
+    // Mine only when nearer this Link than any co-op Link: with both standing together, each game took the other
+    // proxy's quiver arrows and the other's copies as its own, and the two fed each other (2026-11-05). A co-op Link
+    // counts before it is LIVE too.
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++) {
+        float r[3];
+        if (slots[i].actor && coop_rd(slots[i].actor + COOP_ACTOR_POS, r, 12)) {
+            float e = (p[0] - r[0]) * (p[0] - r[0]) + (p[1] - r[1]) * (p[1] - r[1]) + (p[2] - r[2]) * (p[2] - r[2]);
+            if (e < dco) dco = e;
+        }
+    }
+    for (int i = 0; i < 32; i++)
+        if (!my_arrows[i].actor) {
+            my_arrows[i].actor = a, my_arrows[i].mine = arrow_tick - zr_tick <= 90 && d2 < 9 && d2 < dco, my_arrows[i].seen = arrow_tick;
+            my_arrows[i].fused_to = 0;
+            my_arrows[i].id = my_arrows[i].mine ? next_arrow_id++ : 0;
+            if (my_arrows[i].mine) rt_log("coop: my arrow %u is %s (%llx)", my_arrows[i].id, nm, (unsigned long long)a);
+            return;
+        }
+}
+static void mat_quat(const float *r, float q[4]);
+static void quat_mat(const float q[4], float *r);
+static void report_arrows(uint64_t me, CoopObj *out) {
+    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
+    arrow_tick++;
+    if (local_buttons >> 9 & 1) zr_tick = arrow_tick;
+    coop_actors_live(arrow_track_fn, &me);
+    int n = 0;
+    memset(out, 0, sizeof(CoopObj) * COOP_OBJS);
+    for (int i = 0; i < 32; i++) {
+        if (!my_arrows[i].actor) continue;
+        if (arrow_tick - my_arrows[i].seen > 30) { my_arrows[i].actor = 0; continue; }   // gone (not updated for 1 s)
+        if (my_arrows[i].seen != arrow_tick) continue;
+        if (!my_arrows[i].mine || n >= COOP_OBJS) continue;
+        CoopObj *o = &out[n];
+        float r[9];
+        if (!coop_rd(my_arrows[i].actor + COOP_ACTOR_POS, o->pos, 12) || !coop_rd(my_arrows[i].actor + COOP_ACTOR_ROT, r, 36)) continue;
+        o->id = my_arrows[i].id;
+        coop_actor_name(my_arrows[i].actor, o->name, sizeof o->name);
+        mat_quat(r, o->q);
+        n++;
+    }
+}
+static void arrow_copies(Cpu *c, Slot *s) {
+    for (int k = 0; k < COOP_OBJS; k++) {   // copies whose arrow is gone
+        if (!s->mir[k].state) continue;
+        int still = 0;
+        for (int j = 0; j < COOP_OBJS && !still; j++) still = s->objs_want[j].id == s->mir[k].id;
+        if (still) continue;
+        if (s->mir[k].actor) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0);
+        if (s->mir[k].state == 2) continue;   // its create is still pending: claimed (then deleted) once it is there
+        s->mir[k].state = 0, s->mir[k].actor = 0;
+    }
+    for (int j = 0; j < COOP_OBJS; j++) {   // new arrows, and where each one is now
+        const CoopObj *o = &s->objs_want[j];
+        if (!o->id) continue;
+        int k = 0;
+        while (k < COOP_OBJS && !(s->mir[k].state && s->mir[k].id == o->id)) k++;
+        if (k == COOP_OBJS) {
+            for (k = 0; k < COOP_OBJS && s->mir[k].state; k++) {}
+            if (k == COOP_OBJS) continue;
+            s->mir[k].id = o->id, s->mir[k].state = 1, s->mir[k].ticks = 0, s->mir[k].actor = 0;
+            memcpy(s->mir[k].name, o->name, sizeof s->mir[k].name), s->mir[k].name[27] = 0;
+        }
+        memcpy(s->mir[k].pos, o->pos, 12);
+        quat_mat(o->q, s->mir[k].rot);
+    }
+    for (int k = 0; k < COOP_OBJS; k++) {
+        if (s->mir[k].state == 1 && coop_request_create(c, s->mir[k].name, s->mir[k].pos, s->mir[k].rot, s->mir[k].handle))
+            s->mir[k].state = 2;
+        else if (s->mir[k].state == 2) {
+            int st = coop_handle_status(s->mir[k].handle);
+            if (st == 4) { rt_log("coop: slot %d: the copy of arrow %u could not be made", (int)(s - slots), s->mir[k].id); s->mir[k].state = 0; }
+            else if (st == 3) {
+                s->mir[k].actor = coop_claim(c, s->mir[k].handle, s->mir[k].link, &s->mir[k].ref);
+                s->mir[k].state = s->mir[k].actor ? 3 : 0;
+                static int said;
+                if (s->mir[k].actor && said++ < 20) rt_log("coop: slot %d: a copy of arrow %u (%s) is here", (int)(s - slots), s->mir[k].id, s->mir[k].name);
+            }
+        } else if (s->mir[k].state == 3 && ++s->mir[k].ticks >= COPY_WARMUP) place_copy(c, s, k);
+    }
+}
+// A copy after its warmup runs no calc and no update phase (the hooks' part; returns 1 when actor is such a copy).
+static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc) {
+    Slot *s;
+    int k;
+    (void)c, (void)addr, (void)calc;
+    return copy_of(actor, &s, &k) && s->mir[k].ticks >= COPY_WARMUP;
+}
+// Each tick, a copy is put where its arrow is: actor position and rotation, model matrix and the push to the model
+// units, as the proxy. Done from the tick, not in one of its own updates: the game stopped calling a frozen arrow's
+// calc after two frames (a fused BombFruit's went on), so in a hook only the BombFruit moved (TOTK_COOP_TEST_COPYLOG,
+// 2026-11-05).
+static void place_copy(Cpu *c, Slot *s, int k) {
+    uint64_t actor = s->mir[k].actor;
+    float m[12];
+    for (int r = 0; r < 3; r++) {
+        for (int j = 0; j < 3; j++) m[r * 4 + j] = s->mir[k].rot[r * 3 + j];
+        m[r * 4 + 3] = s->mir[k].pos[r];
+    }
+    memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_POS), s->mir[k].pos, 12);
+    memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_ROT), s->mir[k].rot, 36);
+    uint64_t model = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x8) + 0x28);
+    static int copylog = -1, n;   // TOTK_COOP_TEST_COPYLOG=1: where each copy is put, every 30th time (test)
+    if (copylog < 0) copylog = cfg_get("TOTK_COOP_TEST_COPYLOG") != NULL;
+    if (copylog && n++ % 8 == 0) {
+        float mt[12] = {0};
+        if (model) coop_rd(model + 0x1f8, mt, sizeof mt);
+        rt_log("coop: test: copy %.2f s %u %s at %.2f %.2f %.2f, model %llx at %.2f %.2f %.2f", frame_step_world_us() / 1e6, s->mir[k].id, s->mir[k].name,
+               s->mir[k].pos[0], s->mir[k].pos[1], s->mir[k].pos[2], (unsigned long long)model, mt[3], mt[7], mt[11]);
+    }
+    if (model) {
+        memcpy((void *)(uintptr_t)(model + 0x1f8), m, sizeof m);
+        ST8(model + 0x240, LD8(model + 0x240) | 1);
+        coop_guest_call(c, MOD_MAIN_BASE + PROXY_MODEL_PUSH, model, 0, 0, 0);
+    }
+}
 static int this_paused;   // this game sits in a menu (the clock and this Link both still; set by the tick)
 void coop_players_tick(Cpu *c, int numpad3) {
     if (frame_step_world_us() <= 0) return;   // not in the world yet
@@ -1134,6 +1352,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         st.buttons = local_buttons;
         memcpy(st.gear, my_gear, sizeof st.gear);
         memcpy(st.dye, my_dye, sizeof st.dye);
+        report_arrows(me, st.objs);
         for (int k = 0; k < 3; k++) memcpy(st.fuse[k], strcmp(my_gear[k], GEAR_NONE) ? my_fuse[k] : "", 32);   // none when unequipped
         match_my_eq(me);
         uint64_t my_eq = eq_of_actor(me);   // weapon, bow, shield in hand
@@ -1189,6 +1408,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         coop_net_publish(&st);
     }
     armor_probe(me);
+    arrow_log(me);
     uint64_t my_eq = eq_of_actor(me);
     keep_player_eq(me, my_eq);
     if (my_eq) read_my_gear(my_eq);
@@ -1213,6 +1433,9 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 s->state = LET_GO;
                 set_input(s, 0, (const int32_t[4]){0, 0, 0, 0});
                 if (s->actor) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->actor, COOP_DELETE_REASON, 0, 0);
+                for (int k = 0; k < COOP_OBJS; k++)   // their arrows' copies too
+                    if (s->mir[k].actor) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0);
+                memset(s->mir, 0, sizeof s->mir);
                 rt_log("coop: remote player %d left; their Link is deleted", id);
             } else if (s && s->state != LET_GO) s->state = FREE;
             continue;
@@ -1259,6 +1482,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
             s->gear_want[k][31] = 0;
             s->dye_want[k] = st.dye[k];
             if (k < 3) memcpy(s->fuse_want[k], st.fuse[k], 32), s->fuse_want[k][31] = 0;
+            if (k == 0) memcpy(s->objs_want, st.objs, sizeof s->objs_want);
             if (k < 3) s->out_want = (s->out_want & ~(1 << k)) | (int)((st.flags >> (8 + k)) & 1) << k;
         }
         // The owner's stick in world space (their camera), then in this PC's camera frame.
@@ -1417,6 +1641,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
                     rt_log("coop: proxy: slot %d holds %#x, owner %#x: its own update runs again (%d)", i, now, s->out_want, retries);
                 } else if (now == s->out_want) retries = 0;
             }
+            if (s->state == LIVE && s->source == SRC_NET && coop_proxy_mode()) arrow_copies(c, s);
             if (proxied(s)) {   // proxy mode: placed by proxy_drive, no teleports
                 int k = s->nseen++ % 32;
                 if (coop_rd(s->actor + COOP_ACTOR_POS, s->seen[k].pos, 12)) s->seen[k].ns = plat_now_ns();

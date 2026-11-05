@@ -637,3 +637,18 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
 - Stopped after these two attempts. As the 2026-11-04 notes found, a spawned Bokoblin does not make a real fight in
   these places. Next: a save next to a placed camp (a fight that lowers this Link's life), then the same heap diff
   between "noticed" and "attacking", and the swap against a watch-only control.
+
+## Arrows (protocol 8, 2026-11-05)
+- A bow's arrow is an actor (NormalArrow; other types have "Arrow" in the name too). The first one is made at the
+  bow on the ZR press, 1.1-1.4 m from Link; it flies on release (21 m in 0.12 s) and sticks; the next one is put
+  on the bow 46 ticks after the release (TOTK_COOP_TEST_ARROWLOG, bow_shoot_3rd.txt).
+- Each game also makes two arrows 0.45 m from every Link at load (the quiver, by the look). Taken by distance
+  alone they were sent as shots; the 3 s window after ZR keeps them out. The EquipmentUser in-hand bit for the bow
+  (+0x4620 + 3, bit 1) is no use here: on this Link it is set for a moment when the bow comes out, not while aiming.
+- A fused arrow's material is an actor of its own: holding UP while drawing and taking Bomb Flower made a
+  BombFruit 1.0 m from the arrow, which moved with it and was gone when the arrow hit (it blew up). It is sent as
+  one more object; the receiver shows it on the arrow (bow_fuse_3rd.txt, screenshots on B at 23-25 s). The blast
+  itself is not shown on the other screen.
+- A copy is placed from the co-op tick, not from one of its own updates: the game stopped calling a frozen arrow's
+  calc after two frames (the BombFruit's went on), and the Player's update phase main+0x245030 never runs for
+  either (TOTK_COOP_TEST_COPYLOG).

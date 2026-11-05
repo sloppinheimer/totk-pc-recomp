@@ -94,6 +94,14 @@ right in the tester's own two-pad session.
   "Enemy targets, heap scan"). Needs a save next to a placed camp.
 - **Proxy mode is the default** (2026-11-05, the tester's call after playing it): TOTK_COOP_PROXY=0 brings back button
   mirroring (TOTK_COOP_PUPPET=1 with it: the puppet).
+- **Arrows** (protocol 8, the tester's list): a game reports the arrows its own Link shoots (NetState.objs, up to 8: id,
+  name, position, rotation); the others show a frozen copy of each where the owner's is, nocked, in flight and stuck.
+  An arrow is the shooter's when it is made within 3 m of its Link, nearer it than any co-op Link, and within 3 s of
+  ZR (the first on the press, the next one on the bow 46 ticks after the release). bow_shoot_3rd.txt: A's four arrows
+  show on B and nothing else is sent (before the ZR rule each game also sent two arrows made beside each Link at load).
+  Arrow types go by name (any actor with "Arrow" in it). A fused material is an actor of its own (BombFruit for a
+  bomb flower), sent as one more object when it appears within 1.5 m of an arrow while ZR is in use; it shows on the
+  arrow on B. Not shown: what a fused arrow does on hit (the blast). Re-notes "Arrows".
 - Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
 
 ## Plan
