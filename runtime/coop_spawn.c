@@ -387,6 +387,11 @@ static struct { _Atomic uint64_t fn; _Atomic uint32_t hits; uint32_t off; uint64
 int coop_in_remote_calc(void);   // coop_players.c
 int coop_players_phase(Cpu *c, uint64_t addr);   // coop_players.c: another update phase of a co-op Link
 int coop_is_coop_life(uint64_t comp);   // coop_world.c: a co-op Link's life component
+int coop_pose_is_target(uint64_t binding);   // coop_world.c: main+0x2e9c80 poses the co-op Link's model
+void coop_pose_copy_now(void);   // coop_world.c: the copied pose onto it
+int coop_pose_wanted(void);   // coop_world.c: a co-op Link to copy a pose onto
+void coop_pose_saw(uint64_t binding);   // coop_world.c: an animation binding main+0x2e9c80 posed
+void coop_pose_before_anim(uint64_t binding);   // coop_world.c: this Link's animation pose onto the co-op Link's
 void coop_actor_seen(uint64_t actor);   // coop_world.c
 uint64_t coop_nearest_link_data(uint64_t enemy);   // coop_world.c: a co-op Link's perception data when nearer, else 0
 static int prof3;
@@ -657,7 +662,40 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // main+0x194fd7c; the actor job also runs main+0x2f9910): a co-op Link's run as its calc (TOTK_COOP_PROF=7 found
     // them: its ragdoll and tips ran there, outside the calc flag) (2026-11-04).
     if (addr == MOD_MAIN_BASE + 0x245030 || addr == MOD_MAIN_BASE + 0x2f9910 || addr == MOD_MAIN_BASE + 0x194fd7c)
-        return coop_players_phase(c, addr);    if (addr == MOD_MAIN_BASE + 0x2192c50 || addr == MOD_MAIN_BASE + 0x4cb540) return coop_in_remote_calc();
+        return coop_players_phase(c, addr);
+    // main+0x2e9c80 (animation binding): Havok's pose into a g3d model. For the co-op Link's model the copied pose
+    // (TOTK_COOP_TEST_SKELCOPY) goes over its own right after, so its own animation does not undo it (2026-11-05).
+    if (addr == MOD_MAIN_BASE + 0x2e9c80 && cfg_get("TOTK_COOP_TEST_SKELCOPY") && coop_pose_wanted()) {
+        // the distinct models it poses once the co-op Link is there (up to 24), for the target check
+        static _Atomic uint64_t seen[24];
+        coop_pose_saw(c->x[0]);
+        uint64_t a = rd_ptr(c->x[0] + 8), b = a ? rd_ptr(a + 8) : 0, h = rd_ptr(c->x[0]);
+        for (int i = 0; b && i < 24; i++) {
+            uint64_t have = atomic_load(&seen[i]);
+            if (have == b) break;
+            if (!have && atomic_compare_exchange_strong(&seen[i], &have, b)) {
+                rt_log("coop: test: animation binding %llx (vtable main+%#llx) -> %llx -> %llx%s", (unsigned long long)c->x[0],
+                       (unsigned long long)(h - MOD_MAIN_BASE), (unsigned long long)a, (unsigned long long)b,
+                       coop_pose_is_target(c->x[0]) ? " (the co-op Link's)" : "");
+                break;
+            }
+        }
+    }
+    if (addr == MOD_MAIN_BASE + 0x2e9c80 && coop_pose_is_target(c->x[0])) {
+        static __thread int in;
+        const char *mode = cfg_get("TOTK_COOP_TEST_SKELCOPY");
+        if (in || !mode || !strcmp(mode, "tick")) return 0;
+        coop_pose_before_anim(c->x[0]);
+        in = 1;
+        c->pc = addr;
+        rt_dispatch(c);
+        in = 0;
+        if (!strcmp(mode, "after")) coop_pose_copy_now();   // =after: the skeleton copy after it as well
+        static _Atomic int applied;
+        if (atomic_fetch_add(&applied, 1) == 0) rt_log("coop: test: the copied pose goes on after the co-op Link's animation");
+        return 1;
+    }
+    if (addr == MOD_MAIN_BASE + 0x2192c50 || addr == MOD_MAIN_BASE + 0x4cb540) return coop_in_remote_calc();
     // The ability screen effects ([main+0x3a5e878], the manager at its +0x3a8 ability): main+0x2056f3c starts one,
     // main+0x205719c ends it ("UltraHand_End", "ReverseRecorder_End"...), main+0x2057384 focus on/off. A co-op Link's
     // Ultrahand tinted this game's world red (tools/coop/tour2.txt) (2026-11-04).

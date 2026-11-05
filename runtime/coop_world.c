@@ -419,7 +419,7 @@ static void watch_slot5(void) {
                 for (int i = 0; i < 8 && s; i++) s = coop_rd_ptr(s + skel_path[i]);
             }
             uint64_t wm = s ? coop_rd_ptr(s + 0x18) : 0;
-            coop_watch_writes = 0;
+            coop_watch_writes = cfg_get("TOTK_COOP_TEST_WATCHWRITES") != NULL;   // =1: only who writes them
             if (wm && coop_watch_arm(wm, 127 * 0x30)) phase = 1, rt_log("coop: test: watching the co-op Link's skeleton %llx world matrices %llx", (unsigned long long)s, (unsigned long long)wm);
             else if (!wm) return;
             else phase = 2;
@@ -684,6 +684,84 @@ static void model_scan(uint64_t me) {
     }
 }
 
+// The copied pose (TOTK_COOP_TEST_SKELCOPY): this Link's body skeleton onto the first co-op Link's, its world
+// matrices (both buffers, +0x18 and +0x58) and local ones (+0x20).
+static _Atomic uint64_t pose_src, pose_dst, pose_comp;
+static _Atomic int pose_bones;
+void coop_pose_copy_now(void) {
+    uint64_t s0 = atomic_load(&pose_src), s1 = atomic_load(&pose_dst);
+    int n = atomic_load(&pose_bones);
+    if (!s0 || !s1 || n <= 0 || n > 600) return;
+    static __thread uint8_t tmp[600 * 0x40];
+    static const int fields[3][2] = {{0x18, 0x30}, {0x58, 0x30}, {0x20, 0x40}};
+    for (int f = 0; f < 3; f++) {
+        uint64_t from = coop_rd_ptr(s0 + fields[f][0]), to = coop_rd_ptr(s1 + fields[f][0]);
+        size_t len = (size_t)n * fields[f][1];
+        if (from && to && len <= sizeof tmp && coop_rd(from, tmp, len)) memcpy((void *)(uintptr_t)to, tmp, len);
+    }
+}
+// main+0x2e9c80 (x0: an animation binding; [[x0+8]+8] the model component it poses, the one at [actor+0x228] +0x8)
+// has just written a model's pose: when it is the co-op Link's, the copied pose goes over it.
+// The bindings main+0x2e9c80 has posed (coop_pose_saw, from its hook); the tick finds the one the co-op Link holds
+// (a pointer to it in the actor or its components) and keeps it in pose_binding.
+static _Atomic uint64_t bindings_seen[16], pose_binding;
+void coop_pose_saw(uint64_t binding) {
+    for (int i = 0; binding && i < 16; i++) {
+        uint64_t have = atomic_load_explicit(&bindings_seen[i], memory_order_relaxed);
+        if (have == binding) return;
+        if (!have && atomic_compare_exchange_strong(&bindings_seen[i], &have, binding)) return;
+    }
+}
+// Before main+0x2e9c80 poses the co-op Link's model: this Link's animation pose (the binding's [+8] +0x38, 0x1c a
+// bone - rotation and translation - count at +0x30) copied over the co-op Link's, so its model is posed with it.
+void coop_pose_before_anim(uint64_t binding) {
+    uint64_t mine = atomic_load(&bindings_seen[0]);
+    if (!mine || binding == mine) return;
+    uint64_t s = coop_rd_ptr(mine + 8), d = coop_rd_ptr(binding + 8);
+    uint32_t ns = 0, nd = 0;
+    if (!s || !d || !coop_rd(s + 0x30, &ns, 4) || !coop_rd(d + 0x30, &nd, 4)) return;
+    uint32_t n = ns < nd ? ns : nd;
+    uint64_t ps = coop_rd_ptr(s + 0x38), pd = coop_rd_ptr(d + 0x38);
+    static __thread uint8_t tmp[1024 * 0x1c];
+    if (!ps || !pd || !n || n > 1024 || !coop_rd(ps, tmp, (size_t)n * 0x1c)) return;
+    memcpy((void *)(uintptr_t)pd, tmp, (size_t)n * 0x1c);
+    static _Atomic int said;
+    if (atomic_fetch_add(&said, 1) == 0) rt_log("coop: test: animation pose copied before the co-op Link's: %u bones (%u, %u)", n, ns, nd);
+}
+int coop_pose_wanted(void) { return atomic_load_explicit(&pose_comp, memory_order_relaxed) != 0; }
+int coop_pose_is_target(uint64_t binding) {
+    return binding && binding == atomic_load_explicit(&pose_binding, memory_order_relaxed);
+}
+static void find_pose_binding(uint64_t actor) {
+    if (atomic_load(&pose_binding)) return;
+    static uint64_t w[0x4000 / 8], cw[0x1000 / 8];
+    if (!coop_rd(actor, w, sizeof w)) return;
+    uint64_t table = coop_rd_ptr(actor + 0x228);
+    for (int i = 0; i < 16; i++) {
+        uint64_t b = atomic_load(&bindings_seen[i]);
+        if (!b) continue;
+        for (int j = 0; j < 0x4000 / 8; j++)
+            if (w[j] == b) { atomic_store(&pose_binding, b); rt_log("coop: test: the co-op Link's animation binding %llx at actor+%#x", (unsigned long long)b, j * 8); return; }
+        for (int k = 0; table && k < 0x100; k++) {
+            uint64_t comp = coop_rd_ptr(table + k * 8);
+            if (comp < 0x100000000ull || comp >= 0x8000000000ull || !coop_rd(comp, cw, sizeof cw)) continue;
+            for (int j = 0; j < 0x1000 / 8; j++)
+                if (cw[j] == b) {
+                    atomic_store(&pose_binding, b);
+                    rt_log("coop: test: the co-op Link's animation binding %llx at comp[+%#x]+%#x", (unsigned long long)b, k * 8, j * 8);
+                    return;
+                }
+        }
+    }
+    // Not referenced there: by elimination, for this test (this Link's binding is posed from the start, before the
+    // co-op Link exists, so it is the first one seen; the next one is the co-op Link's).
+    uint64_t second = atomic_load(&bindings_seen[1]);
+    if (second) {
+        atomic_store(&pose_binding, second);
+        rt_log("coop: test: the co-op Link's animation binding %llx, by elimination (this Link's %llx)", (unsigned long long)second,
+               (unsigned long long)atomic_load(&bindings_seen[0]));
+    }
+}
 void coop_world_tick(Cpu *c, uint64_t me) {
     cache_links(me);
     watch_slot5();
@@ -748,25 +826,25 @@ void coop_world_tick(Cpu *c, uint64_t me) {
     // +0x2a8, +0x20, +0x20, +0, +0xf8, +0x58, +0xb0: 127 bones) copied onto the first co-op Link's: its world matrices
     // (both buffers, +0x18 and +0x58) and local ones (+0x20). With TOTK_COOP_TEST_FREEZE: a pose shown without the
     // co-op Link's update running.
+    // The pose copy itself runs right after the co-op Link's animation step (coop_pose_after_anim, from coop_spawn.c's
+    // hook on main+0x2e9c80); here the pointers it needs are cached once a tick.
     if (cfg_get("TOTK_COOP_TEST_SKELCOPY")) {
-        static const uint32_t path[8] = {0x48, 0x2a8, 0x20, 0x20, 0, 0xf8, 0x58, 0xb0};
         uint64_t ol[1];
         int oi[1];
         if (coop_player_actors(ol, oi, 1) == 1) {
             uint64_t s0 = me, s1 = ol[0];
-            for (int i = 0; i < 8 && s0 && s1; i++) s0 = coop_rd_ptr(s0 + path[i]), s1 = coop_rd_ptr(s1 + path[i]);
+            for (int i = 0; i < 8 && s0 && s1; i++) s0 = coop_rd_ptr(s0 + skel_path[i]), s1 = coop_rd_ptr(s1 + skel_path[i]);
             uint16_t n0 = 0, n1 = 0;
-            if (s0 && s1 && is_skeleton(s0) && is_skeleton(s1) && coop_rd(s0 + 0x48, &n0, 2) && coop_rd(s1 + 0x48, &n1, 2) && n0 == n1) {
-                static uint8_t tmp[600 * 0x40];
-                static const int fields[3][2] = {{0x18, 0x30}, {0x58, 0x30}, {0x20, 0x40}};
-                for (int f = 0; f < 3; f++) {
-                    uint64_t from = coop_rd_ptr(s0 + fields[f][0]), to = coop_rd_ptr(s1 + fields[f][0]);
-                    size_t len = (size_t)n0 * fields[f][1];
-                    if (from && to && len <= sizeof tmp && coop_rd(from, tmp, len)) memcpy((void *)(uintptr_t)to, tmp, len);
-                }
-                static int said;
-                if (!said++) rt_log("coop: test: skeleton copy %llx -> %llx, %u bones", (unsigned long long)s0, (unsigned long long)s1, n0);
-            }
+            int ok = s0 && s1 && is_skeleton(s0) && is_skeleton(s1) && coop_rd(s0 + 0x48, &n0, 2) && coop_rd(s1 + 0x48, &n1, 2) && n0 == n1;
+            atomic_store(&pose_src, ok ? s0 : 0), atomic_store(&pose_dst, ok ? s1 : 0), atomic_store(&pose_bones, ok ? n0 : 0);
+            atomic_store(&pose_comp, coop_rd_ptr(coop_rd_ptr(ol[0] + 0x228) + 0x8));
+            find_pose_binding(ol[0]);
+            static int said;
+            if (ok && !said++) rt_log("coop: test: skeleton copy %llx -> %llx, %u bones, after the animation of %llx",
+                                      (unsigned long long)s0, (unsigned long long)s1, n0, (unsigned long long)atomic_load(&pose_comp));
+            // TOTK_COOP_TEST_SKELCOPY=tick: the old way, copied here (for comparison)
+            const char *mode = cfg_get("TOTK_COOP_TEST_SKELCOPY");
+            if (ok && !strcmp(mode, "tick")) coop_pose_copy_now();
         }
     }
     // Test (TOTK_COOP_TEST_POSECOPY=<offset>,<count>,<stride>): every tick, the matrices at [[comp table +0x8] +0x28]
