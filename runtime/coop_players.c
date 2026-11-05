@@ -393,8 +393,10 @@ int coop_players_gear(Cpu *c, uint64_t addr) {
             fp = next;
         }
         chain[m] = 0;
-        rt_log("coop: test: create main+%#llx eq %llx slot %d %s dye %d, me %llx, owner %llx%s; from%s", (unsigned long long)(addr - MOD_MAIN_BASE),
-               (unsigned long long)eq, (int)(uint32_t)c->x[1], nm0, (int)(int32_t)c->x[3], (unsigned long long)me, (unsigned long long)owner,
+        char att0[48] = "";   // a weapon create's 7th argument: the attachment (fused material) name, as a string object
+        if (addr == MOD_MAIN_BASE + GEAR_WEAPON_CREATE) { uint64_t ap = coop_rd_ptr(c->x[6]); if (ap) coop_rd(ap, att0, sizeof att0 - 1); }
+        rt_log("coop: test: create main+%#llx eq %llx slot %d %s dye %d att '%s', me %llx, owner %llx%s; from%s", (unsigned long long)(addr - MOD_MAIN_BASE),
+               (unsigned long long)eq, (int)(uint32_t)c->x[1], nm0, (int)(int32_t)c->x[3], att0, (unsigned long long)me, (unsigned long long)owner,
                owner && owner != me ? " (a co-op Link)" : "", chain);
     }
     if (!owner) {   // a Player not claimed yet (a new co-op Link builds its gear first, or this PC's Link while a
@@ -1318,7 +1320,9 @@ void coop_players_tick(Cpu *c, int numpad3) {
             // a lowered shield stayed in the frozen proxy's hand and then was gone from hand and back; making it
             // again (in either state) did not help (2026-11-05). Its update runs for a while on each change.
             if (eq && proxied(s)) {
-                if (s->out_have >= 0 && s->out_have != s->out_want) {
+                static int skip_putaway = -1;   // TOTK_COOP_TEST_NOTHAW_PUTAWAY=1: no thaw when an item is put away (test)
+                if (skip_putaway < 0) skip_putaway = cfg_get("TOTK_COOP_TEST_NOTHAW_PUTAWAY") != NULL;
+                if (s->out_have >= 0 && s->out_have != s->out_want && !(skip_putaway && (s->out_want & ~s->out_have) == 0)) {
                     s->thaw = PROXY_THAW_TICKS;
                     rt_log("coop: proxy: slot %d runs its own update for %d ticks (in hand %#x -> %#x)", i, PROXY_THAW_TICKS, s->out_have, s->out_want);
                 }
@@ -1331,6 +1335,15 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 for (int k = 0; k < 3; k++) now |= (int)(coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, eq, hand_of[k], 0, 0) & 1) << k;
                 if ((now | s->out_want << 4) != hand_said)
                     rt_log("coop: puppet: slot %d holds %#x, owner %#x", i, now, s->out_want), hand_said = now | s->out_want << 4;
+                // Proxy mode: a put-away that did not take (a play session: "holds 0x4, owner 0" stayed after sword and
+                // shield were put away together, and the shield was then held with the bow, 2026-11-05). Once a thaw is
+                // over and the proxy still holds something else than its owner, its own update runs again (at most 4
+                // times for one mismatch).
+                static int retries;
+                if (proxied(s) && s->thaw <= 0 && now != s->out_want && retries < 4 && !cfg_get("TOTK_COOP_TEST_NORETRY")) {
+                    s->thaw = PROXY_THAW_TICKS, retries++;
+                    rt_log("coop: proxy: slot %d holds %#x, owner %#x: its own update runs again (%d)", i, now, s->out_want, retries);
+                } else if (now == s->out_want) retries = 0;
             }
             if (proxied(s)) {   // proxy mode: placed by proxy_drive, no teleports
                 int k = s->nseen++ % 32;
