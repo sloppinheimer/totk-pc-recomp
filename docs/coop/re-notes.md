@@ -369,12 +369,23 @@ instead of by action:
 - Gaps: paths are first-found, so the two Links can label one object differently. The skeleton search is not
   deterministic (2–5 skeletons from one run to the next; head and hair are not always found). The bone translation
   values in the report read 0 (the record offsets are a guess); the changes themselves are real.
-- First finding, from the tour (game A) and puppet mode (game B):
-  - A puppet matches its owner exactly while both are on the ground (8 s, 19 s).
-  - Once the owner is in the air it drifts (30 s: 2.3 m off). At 39 s the owner glides at y 318 and the puppet has
-    fallen to y 276.
-  - ForceSetMatrix (main+0x45ce70) is called about every 25 ms from coop_players.c snap(), and has no visible
-    effect then.
-  - The puppet's position is written inside update phase main+0x245030, then main+0x257310, then main+0x25a91c, on
-    its comp+0x18 (>+0x370>+0x150): its physics body sets the actor position each frame. Its physics, not snap,
-    owns where it is.
+- Caution: a window stalls both games for a moment (building the map, the slow recording). In puppet mode that
+  shows up as the puppet drifting away from its owner. That drift comes from the tracer: without tracing, the puppet
+  stays within 0.3 m in the air (below). Don't measure positions across a trace window.
+- Seen in the traces: the puppet's position is written inside its update phase main+0x245030, then main+0x257310, on
+  its comp+0x18 (>+0x370>+0x150): the physics body sets the actor position each frame. ForceSetMatrix
+  (main+0x45ce70) goes through [[actor+0x228]+0x50]+0x20 (the controller): it sets flags at +0x188, then on the body
+  [ctrl+0x150] queues a transform request (main+0x25a450) or calls a vtable +0xc0 path.
+
+## Puppet following its owner (2026-11-05)
+- Measure: coop_players.c logs "error vs its owner at the same moment". It compares where the puppet was against
+  each report's send time, so network lag counts as error.
+- Where to call ForceSetMatrix (tour.txt in A, puppet mode in B): from our tick (the input thread) is best. Right
+  before or right after the puppet's calc is worse: after the owner's long drop the puppet stays 29 m up.
+- Prediction (on in puppet mode, TOTK_COOP_PUPPET_PREDICT=0 turns it off): the snap moves the owner's last report on
+  by its age plus one tick at their measured velocity (at most 0.25 s ahead). While the owner moves the mean error
+  roughly halves (for example 0.25 to 0.11 m).
+- Still wrong, with prediction or without:
+  - A 14 m spike for about a second when the owner lands after the long drop.
+  - 0.98 m all the time while the owner climbs. The input-less puppet can't hold a climb, so it stands at the foot
+    of the wall. Both need the puppet's physics off (it should follow the owner's transform, not simulate). Open.

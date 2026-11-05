@@ -38,6 +38,13 @@ typedef struct {
     uint64_t buttons;                  // this frame's input, set by coop_players_tick
     float stick[4];
     float want_pos[3], want_rot[9];    // net: the owner's reported transform
+    float vel[3];                      // the owner's velocity from the last two reports (puppet mode's prediction)
+    uint32_t last_seq;
+    uint64_t last_ns;                  // when that report was sent, as plat_now_ns
+    struct { uint64_t ns; float pos[3]; } seen[32];   // puppet mode: where the puppet was, for the error log
+    int nseen;
+    float err_max, err_sum;
+    int err_n;
     int have_want, idle, snap_wait;
     unsigned snaps;
     char gear_want[COOP_GEAR_SLOTS][32], gear_have[COOP_GEAR_SLOTS][32];   // the owner's gear; what this Link was given
@@ -375,6 +382,7 @@ static Slot *slot_new(int source, int net_id) {
         if (slots[i].state == FREE) {
             Slot *s = &slots[i];
             s->source = source, s->net_id = net_id, s->prev = 0, s->have_want = 0;
+            memset(s->vel, 0, sizeof s->vel), s->last_seq = 0, s->last_ns = 0, s->nseen = 0, s->err_n = 0;
             memset(s->held, 0, sizeof s->held);
             memset(s->gear_want, 0, sizeof s->gear_want), memset(s->gear_have, 0, sizeof s->gear_have);
             s->state = WANTED;
@@ -508,12 +516,21 @@ static void spawn_slot(Cpu *c, Slot *s) {
     }
 }
 
-// The owner's transform as a ForceSetMatrix argument: rows of rotation | position.
+// The owner's transform as a ForceSetMatrix argument: rows of rotation | position. In puppet mode the position is
+// where the owner will be when the move lands: their last report moved on by its age and one tick (the move is
+// applied in the puppet's next update) at their velocity, at most 0.25 s ahead.
 static void snap(Cpu *c, Slot *s) {
-    float m[12];
+    float m[12], ahead = 0;
+    int coop_puppet_mode(void);   // coop_world.c
+    static int predict = -1;   // TOTK_COOP_PUPPET_PREDICT=0: no prediction (for comparing)
+    if (predict < 0) { const char *e = cfg_get("TOTK_COOP_PUPPET_PREDICT"); predict = !e || *e != '0'; }
+    if (predict && coop_puppet_mode() && s->last_ns) {
+        double a = (double)(plat_now_ns() - s->last_ns) / 1e9 + 1.0 / 30;
+        ahead = a > 0.25 ? 0.25f : (float)a;
+    }
     for (int r = 0; r < 3; r++) {
         for (int k = 0; k < 3; k++) m[r * 4 + k] = s->want_rot[r * 3 + k];
-        m[r * 4 + 3] = s->want_pos[r];
+        m[r * 4 + 3] = s->want_pos[r] + s->vel[r] * ahead;
     }
     coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, s->actor, (uint64_t)(uintptr_t)m, 0, 0);
 }
@@ -605,6 +622,32 @@ void coop_players_tick(Cpu *c, int numpad3) {
         }
         if (id < host_id && age < 2000000000ull) host_id = id, host_time = st.day_seconds, host_weather = st.weather, have_host = 1;
         if (!s && !(s = slot_new(SRC_NET, id))) continue;
+        if (st.seq != s->last_seq) {   // a new report: the owner's velocity since the previous one
+            uint64_t at = plat_now_ns() - age;
+            double dt = s->have_want && s->last_ns ? (double)(at - s->last_ns) / 1e9 : 0;
+            float d[3] = {st.pos[0] - s->want_pos[0], st.pos[1] - s->want_pos[1], st.pos[2] - s->want_pos[2]};
+            float d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            for (int k = 0; k < 3; k++) s->vel[k] = dt > 0.005 && dt < 0.5 && d2 < 100 ? (float)(d[k] / dt) : 0;   // 10 m: a warp
+            s->last_seq = st.seq, s->last_ns = at;
+            // Puppet mode: how far the puppet was from where its owner was at the same moment (the report's send time).
+            int best = -1;
+            for (int k = 0; k < 32 && k < s->nseen; k++) {
+                int64_t dd = (int64_t)(s->seen[k].ns - at);
+                if (dd < 0) dd = -dd;
+                if (dd < 40000000 && (best < 0 || dd < llabs((int64_t)(s->seen[best].ns - at)))) best = k;
+            }
+            if (best >= 0) {
+                float ex = s->seen[best].pos[0] - st.pos[0], ey = s->seen[best].pos[1] - st.pos[1], ez = s->seen[best].pos[2] - st.pos[2];
+                float e = sqrtf(ex * ex + ey * ey + ez * ez);
+                if (e > s->err_max) s->err_max = e;
+                s->err_sum += e, s->err_n++;
+            }
+            if (s->err_n >= 30) {
+                rt_log("coop: puppet: slot %d error vs its owner at the same moment: mean %.2f m, max %.2f m (owner y %.1f) at %.1f s",
+                       (int)(s - slots), s->err_sum / s->err_n, s->err_max, st.pos[1], frame_step_world_us() / 1e6);
+                s->err_max = s->err_sum = 0, s->err_n = 0;
+            }
+        }
         memcpy(s->want_pos, st.pos, 12), memcpy(s->want_rot, st.rot, 36), s->have_want = 1;
         for (int k = 0; k < COOP_GEAR_SLOTS; k++) {
             memcpy(s->gear_want[k], st.gear[k], 32);
@@ -680,6 +723,9 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 snap(c, s);   // puppet mode: it gets no input, so it is moved to its owner every tick
                 static int said_snap;
                 if (!said_snap++) rt_log("coop: puppet: slot %d follows its owner every tick", i);
+                int k = s->nseen++ % 32;
+                if (coop_rd(s->actor + COOP_ACTOR_POS, s->seen[k].pos, 12)) s->seen[k].ns = plat_now_ns();
+                else s->seen[k].ns = 0;
             } else if (s->state == LIVE && s->source == SRC_NET && s->have_want) {
                 float p[3];
                 float lim = s->idle ? COOP_SNAP_IDLE_M : COOP_SNAP_MOVING_M;
