@@ -316,3 +316,10 @@ instead of by action:
   facing its own frozen way; its head / hair (a separate skeleton, not copied) floats out of place. Verdict: a
   pose can be shown on a co-op Link whose update does not run. Not done: the other skeletons, the model's position
   and rotation while frozen, held items, the network.
+- Moving the frozen Link (2026-11-05): the model object (component +0x8, +0x28) keeps its world matrix at +0x1f8
+  (3x4 rows, absolute position) and scale at +0x228. main+0x24cc30 (from the update phase main+0x245030) pushes it to
+  the model units only when its dirty bit (+0x240 bit 0) is set; main+0x25cf88 and main+0x269f70 read it to place
+  attached items. Writing +0x1f8 alone (TOTK_COOP_TEST_FOLLOW), the actor position (MOVE=5) or the 4x4 array at
+  +0x5b0 (MOVE=4) does not move it. With the calc frozen but main+0x245030 running
+  (TOTK_COOP_TEST_FREEZE_PHASES=0) and MOVE=6 (owner position into +0x1f8, dirty bit set): head / hair and shield
+  follow the owner; the body (the 127-bone skeleton's model) does not show at all. Open: what places the body.
