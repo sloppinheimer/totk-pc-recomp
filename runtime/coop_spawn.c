@@ -391,7 +391,8 @@ int coop_pose_is_target(uint64_t binding);   // coop_world.c: main+0x2e9c80 pose
 void coop_pose_copy_now(void);   // coop_world.c: the copied pose onto it
 int coop_pose_wanted(void);   // coop_world.c: a co-op Link to copy a pose onto
 void coop_pose_saw(uint64_t binding);   // coop_world.c: an animation binding main+0x2e9c80 posed
-void coop_pose_before_anim(uint64_t binding);   // coop_world.c: this Link's animation pose onto the co-op Link's
+void coop_pose_before_anim(uint64_t binding);
+int coop_pose_arg_match(const uint64_t *args, int n);   // coop_world.c: x0..x3 name the co-op Link's skeleton or model   // coop_world.c: this Link's animation pose onto the co-op Link's
 void coop_actor_seen(uint64_t actor);   // coop_world.c
 uint64_t coop_nearest_link_data(uint64_t enemy);   // coop_world.c: a co-op Link's perception data when nearer, else 0
 static int prof3;
@@ -679,6 +680,26 @@ int coop_hook(Cpu *c, uint64_t addr) {
                        coop_pose_is_target(c->x[0]) ? " (the co-op Link's)" : "");
                 break;
             }
+        }
+    }
+    // The later writers of a body skeleton's world matrices (write watch, re-notes): main+0x283c750, 0x289620,
+    // 0x2925e0, 0x43e450. When one is called for the co-op Link's skeleton or model (an argument names it), the
+    // copied pose goes on after it (TOTK_COOP_TEST_SKELCOPY) (2026-11-05).
+    if ((addr == MOD_MAIN_BASE + 0x283c750 || addr == MOD_MAIN_BASE + 0x289620 || addr == MOD_MAIN_BASE + 0x2925e0 ||
+         addr == MOD_MAIN_BASE + 0x43e450) && coop_pose_wanted()) {
+        static __thread int in2;
+        int m = in2 ? 0 : coop_pose_arg_match(c->x, 4);
+        if (m) {
+            in2 = 1;
+            c->pc = addr;
+            rt_dispatch(c);
+            in2 = 0;
+            coop_pose_copy_now();
+            static _Atomic int said[4];
+            int w = addr == MOD_MAIN_BASE + 0x283c750 ? 0 : addr == MOD_MAIN_BASE + 0x289620 ? 1 : addr == MOD_MAIN_BASE + 0x2925e0 ? 2 : 3;
+            if (atomic_fetch_add(&said[w], 1) == 0)
+                rt_log("coop: test: pose copied after main+%#llx (x%d is the co-op Link's #%d)", (unsigned long long)(addr - MOD_MAIN_BASE), (m - 1) / 8, (m - 1) % 8);
+            return 1;
         }
     }
     if (addr == MOD_MAIN_BASE + 0x2e9c80 && coop_pose_is_target(c->x[0])) {
