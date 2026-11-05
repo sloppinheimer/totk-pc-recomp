@@ -389,3 +389,17 @@ instead of by action:
   - A 14 m spike for about a second when the owner lands after the long drop.
   - 0.98 m all the time while the owner climbs. The input-less puppet can't hold a climb, so it stands at the foot
     of the wall. Both need the puppet's physics off (it should follow the owner's transform, not simulate). Open.
+- Placement (2026-11-05, TOTK_COOP_PUPPET_PLACE: bit 0 actor, bit 1 model, default 3, 0 off): main+0x257310
+  (x0 = actor) is the step that copies the physics body's transform into the actor (+0x2b4 position, +0x2c0
+  rotation; it writes only when they differ from the body's) and into the model's world matrix. Puppet mode lets it
+  run, then writes the owner's predicted transform over the actor and over the model ([[[actor+0x228]+8]+0x28]
+  +0x1f8, dirty bit +0x240) so the model units get it in the same phase. The body itself is still moved by snap()
+  every tick, so physics can no longer put the visible puppet anywhere else.
+- Checked on screen (tools/coop/show_jump.txt, B every 0.5 s): the puppet walks in, jumps clear of the deck and
+  lands, with placement on (and in the control without it). Climbing and the long fall are not checked on screen:
+  in tour.txt the owner is out of B's view by then. The tour runs to the end without a crash.
+- With placement on, the "error vs its owner" log reads 0: it reads the actor's position, which placement writes.
+  Measure physics drift with TOTK_COOP_PUPPET_PLACE=0.
+- Mistake made while testing: a run whose screenshots started at 16 s (B's clock) missed the jumps, which happen at
+  14–16 s there, and looked like a frozen puppet. Each game's world clock starts at its own load, so screenshot
+  windows need a second or two of slack on each side.

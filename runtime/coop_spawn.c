@@ -579,6 +579,7 @@ static uint8_t neutral[0x200];    // the input object while nothing is held: coo
 static _Atomic int neutral_ok;
 
 int coop_players_calc(Cpu *c, uint64_t addr);    // coop_players.c
+int coop_puppet_place(Cpu *c, uint64_t addr);   // coop_players.c: a puppet put at its owner after its physics step
 void coop_players_tick(Cpu *c, int numpad3);
 uint64_t coop_players_first(void);
 int coop_players_gear(Cpu *c, uint64_t addr);
@@ -1005,6 +1006,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
         }
         return 0;
     }
+    if (addr == MOD_MAIN_BASE + 0x257310 && coop_puppet_place(c, addr)) return 1;   // coop_players.c: puppet mode
     // The other functions the profiler saw entered with PlayerCamera (TOTK_COOP_PROF=2): bracket them for the
     // camera too.
     if (addr == MOD_MAIN_BASE + 0x2e27b0 || addr == MOD_MAIN_BASE + 0x245030 || addr == MOD_MAIN_BASE + 0x257310 ||

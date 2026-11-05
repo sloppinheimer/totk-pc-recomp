@@ -466,6 +466,45 @@ int coop_players_phase(Cpu *c, uint64_t addr) {
     inside = 0;
     return 1;
 }
+// Puppet mode, from the hook on main+0x257310 (x0 the actor): that step copies the physics body's transform into the
+// actor's position and rotation (+0x2b4, +0x2c0) and its model's world matrix. For a puppet the body is only near
+// its owner (it falls, can't climb), so after it runs the owner's transform goes over all three; the model's dirty
+// bit makes main+0x24cc30 push it to the model units later in the same phase. The body itself is still moved by
+// snap() every tick. Returns 1 when it ran the step.
+static void owner_matrix(Slot *s, float m[12]);
+int coop_puppet_place(Cpu *c, uint64_t addr) {
+    Slot *s = slot_of_actor(c->x[0]);
+    int coop_puppet_mode(void);   // coop_world.c
+    if (!s || s->state != LIVE || s->source != SRC_NET || !s->have_want || !coop_puppet_mode()) return 0;
+    static int place = -1;   // TOTK_COOP_PUPPET_PLACE: bit 0 the actor's transform, bit 1 the model's (default 3; 0 off)
+    if (place < 0) { const char *e = cfg_get("TOTK_COOP_PUPPET_PLACE"); place = e ? atoi(e) : 3; }
+    if (!place) return 0;
+    static __thread int in;
+    if (in) return 0;
+    uint64_t actor = c->x[0];
+    in = 1;
+    c->pc = addr;
+    rt_dispatch(c);
+    in = 0;
+    float m[12], pos[3] = {0}, rot[9];
+    owner_matrix(s, m);
+    for (int r = 0; r < 3; r++) {
+        pos[r] = m[r * 4 + 3];
+        for (int k = 0; k < 3; k++) rot[r * 3 + k] = m[r * 4 + k];
+    }
+    if (place & 1) {
+        memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_POS), pos, 12);
+        memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_ROT), rot, 36);
+    }
+    uint64_t model = place & 2 ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x8) + 0x28) : 0;
+    if (model) {
+        memcpy((void *)(uintptr_t)(model + 0x1f8), m, sizeof m);
+        ST8(model + 0x240, LD8(model + 0x240) | 1);
+    }
+    static int said;
+    if (!said++) rt_log("coop: puppet: slot %d is placed at its owner after its physics step", (int)(s - slots));
+    return 1;
+}
 int coop_players_calc(Cpu *c, uint64_t addr) {
     Slot *s;
     if (inside || !(s = slot_of_actor(c->x[0]))) return 0;
@@ -519,8 +558,8 @@ static void spawn_slot(Cpu *c, Slot *s) {
 // The owner's transform as a ForceSetMatrix argument: rows of rotation | position. In puppet mode the position is
 // where the owner will be when the move lands: their last report moved on by its age and one tick (the move is
 // applied in the puppet's next update) at their velocity, at most 0.25 s ahead.
-static void snap(Cpu *c, Slot *s) {
-    float m[12], ahead = 0;
+static void owner_matrix(Slot *s, float m[12]) {
+    float ahead = 0;
     int coop_puppet_mode(void);   // coop_world.c
     static int predict = -1;   // TOTK_COOP_PUPPET_PREDICT=0: no prediction (for comparing)
     if (predict < 0) { const char *e = cfg_get("TOTK_COOP_PUPPET_PREDICT"); predict = !e || *e != '0'; }
@@ -532,6 +571,10 @@ static void snap(Cpu *c, Slot *s) {
         for (int k = 0; k < 3; k++) m[r * 4 + k] = s->want_rot[r * 3 + k];
         m[r * 4 + 3] = s->want_pos[r] + s->vel[r] * ahead;
     }
+}
+static void snap(Cpu *c, Slot *s) {
+    float m[12];
+    owner_matrix(s, m);
     coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, s->actor, (uint64_t)(uintptr_t)m, 0, 0);
 }
 
