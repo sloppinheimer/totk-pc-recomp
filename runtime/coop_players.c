@@ -53,6 +53,7 @@ typedef struct {
     unsigned snaps;
     char gear_want[COOP_GEAR_SLOTS][32], gear_have[COOP_GEAR_SLOTS][32];   // the owner's gear; what this Link was given
     int8_t dye_want[COOP_GEAR_SLOTS], dye_have[COOP_GEAR_SLOTS];   // the armor's dye colour, the same way (-1 none)
+    int out_want, out_have;            // puppet mode: bits 0..2 weapon, bow, shield in the owner's hands; as last made
     _Alignas(16) uint8_t gear_str[COOP_GEAR_SLOTS][0x60];   // the names handed to the creates, kept while they run
 } Slot;
 static Slot slots[COOP_MAX_PLAYERS];
@@ -281,13 +282,14 @@ static uint64_t gear_string(uint8_t st[0x60], const char *text) {
 }
 
 // Makes slot k of a remote Link's EquipmentUser the item name ("" empties a weapon slot), as c4a5f4 would from a save.
-static void give_gear(Cpu *c, uint64_t eq, int k, const char *name, int dye, uint8_t st[0x60]) {
+// out (weapons): 1 in hand, 0 put away, -1 as this Link has it now.
+static void give_gear(Cpu *c, uint64_t eq, int k, const char *name, int dye, int out_want, uint8_t st[0x60]) {
     uint64_t slot = (uint64_t)coop_gear_slot[k], np = gear_string(st, name);
     uint64_t saved_x[31], sp0 = c->sp;
     memcpy(saved_x, c->x, sizeof saved_x);
     if (k <= 2) {
         static const uint64_t hand_of[3] = {0, 3, 4};
-        int out = (int)(coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, eq, hand_of[k], 0, 0) & 1);
+        int out = out_want >= 0 ? out_want : (int)(coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, eq, hand_of[k], 0, 0) & 1);
         static _Alignas(16) uint8_t no_attachment[0x60];
         uint64_t att = gear_string(no_attachment, "");
         uint64_t sp = (sp0 - 0x100) & ~0xfull;
@@ -403,6 +405,7 @@ static Slot *slot_new(int source, int net_id) {
             memset(s->held, 0, sizeof s->held);
             memset(s->gear_want, 0, sizeof s->gear_want), memset(s->gear_have, 0, sizeof s->gear_have);
             memset(s->dye_want, -1, sizeof s->dye_want), memset(s->dye_have, -1, sizeof s->dye_have);
+            s->out_want = 0, s->out_have = -1;
             s->state = WANTED;
             rt_log("coop: player slot %d for %s %d", i, source == SRC_NET ? "remote player" : "local pad", net_id);
             return s;
@@ -707,6 +710,10 @@ void coop_players_tick(Cpu *c, int numpad3) {
         st.buttons = local_buttons;
         memcpy(st.gear, my_gear, sizeof st.gear);
         memcpy(st.dye, my_dye, sizeof st.dye);
+        uint64_t my_eq = eq_of_actor(me);   // weapon, bow, shield in hand
+        static const uint64_t hand_of[3] = {0, 3, 4};
+        for (int k = 0; my_eq && k < 3; k++)
+            if (coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, my_eq, hand_of[k], 0, 0) & 1) st.flags |= 1u << (8 + k);
         const char *fdye = cfg_get("TOTK_COOP_FAKEDYE");   // test: report these dyes instead (slot order, comma-separated)
         for (int k = 0; fdye && *fdye && k < COOP_GEAR_SLOTS; k++) {
             if (*fdye != ',') st.dye[k] = (int8_t)atoi(fdye);
@@ -817,6 +824,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
             memcpy(s->gear_want[k], st.gear[k], 32);
             s->gear_want[k][31] = 0;
             s->dye_want[k] = st.dye[k];
+            if (k < 3) s->out_want = (s->out_want & ~(1 << k)) | (int)((st.flags >> (8 + k)) & 1) << k;
         }
         // The owner's stick in world space (their camera), then in this PC's camera frame.
         int32_t sticks[4];
@@ -882,9 +890,21 @@ void coop_players_tick(Cpu *c, int numpad3) {
                     int none = !strcmp(s->gear_want[k], GEAR_NONE);
                     if ((none && k > 2) || (!strcmp(held[k], s->gear_want[k]) && !redye)) continue;   // nothing to change
                     rt_log("coop: slot %d: owner's gear slot %d is %s (dye %d)", i, coop_gear_slot[k], s->gear_want[k], s->dye_want[k]);
-                    give_gear(c, eq, k, none ? "" : s->gear_want[k], s->dye_want[k], s->gear_str[k]);
+                    give_gear(c, eq, k, none ? "" : s->gear_want[k], s->dye_want[k], -1, s->gear_str[k]);
                 }
             int coop_puppet_mode(void);   // coop_world.c
+            // Puppet mode: it gets no input, so it never draws or puts away an item itself. When the owner's hands
+            // change, each changed item is made again in hand or put away (the weapon create's 4th argument).
+            if (eq && coop_puppet_mode() && s->out_want != s->out_have) {
+                for (int k = 0; k < 3; k++) {
+                    int w = (s->out_want >> k) & 1;
+                    if (s->out_have >= 0 && ((s->out_have >> k) & 1) == w) continue;
+                    if (!s->gear_have[k][0] || !strcmp(s->gear_have[k], GEAR_NONE)) continue;
+                    give_gear(c, eq, k, s->gear_have[k], -1, w, s->gear_str[k]);
+                    rt_log("coop: puppet: slot %d's %s is %s", i, s->gear_have[k], w ? "in hand" : "put away");
+                }
+                s->out_have = s->out_want;
+            }
             if (s->state == LIVE && s->source == SRC_NET && s->have_want && coop_puppet_mode()) {
                 snap(c, s);   // puppet mode: it gets no input, so it is moved to its owner every tick
                 static int said_snap;

@@ -10,7 +10,7 @@
 // player's own camera saw them, with the camera's horizontal forward and right so a receiver can turn them into its
 // own camera's frame.
 typedef struct {
-    uint32_t seq, flags;
+    uint32_t seq, flags;              // flags bits 8..10: weapon, bow, shield in hand (puppet mode draws them)
     float pos[3], rot[9];
     float cam_fwd[2], cam_right[2];   // x, z
     uint64_t buttons;                 // Switch buttons (input_map.h B_*)

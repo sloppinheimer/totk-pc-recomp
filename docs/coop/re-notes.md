@@ -412,3 +412,11 @@ instead of by action:
 - Checked: on the 3rd save the tunic and trousers are dye 10 and go over as 10. With game A faking dye 3
   (run_pair -FakeDyeA ",,,,3,3", TOTK_COOP_FAKEDYE) game B shows A's Link in a darker tunic than its own white one.
   Not checked: dyeing at the shop during a session. That should go through the same create, but it's untested.
+
+## Items in hand, puppet mode (2026-11-05)
+- A puppet gets no input, so it never draws an item. The owner's state now carries weapon, bow and shield in hand
+  (NetState.flags bits 8..10, from main+0x3e322c on their EquipmentUser). When one changes, the puppet's item is
+  made again with the weapon create's "1 in hand / 2 put away" argument (main+0xaf100c).
+- Checked: shield (1st save, show.txt). The log shows put away -> in hand -> put away around ZL, and game B's shot
+  has the shield on the puppet's forearm. Not checked: sword and bow, because neither test save has one equipped.
+  Each change rebuilds the item, which may show for a frame.
