@@ -489,6 +489,46 @@ void coop_world_tick(Cpu *c, uint64_t me) {
                 }
             }
         }
+        // The registry main+0x72b4e8 takes "the player" from: [main+0x3a75a40], count +0x38, sorted pointers +0x40 to
+        // {u32 key, +8 object}; key 0x5d5d398d, then object +0x150. What that object and its +0x150 are. Once, at 20 s.
+        static int reg_said;
+        if (!reg_said && tt > 600) {
+            reg_said = 1;
+            uint64_t r = coop_rd_ptr(MOD_MAIN_BASE + 0x3a75a40), arr = r ? coop_rd_ptr(r + 0x40) : 0;
+            uint32_t n = 0;
+            if (r) coop_rd(r + 0x38, &n, 4);
+            rt_log("coop: registry %llx: %u entries, +0x20 %llx -> +0x150 %llx", (unsigned long long)r, n,
+                   (unsigned long long)coop_rd_ptr(r + 0x20), (unsigned long long)coop_rd_ptr(coop_rd_ptr(r + 0x20) + 0x150));
+            for (uint32_t i = 0; arr && i < n && i < 4096; i++) {
+                uint64_t e = coop_rd_ptr(arr + i * 8);
+                uint32_t key = 0;
+                if (!e || !coop_rd(e, &key, 4) || key != 0x5d5d398du) continue;
+                uint64_t o = coop_rd_ptr(e + 8), p = o ? coop_rd_ptr(o + 0x150) : 0;
+                char on[64] = "", pn[64] = "";
+                coop_actor_name(o, on, sizeof on), coop_actor_name(p, pn, sizeof pn);
+                rt_log("coop: registry player entry %u: %llx object %llx (%s) +0x150 %llx (%s); this Link %llx, its ref %llx",
+                       i, (unsigned long long)e, (unsigned long long)o, on, (unsigned long long)p, pn,
+                       (unsigned long long)tp_links[0], (unsigned long long)tp_refs[0]);
+                const char *w = link_of(o) ? link_of(o) : link_of(p);
+                rt_log("coop: registry player entry is %s", w ? w : "neither Link nor its ref");
+                // Words of both objects (0x1000) and of what they point to (0x400) equal to a Link, its ref, or its
+                // perception component or data.
+                uint64_t pc = coop_rd_ptr(coop_rd_ptr(tp_links[0] + 0x228) + 0x378), pdat = pc ? coop_rd_ptr(pc + 0x30) : 0;
+                uint64_t roots[2] = {o, p};
+                for (int k = 0; k < 2; k++)
+                    for (int j = 0; roots[k] && j < 0x1000 / 8; j++) {
+                        uint64_t v = coop_rd_ptr(roots[k] + j * 8);
+                        const char *s = link_of(v) ? link_of(v) : v && v == pc ? "this Link's perception component" : v && v == pdat ? "this Link's perception data" : NULL;
+                        if (s) rt_log("coop:   %s +%#x = %s", k ? "+0x150 object" : "object", j * 8, s);
+                        if (v < 0x100000000ull || v >= 0x8000000000ull) continue;
+                        for (int i2 = 0; i2 < 0x400 / 8; i2++) {
+                            uint64_t w2 = coop_rd_ptr(v + i2 * 8);
+                            const char *s2 = link_of(w2) ? link_of(w2) : w2 && w2 == pc ? "this Link's perception component" : w2 && w2 == pdat ? "this Link's perception data" : NULL;
+                            if (s2) rt_log("coop:   [%s +%#x]+%#x = %s", k ? "+0x150 object" : "object", j * 8, i2 * 8, s2);
+                        }
+                    }
+            }
+        }
         // Where the game keeps either Link's perception component or data: words of main's data (.data to .bss) and
         // of the objects they point to (first 0x800 bytes) equal to one of them. Once, after 20 s.
         static int scanned;
