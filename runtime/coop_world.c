@@ -1364,7 +1364,119 @@ static void find_pose_binding(uint64_t actor) {
                (unsigned long long)atomic_load(&bindings_seen[0]));
     }
 }
+// Test (TOTK_COOP_TEST_REFSCAN=<s1>,<s2>[,...]): at each of those world times, every 8-byte word in guest memory
+// 0x100000000..0x240000000 equal to this Link's actor or its reference object, logged (up to 600) with which it is:
+// before and after an enemy notices this Link, the new holders are where it keeps its target (stage 5).
+static void refscan(uint64_t me) {
+    const char *e = cfg_get("TOTK_COOP_TEST_REFSCAN");
+    static int done_n;
+    if (!e) return;
+    double times[8];
+    int nt = 0;
+    for (const char *q = e; *q && nt < 8; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) times[nt++] = atof(q);
+    double now = frame_step_world_us() / 1e6;
+    if (done_n >= nt || now < times[done_n]) return;
+    done_n++;
+    uint64_t ref = 0;
+    coop_resident_named("Player", &ref);
+    static uint64_t buf[0x100000 / 8];
+    int found = 0;
+    uint64_t t0 = plat_now_ns();
+    for (uint64_t a = 0x100000000ull; a < 0x240000000ull; a += sizeof buf) {
+        if (!plat_mem_read(a, buf, sizeof buf)) {   // in 64 KB pieces where the whole MB does not read
+            for (uint64_t b = a; b < a + sizeof buf; b += 0x10000) {
+                if (!plat_mem_read(b, buf, 0x10000)) continue;
+                for (int i = 0; i < 0x10000 / 8; i++)
+                    if ((buf[i] == me || (ref && buf[i] == ref)) && found++ < 600)
+                        rt_log("coop: test: refscan %d %llx = %s", done_n, (unsigned long long)(b + i * 8), buf[i] == me ? "actor" : "ref");
+            }
+            continue;
+        }
+        for (size_t i = 0; i < sizeof buf / 8; i++)
+            if ((buf[i] == me || (ref && buf[i] == ref)) && found++ < 600)
+                rt_log("coop: test: refscan %d %llx = %s", done_n, (unsigned long long)(a + i * 8), buf[i] == me ? "actor" : "ref");
+    }
+    rt_log("coop: test: refscan %d at %.1f s: %d words (actor %llx, ref %llx), %.1f s", done_n, now, found, (unsigned long long)me,
+           (unsigned long long)ref, (plat_now_ns() - t0) / 1e9);
+}
+// Test (TOTK_COOP_TEST_TARGETSWAP=<s0>,<s1>): the words in guest memory holding this Link's reference object at s1
+// but not at s0 (an enemy spawned in between: where it keeps its target, refscan) are rewritten with the first
+// co-op Link's reference whenever they hold this Link's, every tick from s1 (TOTK_COOP_TEST_TARGETSWAP_OFF=1: only
+// watched). Every 60 ticks: the nearest enemy's distance to both Links, this Link's life, writes so far.
+static uint64_t swap_base[4096], swap_words[16];
+static int swap_nbase, swap_nwords, swap_state;
+static void ref_holders(uint64_t ref, uint64_t *out, int *n, int max) {
+    static uint64_t buf[0x10000 / 8];
+    *n = 0;
+    for (uint64_t a = 0x100000000ull; a < 0x240000000ull; a += sizeof buf) {
+        if (!plat_mem_read(a, buf, sizeof buf)) continue;
+        for (size_t i = 0; i < sizeof buf / 8; i++) if (buf[i] == ref && *n < max) out[(*n)++] = a + i * 8;
+    }
+}
+struct near_enemy { uint64_t me, best; float d; };
+static void near_fn(int cell, uint64_t a, void *arg) {
+    struct near_enemy *ne = arg;
+    char nm[48];
+    if (!enemy_of(cell, a, nm, sizeof nm)) return;
+    float p[3], q[3];
+    if (!coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(ne->me + COOP_ACTOR_POS, q, 12)) return;
+    float d = sqrtf((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
+    if (!ne->best || d < ne->d) ne->best = a, ne->d = d;
+}
+static void target_swap(uint64_t me) {
+    const char *e = cfg_get("TOTK_COOP_TEST_TARGETSWAP");
+    if (!e || !strchr(e, ',')) return;
+    double s0 = atof(e), s1 = atof(strchr(e, ',') + 1), now = frame_step_world_us() / 1e6;
+    uint64_t ref = 0;
+    coop_resident_named("Player", &ref);
+    if (!ref) return;
+    if (swap_state == 0 && now >= s0) { ref_holders(ref, swap_base, &swap_nbase, 4096); swap_state = 1; rt_log("coop: test: targetswap base: %d words", swap_nbase); }
+    if (swap_state == 1 && now >= s1) {
+        static uint64_t now_w[4096];
+        int n = 0;
+        ref_holders(ref, now_w, &n, 4096);
+        for (int i = 0; i < n && swap_nwords < 16; i++) {
+            int old = 0;
+            for (int k = 0; k < swap_nbase && !old; k++) old = swap_base[k] == now_w[i];
+            if (!old) swap_words[swap_nwords++] = now_w[i], rt_log("coop: test: targetswap word %llx", (unsigned long long)now_w[i]);
+        }
+        swap_state = 2;
+        rt_log("coop: test: targetswap: %d new words of %d", swap_nwords, n);
+    }
+    if (swap_state != 2) return;
+    uint64_t co[1];
+    int ids[1];
+    uint64_t co_ref = 0;
+    if (coop_player_actors(co, ids, 1) != 1) return;
+    for (int k = 0; k < 16 && !co_ref; k++) {   // the co-op Link's reference: a word in its first 0x400 bytes whose +0x40 is it
+        uint64_t w[0x400 / 8];
+        if (!coop_rd(co[0], w, sizeof w)) break;
+        for (int i = 0; i < 0x400 / 8 && !co_ref; i++) if (w[i] > 0x100000000ull && coop_rd_ptr(w[i] + 0x40) == co[0]) co_ref = w[i];
+    }
+    static int off = -1, writes, t;
+    if (off < 0) off = cfg_get("TOTK_COOP_TEST_TARGETSWAP_OFF") != NULL;
+    for (int i = 0; i < swap_nwords && !off && co_ref; i++)
+        if (coop_rd_ptr(swap_words[i]) == ref) ST64(swap_words[i], co_ref), writes++;
+    if (++t % 60) return;
+    struct near_enemy ne = {me, 0, 0};
+    each_live(near_fn, &ne);
+    float pe[3] = {0}, pc[3] = {0};
+    if (ne.best) coop_rd(ne.best + COOP_ACTOR_POS, pe, 12);
+    coop_rd(co[0] + COOP_ACTOR_POS, pc, 12);
+    float dc = sqrtf((pe[0] - pc[0]) * (pe[0] - pc[0]) + (pe[1] - pc[1]) * (pe[1] - pc[1]) + (pe[2] - pc[2]) * (pe[2] - pc[2]));
+    char vals[200];
+    int m = 0;
+    for (int i = 0; i < swap_nwords && m < 180; i++) {
+        uint64_t v = coop_rd_ptr(swap_words[i]);
+        m += snprintf(vals + m, sizeof vals - m, " %s", v == ref ? "mine" : v == co_ref ? "co-op" : "other");
+    }
+    vals[m] = 0;
+    rt_log("coop: test: targetswap %.1f s: enemy %.1f m from this Link, %.1f m from the co-op Link; life %d; %d writes (co-op ref %llx); words:%s",
+           now, ne.best ? ne.d : -1.0f, ne.best ? dc : -1.0f, life_of(me), writes, (unsigned long long)co_ref, vals);
+}
 void coop_world_tick(Cpu *c, uint64_t me) {
+    refscan(me);
+    target_swap(me);
     cache_links(me);
     watch_slot5();
     model_scan(me);

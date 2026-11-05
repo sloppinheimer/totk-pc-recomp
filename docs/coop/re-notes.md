@@ -557,3 +557,20 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   times a second. Not tried: calling main+0x4dcc1c on a proxy's AS manager (where it is kept, a copied request),
   and whether a frozen proxy's AS then advances (its animation binding main+0x2e9c80 runs while frozen; the writer
   main+0x283c750 that turns it into a pose does not).
+
+## Enemy targets, heap scan (stage 5, 2026-11-05)
+- Tools (coop_world.c): TOTK_COOP_TEST_REFSCAN=<s>,<s>... logs every 8-byte word in guest memory 0x100000000-
+  0x240000000 equal to this Link's actor or its reference object (0.5-0.7 s a scan; 314-316 words on the Rito save).
+  TOTK_COOP_TEST_TARGETSWAP=<s0>,<s1> takes the words holding this Link's reference at s1 but not at s0, and from
+  s1 writes the first co-op Link's reference over them whenever they hold this Link's (TOTK_COOP_TEST_TARGETSWAP_OFF=1:
+  watch only); every 0.5 s it logs the nearest enemy's distance to both Links and this Link's life.
+- Rito tower, Bokoblin spawned 2 m away at 20 s (TOTK_COOP_TEST_SPAWN=Enemy_Bokoblin_Junior@20): one new word, at
+  1bce51cc8 in two runs (the same address, so a shared slot, not the enemy's own memory). Overwritten (2 writes
+  needed): the enemy's distances to this Link were the same to 0.1 m as in the watch-only control (3.2, 1.0, 3.0,
+  4.3, 3.3 m), and in both runs it left the live set at 32 s (it fell off the platform or was removed). No effect.
+- In-isa stairs, the same spawn, B's Link 8 m up the stairs: three new words (11fffdbc0, 1a0123710, ...), which flip
+  between this Link's reference and other values on their own. This Link took no damage (life 14 throughout), the
+  Bokoblin wandered 12-16 m off and was gone by 39 s. No fight, so no test of the swap.
+- Stopped after these two attempts. As the 2026-11-04 notes found, a spawned Bokoblin does not make a real fight in
+  these places. Next: a save next to a placed camp (a fight that lowers this Link's life), then the same heap diff
+  between "noticed" and "attacking", and the swap against a watch-only control.
