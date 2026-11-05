@@ -477,7 +477,8 @@ int coop_players_calc(Cpu *c, uint64_t addr) {
     plat_mutex_unlock(&lock);
     // Test (TOTK_COOP_TEST_NOINPUT): the co-op Link gets no buttons and no stick (the idle body for a copied pose)
     static int noinput = -1;
-    if (noinput < 0) noinput = cfg_get("TOTK_COOP_TEST_NOINPUT") != NULL;
+    int coop_puppet_mode(void);   // coop_world.c: puppet mode gives no input either
+    if (noinput < 0) noinput = cfg_get("TOTK_COOP_TEST_NOINPUT") != NULL || coop_puppet_mode();
     if (noinput) buttons = 0, memset(stick, 0, sizeof stick);
     coop_fill_controller(own, buttons, stick, &s->prev, s->held);
     ST64(mgr + 0xa0, own);
@@ -674,7 +675,12 @@ void coop_players_tick(Cpu *c, int numpad3) {
                     rt_log("coop: slot %d: owner's gear slot %d is %s", i, coop_gear_slot[k], s->gear_want[k]);
                     give_gear(c, eq, k, none ? "" : s->gear_want[k], s->gear_str[k]);
                 }
-            if (s->state == LIVE && s->source == SRC_NET && s->have_want) {
+            int coop_puppet_mode(void);   // coop_world.c
+            if (s->state == LIVE && s->source == SRC_NET && s->have_want && coop_puppet_mode()) {
+                snap(c, s);   // puppet mode: it gets no input, so it is moved to its owner every tick
+                static int said_snap;
+                if (!said_snap++) rt_log("coop: puppet: slot %d follows its owner every tick", i);
+            } else if (s->state == LIVE && s->source == SRC_NET && s->have_want) {
                 float p[3];
                 float lim = s->idle ? COOP_SNAP_IDLE_M : COOP_SNAP_MOVING_M;
                 if (s->snap_wait) s->snap_wait--;

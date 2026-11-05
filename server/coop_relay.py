@@ -18,7 +18,7 @@ import sys
 import time
 
 MAGIC, VERSION = b'TKCO', 5
-HELLO, WELCOME, STATE, LEAVE, BYE, WORLD, HIT = 1, 2, 3, 4, 5, 6, 7
+HELLO, WELCOME, STATE, LEAVE, BYE, WORLD, HIT, POSE = 1, 2, 3, 4, 5, 6, 7, 8
 MAX_PLAYERS, TIMEOUT = 8, 5.0
 HEADER = struct.Struct('<4sBBBB')
 
@@ -48,7 +48,7 @@ def main():
 
     while True:
         try:
-            data, addr = sock.recvfrom(2048)
+            data, addr = sock.recvfrom(8192)
         except socket.timeout:
             data, addr = None, None
         except ConnectionResetError:   # Windows reports an unreachable earlier peer this way
@@ -75,7 +75,7 @@ def main():
             me['seen'] = now
             others = b''.join(struct.pack('<B16s', p['id'], p['name'].encode()[:16]) for k, p in players.items() if k != addr)
             sock.sendto(header(WELCOME, me['id']) + others, addr)
-        elif kind in (STATE, WORLD, HIT) and addr in players:
+        elif kind in (STATE, WORLD, HIT, POSE) and addr in players:
             me = players[addr]
             me['seen'] = now
             out = header(kind, me['id']) + data[HEADER.size:]
