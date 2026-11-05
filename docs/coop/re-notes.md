@@ -249,3 +249,12 @@ evidence), guess.
   to find it. Untried idea: swapping the two Links' positions during an enemy's calc (risky: actor calcs run on
   several threads). Test caveat: with tools/coop/idle.txt and TOTK_COOP_TEST_SPAWN=Enemy_Bokoblin_Junior@8 the
   Bokoblin circles both Links but did not hit either in 80-150 s runs; a test needs a real fight.
+
+## Instant tips from a co-op Link (2026-11-04)
+- main+0x923d20 (game data [main+0x395dff0], 1, &key, value) sets a game-data enum (458 callers). A Player's calc
+  calls it from main+0x207eba0 (key 0x57f52eb8, values from the table "AttackByWeapon", ...): this game's record of
+  the player's last action. The instant tips ("To shield surf...") show from it, so a co-op Link's shield surf showed
+  the tip in this game too. Found with TOTK_COOP_PROF=3 (functions in co-op Link calcs with a global's object) and
+  tools/coop/surf.txt on game B: the only game-data write in the surf windows.
+- Fix: coop_spawn.c skips main+0x923d20 inside a co-op Link's calc. Test: run_pair with B surfing, the tip shows in
+  B's game only (screenshots, one run). Other game-data setters (bool, int) are not hooked; none showed up here.
