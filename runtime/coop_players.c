@@ -1095,6 +1095,9 @@ static void armor_probe(uint64_t me) {
 // (from the tick alone it came too late in one of two games: the rebuild had run on the new co-op Link already).
 #define PLAYER_EQ_GLOBAL 0x39601e8
 static void keep_player_eq(uint64_t me, uint64_t my_eq) {
+    static int off = -1;   // TOTK_COOP_TEST_NOKEEPEQ=1: not done (test)
+    if (off < 0) off = cfg_get("TOTK_COOP_TEST_NOKEEPEQ") != NULL;
+    if (off) return;
     uint64_t obj = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + PLAYER_EQ_GLOBAL)), var = obj ? obj + 0x480 : 0, g = var ? coop_rd_ptr(var) : 0;
     static uint64_t last = 1;
     static unsigned fixes;
@@ -1348,6 +1351,16 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 if (s->out_have >= 0 && s->out_have != s->out_want && !(skip_putaway && (s->out_want & ~s->out_have) == 0)) {
                     s->thaw = PROXY_THAW_TICKS;
                     rt_log("coop: proxy: slot %d runs its own update for %d ticks (in hand %#x -> %#x)", i, PROXY_THAW_TICKS, s->out_have, s->out_want);
+                    // An item taken out is also made again in hand (the weapon create's "1 in hand"): with the flag and
+                    // the thaw alone a sword made on the back stayed there while the proxy swung with an empty hand
+                    // (a play session; equip_draw_3rd.txt, 2026-11-05). Made in hand it is held (stage 1's test).
+                    static int no_remake = -1;   // TOTK_COOP_TEST_NODRAWREMAKE=1: not done (test)
+                    if (no_remake < 0) no_remake = cfg_get("TOTK_COOP_TEST_NODRAWREMAKE") != NULL;
+                    for (int k = 0; k < 3 && !no_remake; k++)
+                        if ((s->out_want & ~s->out_have) >> k & 1 && s->gear_want[k][0] && strcmp(s->gear_want[k], GEAR_NONE)) {
+                            give_gear(c, eq, k, s->gear_want[k], -1, 1, s->gear_str[k], s->fuse_want[k], s->att_str[k]);
+                            rt_log("coop: proxy: slot %d: %s made again in hand", i, s->gear_want[k]);
+                        }
                 }
                 s->out_have = s->out_want;
             }
