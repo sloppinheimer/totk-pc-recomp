@@ -63,7 +63,7 @@ typedef struct {
         int state;                     // 0 free, 1 wanted, 2 requested, 3 live
         char name[48];
         uint8_t flags;                 // the owner's CoopObj.flags
-        float lpos[3], lrot[9];        // with COOP_OBJ_LOCAL: its place in the owner's frame
+        float lpos[3], lrot[9];        // with COOP_OBJ_LOCAL: its place in the owner's bow's frame
         float pos[3], rot[9];
         _Alignas(16) uint8_t handle[0x40], link[0x40];
         uint64_t actor, ref;
@@ -615,6 +615,22 @@ static int proxied(const Slot *s) {
 }
 static int ride_place(const Slot *s, float out[3]);   // the owner rides an object: where, here
 static void shield_place(Cpu *c, Slot *s);
+static uint64_t eq_item(uint64_t eq, int kind);
+static void place_copy(Cpu *c, Slot *s, int k);
+#define COPY_WARMUP 5   // ticks a copy runs its own update after it is made (arrow_copies)
+// Where a Link's bow is drawn: its model's world matrix (model +0x1f8, 3x4 rows), which the model push puts on the
+// hand bone each frame. A nocked arrow is sent and shown in this frame (COOP_OBJ_LOCAL). 1 when it has a bow.
+static int bow_frame(uint64_t link, float rot[9], float pos[3]) {
+    uint64_t bow = link ? eq_item(eq_of_actor(link), 1) : 0;
+    uint64_t model = bow ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(bow + 0x228) + 0x8) + 0x28) : 0;
+    float w[12];
+    if (!model || !coop_rd(model + 0x1f8, w, sizeof w)) return 0;
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) rot[i * 3 + j] = w[i * 4 + j];
+        pos[i] = w[i * 4 + 3];
+    }
+    return 1;
+}
 static void proxy_drive(Cpu *c, Slot *s) {
     uint64_t actor = s->actor;
     float m[12], pos[3], rot[9];
@@ -643,6 +659,8 @@ static void proxy_drive(Cpu *c, Slot *s) {
     // A shield surf: the shield where the owner's is. After the push, which puts items on their body bones (on the
     // back for a shield out of hand): put there from the tick, it was back there every other frame (surf.txt).
     shield_place(c, s);
+    for (int k = 0; k < COOP_OBJS; k++)   // nocked arrows' copies on the bow the push just put on the hand
+        if (s->mir[k].state == 3 && s->mir[k].ticks >= COPY_WARMUP && (s->mir[k].flags & COOP_OBJ_LOCAL)) place_copy(c, s, k);
     // Jump watch: its body top (model space, skeleton +0x20) and its world height, frame to frame; standing = the
     // owner's reported velocity under 5 cm/s with no stick or buttons held. Summary every 600 frames, each standing jump over 1 cm logged.
     float root_y = 0, top = body_top_root(actor, &root_y);
@@ -1241,7 +1259,6 @@ static void arrow_log(uint64_t me) {
 // copy of each: made with the same name, then after COPY_WARMUP ticks its own update is off and it is put where the
 // owner's is every tick (place_copy), so it does not fly, hit or get picked up here. A copy goes when its arrow is no
 // longer reported.
-#define COPY_WARMUP 5
 static struct { uint64_t actor; uint32_t id; int mine, seen, fused_to; } my_arrows[32];
 static struct { uint64_t actor; int seen; } near_actors[64];   // other actors within 3 m of this Link, last tick seen
 static uint32_t next_arrow_id = 1;
@@ -1336,13 +1353,15 @@ static int report_arrows(uint64_t me, CoopObj *out) {
         if (!coop_rd(my_arrows[i].actor + COOP_ACTOR_POS, o->pos, 12) || !coop_rd(my_arrows[i].actor + COOP_ACTOR_ROT, r, 36)) continue;
         o->id = my_arrows[i].id;
         coop_actor_name(my_arrows[i].actor, o->name, sizeof o->name);
-        // Within 2.5 m of this Link (nocked): sent in its frame, so the other games put it on the proxy as they show
-        // it. Sent as a world place, with this Link's own place in another packet, it shook 0.3 m about the proxy's
-        // bow as the owner walked (bow_walk_3rd.txt).
-        float lp[3], lr[9];
-        if (coop_rd(me + COOP_ACTOR_POS, lp, 12) && coop_rd(me + COOP_ACTOR_ROT, lr, 36)) {
+        // Within 2.5 m of this Link (nocked): sent in the frame of its bow's model, so the other games put it on the
+        // proxy's bow as they show it. Sent as a world place, with this Link's own place in another packet, it shook
+        // 0.3 m about the proxy's bow as the owner walked (bow_walk_3rd.txt); in the Link's frame it still trailed the
+        // bow a little, which comes with the proxy's pose (a play session, 2026-11-05).
+        float lp[3], lr[9], mp[3];
+        if (coop_rd(me + COOP_ACTOR_POS, mp, 12) && bow_frame(me, lr, lp) &&
+            (o->pos[0] - mp[0]) * (o->pos[0] - mp[0]) + (o->pos[1] - mp[1]) * (o->pos[1] - mp[1]) + (o->pos[2] - mp[2]) * (o->pos[2] - mp[2]) < 2.5f * 2.5f) {
             float d[3] = {o->pos[0] - lp[0], o->pos[1] - lp[1], o->pos[2] - lp[2]};
-            if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < 2.5f * 2.5f) {
+            {
                 float rl[9];
                 for (int j = 0; j < 3; j++) o->pos[j] = lr[0 * 3 + j] * d[0] + lr[1 * 3 + j] * d[1] + lr[2 * 3 + j] * d[2];
                 for (int a = 0; a < 3; a++)
@@ -1403,11 +1422,11 @@ static void arrow_copies(Cpu *c, Slot *s) {
             memcpy(s->mir[k].name, o->name, sizeof s->mir[k].name), s->mir[k].name[sizeof s->mir[k].name - 1] = 0;
         }
         s->mir[k].flags = o->flags;
-        if (o->flags & COOP_OBJ_LOCAL) {   // in the owner's frame: put on the proxy as shown here (place_copy)
+        if (o->flags & COOP_OBJ_LOCAL) {   // in the owner's bow's frame: put on the proxy's bow as shown here (place_copy)
             memcpy(s->mir[k].lpos, o->pos, 12);
             quat_mat(o->q, s->mir[k].lrot);
             float pp[3] = {0}, pr[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-            if (s->actor) coop_rd(s->actor + COOP_ACTOR_POS, pp, 12), coop_rd(s->actor + COOP_ACTOR_ROT, pr, 36);
+            if (s->actor && !bow_frame(s->actor, pr, pp)) coop_rd(s->actor + COOP_ACTOR_POS, pp, 12), coop_rd(s->actor + COOP_ACTOR_ROT, pr, 36);
             for (int i = 0; i < 3; i++) s->mir[k].pos[i] = pp[i] + pr[i * 3] * o->pos[0] + pr[i * 3 + 1] * o->pos[1] + pr[i * 3 + 2] * o->pos[2];
             memcpy(s->mir[k].rot, pr, 36);
         } else {
@@ -1518,11 +1537,11 @@ static void place_copy(Cpu *c, Slot *s, int k) {
         for (int j = 0; j < 3; j++) m[r * 4 + j] = s->mir[k].rot[r * 3 + j];
         m[r * 4 + 3] = s->mir[k].pos[r];
     }
-    // An arrow the owner sends in its own frame (COOP_OBJ_LOCAL: at its bow): put on the proxy as it is shown here.
-    // Put at the reported world place, it lagged behind the proxy's bow as the owner moved (the proxy is shown from
-    // a smoothed, delayed place; a play session, 2026-11-05).
+    // An arrow the owner sends in its bow's frame (COOP_OBJ_LOCAL: nocked): put on the proxy's bow as it is drawn here
+    // (also from proxy_drive, right after the push that puts the bow on the hand). Put at the reported world place,
+    // it lagged behind the proxy's bow as the owner moved (a play session, 2026-11-05).
     float pp[3], pr[9];
-    if ((s->mir[k].flags & COOP_OBJ_LOCAL) && s->actor && coop_rd(s->actor + COOP_ACTOR_POS, pp, 12) && coop_rd(s->actor + COOP_ACTOR_ROT, pr, 36)) {
+    if ((s->mir[k].flags & COOP_OBJ_LOCAL) && s->actor && bow_frame(s->actor, pr, pp)) {
         const float *l = s->mir[k].lpos, *lr = s->mir[k].lrot;
         for (int i = 0; i < 3; i++) {   // on the proxy: P R_local, P t_local
             for (int j = 0; j < 3; j++) m[i * 4 + j] = pr[i * 3 + 0] * lr[0 * 3 + j] + pr[i * 3 + 1] * lr[1 * 3 + j] + pr[i * 3 + 2] * lr[2 * 3 + j];
@@ -1546,10 +1565,11 @@ static void place_copy(Cpu *c, Slot *s, int k) {
     if (copylog && n++ % 8 == 0) {
         float mt[12] = {0};
         if (model) coop_rd(model + 0x1f8, mt, sizeof mt);
-        float pp[3] = {0};
+        float pp[3] = {0}, bp[3] = {0}, br[9];
         if (s->actor) coop_rd(s->actor + COOP_ACTOR_POS, pp, 12);
+        if (s->actor && bow_frame(s->actor, br, bp)) memcpy(pp, bp, 12);   // from its bow when it has one
         float dm = sqrtf((m[3] - pp[0]) * (m[3] - pp[0]) + (m[7] - pp[1]) * (m[7] - pp[1]) + (m[11] - pp[2]) * (m[11] - pp[2]));
-        rt_log("coop: test: copy %.2f s %u %s at %.2f %.2f %.2f, model %llx at %.2f %.2f %.2f; put %.2f m from the proxy", frame_step_world_us() / 1e6,
+        rt_log("coop: test: copy %.2f s %u %s at %.2f %.2f %.2f, model %llx at %.2f %.2f %.2f; put %.2f m from the proxy's bow", frame_step_world_us() / 1e6,
                s->mir[k].id, s->mir[k].name, s->mir[k].pos[0], s->mir[k].pos[1], s->mir[k].pos[2], (unsigned long long)model, mt[3], mt[7], mt[11], dm);
     }
     if (model) {
@@ -2174,6 +2194,37 @@ static void proxy_arrows_test(void) {
         if (!slots[i].actor || !coop_rd(slots[i].actor + COOP_ACTOR_POS, ps.at, 12)) continue;
         coop_actors_all(proxy_arrow_fn, &ps);
     }
+}
+// Test (TOTK_COOP_TEST_BONEARROW=1): every 30 ticks while this Link has an arrow within 2.5 m, which body bone is
+// nearest it when a bone's world place is taken as the model's world matrix (model +0x1f8, 3x4 rows) applied to the
+// bone's translation in skeleton +0x20 (4x4, translation at 12..14); and the arrow's place in that bone's frame
+// (columns 0..2, 4..6, 8..10 as its axes). For putting a nocked arrow's copy on the proxy's hand.
+static void bone_arrow_test(uint64_t me) {
+    static int on = -1, t;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_BONEARROW") != NULL;
+    if (!on || ++t % 30) return;
+    uint64_t arrow = 0;
+    for (int i = 0; i < 32 && !arrow; i++) if (my_arrows[i].actor && my_arrows[i].mine && arrow_tick - my_arrows[i].seen < 2) arrow = my_arrows[i].actor;
+    float a[3], lp[3];
+    if (!arrow || !coop_rd(arrow + COOP_ACTOR_POS, a, 12) || !coop_rd(me + COOP_ACTOR_POS, lp, 12)) return;
+    if ((a[0] - lp[0]) * (a[0] - lp[0]) + (a[1] - lp[1]) * (a[1] - lp[1]) + (a[2] - lp[2]) * (a[2] - lp[2]) > 2.5f * 2.5f) return;
+    uint64_t sk = body_skeleton(me), wb = sk ? coop_rd_ptr(sk + 0x20) : 0;
+    uint64_t model = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(me + 0x228) + 0x8) + 0x28);
+    uint16_t nb = 0;
+    static float rec[128][16];
+    float w[12];
+    if (!wb || !model || !coop_rd(sk + 0x48, &nb, 2) || nb == 0 || nb > 128 || !coop_rd(wb, rec, (size_t)nb * 64) ||
+        !coop_rd(model + 0x1f8, w, sizeof w)) return;
+    int best = -1;
+    float bd = 1e9f, bw[3] = {0};
+    for (int b = 0; b < nb; b++) {
+        float q[3];
+        for (int i = 0; i < 3; i++) q[i] = w[i * 4] * rec[b][12] + w[i * 4 + 1] * rec[b][13] + w[i * 4 + 2] * rec[b][14] + w[i * 4 + 3];
+        float d = (q[0] - a[0]) * (q[0] - a[0]) + (q[1] - a[1]) * (q[1] - a[1]) + (q[2] - a[2]) * (q[2] - a[2]);
+        if (d < bd) bd = d, best = b, memcpy(bw, q, 12);
+    }
+    rt_log("coop: test: bone arrow %.2f s: nearest bone %d, %.3f m (arrow %.2f %.2f %.2f, bone %.2f %.2f %.2f, Link %.2f %.2f %.2f)",
+           frame_step_world_us() / 1e6, best, sqrtf(bd), a[0], a[1], a[2], bw[0], bw[1], bw[2], lp[0], lp[1], lp[2]);
 }
 // Both games: where the object a co-op player moved last is here (for the test above).
 static void props_test_where(void) {
@@ -3343,7 +3394,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         if (fw && *fw) st.weather = atoi(fw);
         coop_net_publish(&st);
         if (coop_proxy_mode()) props_receive(c), ride_carry(c, me);   // placed objects co-op players move; riding them
-        props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test();
+        props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test(), bone_arrow_test(me);
     }
     armor_probe(me);
     arrow_log(me);

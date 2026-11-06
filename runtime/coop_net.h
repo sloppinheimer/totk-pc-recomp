@@ -21,7 +21,7 @@ typedef struct {
     uint32_t id;                      // the owner's number for it, or COOP_OBJ_KEYED | key (0: an empty entry)
     char name[47];                    // its actor name (NormalArrow, SpObj_LiftGeneratorWing_A_01...)
     uint8_t flags;                    // COOP_OBJ_AUTOBUILT: a device made by the owner's autobuild; COOP_OBJ_LOCAL:
-                                      // pos and q are in the owner's Link's frame (an arrow at its bow)
+                                      // pos and q are in the frame of the owner's bow's model (a nocked arrow)
     float pos[3], q[4];               // world position, rotation as a quaternion x y z w
 } CoopObj;
 #define COOP_OBJ_AUTOBUILT 1
