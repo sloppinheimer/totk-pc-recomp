@@ -1485,11 +1485,38 @@ static int is_imaginary(uint64_t a) {
     uint64_t s = coop_rd_ptr(a + 0x18);
     return s && coop_rd(s, buf, sizeof buf) && !memcmp(buf, tag, sizeof tag);
 }
+// Research log for the autobuild tint: a Zonai device within 20 m, each time its creation label (actor +0x18), its
+// flags (actor +0x668, where the label's creation sets 0x10000000; actor +0x440 bit 0x100000) or its attachment byte
+// ([actor+0x228]+0x120, +0x428) change. Does a built device keep the preview's label? Remove once known.
+static void build_watch(uint64_t a, const char *nm, const float *me, int copy) {
+    static struct { uint64_t actor, label; uint32_t f668, f440; uint8_t att; } w[64];
+    static int logged;
+    if (strncmp(nm, "SpObj_", 6) || logged > 400) return;
+    float p[3];
+    if (!coop_rd(a + COOP_ACTOR_POS, p, 12) ||
+        (p[0] - me[0]) * (p[0] - me[0]) + (p[1] - me[1]) * (p[1] - me[1]) + (p[2] - me[2]) * (p[2] - me[2]) > 400) return;
+    uint64_t label = coop_rd_ptr(a + 0x18), comp = coop_rd_ptr(a + 0x228), c120 = comp ? coop_rd_ptr(comp + 0x120) : 0;
+    uint32_t f668 = 0, f440 = 0;
+    uint8_t att = 0;
+    coop_rd(a + 0x668, &f668, 4), coop_rd(a + 0x440, &f440, 4), f440 &= 0x100000;   // the bit main+0x9e6af0 tests
+    if (c120) coop_rd(c120 + 0x428, &att, 1);
+    int e = -1, free = 0;
+    for (int i = 0; i < 64 && e < 0; i++) if (w[i].actor == a) e = i; else if (!w[i].actor) free = i;
+    if (e >= 0 && w[e].label == label && w[e].f668 == f668 && w[e].f440 == f440 && w[e].att == att) return;
+    if (e < 0) e = free;
+    char ls[32] = "none";
+    if (label) coop_rd(label, ls, sizeof ls - 1), ls[sizeof ls - 1] = 0;
+    rt_log("coop: build watch %s %s%s: label %s, flags 668 %08x 440 %08x, attachment %02x", nm, copy ? "(copy) " : "",
+           w[e].actor == a ? "changed" : "seen", ls, f668, f440, att);
+    w[e].actor = a, w[e].label = label, w[e].f668 = f668, w[e].f440 = f440, w[e].att = att;
+    logged++;
+}
 typedef struct { float me[3]; int cand[32], n_cand, n_first_near; } PropScan;
 static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *arg) {
     PropScan *ps = arg;
     Slot *cs;
     int ck;
+    build_watch(a, nm, ps->me, copy_of(a, &cs, &ck));
     if (prop_skip(nm) || copy_of(a, &cs, &ck) || is_driven(a) || is_imaginary(a)) return;
     for (int i = 0; i < 32; i++) if (my_arrows[i].actor == a) return;   // an arrow's fused material
     float p[3];
