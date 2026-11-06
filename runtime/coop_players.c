@@ -1983,6 +1983,20 @@ static int prop_skip(const char *nm) {
         for (int k = 0; k < 3; k++) if (!strcmp(nm, my_gear[k])) return 1;
         for (int i = 0; i < COOP_MAX_PLAYERS; i++)
             for (int k = 0; k < 3; k++) if (slots[i].actor && !strcmp(nm, slots[i].gear_want[k])) return 1;
+        // a weapon's sheath, whatever its name (Weapon_Lsheath_103, Weapon_SpearSheath_109: only "Weapon_Sheath" was
+        // left out, and the others went to the other game as dropped objects over and over; a play session)
+        if (strstr(nm, "sheath") || strstr(nm, "Sheath")) return 1;
+    }
+    // The material fused to a weapon, bow or shield of this Link or a co-op Link: an actor of its own, stuck to the
+    // weapon. Sent as an object, the other game showed a loose copy of it on the proxy's weapon, over the fused one
+    // the proxy's weapon has (a play session, 2026-11-06: "the real item is appended onto them").
+    if (nm[0]) {
+        for (int k = 0; k < 3; k++) if (my_fuse[k][0] && !strcmp(nm, my_fuse[k])) return 1;
+        for (int i = 0; i < COOP_MAX_PLAYERS; i++)
+            for (int k = 0; k < 3; k++)
+                if (slots[i].actor && ((slots[i].fuse_have[k][0] && !strcmp(nm, slots[i].fuse_have[k])) ||
+                                       (slots[i].fuse_want[k][0] && !strcmp(nm, slots[i].fuse_want[k]))))
+                    return 1;
     }
     return 0;
 }
