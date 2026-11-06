@@ -1566,7 +1566,8 @@ typedef struct { uint8_t slot, how, pad[6]; uint64_t v; } LinkHitSlot;
 // info_len 0 when none was seen.
 #define HIT_INFO 0xe8
 typedef struct {
-    uint32_t key; int32_t damage; uint32_t to, kind, flags, nslots, info_len, pad;
+    uint32_t key; int32_t damage; uint32_t to, kind, flags, nslots, info_len;
+    uint32_t atk_off;    // where the hit's attack (main+0x31dbc0's x1) sits in the proxy's damage component, 0 elsewhere
     uint8_t info[HIT_INFO];
     LinkHitSlot s[LH_SLOTS];
 } LinkHitPacket;
@@ -1786,7 +1787,7 @@ static uint32_t key_of_actor(uint64_t actor) {
 // When the receiver is a proxy's, the hit is kept here for link_hits_send to send to that proxy's player.
 #define RCV_N COOP_MAX_PLAYERS
 static _Atomic uint64_t proxy_rcv[RCV_N];   // the proxies' receivers, set by link_hits_send
-static struct { _Atomic uint32_t seq; uint8_t info[HIT_INFO]; } rcv_hit[RCV_N];
+static struct { _Atomic uint32_t seq; uint8_t info[HIT_INFO]; uint64_t atk, dc; } rcv_hit[RCV_N];
 void coop_hit_delivered(Cpu *c) {
     uint64_t r = c->x[0], h = c->x[2];
     if (!r || !h) return;
@@ -1794,8 +1795,24 @@ void coop_hit_delivered(Cpu *c) {
         if (atomic_load_explicit(&proxy_rcv[i], memory_order_relaxed) == r) {
             // the hit functions call it up to three times a hit; the one with damage and a kind (12 none) is the hit
             int32_t d[6];
+            static int chain_on = -1;   // Test (TOTK_COOP_TEST_HITCHAIN=1): the guest call chain of the hit, 8 times
+            static _Atomic int chain_said;
+            if (chain_on < 0) chain_on = cfg_get("TOTK_COOP_TEST_HITCHAIN") != NULL;
+            if (chain_on && coop_rd(h, d, sizeof d) && d[0] > 0 && d[5] != 12 && atomic_fetch_add(&chain_said, 1) < 8) {
+                char chain[400];
+                int m = snprintf(chain, sizeof chain, "coop: test: hitchain lr main+%llx, frames", (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
+                uint64_t fp = c->x[29];
+                for (int k = 0; k < 16 && fp && m < 380; k++) {
+                    uint64_t next = coop_rd_ptr(fp), ret = coop_rd_ptr(fp + 8);
+                    if (!ret) break;
+                    m += snprintf(chain + m, sizeof chain - m, " %llx", (unsigned long long)(ret - MOD_MAIN_BASE));
+                    if (next <= fp) break;
+                    fp = next;
+                }
+                rt_log("%s", chain);
+            }
             if (coop_rd(h, d, sizeof d) && d[0] > 0 && d[5] != 12 && coop_rd(h, rcv_hit[i].info, HIT_INFO))
-                atomic_fetch_add(&rcv_hit[i].seq, 1);
+                rcv_hit[i].atk = c->x[1], rcv_hit[i].dc = r - 0x190, atomic_fetch_add(&rcv_hit[i].seq, 1);
             return;
         }
 }
@@ -1837,9 +1854,12 @@ static void link_hits_send(void) {
         // marked as the attacker's reference, so the player's game can write the same hit into its own Link.
         static LinkHitPacket lh;
         memset(&lh, 0, sizeof lh);
-        lh.key = key, lh.damage = dmg, lh.to = (uint32_t)ids[i], lh.kind = LINKHIT_KIND, lh.flags = w[0x30 / 4];
+        lh.key = key, lh.damage = dmg, lh.to = (uint32_t)ids[i], lh.kind = LINKHIT_KIND;
+        memcpy(&lh.flags, (const uint8_t *)rs + 0x30, 4);   // the record's flags (+0x1d0; past w, which holds +0x1a0..+0x1c8)
         if (i < RCV_N && atomic_load(&rcv_hit[i].seq) != rcv_seen[i]) {
             memcpy(lh.info, rcv_hit[i].info, HIT_INFO), lh.info_len = HIT_INFO;
+            uint64_t ao = rcv_hit[i].atk - rcv_hit[i].dc;
+            lh.atk_off = rcv_hit[i].atk > rcv_hit[i].dc && ao < 0x2000 ? (uint32_t)ao : 0;
             rcv_seen[i] = atomic_load(&rcv_hit[i].seq);
             static int said_info;
             if (said_info++ < 4) {
@@ -1879,12 +1899,19 @@ static uint64_t actor_ref(uint64_t a) {
 // A hit written into this Link's record waits to be taken by its own update; if its life has not gone down by then,
 // the damage is taken off it directly.
 static struct { int frames, life, damage; uint32_t key; } lh_wait;
+static _Atomic int lh_guarded;   // (defined with lh_dc below)
 static void link_hit_check(uint64_t me) {
     if (!lh_wait.frames || --lh_wait.frames) return;
+    if (atomic_exchange(&lh_guarded, 0)) {   // blocked: nothing to take
+        rt_log("coop: the hit by enemy %08x was guarded by this Link (life %d)", lh_wait.key, life_of(me));
+        return;
+    }
     void coop_hit_drop(void);
     coop_hit_drop();   // a hit still waiting for this Link's update is not delivered after the damage was taken here
     int life = life_of(me);
-    if (life >= lh_wait.life && life > 0) {
+    // (only an unchanged life: one gone up was a fairy or a meal, not a hit left untaken; 2 -> 20 by a fairy, then
+    // 3 more taken here, 2026-11-06)
+    if (life == lh_wait.life && life > 0) {
         int now = life - lh_wait.damage < 0 ? 0 : life - lh_wait.damage;
         set_life(me, now);
         rt_log("coop: the hit by enemy %08x was not taken from its record here: life %d -> %d directly", lh_wait.key, life, now);
@@ -1908,13 +1935,16 @@ static void link_hit_check(uint64_t me) {
 // receiver's lists at once and the update crashed on a broken object at +0x1238 (twice, 2026-11-06). 1 when queued.
 static _Alignas(16) uint8_t lh_info[HIT_INFO], lh_atk[0x400];
 static _Atomic uint64_t lh_dc;   // the damage component a hit waits for, 0 none
+static _Atomic int lh_guarded;   // the last hit delivered was guarded (flag +0xe0 bit 3 after the delivery)
+static _Atomic uint64_t lh_x1;   // the attack it is delivered with
 void coop_hit_update(Cpu *c) {
     uint64_t dc = atomic_load_explicit(&lh_dc, memory_order_acquire);
     if (!dc || c->x[0] != dc || !atomic_compare_exchange_strong(&lh_dc, &dc, 0)) return;
     uint64_t keep[31];
     memcpy(keep, c->x, sizeof keep);
-    rt_call(c, MOD_MAIN_BASE + 0x31dbc0, 3, dc + 0x190, (uint64_t)(uintptr_t)lh_atk, (uint64_t)(uintptr_t)lh_info);
+    rt_call(c, MOD_MAIN_BASE + 0x31dbc0, 3, dc + 0x190, atomic_load(&lh_x1), (uint64_t)(uintptr_t)lh_info);
     memcpy(c->x, keep, sizeof keep);
+    atomic_store(&lh_guarded, lh_info[0xe0] >> 3 & 1);
 }
 void coop_hit_drop(void) {
     uint64_t dc = atomic_exchange(&lh_dc, 0);
@@ -1936,14 +1966,27 @@ static int link_hit_deliver(Cpu *c, const LinkHitPacket *lh, uint64_t me, uint64
     memcpy(h + 0x28, &r8, 8);
     memcpy(h + 0x30, &serial, 4);
     h[0xe0] &= (uint8_t)~8;
+    // A raised shield does not block these hits (the tester's worry, 2026-11-06). A blocked hit reaches main+0x31dbc0
+    // with damage 0 and nothing else of it different (this Link's own hits with its shield up), so the block is made
+    // where the hit is built, from the attack's contact with the shield, before the delivery; not by the guard check
+    // the delivery runs (main+0x1cd380c from main+0x1cceaac: never guarded with this Link's own attack object), nor by
+    // this Link's listener (vtable +0x48, main+0x1cca59c: damage 3 -> 3 with its shield up), nor by the proxy's own
+    // update with ZL let through in the owner's game. docs/coop/proxy-plan.md: the contact replayed instead.
     uint8_t *atk = lh_atk;
     memset(atk, 0, sizeof lh_atk);
     uint64_t self = (uint64_t)(uintptr_t)atk;
     memcpy(atk + 0x70, &self, 8), memcpy(atk + 0x30, &self, 8);
     atk[0x4a] = 1, atk[0x183] = 1;
+    // The "attack" is the hit body's own object in its damage component (dc+0x18d0 for a Link; +8 that body's life,
+    // 14, 11, 8 as the hits landed; +0xb8 its actor): this Link's object at the same place, as the game passes it;
+    // the blank one when that is not there.
+    uint64_t own = lh->atk_off && lh->atk_off < 0x2000 ? dc + lh->atk_off : 0;
+    if (own && coop_rd_ptr(own + 0xb8) != me) own = 0;
+    atomic_store(&lh_x1, own ? own : self);
     int32_t d[6];
     memcpy(d, h, sizeof d);
-    rt_log("coop: delivering the hit here: damage %d, kind %d, attacker %s", d[0], d[5], ref ? "this game's copy" : "none");
+    rt_log("coop: delivering the hit here: damage %d, kind %d, attacker %s; the attack %s (+%#x)", d[0], d[5],
+           ref ? "this game's copy" : "none", own ? "this Link's own" : "blank", lh->atk_off);
     atomic_store_explicit(&lh_dc, dc, memory_order_release);
     return 1;
 }
@@ -1958,7 +2001,9 @@ static void link_hit_take(Cpu *c, const LinkHitPacket *lh, int from, uint64_t me
     if (life <= 0) return;
     static int deliver_on = -1;
     if (deliver_on < 0) { const char *e = cfg_get("TOTK_COOP_LINKHIT_DELIVER"); deliver_on = !(e && *e == '0'); }
-    if (deliver_on && !lh_wait.frames && link_hit_deliver(c, lh, me, pup_ready_actor(lh->key))) {
+    int dl = deliver_on && !lh_wait.frames ? link_hit_deliver(c, lh, me, pup_ready_actor(lh->key)) : 0;
+    if (dl) atomic_store(&lh_guarded, 0);
+    if (dl) {
         lh_wait.frames = 12, lh_wait.life = life, lh_wait.damage = lh->damage, lh_wait.key = lh->key;
         rt_log("coop: enemy %08x hit this Link in player %d's game for %d: delivered here as the game's own hit", lh->key, from, lh->damage);
         return;
@@ -2024,8 +2069,42 @@ static void hit_watch_test(uint64_t me) {
         if (dc) coop_watch_writes = 1, phase = coop_watch_arm(dc + off, 8) ? 1 : 2;
     } else if (phase == 1 && t >= to) coop_watch_disarm(), phase = 2;
 }
+// Test (TOTK_COOP_TEST_GUARDSCAN=<t0>,<t1>): this Link's actor (0x3000 bytes) and the objects its +0x228 component
+// table points to (+0..+0x400, 0x800 bytes each), at t0 and t1 world seconds: the 32-bit words that differ, logged
+// for those that stayed the same over the 2 s before t0 (for finding a state such as the shield held up, ZL from t0 to t1).
+static void guard_scan_test(uint64_t me) {
+    static int on = -1, phase;
+    static double t0, t1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_TEST_GUARDSCAN"); on = e && sscanf(e, "%lf,%lf", &t0, &t1) == 2; }
+    if (!on || !me || phase > 2) return;
+    enum { AW = 0x3000 / 4, CN = 0x400 / 8, CW = 0x800 / 4 };
+    static uint32_t a[3][AW], cc[3][CN][CW];
+    static uint64_t comps[CN];
+    double t = frame_step_world_us() / 1e6, at[3] = {t0 - 2, t0 - 0.2, t1};
+    if (t < at[phase]) return;
+    uint64_t tab = coop_rd_ptr(me + 0x228);
+    if (phase == 0 && tab) coop_rd(tab, comps, sizeof comps);
+    coop_rd(me, a[phase], sizeof a[phase]);
+    for (int k = 0; k < CN; k++) if (comps[k] > 0x100000000ull && comps[k] < 0x8000000000ull) coop_rd(comps[k], cc[phase][k], sizeof cc[phase][k]);
+    if (++phase < 3) return;
+    char line[1600];
+    int m = snprintf(line, sizeof line, "coop: test: guardscan actor:");
+    for (int i = 0; i < AW && m < 1500; i++)
+        if (a[0][i] == a[1][i] && a[1][i] != a[2][i]) m += snprintf(line + m, sizeof line - m, " +%#x:%x>%x", i * 4, a[1][i], a[2][i]);
+    rt_log("%s", line);
+    for (int k = 0; k < CN; k++) {
+        if (!comps[k]) continue;
+        m = snprintf(line, sizeof line, "coop: test: guardscan comp +%#x:", k * 8);
+        int any = 0;
+        for (int i = 0; i < CW && m < 1500; i++)
+            if (cc[0][k][i] == cc[1][k][i] && cc[1][k][i] != cc[2][k][i] && cc[2][k][i] - cc[1][k][i] + 0u < 0x100000u)
+                m += snprintf(line + m, sizeof line - m, " +%#x:%x>%x", i * 4, cc[1][k][i], cc[2][k][i]), any = 1;
+        if (any) rt_log("%s", line);
+    }
+}
 static void peer_tick(Cpu *c, uint64_t me) {
     pup_me = me;
+    guard_scan_test(me);
     hit_watch_test(me);
     link_hit_check(me);
     int my_id = coop_net_id();

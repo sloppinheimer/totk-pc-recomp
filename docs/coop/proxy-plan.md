@@ -203,9 +203,18 @@ right in the tester's own two-pad session.
     update itself, the Link knocked back down the stairs in that game's frames. What did not work: the record's words
     copied into the Link (not taken, as with a fan); flag +0xe0 bit 3 to skip the guard check (it is the guard's
     result: every hit blocked); the delivery from the co-op tick (it raced the update on another thread and broke an
-    object at +0x1238: two crashes). Untested: a shield block or perfect guard by that player (the guard check sees
-    the blank attack, not the enemy's), the attacker handle (TOTK_COOP_LINKHIT_ATTACKER=1 names the frozen copy; untried
-    with the update-time delivery).
+    object at +0x1238: two crashes). The attacker handle (TOTK_COOP_LINKHIT_ATTACKER=1 names the frozen copy) is
+    untried with the update-time delivery.
+  - **A raised shield does not block them** (guard_3rd.txt in both games: four hits of 3 through the shield, life
+    14 -> 2). A blocked hit reaches main+0x31dbc0 with damage 0 and nothing else of it different (TOTK_COOP_TEST_LINKHIT
+    on a guarding Link's own hits, five of them, life kept), so the block is made where the hit is built, from the
+    attack's contact with the shield. Not by: the guard check the delivery runs (main+0x1cd380c from main+0x1cceaac;
+    with the Link's own attack object, dc+0x18d0, still never guarded); the Link's listener (vtable +0x48,
+    main+0x1cca59c, the Player's damage filter: damage 3 -> 3 with the shield up, and no second armor cut without it);
+    the proxy's own update with ZL let through in the owner's game (its hits still unguarded there). Next: replay the
+    contact, not the hit (TotK Online's way, read for behaviour: the contact report appended to the attacker's sensor
+    in the player's game, whose own processing builds the hit, guard and all); first whether a frozen enemy copy's
+    sensor takes a contact at all.
   - **Its weapons** (a play session: one lagged in the frozen enemy's hand and could be taken from it): the owner
     sends the Weapon_ actors within 2.5 m that are no Link's with each pose; the other games freeze theirs of that name
     nearest that place and put it there after the enemy's model push, its body 300 m under it. Pair test on the tester's
