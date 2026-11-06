@@ -7,10 +7,11 @@
 #   -FakeDyeA ",,,,3,3": game A reports these armor dyes (slot order; empty keeps the real one)
 #   -QuitBAfter 60: game B is closed 60 s after it starts (a player leaving)
 #   -SpawnA / -SpawnB "Enemy_Bokoblin_Junior@20": that game spawns the actor beside its Link at that world time
+#   -ShotsSmall: the screenshots box-filtered to 480x270 (else full size)
 #   -Profile build\prof-play-1: both games play copies of that profile instead of the 1.4.3 one (it is not written)
 #   -FakeAtA 25: game A's fakes (-FakeGearA, -FakeDyeA, -FakeHandA) apply only from 25 s into its world
 param([int]$Seconds = 90, [string]$ScriptA = "tools\coop\walk.txt", [string]$ScriptB = "tools\coop\idle.txt", [string]$FakeGearA = "", [string]$FakeDyeA = "", [string]$FakeHandA = "",
-      [string]$ShotsA = "", [string]$ShotsB = "", [string]$ShotsDir = "", [int]$QuitBAfter = 0, [string]$FakeAtA = "", [string]$SpawnA = "", [string]$SpawnB = "", [string]$Profile = "build\profile-v143")
+      [string]$ShotsA = "", [string]$ShotsB = "", [string]$ShotsDir = "", [int]$QuitBAfter = 0, [string]$FakeAtA = "", [string]$SpawnA = "", [string]$SpawnB = "", [string]$Profile = "build\profile-v143", [switch]$ShotsSmall)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
@@ -48,7 +49,7 @@ foreach ($g in @(@{dir = $a; prof = 'build\prof-coop-a'; script = $ScriptA; name
     $spawn = if ($g.name -eq 'A') { $SpawnA } else { $SpawnB }
     if ($spawn) { $env:TOTK_COOP_TEST_SPAWN = $spawn } elseif ($SpawnA -or $SpawnB) { Remove-Item Env:TOTK_COOP_TEST_SPAWN -ErrorAction SilentlyContinue }
     $shots = if ($g.name -eq 'A') { $ShotsA } else { $ShotsB }
-    if ($shots) { $sd = Join-Path $ShotsDir $g.name; New-Item -ItemType Directory -Force $sd | Out-Null; $env:TOTK_SHOTS = $shots; $env:TOTK_SHOTS_DIR = $sd; $env:TOTK_SHOTS_FULL = '1' }
+    if ($shots) { $sd = Join-Path (Join-Path $root $ShotsDir) $g.name; New-Item -ItemType Directory -Force $sd | Out-Null; $env:TOTK_SHOTS = $shots; $env:TOTK_SHOTS_DIR = $sd; if ($ShotsSmall) { Remove-Item Env:TOTK_SHOTS_FULL -ErrorAction SilentlyContinue } else { $env:TOTK_SHOTS_FULL = '1' } }
     else { Remove-Item Env:TOTK_SHOTS, Env:TOTK_SHOTS_DIR, Env:TOTK_SHOTS_FULL -ErrorAction SilentlyContinue }
     $games += Start-Quiet (Join-Path $g.dir 'totk.exe') '' $g.dir
     Start-Sleep 3
