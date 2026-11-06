@@ -1495,6 +1495,14 @@ static void place_copy(Cpu *c, Slot *s, int k) {
     }
     memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_POS), s->mir[k].pos, 12);
     memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_ROT), s->mir[k].rot, 36);
+    // An arrow's copy at the other player's bow could still be taken (it stayed there; a sparkling spot with an
+    // invisible arrow was left where it was taken, and gave an arrow again each time the owner shot; the tester's
+    // session, 2026-11-05). The pick-up goes by the actor's place: that is kept 300 m under it, as its body; it is
+    // drawn from its model matrix, below.
+    if (strstr(s->mir[k].name, "Arrow")) {
+        float low[3] = {s->mir[k].pos[0], s->mir[k].pos[1] - 300.0f, s->mir[k].pos[2]};
+        memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_POS), low, 12);
+    }
     uint64_t model = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x8) + 0x28);
     static int copylog = -1, n;   // TOTK_COOP_TEST_COPYLOG=1: where each copy is put, every 30th time (test)
     if (copylog < 0) copylog = cfg_get("TOTK_COOP_TEST_COPYLOG") != NULL;
@@ -2094,6 +2102,38 @@ static void arrow_dump(void) {
     char n1[48], n2[48];
     rt_log("coop: test: arrow dump: own %s %llx, copy %s %llx", coop_actor_name(own, n1, sizeof n1), (unsigned long long)own,
            coop_actor_name(copy, n2, sizeof n2), (unsigned long long)copy);
+}
+// Test (TOTK_COOP_TEST_PROXYARROWS=1): every 30 ticks, each actor (the reference pool: at rest too) with "Arrow" or a fused material in its name
+// within 2 m of a co-op Link here: whether it is one of this game's copies, its state, how far from the Link. For
+// the one arrow another player could still take at the proxy's bow (a play session, 2026-11-05).
+typedef struct { float at[3]; int n; } ProxyArrowScan;
+static void proxy_arrow_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
+    ProxyArrowScan *ps = arg;
+    (void)key;
+    if (!strstr(nm, "Arrow") && strcmp(nm, "BombFruit")) return;
+    float p[3];
+    if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+    float d2 = (p[0] - ps->at[0]) * (p[0] - ps->at[0]) + (p[1] - ps->at[1]) * (p[1] - ps->at[1]) + (p[2] - ps->at[2]) * (p[2] - ps->at[2]);
+    if (d2 > 4) return;
+    Slot *cs;
+    int ck, mine = 0;
+    for (int i = 0; i < 32; i++) mine |= my_arrows[i].actor == a;
+    int32_t st = 0;
+    coop_rd(a + COOP_ACTOR_STATE, &st, 4);
+    if (ps->n++ < 8)
+        rt_log("coop: test: proxy arrows %.2f s: %s %llx %s, state %d, %.2f m from the co-op Link", frame_step_world_us() / 1e6, nm,
+               (unsigned long long)a, copy_of(a, &cs, &ck) ? "(a copy)" : mine ? "(this Link's)" : "(neither: the proxy's own?)", st, sqrtf(d2));
+}
+static void proxy_arrows_test(void) {
+    static int on = -1, t;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_PROXYARROWS") != NULL;
+    if (!on || ++t % 30) return;
+    void coop_actors_all(void (*fn)(uint64_t, const char *, uint32_t, void *), void *arg);   // coop_world.c: at rest too
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++) {
+        ProxyArrowScan ps = {{0}, 0};
+        if (!slots[i].actor || !coop_rd(slots[i].actor + COOP_ACTOR_POS, ps.at, 12)) continue;
+        coop_actors_all(proxy_arrow_fn, &ps);
+    }
 }
 // Both games: where the object a co-op player moved last is here (for the test above).
 static void props_test_where(void) {
@@ -3263,7 +3303,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         if (fw && *fw) st.weather = atoi(fw);
         coop_net_publish(&st);
         if (coop_proxy_mode()) props_receive(c), ride_carry(c, me);   // placed objects co-op players move; riding them
-        props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump();
+        props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test();
     }
     armor_probe(me);
     arrow_log(me);
