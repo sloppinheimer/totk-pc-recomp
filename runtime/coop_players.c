@@ -1404,7 +1404,9 @@ static void arrow_copies(Cpu *c, Slot *s) {
                 arrow_watch_start(s->mir[k].actor, s->mir[k].name);
             }
         } else if (s->mir[k].state == 3 && ++s->mir[k].ticks >= COPY_WARMUP) {
-            if (pickable(s->mir[k].name)) {   // picked up here?
+            // picked up here? An arrow's copy too: awake, a stuck arrow's copy could be picked up again and again
+            // (a play session, 2026-11-05)
+            if (pickable(s->mir[k].name) || strstr(s->mir[k].name, "Arrow")) {
                 int32_t st = 0;
                 char nm[48];
                 float me_p[3] = {1e9f, 1e9f, 1e9f}, *q = s->mir[k].pos;
@@ -2222,6 +2224,12 @@ static void objs_receive(Cpu *c) {
                 CoopObj o;
                 memcpy(&o, pk + 4 + e * sizeof(CoopObj), sizeof o);
                 if (o.flags != coop_net_id()) continue;
+                for (int i = 0; i < 32; i++)   // an arrow of this Link's (picked up where it stuck)
+                    if (my_arrows[i].actor && my_arrows[i].mine && my_arrows[i].id == o.id) {
+                        rt_log("coop: player %d picked up my arrow (number %u); mine is deleted", from, o.id);
+                        coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, my_arrows[i].actor, COOP_DELETE_REASON, 0, 0);
+                        my_arrows[i].actor = 0;
+                    }
                 for (int i = 0; i < PROPS_N; i++)   // one it made (by number) or a placed one it moved (by key)
                     if (props[i].actor && ((props[i].made && props[i].id == o.id) ||
                                            (!props[i].made && (o.id & COOP_OBJ_KEYED) && (COOP_OBJ_KEYED | (props[i].key & ~COOP_OBJ_KEYED)) == o.id))) {
