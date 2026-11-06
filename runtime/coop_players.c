@@ -1406,6 +1406,20 @@ static void arrow_copies(Cpu *c, Slot *s) {
                     s->mir[k].state = 0, s->mir[k].actor = 0;
                     continue;
                 }
+            } else if (!strstr(s->mir[k].name, "Arrow")) {
+                // Destroyed here (a bomb flower's copy shot by this game's Link blew up, a play session,
+                // 2026-11-05): the owner's own goes too (the same notice as a pick-up), so it cannot be picked up
+                // there again; it went off there only when the copy of this Link's arrow happened to touch it.
+                int32_t st = 0;
+                char nm[48];
+                if (!coop_rd(s->mir[k].actor + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 ||
+                    strcmp(coop_actor_name(s->mir[k].actor, nm, sizeof nm), s->mir[k].name)) {
+                    rt_log("coop: slot %d: the copy of object %u (%s) went away here (state %d); the owner is told",
+                           (int)(s - slots), s->mir[k].id, s->mir[k].name, st);
+                    take_note(s->net_id, s->mir[k].id);
+                    s->mir[k].state = 0, s->mir[k].actor = 0;
+                    continue;
+                }
             }
             place_copy(c, s, k);
         }
@@ -1878,6 +1892,17 @@ static void props_test(Cpu *c, uint64_t me) {
         float m[12] = {1, 0, 0, base[0], 0, 1, 0, base[1] + (float)(now - 28) * 0.75f, 0, 0, 1, base[2]};
         coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, obj, (uint64_t)(uintptr_t)m, 0, 0);
     }
+    // TOTK_COOP_TEST_PROPS=kill: at 32 s the other game deletes its copy of the BombFruit, as a blast would; the
+    // first game's own one should go too (the destroyed-copy notice).
+    static int killed;
+    if (!killed && now > 32 && coop_net_id() != 1 && !strcmp(cfg_get("TOTK_COOP_TEST_PROPS"), "kill"))
+        for (int i = 0; i < COOP_MAX_PLAYERS && !killed; i++)
+            for (int k = 0; k < COOP_OBJS && !killed; k++)
+                if (slots[i].mir[k].state == 3 && !strcmp(slots[i].mir[k].name, "BombFruit")) {
+                    coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, slots[i].mir[k].actor, COOP_DELETE_REASON, 0, 0);
+                    killed = 1;
+                    rt_log("coop: test: props: the copy of BombFruit %u is deleted here", slots[i].mir[k].id);
+                }
 }
 // Test (TOTK_COOP_TEST_PICKUP=1, or =sword for a Weapon_Sword_001, both games on the 100% save; pickup_b_3rd.txt in game B): at 21 s both Links are
 // put on the flat ground the fan test uses, 1.2 m apart and facing each other (player 1 at z 1510.2 facing +z, the
@@ -2127,7 +2152,7 @@ static void objs_receive(Cpu *c) {
                 for (int i = 0; i < PROPS_N; i++)   // one it made (by number) or a placed one it moved (by key)
                     if (props[i].actor && ((props[i].made && props[i].id == o.id) ||
                                            (!props[i].made && (o.id & COOP_OBJ_KEYED) && (COOP_OBJ_KEYED | (props[i].key & ~COOP_OBJ_KEYED)) == o.id))) {
-                        rt_log("coop: player %d picked up my %s (%08x); mine is deleted", from, props[i].name, o.id);
+                        rt_log("coop: player %d picked up or destroyed my %s (%08x); mine is deleted", from, props[i].name, o.id);
                         coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, props[i].actor, COOP_DELETE_REASON, 0, 0);
                         set_driven(props[i].actor);   // not taken for a new object of this game's while it goes away
                         props[i].actor = 0;
