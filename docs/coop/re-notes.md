@@ -791,3 +791,19 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   checks before setting the label; actor +0x3e8 holds main+0x3a4e008 on originals only). Making the copy through
   that same path, or finding what that record changes in the model at load, is the next step: hook main+0x6898dc
   to log the record during a build.
+
+## Proxy hair and clothes stay blown after a fan (open)
+the tester (2026-11-05): after a fan's wind hits the proxy, its hair and clothes keep flapping as if in wind, on that
+screen only, after the fan is off. Likely cause: the proxy runs none of its own update, and something in it sets the
+wind its cloth feels; the proxy's swing thaw (40 frames of its own update) ran while the copy fan blew, and nothing
+reset it after. Pair test fan_hits_3rd.txt with TOTK_COOP_TEST_FANSET=9 (the copy fan in B blows on A's proxy).
+What was looked at, none of it holding the wind:
+- Body bones (skeleton +0x20, 127 bones, which hold the hair): standing, the proxy's bones shake 0.2 mm a frame on
+  both screens (this Link 0.06 mm), no fast flapping. The flapping is not in those matrices.
+- The proxy's actor (0x3000 bytes) and 0x400 bytes of each of its first 128 components, dumped at the hit, 4 s later
+  and 8 s after the fan went off: nothing that changed in the wind and stayed, besides positions.
+- Havok cloth wind: TthclSimpleWindAction (vtable main+0x35c4888; base wind +0x20, gust +0x40 made by
+  main+0x150dcb4 each frame). A search of all committed memory found no object of that class in the scene, so the
+  Link's cloth does not use it.
+Next: find what moves the hair on screen (a bone set after the pose write, or a shader wind), then what sets its
+wind; a write watch (coop_watch_arm with coop_watch_writes) on it would name the setter.
