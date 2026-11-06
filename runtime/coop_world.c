@@ -9,6 +9,7 @@
 // pose, life and death and send it their hits (peer_tick and the enemy puppets, below). Enemies near no other Link
 // are each game's own.
 #include <math.h>
+#include <stddef.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1556,7 +1557,13 @@ typedef struct { uint16_t count, reserved; NetEnemy e[MAX_SENT]; } WorldPacket;
 typedef struct { uint32_t key; int32_t damage; uint32_t to; } HitPacket;   // to: the owner's player id
 // An enemy's hit on a player's proxy here, for that player (to): the enemy's key and the damage (quarter hearts).
 // Told from a HitPacket by its size.
-typedef struct { uint32_t key; int32_t damage; uint32_t to, kind, flags; } LinkHitPacket;
+// Then nslots LinkHitSlot: the 8-byte slots of the hit's record (damage component +0x1a0..+0x300) the hit changed,
+// with how a pointer is moved into the other game (how).
+enum { LH_RAW, LH_DC, LH_ACTOR, LH_ATTACKER };
+typedef struct { uint8_t slot, how, pad[6]; uint64_t v; } LinkHitSlot;
+#define LH_SLOTS (0x160 / 8)
+typedef struct { uint32_t key; int32_t damage; uint32_t to, kind, flags, nslots; LinkHitSlot s[LH_SLOTS]; } LinkHitPacket;
+_Static_assert(sizeof(LinkHitPacket) <= COOP_HIT_MAX, "LinkHitPacket fits a HIT packet");
 #define LINKHIT_KIND 0x4c48   // "HL"
 
 // The enemies this game runs, as last seen (for the hits on them, their deaths and their poses); d2 the square of the
@@ -1770,13 +1777,18 @@ static void link_hits_send(void) {
     int ids[COOP_MAX_PLAYERS], n = coop_player_actors(acts, ids, COOP_MAX_PLAYERS);
     static uint64_t last_actor[COOP_MAX_PLAYERS];
     static uint32_t last_state[COOP_MAX_PLAYERS];
+    static uint64_t idle[COOP_MAX_PLAYERS][LH_SLOTS];   // the record as it stood before the hit
     for (int i = 0; i < n; i++) {
         uint64_t dc = coop_rd_ptr(coop_rd_ptr(acts[i] + 0x228) + 0x2f8);
+        uint64_t rs[LH_SLOTS];
+        if (!dc || !coop_rd(dc + 0x1a0, rs, sizeof rs)) continue;
         uint32_t w[0x28 / 4];
-        if (!dc || !coop_rd(dc + 0x1a0, w, sizeof w)) continue;
+        memcpy(w, rs, sizeof w);
         uint32_t st = w[1], was = last_actor[i] == acts[i] ? last_state[i] : st;
+        int fresh = last_actor[i] != acts[i];
         last_actor[i] = acts[i], last_state[i] = st;
-        if (!st || st == was) continue;
+        if (!st) { memcpy(idle[i], rs, sizeof rs); continue; }
+        if (st == was || fresh) continue;
         uint64_t ref;
         memcpy(&ref, &w[0x20 / 4], 8);
         uint64_t att = ref ? coop_rd_ptr(ref + 0x40) : 0;
@@ -1789,13 +1801,52 @@ static void link_hits_send(void) {
             rt_log("coop: %s %08x hit player %d's Link here for %d%s", nm[0] ? nm : "something", key, ids[i], dmg,
                    key && dmg > 0 ? ", sent to them" : "");
         if (!key || dmg <= 0 || dmg > 4000) continue;
-        LinkHitPacket lh = {key, dmg, (uint32_t)ids[i], LINKHIT_KIND, w[0x30 / 4]};
-        coop_net_hit_send(&lh, sizeof lh);
+        // The record's slots the hit changed, pointers made relative to the proxy's damage component or actor, or
+        // marked as the attacker's reference, so the player's game can write the same hit into its own Link.
+        static LinkHitPacket lh;
+        memset(&lh, 0, sizeof lh);
+        lh.key = key, lh.damage = dmg, lh.to = (uint32_t)ids[i], lh.kind = LINKHIT_KIND, lh.flags = w[0x30 / 4];
+        for (int k = 0; k < LH_SLOTS; k++) {
+            if (rs[k] == idle[i][k]) continue;
+            LinkHitSlot *e = &lh.s[lh.nslots++];
+            uint64_t v = rs[k];
+            e->slot = (uint8_t)k;
+            if (v == ref) e->how = LH_ATTACKER, e->v = 0;
+            else if (v >= dc && v < dc + 0x2000) e->how = LH_DC, e->v = v - dc;
+            else if (v >= acts[i] && v < acts[i] + 0x3000) e->how = LH_ACTOR, e->v = v - acts[i];
+            else e->how = LH_RAW, e->v = v;
+        }
+        coop_net_hit_send(&lh, (int)(offsetof(LinkHitPacket, s) + lh.nslots * sizeof(LinkHitSlot)));
     }
 }
+static uint64_t pup_ready_actor(uint32_t key);
+// An actor's reference object (+0x40 the actor), from a pointer in the actor's first 0x1000 bytes: what a hit record
+// names its attacker by. 0 none found.
+static uint64_t actor_ref(uint64_t a) {
+    static uint64_t w[0x1000 / 8];
+    if (!a || !coop_rd(a, w, sizeof w)) return 0;
+    for (int i = 0; i < 0x1000 / 8; i++)
+        if (w[i] > 0x100000000ull && w[i] < 0x8000000000ull && coop_rd_ptr(w[i] + 0x40) == a) return w[i];
+    return 0;
+}
+// A hit written into this Link's record waits to be taken by its own update; if its life has not gone down by then,
+// the damage is taken off it directly.
+static struct { int frames, life, damage; uint32_t key; } lh_wait;
+static void link_hit_check(uint64_t me) {
+    if (!lh_wait.frames || --lh_wait.frames) return;
+    int life = life_of(me);
+    if (life >= lh_wait.life && life > 0) {
+        int now = life - lh_wait.damage < 0 ? 0 : life - lh_wait.damage;
+        set_life(me, now);
+        rt_log("coop: the hit by enemy %08x was not taken from its record here: life %d -> %d directly", lh_wait.key, life, now);
+    } else rt_log("coop: the hit by enemy %08x was taken by this Link (life %d -> %d)", lh_wait.key, lh_wait.life, life);
+}
 // A hit on this Link's proxy in another game, by an enemy that game runs: taken here, when this game shows that
-// enemy as that game's (it follows it: its own one does not attack). The life goes down by the damage; the hit's
-// knock-back and flinch are not made here.
+// enemy as that game's (it follows it: its own one does not attack). The life goes down by the damage; no knock-back
+// or flinch. TOTK_COOP_LINKHIT_RECORD=1 (a test) writes the hit's record into this Link's damage component instead,
+// with this game's frozen copy of the enemy as the attacker: its update did not take it (life unchanged 12 frames
+// later, twice; 2026-11-06), as a fan given another's record (re-notes): the hit goes somewhere else too. The damage
+// is then taken off directly.
 static void link_hit_take(const LinkHitPacket *lh, int from, uint64_t me) {
     const Follow *f = NULL;
     for (int k = 0; k < FOLLOW_N; k++) if (follow[k].key == lh->key) f = &follow[k];
@@ -1805,19 +1856,43 @@ static void link_hit_take(const LinkHitPacket *lh, int from, uint64_t me) {
     }
     int life = life_of(me);
     if (life <= 0) return;
+    static int rec_on = -1;
+    if (rec_on < 0) { const char *e = cfg_get("TOTK_COOP_LINKHIT_RECORD"); rec_on = e && *e == '1'; }
+    uint64_t att = pup_ready_actor(lh->key), ref = rec_on ? actor_ref(att) : 0;
+    uint64_t dc = coop_rd_ptr(coop_rd_ptr(me + 0x228) + 0x2f8);
+    uint32_t cur = 1;
+    if (dc) coop_rd(dc + 0x1a4, &cur, 4);
+    if (ref && dc && !cur && lh->nslots && lh->nslots <= LH_SLOTS && !lh_wait.frames) {
+        const LinkHitSlot *first = NULL;
+        for (int pass = 0; pass < 2; pass++)   // slot 0 (with the state word +0x1a4) last: the update takes it then
+            for (uint32_t k = 0; k < lh->nslots; k++) {
+                const LinkHitSlot *e = &lh->s[k];
+                if (e->slot >= LH_SLOTS || (pass == 0) == (e->slot == 0)) continue;
+                uint64_t v = e->how == LH_ATTACKER ? ref : e->how == LH_DC ? dc + e->v : e->how == LH_ACTOR ? me + e->v : e->v;
+                memcpy((void *)(uintptr_t)(dc + 0x1a0 + e->slot * 8), &v, 8);
+                if (!first) first = e;
+            }
+        lh_wait.frames = 12, lh_wait.life = life, lh_wait.damage = lh->damage, lh_wait.key = lh->key;
+        rt_log("coop: enemy %08x hit this Link in player %d's game for %d: its record (%u slots) written here, the attacker this game's copy",
+               lh->key, from, lh->damage, lh->nslots);
+        return;
+    }
     int now = life - lh->damage < 0 ? 0 : life - lh->damage;
     set_life(me, now);
-    rt_log("coop: enemy %08x hit this Link in player %d's game for %d (life %d -> %d)", lh->key, from, lh->damage, life, now);
+    rt_log("coop: enemy %08x hit this Link in player %d's game for %d (life %d -> %d%s)", lh->key, from, lh->damage, life, now,
+           !rec_on ? "" : !ref ? "; no copy of it here to hit with" : cur ? "; a hit of its own was being taken" : "");
 }
 static void peer_tick(Cpu *c, uint64_t me) {
     pup_me = me;
+    link_hit_check(me);
     int my_id = coop_net_id();
     // Hits from the others on the enemies this game runs: the damage taken from this game's one.
     HitPacket hp;
     int from = 0, n;
-    LinkHitPacket lhp;
+    static LinkHitPacket lhp;
     while ((n = coop_net_hit_take(&lhp, sizeof lhp, &from)) != 0) {
-        if (n == (int)sizeof lhp && lhp.kind == LINKHIT_KIND) {
+        if (n >= (int)offsetof(LinkHitPacket, s) && lhp.kind == LINKHIT_KIND && lhp.nslots <= LH_SLOTS &&
+            n == (int)(offsetof(LinkHitPacket, s) + lhp.nslots * sizeof(LinkHitSlot))) {
             if ((int)lhp.to == my_id && lhp.damage > 0 && lhp.damage <= 4000) link_hit_take(&lhp, from, me);
             continue;
         }
@@ -1971,6 +2046,10 @@ static void pup_release(uint32_t key) {
     }
     pups[i].key = 0, pups[i].count = 0;
     plat_mutex_unlock(&pup_lock);
+}
+static uint64_t pup_ready_actor(uint32_t key) {   // this game's frozen copy of it, 0 none
+    int i = pup_find(key);
+    return i >= 0 && atomic_load(&pups[i].ready) ? atomic_load(&pups[i].actor) : 0;
 }
 static int pup_ready_key(uint32_t key) {
     int i = pup_find(key);

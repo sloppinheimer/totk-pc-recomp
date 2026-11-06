@@ -189,7 +189,9 @@ right in the tester's own two-pad session.
     (and the frozen copy in their own game never attacks). The hit's record on the proxy (damage component +0x1a4,
     damage in quarter hearts at +0x1a8, the attacker's reference at +0x1c0) is sent to that player, whose life goes
     down by it when its game follows that enemy (pair test: two hits of 1, life 14 -> 13 -> 12 and kept). No knock-back
-    or flinch there.
+    or flinch there: the hit's record written into that player's own Link (its changed slots, pointers moved over, the
+    attacker this game's copy; TOTK_COOP_LINKHIT_RECORD=1) is not taken by its update, as with a fan (protocol 16:
+    hits carry the record). Next: find what the hit hands its target besides the record (needs Ghidra).
   - **Its weapons** (a play session: one lagged in the frozen enemy's hand and could be taken from it): the owner
     sends the Weapon_ actors within 2.5 m that are no Link's with each pose; the other games freeze theirs of that name
     nearest that place and put it there after the enemy's model push, its body 300 m under it. Pair test on the tester's

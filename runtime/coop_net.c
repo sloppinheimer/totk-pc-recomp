@@ -60,7 +60,7 @@ static struct { uint8_t d[COOP_POSE_MAX]; int len; uint64_t at_ns; } pose_in[COO
 static struct { uint8_t d[COOP_OBJS_PACKET_MAX]; int len, from; } objs_out[OBJQ], objs_in[OBJQ];   // lock
 static int objs_out_n, objs_in_n;   // lock
 #define HITQ 64
-static struct { uint8_t d[64]; int len, from; } hit_out[HITQ], hit_in[HITQ];   // lock
+static struct { uint8_t d[COOP_HIT_MAX]; int len, from; } hit_out[HITQ], hit_in[HITQ];   // lock
 static int hit_out_n, hit_in_n;   // lock
 
 static void header(uint8_t *p, int kind) { memcpy(p, "TKCO", 4), p[4] = VERSION, p[5] = (uint8_t)kind, p[6] = (uint8_t)my_id, p[7] = 0; }
@@ -153,10 +153,10 @@ static void net_thread(void *arg) {
         if (my_id) {   // the world packet (host, about 10 a second) and queued hits, as they come
             uint8_t w[HEADER + WORLD_MAX];
             int wl = 0, nh = 0;
-            struct { uint8_t d[64]; int len; } hits[HITQ];
+            static struct { uint8_t d[COOP_HIT_MAX]; int len; } hits[HITQ];
             plat_mutex_lock(&lock);
             if (world_out_new) memcpy(w + HEADER, world_out, world_out_len), wl = world_out_len, world_out_new = 0;
-            for (int i = 0; i < hit_out_n; i++) memcpy(hits[i].d, hit_out[i].d, 64), hits[i].len = hit_out[i].len;
+            for (int i = 0; i < hit_out_n; i++) memcpy(hits[i].d, hit_out[i].d, hit_out[i].len), hits[i].len = hit_out[i].len;
             nh = hit_out_n, hit_out_n = 0;
             plat_mutex_unlock(&lock);
             if (wl) header(w, WORLD), sendto(s, (const char *)w, HEADER + wl, 0, res->ai_addr, (int)res->ai_addrlen);
@@ -266,7 +266,7 @@ static void net_thread(void *arg) {
             if (objs_in_n < OBJQ) memcpy(objs_in[objs_in_n].d, buf + HEADER, n - HEADER), objs_in[objs_in_n].len = n - HEADER,
                                   objs_in[objs_in_n].from = id, objs_in_n++;
             plat_mutex_unlock(&lock);
-        } else if (kind == HIT && n - HEADER <= 64) {
+        } else if (kind == HIT && n - HEADER <= COOP_HIT_MAX) {
             plat_mutex_lock(&lock);
             if (hit_in_n < HITQ) memcpy(hit_in[hit_in_n].d, buf + HEADER, n - HEADER), hit_in[hit_in_n].len = n - HEADER,
                                  hit_in[hit_in_n].from = id, hit_in_n++;
@@ -430,7 +430,7 @@ int coop_net_objs_take(void *out, int max, int *from) {
 }
 
 void coop_net_hit_send(const void *data, int len) {
-    if (len < 0 || len > 64) return;
+    if (len < 0 || len > COOP_HIT_MAX) return;
     plat_mutex_lock(&lock);
     if (hit_out_n < HITQ) memcpy(hit_out[hit_out_n].d, data, len), hit_out[hit_out_n].len = len, hit_out_n++;
     plat_mutex_unlock(&lock);
