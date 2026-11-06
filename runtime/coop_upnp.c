@@ -133,6 +133,7 @@ static const char *xml_value(const char *from, const char *tag, char *out, size_
 typedef struct { char host[128], path[256], service[128]; int port; } Gateway;
 
 // Steps 1 and 2: the gateway's control URL and service type.
+static int private_v4(const char *ip);   // (below)
 static int find_gateway(Gateway *gw, char *why, size_t wn) {
     Sock s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (s == SOCK_BAD) { snprintf(why, wn, "no network socket"); return 0; }
@@ -156,12 +157,19 @@ static int find_gateway(Gateway *gw, char *why, size_t wn) {
         }
         uint64_t until = plat_now_ns() + 2500000000ull;
         while (plat_now_ns() < until && nloc < 8) {
-            int n = (int)recvfrom(s, msg, sizeof msg - 1, 0, NULL, NULL);
+            struct sockaddr_in from = {0};
+            socklen_t fl = sizeof from;
+            int n = (int)recvfrom(s, msg, sizeof msg - 1, 0, (struct sockaddr *)&from, &fl);
             if (n <= 0) continue;
             msg[n] = 0;
-            char loc[512];
+            char loc[512], sip[64] = "", lh[128];
+            int lport = 80;
+            char lpath[256];
             header_value(msg, "LOCATION", loc, sizeof loc);
-            int seen = !loc[0];
+            inet_ntop(AF_INET, &from.sin_addr, sip, sizeof sip);
+            // Only a description on the device that answered, on this LAN: any device's answer named the hosts the
+            // requests then went to (code review, 2026-11-06).
+            int seen = !loc[0] || !private_v4(sip) || !split_url(loc, lh, sizeof lh, &lport, lpath, sizeof lpath) || strcmp(lh, sip);
             for (int i = 0; i < nloc && !seen; i++) seen = !strcmp(locs[i], loc);
             if (!seen) snprintf(locs[nloc++], sizeof locs[0], "%s", loc);
         }
@@ -188,7 +196,10 @@ static int find_gateway(Gateway *gw, char *why, size_t wn) {
             gw->port = port;
             if (!strncmp(ctl, "http://", 7)) {
                 char h2[128];
-                split_url(ctl, h2, sizeof h2, &gw->port, gw->path, sizeof gw->path);
+                int p2 = port;
+                // (on the same device only)
+                if (!split_url(ctl, h2, sizeof h2, &p2, gw->path, sizeof gw->path) || strcmp(h2, host)) continue;
+                gw->port = p2;
                 snprintf(gw->host, sizeof gw->host, "%s", h2);
             } else
                 snprintf(gw->path, sizeof gw->path, "%s%s", ctl[0] == '/' ? "" : "/", ctl);

@@ -48,7 +48,11 @@ static void relay_thread(void *arg) {
     Sock s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     struct sockaddr_in me = {0};
     me.sin_family = AF_INET, me.sin_port = htons((uint16_t)port), me.sin_addr.s_addr = htonl(INADDR_ANY);
-    if (s == SOCK_BAD || bind(s, (struct sockaddr *)&me, sizeof me)) {
+    // (tried for up to 0.6 s: a relay stopped just before keeps the port until its receive times out, 0.2 s, and a
+    // relay started right after found it taken; code review, 2026-11-06)
+    int bound = 0;
+    for (int t = 0; s != SOCK_BAD && t < 6 && !(bound = !bind(s, (struct sockaddr *)&me, sizeof me)) && relay_gen == gen; t++) plat_sleep_ms(100);
+    if (s == SOCK_BAD || !bound) {
         rt_log("coop relay: cannot use UDP port %d (another relay or game there?)", port);
         if (s != SOCK_BAD) closesocket(s);
         if (relay_gen == gen) relay_port = 0;

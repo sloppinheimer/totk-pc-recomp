@@ -736,6 +736,8 @@ static uint8_t neutral[0x200];    // the input object while nothing is held: coo
 static _Atomic int neutral_ok;
 
 int coop_players_calc(Cpu *c, uint64_t addr);    // coop_players.c
+void coop_ctl_enter(void);                       // the controller lock (below)
+void coop_ctl_leave(void);
 int coop_puppet_place(Cpu *c, uint64_t addr);   // coop_players.c: a puppet put at its owner after its physics step
 void coop_players_tick(Cpu *c, int numpad3);
 uint64_t coop_players_first(void);
@@ -780,6 +782,19 @@ static int calc_wrap(Cpu *c, uint64_t addr) {
         return 1;
     }
     (void)in_calc;
+    // This PC's Link: its update takes the controller lock (above), so no co-op Link's controller is in the manager
+    // while it reads it. Only while there are co-op Links.
+    static __thread int in_mine;
+    int coop_players_any(void);   // coop_players.c
+    if (!in_mine && actor && actor == player_actor_cached && coop_players_any()) {
+        coop_ctl_enter();
+        in_mine = 1;
+        c->pc = addr;
+        rt_dispatch(c);
+        in_mine = 0;
+        coop_ctl_leave();
+        return 1;
+    }
     return coop_players_calc(c, addr);   // a co-op Player (coop_players.c): run with its own controller
 }
 
@@ -822,12 +837,33 @@ static int create_trace(Cpu *c) {
 // push; both games of a play session, 2026-11-05). One thread at a time runs it now.
 static PlatMutex beam_lock = PLAT_MUTEX_INIT;
 static _Atomic int beam_waits;
+// A lock held across a game call is waited for with this thread's virtual core given up: the holder can give its
+// core up inside the call (kern_checkpoint), and a waiter holding one on the host lock could leave it none (code
+// review, 2026-11-06).
+void coop_lock_wait(PlatMutex *m) {
+    if (plat_mutex_trylock(m)) return;
+    int away = kern_core_away();
+    plat_mutex_lock(m);
+    kern_core_back(&away);
+}
+// The input manager's controller ([mgr+0xa0]) is swapped for a co-op Link's around its update
+// (coop_players_calc); this PC's Link's update and the co-op Links' run on worker threads, so they take turns: two
+// at once could leave the manager on a co-op Link's controller, or let this PC's Link read one (code review).
+// Taken again on a thread that holds it (one update inside another's), it only counts.
+static PlatMutex coop_ctl_lock = PLAT_MUTEX_INIT;
+static __thread int ctl_depth;
+void coop_ctl_enter(void) {
+    if (!ctl_depth++) coop_lock_wait(&coop_ctl_lock);
+}
+void coop_ctl_leave(void) {
+    if (!--ctl_depth) plat_mutex_unlock(&coop_ctl_lock);
+}
 static int beam_hook(Cpu *c, uint64_t addr) {
     static __thread int inside;
     if (inside) return 0;
     if (!plat_mutex_trylock(&beam_lock)) {
         if (atomic_fetch_add(&beam_waits, 1) < 5) rt_log("coop: the Ultrahand beam was drawn by two threads at once; one waits");
-        plat_mutex_lock(&beam_lock);
+        coop_lock_wait(&beam_lock);
     }
     inside = 1;
     c->pc = addr;
@@ -845,7 +881,10 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // An actor's other per-frame update phases besides ACTOR_CALC (its vtable holds main+0x41bb20, main+0x245030,
     // main+0x194fd7c; the actor job also runs main+0x2f9910): a co-op Link's run as its calc (TOTK_COOP_PROF=7 found
     // them: its ragdoll and tips ran there, outside the calc flag) (2026-11-04).
-    if (addr == MOD_MAIN_BASE + 0x245030 || addr == MOD_MAIN_BASE + 0x2f9910 || addr == MOD_MAIN_BASE + 0x194fd7c)
+    // (PlayerCamera's main+0x245030 while the camera follows Link#2 goes on to the camera bracket below: taken here
+    // always, that bracket's case for it never ran; code review, 2026-11-06)
+    int cam_phase = addr == MOD_MAIN_BASE + 0x245030 && !in_camera && c->x[0] && c->x[0] == camera_actor && cam_two && second_player;
+    if ((addr == MOD_MAIN_BASE + 0x245030 && !cam_phase) || addr == MOD_MAIN_BASE + 0x2f9910 || addr == MOD_MAIN_BASE + 0x194fd7c)
         return coop_players_phase(c, addr);
     // main+0x2e9c80 (animation binding): Havok's pose into a g3d model. For the co-op Link's model the copied pose
     // (TOTK_COOP_TEST_SKELCOPY) goes over its own right after, so its own animation does not undo it (2026-11-05).
@@ -975,7 +1014,18 @@ int coop_hook(Cpu *c, uint64_t addr) {
             static _Atomic int said;
             if (atomic_fetch_add(&said, 1) < 8) rt_log("coop: a co-op Link's damage %u not taken here", 0x3fffffffu - after);
         }
-        ST32(p + 8, after > 0x3fffffffu ? before + (after - 0x3fffffffu) : before);
+        // Put back: life lifted for the call and taken off it is not taken; healed above it, the heal is kept. Left at
+        // its most life, it was the clamp of the lifted value: back to before. Set to another value far below the lift,
+        // the game set it outright (a revival, a new most life): that is kept (put back to before, it was lost; code
+        // review, 2026-11-06).
+        uint32_t max = 0;
+        uint64_t pm = rd_ptr(c->x[0] + 0x1838);
+        int have_max = pm && rd(pm + 8, &max, 4);
+        uint32_t put = after > 0x3fffffffu ? before + (after - 0x3fffffffu)
+                     : after > 0x3fff0000u ? before
+                     : (have_max && after == max) ? before
+                     : after;
+        ST32(p + 8, put);
         return 1;
     }
     // main+0x207ea50 (instant tips manager, tip id) queues an instant tip ("To shield surf...") and records the action
@@ -1045,6 +1095,10 @@ int coop_hook(Cpu *c, uint64_t addr) {
         uint32_t r = atomic_fetch_add(&redirects, 1);
         if (!(r & 1023)) rt_log("coop: perception: %u checks taken to a co-op Link so far", r + 1);
         (void)checks;
+        // One swap at a time: two receivers' checks on two threads could leave [mgr+0x58] on a co-op Link's data
+        // for good (code review, 2026-11-06).
+        static PlatMutex perc_lock = PLAT_MUTEX_INIT;
+        coop_lock_wait(&perc_lock);
         uint64_t mine = rd_ptr(mgr + 0x58);
         inside45 = 1;
         ST64(mgr + 0x58, other);
@@ -1052,8 +1106,10 @@ int coop_hook(Cpu *c, uint64_t addr) {
         rt_dispatch(c);
         ST64(mgr + 0x58, mine);
         inside45 = 0;
+        plat_mutex_unlock(&perc_lock);
         return 1;
-    }    if (addr == MOD_MAIN_BASE + 0x49f5f8) {
+    }
+    if (addr == MOD_MAIN_BASE + 0x49f5f8) {
         static int on = -1;
         if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "emit"); }
         if (on) {
@@ -1177,10 +1233,15 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // ActorLink lock-and-get main+0x1afbe4 (out, link): a link is {+8 reference object, +0x10 its id}; inside
     // PlayerCamera's calls a link to Link#1 is handed over as a copy that names Link#2's reference (patch page +0x800;
     // only the camera thread uses it while the camera runs).
-    if (addr == MOD_MAIN_BASE + 0x1afbe4 && in_camera && cam_two && second_ref) {
+    // (Only while second_ref still names the Player#2 in the world: it was never cleared, and after that Link went it
+    // named a dead object. The copy goes in one of 32 slots in turn, not one shared by the camera's threads, and only
+    // when the patch page exists; code review, 2026-11-06.)
+    if (addr == MOD_MAIN_BASE + 0x1afbe4 && in_camera && cam_two && second_ref && second_player && rt_patch_page() &&
+        rd_ptr(second_ref + 0x40) == second_player) {
         uint64_t link = c->x[1], ref = link ? LD64(link + 8) : 0;
         if (ref && LD64(ref + 0x40) == player_actor_cached) {
-            uint64_t tmp = RT_PATCH_PAGE + 0x800;
+            static _Atomic uint32_t next_tmp;
+            uint64_t tmp = RT_PATCH_PAGE + 0x800 + 0x20 * (atomic_fetch_add(&next_tmp, 1) & 31);
             memcpy((void *)(uintptr_t)tmp, (void *)(uintptr_t)link, 0x20);
             ST64(tmp + 8, second_ref);
             ST32(tmp + 0x10, LD32(second_ref + 0x48));

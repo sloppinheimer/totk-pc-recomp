@@ -886,8 +886,8 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
     owner_matrix(s, m);
     {   // how far the physics step's transform is from the owner's (what placement covers), logged every 60 frames
         float pp[3], pr[9];
-        static float dp_max, dr_max;
-        static int dn;
+        static __thread float dp_max, dr_max;   // (per thread: the puppets are placed on several, code review)
+        static __thread int dn;
         if (coop_rd(actor + COOP_ACTOR_POS, pp, 12) && coop_rd(actor + COOP_ACTOR_ROT, pr, 36)) {
             memcpy(s->phys_pos, pp, 12), s->have_phys = 1;
             for (int k = 0; k < 3; k++) { float d = fabsf(pp[k] - m[k * 4 + 3]); if (d > dp_max) dp_max = d; }
@@ -918,8 +918,8 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
         for (int k = 0; k < 8 && sk; k++) sk = coop_rd_ptr(sk + path[k]);
         uint16_t nb = 0;
         uint64_t wb = sk ? coop_rd_ptr(sk + 0x20) : 0;
-        static float rec[127][16];
-        static int jumps, frames;
+        static __thread float rec[127][16];   // (per thread: two puppets' placing overwrote each other's, code review)
+        static __thread int jumps, frames;
         if (wb && coop_rd(sk + 0x48, &nb, 2) && nb == 127 && coop_rd(wb, rec, sizeof rec)) {
             float top = -1e9f;
             for (int b = 0; b < 127; b++) if (rec[b][13] > top) top = rec[b][13];
@@ -951,6 +951,10 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
     if (!said++) rt_log("coop: puppet: slot %d is placed at its owner after its physics step", (int)(s - slots));
     return 1;
 }
+int coop_players_any(void) {   // a co-op Link in the world
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++) if (slots[i].actor && (slots[i].state == LIVE || slots[i].state == LET_GO)) return 1;
+    return 0;
+}
 int coop_players_calc(Cpu *c, uint64_t addr) {
     Slot *s;
     if (!inside && (copy_place(c, c->x[0], addr, 1) || surf_shield(c->x[0]))) return 1;
@@ -967,8 +971,11 @@ int coop_players_calc(Cpu *c, uint64_t addr) {
     }
     uint64_t mgr = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + COOP_INPUT_MGR_SLOT));
     if (!mgr) return 0;
+    // One update with a swapped controller at a time, and not while this PC's Link's runs (coop_spawn.c, calc_wrap).
+    void coop_ctl_enter(void), coop_ctl_leave(void);   // coop_spawn.c
+    coop_ctl_enter();
     uint64_t real = LD64(mgr + 0xa0), own = (uint64_t)(uintptr_t)s->ctl;
-    if (!real) return 0;   // no controller yet (early in a load): copying from it read address 0 (code review, 2026-11-06)
+    if (!real) { coop_ctl_leave(); return 0; }   // no controller yet (early in a load): copying from it read address 0 (code review, 2026-11-06)
     memcpy(s->ctl, (void *)(uintptr_t)real, sizeof s->ctl);
     plat_mutex_lock(&lock);
     uint64_t buttons = s->buttons;
@@ -993,6 +1000,7 @@ int coop_players_calc(Cpu *c, uint64_t addr) {
     inside = 0;
     if (diff_on) diff_after();
     ST64(mgr + 0xa0, real);
+    coop_ctl_leave();
     return 1;
 }
 
@@ -2182,11 +2190,13 @@ static int report_props(uint64_t me, CoopObj *out, int max) {
     return n;
 }
 // The objects every game has that co-op players move: this game's own goes where theirs is.
-typedef struct { uint32_t key[COOP_MAX_PLAYERS * COOP_OBJS]; uint64_t actor[COOP_MAX_PLAYERS * COOP_OBJS]; int n; } KeyFind;
+typedef struct { uint32_t key[COOP_MAX_PLAYERS * COOP_OBJS]; uint64_t actor[COOP_MAX_PLAYERS * COOP_OBJS]; const char *name[COOP_MAX_PLAYERS * COOP_OBJS]; int n; } KeyFind;
+// (the key and the name: by key alone, another actor with that key was taken, then refused for its name every scan,
+// and forced to the place meanwhile; code review, 2026-11-06)
 static void keyfind_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
     KeyFind *kf = arg;
-    (void)nm;
-    for (int i = 0; i < kf->n; i++) if (kf->key[i] == (key & ~COOP_OBJ_KEYED) && !kf->actor[i]) kf->actor[i] = a;   // 31 bits sent
+    for (int i = 0; i < kf->n; i++)
+        if (kf->key[i] == (key & ~COOP_OBJ_KEYED) && !kf->actor[i] && (!kf->name[i] || !strcmp(kf->name[i], nm))) kf->actor[i] = a;   // 31 bits sent
 }
 // Keys found here, kept while their actor still has that name: the scan of every actor runs only for new keys, and
 // an object once moved here is no longer where its key says.
@@ -2227,9 +2237,11 @@ static void force_to(Cpu *c, uint64_t a, const float pos[3], const float q[4]) {
     if (!coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(a + COOP_ACTOR_ROT, ar, 36)) return;
     quat_mat(q, r);
     int k = 0, free = -1;
-    for (; k < 128 && last[k].actor != a; k++) if (free < 0 && !last[k].actor) free = k;
-    if (k == 128) k = free >= 0 ? free : (int)((a >> 4) & 127), last[k].actor = a, last[k].us = 0;
     int64_t now = frame_step_world_us();
+    // (an entry not used for 1 s is free again: kept for good, after 128 objects new ones took each other's places
+    // and were teleported each time instead of moved by speed; code review, 2026-11-06)
+    for (; k < 128 && last[k].actor != a; k++) if (free < 0 && (!last[k].actor || now - last[k].us > 1000000)) free = k;
+    if (k == 128) k = free >= 0 ? free : (int)((a >> 4) & 127), last[k].actor = a, last[k].us = 0;
     if (last[k].us == now) return;   // the tick runs twice at one world time: once a frame
     float dt = last[k].us ? (float)(now - last[k].us) / 1e6f : 0;
     float dx = p[0] - pos[0], dy = p[1] - pos[1], dz = p[2] - pos[2];
@@ -2343,7 +2355,7 @@ static void destroy_watch(uint64_t me) {
 // Another game's notice: its placed objects destroyed there go here too.
 static void destroy_apply(Cpu *c, const CoopObj *o, int from) {
     KeyFind kf = {0};
-    kf.key[0] = o->id & ~COOP_OBJ_KEYED, kf.n = 1;
+    kf.key[0] = o->id & ~COOP_OBJ_KEYED, kf.name[0] = o->name, kf.n = 1;
     void coop_actors_all(void (*fn)(uint64_t, const char *, uint32_t, void *), void *arg);   // coop_world.c
     coop_actors_all(keyfind_fn, &kf);
     uint64_t a = kf.actor[0];
@@ -2370,11 +2382,12 @@ static void props_receive(Cpu *c) {
         for (int j = 0; j < COOP_OBJS; j++)
             if (slots[i].objs_want[j].id & COOP_OBJ_KEYED) {
                 want[kf.n] = &slots[i].objs_want[j], want_from[kf.n] = slots[i].net_id;
-                kf.key[kf.n] = slots[i].objs_want[j].id & ~COOP_OBJ_KEYED, kf.actor[kf.n] = 0, kf.n++;
+                kf.key[kf.n] = slots[i].objs_want[j].id & ~COOP_OBJ_KEYED, kf.actor[kf.n] = 0, kf.name[kf.n] = slots[i].objs_want[j].name, kf.n++;
             }
     }
-    props_hold(c);
-    if (!kf.n) return;
+    // (props_hold runs after this tick's reports, at the end: run first, it put each reported object at the place of
+    // the report before, and the new report was then dropped as the same world time; code review, 2026-11-06)
+    if (!kf.n) { props_hold(c); return; }
     int need = 0;
     for (int i = 0; i < kf.n; i++) need |= !(kf.actor[i] = key_cached(kf.key[i], want[i]->name));
     static int last_scan = -1000;
@@ -2416,6 +2429,7 @@ static void props_receive(Cpu *c) {
         set_driven(a);
         force_to(c, a, want[i]->pos, want[i]->q);
     }
+    props_hold(c);
 }
 // The owner sends a moved object until 1 s after it stops; its copy here, moved by this game's physics in between,
 // rolled on for 2 m after; held 2 s, it still slid 1 m down the slope after that (props test, 2026-11-05). For 5 s
@@ -2957,6 +2971,11 @@ static void objs_send(const CoopObj *cur, int n) {
         if (++in_pk == COOP_OBJS_PER_PACKET) { uint16_t h[2] = {(uint16_t)in_pk, 0}; memcpy(pk, h, 4); \
             coop_net_objs_send(pk, 4 + in_pk * (int)sizeof(CoopObj)); in_pk = 0; } budget--; } while (0)
     for (int j = 0; j < objs_sent_n; j++) objs_sent[j].here = 0;
+    // Marked here first, all of them: marked only by the loop that stops at the budget, the ones after it went for
+    // gone, unsaid, and were sent as new the next tick (code review, 2026-11-06).
+    for (int i = 0; i < n; i++)
+        for (int j = 0; j < objs_sent_n; j++)
+            if (objs_sent[j].id == cur[i].id) { objs_sent[j].here = 1; break; }
     for (int pass = 0; pass < 2; pass++)   // what changed first, then the once-a-second refreshes
         for (int i = 0; i < n && budget > 0; i++) {
             const CoopObj *o = &cur[i];
@@ -2982,8 +3001,9 @@ static void objs_send(const CoopObj *cur, int n) {
         }
     for (int j = 0; j < objs_sent_n;) {   // gone: said once, then forgotten
         if (objs_sent[j].here) { j++; continue; }
+        if (budget <= 0) { j++; continue; }   // said when there is room (forgotten unsaid, its copy stayed)
         CoopObj gone = {.id = objs_sent[j].id};
-        if (budget > 0) OBJS_PUT(&gone);
+        OBJS_PUT(&gone);
         objs_sent[j] = objs_sent[--objs_sent_n];
     }
     if (in_pk) {
@@ -4105,7 +4125,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 if (s->actor) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->actor, COOP_DELETE_REASON, 0, 0);
                 for (int k = 0; k < COOP_OBJS; k++)   // their arrows' copies too (each still that copy)
                     if (s->mir[k].state == 3 && copy_alive(s, k)) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0);
-                memset(s->mir, 0, sizeof s->mir);
+                memset(s->mir, 0, sizeof s->mir), copies_live[s - slots] = 0;
                 rt_log("coop: remote player %d left; their Link is deleted", id);
             } else if (s && s->state == REQUESTED) s->leaving = 1;   // (a create on its way: deleted when it comes)
             else if (s && s->state != LET_GO) s->state = FREE;

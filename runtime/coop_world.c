@@ -34,7 +34,31 @@ static struct {
     _Atomic int64_t at_us;
     float home[3];        // where it was first seen
     _Atomic int home_ok;
+    _Atomic uint64_t home_of;   // the actor home is of: a reader takes home only for its own actor (below)
+    uint32_t name_hash;   // its name's, when first seen (an actor in a gone one's memory has another)
 } seen[SEEN_N];
+static uint32_t name_hash_of(uint64_t a) {
+    char nm[48];
+    coop_actor_name(a, nm, sizeof nm);
+    uint32_t h = 2166136261u;
+    for (const char *p = nm; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+    return h;
+}
+// Its first place, set where it is first seen (its first update): set at the first scan instead, up to 0.1 s later,
+// an enemy that moved by then had another key in each game (code review, 2026-11-06).
+static void set_home(int h, uint64_t actor) {
+    float p[3];
+    atomic_store_explicit(&seen[h].home_ok, 0, memory_order_relaxed);
+    seen[h].name_hash = name_hash_of(actor);
+    if (!coop_rd(actor + COOP_ACTOR_POS, p, 12)) return;
+    memcpy(seen[h].home, p, 12);
+    atomic_store_explicit(&seen[h].home_of, actor, memory_order_release);
+    atomic_store_explicit(&seen[h].home_ok, 1, memory_order_release);
+}
+// home is the cell's own actor's (set by set_home, or by a scan for this actor)
+static int home_is(int h, uint64_t actor) {
+    return atomic_load_explicit(&seen[h].home_ok, memory_order_acquire) && atomic_load_explicit(&seen[h].home_of, memory_order_acquire) == actor;
+}
 
 void coop_actor_seen(uint64_t actor) {
     if (!actor) return;
@@ -45,6 +69,10 @@ void coop_actor_seen(uint64_t actor) {
     // the cell's), so the other game no longer matched it (code review, 2026-11-06).
     for (int k = 0; k < 32; k++, h = (h + 1) & (SEEN_N - 1))
         if (atomic_load_explicit(&seen[h].actor, memory_order_relaxed) == actor) {
+            // Back after more than a second unseen with another name: another actor in a gone one's memory, which took
+            // the gone one's first place and key (code review, 2026-11-06). Its own now.
+            if (now - atomic_load_explicit(&seen[h].at_us, memory_order_relaxed) > 1000000 && name_hash_of(actor) != seen[h].name_hash)
+                set_home((int)h, actor);
             atomic_store_explicit(&seen[h].at_us, now, memory_order_relaxed);
             return;
         }
@@ -55,8 +83,8 @@ void coop_actor_seen(uint64_t actor) {
         // An empty cell, or one whose actor has not been updated for 10 s (gone): take it.
         int64_t at = atomic_load_explicit(&seen[h].at_us, memory_order_relaxed);
         if ((!a || now - at > 10000000) && atomic_compare_exchange_strong(&seen[h].actor, &a, actor)) {
-            atomic_store_explicit(&seen[h].home_ok, 0, memory_order_relaxed);
             atomic_store_explicit(&seen[h].at_us, now, memory_order_relaxed);
+            set_home((int)h, actor);
             return;
         }
     }
@@ -128,11 +156,13 @@ void coop_actors_keyed(void (*fn)(uint64_t actor, const char *name, uint32_t key
         char nm[48];
         coop_actor_name(a, nm, sizeof nm);
         int first = 0;
-        if (!atomic_load_explicit(&seen[i].home_ok, memory_order_relaxed)) {
+        static uint64_t first_of[SEEN_N];   // (the scan that first sees a cell's actor says so once)
+        if (!home_is(i, a)) {
             if (!coop_rd(a + COOP_ACTOR_POS, seen[i].home, 12)) continue;
-            atomic_store_explicit(&seen[i].home_ok, 1, memory_order_relaxed);
-            first = 1;
+            atomic_store_explicit(&seen[i].home_of, a, memory_order_release);
+            atomic_store_explicit(&seen[i].home_ok, 1, memory_order_release);
         }
+        if (first_of[i] != a) first_of[i] = a, first = 1;
         fn(a, nm, enemy_key(nm, seen[i].home), first, arg);
     }
 }
@@ -147,7 +177,7 @@ static int seen_home(uint64_t actor, float out[3]) {
     uint32_t h = (uint32_t)((actor >> 4) * 2654435761u) & (SEEN_N - 1);
     for (int k = 0; k < 32; k++, h = (h + 1) & (SEEN_N - 1))
         if (atomic_load_explicit(&seen[h].actor, memory_order_relaxed) == actor) {
-            if (!atomic_load_explicit(&seen[h].home_ok, memory_order_relaxed)) return 0;
+            if (!home_is((int)h, actor)) return 0;
             memcpy(out, seen[h].home, 12);
             return 1;
         }
@@ -183,9 +213,10 @@ void coop_actors_all(void (*fn)(uint64_t actor, const char *name, uint32_t key, 
 static uint32_t enemy_of(int cell, uint64_t a, char *nm, size_t n) {
     coop_actor_name(a, nm, n);
     if (strncmp(nm, "Enemy_", 6)) return 0;
-    if (!atomic_load_explicit(&seen[cell].home_ok, memory_order_relaxed)) {
+    if (!home_is(cell, a)) {
         if (!coop_rd(a + COOP_ACTOR_POS, seen[cell].home, 12)) return 0;
-        atomic_store_explicit(&seen[cell].home_ok, 1, memory_order_relaxed);
+        atomic_store_explicit(&seen[cell].home_of, a, memory_order_release);
+        atomic_store_explicit(&seen[cell].home_ok, 1, memory_order_release);
     }
     return enemy_key(nm, seen[cell].home);
 }
@@ -201,11 +232,29 @@ static struct { uint32_t key; int64_t died_us; } dead[64];   // enemies seen to 
 static struct { uint32_t key; uint64_t actor; int life; int64_t at_us; } host_known[256];   // as last seen
 
 typedef struct { WorldPacket pk; float players[COOP_MAX_PLAYERS + 1][3]; int np, live_max; } HostScan;
+// Two enemies of one name made in the same half metre have one key: the guest put both on one host enemy, and the
+// host kept one per key (code review, 2026-11-06). Such a key is left out of the sync in both games: counted first
+// over the live enemies (dup_count), then skipped.
+static struct { uint32_t key; int n; } dup_keys[512];
+static int dup_n;
+static void dup_one(int cell, uint64_t a, void *arg) {
+    (void)arg;
+    char nm[64];
+    uint32_t key = enemy_of(cell, a, nm, sizeof nm);
+    if (!key) return;
+    for (int i = 0; i < dup_n; i++) if (dup_keys[i].key == key) { dup_keys[i].n++; return; }
+    if (dup_n < 512) dup_keys[dup_n].key = key, dup_keys[dup_n++].n = 1;
+}
+static void dup_count(void) { dup_n = 0, each_live(dup_one, NULL); }
+static int dup_key(uint32_t key) {
+    for (int i = 0; i < dup_n; i++) if (dup_keys[i].key == key) return dup_keys[i].n > 1;
+    return 0;
+}
 static void host_one(int cell, uint64_t a, void *arg) {
     HostScan *h = arg;
     char nm[64];
     uint32_t key = enemy_of(cell, a, nm, sizeof nm);
-    if (!key || h->pk.count >= h->live_max) return;
+    if (!key || h->pk.count >= h->live_max || dup_key(key)) return;
     NetEnemy e = {.key = key};
     if (!coop_rd(a + COOP_ACTOR_POS, e.pos, 12) || !coop_rd(a + COOP_ACTOR_ROT, e.rot, 36)) return;
     int near = 0;
@@ -271,6 +320,7 @@ static void host_tick(Cpu *c, uint64_t me) {
     int n_dead = 0;
     for (int d = 0; d < 64; d++) n_dead += dead[d].key && now0 - dead[d].died_us < DEAD_KEEP_US;
     h.live_max = MAX_SENT - (n_dead < 10 ? n_dead : 10);
+    dup_count();
     each_live(host_one, &h);
     // Known enemies no longer seen: gone. Those whose life was 0 when last seen died: reported dead a while.
     int64_t now = frame_step_world_us();
@@ -314,7 +364,7 @@ static void guest_one(int cell, uint64_t a, void *arg) {
     GuestScan *g = arg;
     char nm[64];
     uint32_t key = enemy_of(cell, a, nm, sizeof nm);
-    if (!key) return;
+    if (!key || dup_key(key)) return;
     const NetEnemy *e = NULL;
     for (int i = 0; i < g->pk.count; i++) if (g->pk.e[i].key == key) { e = &g->pk.e[i]; break; }
     if (!e) return;   // the host does not have it near anyone: this game's own
@@ -371,6 +421,7 @@ static void guest_tick(Cpu *c) {
     int n = coop_net_world(&g.pk, sizeof g.pk, &from, &age);
     if (n < 4 || age > 1000000000ull || 4 + g.pk.count * (int)sizeof(NetEnemy) > n) return;
     g.c = c, g.snaps = 0;
+    dup_count();
     each_live(guest_one, &g);
     static int t, snaps;
     snaps += g.snaps;
@@ -1094,8 +1145,11 @@ static int pose_decode(const uint8_t *in, int len, PoseRec *r) {
     uint16_t n = 0, nsc = 0;
     if (len < 4) return 0;
     memcpy(&n, in, 2), memcpy(&nsc, in + 2, 2);
-    r->records = n >> 15, n &= 0x7fff;   // top bit: the skeleton's final local records (proxy_pack_mine), not the input
+    int records = n >> 15;   // top bit: the skeleton's final local records (proxy_pack_mine), not the input
+    n &= 0x7fff;
+    // (set only for a good packet: a bad one changed the entry the blend still used; code review, 2026-11-06)
     if (n == 0 || n > POSE_HIST_BONES || 4 + n * POSE_BONE > len) return 0;
+    r->records = records;
     for (int b = 0; b < n; b++) {
         int16_t v[6];
         memcpy(v, in + 4 + b * POSE_BONE, POSE_BONE);
