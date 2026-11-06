@@ -45,6 +45,7 @@ foreach ($g in @(@{dir = $a; n = 1; name = $Name1; pad = '0'}, @{dir = $b; n = 2
     $env:TOTK_COOP_P2 = 'off'           # the second pad belongs to the other game, not to a local player 2
     $env:TOTK_MOUSE_SENS = '0'          # no mouse camera, no cursor capture: the mouse moves between the windows
     $env:TOTK_COOP_HIDE_CONSOLE = '1'
+    $env:TOTK_COOP_TEST_LIFELOG = '1'   # for now: each change of a co-op Link's life logged (its life went to full in play)
     Remove-Item Env:TOTK_INPUT_SCRIPT, Env:TOTK_INPUT, Env:TOTK_COOP_AUTOSPAWN -ErrorAction SilentlyContinue
     $games += Start-NoConsole (Join-Path $g.dir 'totk.exe') '' $g.dir
     Start-Sleep 3

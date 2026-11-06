@@ -263,9 +263,18 @@ static int time_following;
 static float own_offset;
 
 static void follow_host_time(Cpu *c, float host) {
-    static uint64_t last_ns;
+    static uint64_t last_ns, mine_at;
+    static float last_mine = -1;
     float mine = day_seconds();
     if (mine < 0 || host < 0) return;
+    // Not while this game's clock stands (a fast travel's load, a menu): set every second all through a load, the
+    // load hung, and the game came back only once it stopped (a play session, 2026-11-06: "this Link is paused"
+    // and "set to the host's" every second). The clock has to have moved since the last look, 0.5 s or more ago.
+    uint64_t t = plat_now_ns();
+    if (t - mine_at < 500000000ull) return;
+    int clock_runs = last_mine >= 0 && mine != last_mine;
+    last_mine = mine, mine_at = t;
+    if (!clock_runs) return;
     float d = host - mine;
     if (d > 43200.0f) d -= 86400.0f;
     if (d < -43200.0f) d += 86400.0f;
@@ -1960,7 +1969,9 @@ static int prop_skip(const char *nm) {
                                 // point, a cannon terminal and door; taken as made, each game had copies of the other's,
                                 // and a warp to a place with a copied warp point hung about a minute (a play session,
                                 // 2026-11-06)
-                                "DgnObj_ZonauShrineEntrance", "DgnObj_WarpPoint", "ZonauShrine_EntranceGate", "FldObj_Cannon"};   // chests: each player's own
+                                "DgnObj_ZonauShrineEntrance", "DgnObj_WarpPoint", "ZonauShrine_EntranceGate", "FldObj_Cannon",
+                                // the weather's own (a thunderstorm's strike near the Link was sent as made, 2026-11-06)
+                                "LightningStrike"};   // chests: each player's own
     for (size_t i = 0; i < sizeof pre / sizeof *pre; i++) if (!strncmp(nm, pre[i], strlen(pre[i]))) return 1;
     if (strstr(nm, "Arrow")) return 1;
     // Helpers that go with this Link and are not things in the world: EventCamera and CameraXLinkControl were sent
@@ -4328,7 +4339,9 @@ void coop_players_tick(Cpu *c, int numpad3) {
             if (coop_life_max_of(s->actor) != st.life_max) coop_set_life_max(s->actor, st.life_max);
             if (coop_life_of(s->actor) != st.life) {
                 static int said;
-                if (said++ < 6) rt_log("coop: proxy: slot %d life %d -> %d of %d, as its owner's", (int)(s - slots), coop_life_of(s->actor), st.life, st.life_max);
+                if (said++ < 6 || (cfg_get("TOTK_COOP_TEST_LIFELOG") && said < 60))
+                    rt_log("coop: proxy: slot %d life %d -> %d of %d, as its owner's (%.2f s, thaw %d, attack thaw %d)", (int)(s - slots),
+                           coop_life_of(s->actor), st.life, st.life_max, frame_step_world_us() / 1e6, s->thaw, s->atk_thaw);
                 coop_set_life(s->actor, st.life);
             }
         }

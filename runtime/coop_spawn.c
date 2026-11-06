@@ -1019,6 +1019,11 @@ int coop_hook(Cpu *c, uint64_t addr) {
         // put back. (Keeping a value set outright, unless it was the most life, kept the clamp: the most life could not
         // be read in here, and the proxy went to full life in each update it ran; the sync audit, 2026-11-06.)
         ST32(p + 8, after > 0x3fffffffu ? before + (after - 0x3fffffffu) : before);
+        static int lifelog = -1;   // TOTK_COOP_TEST_LIFELOG: each co-op Link life update that changed the lifted value
+        if (lifelog < 0) lifelog = cfg_get("TOTK_COOP_TEST_LIFELOG") != NULL;
+        static _Atomic int said_lu;
+        if (lifelog && after != 0x3fffffffu && atomic_fetch_add(&said_lu, 1) < 40)
+            rt_log("coop: test: a co-op Link's life update: %u before, %#x after", before, after);
         return 1;
     }
     // main+0x207ea50 (instant tips manager, tip id) queues an instant tip ("To shield surf...") and records the action
