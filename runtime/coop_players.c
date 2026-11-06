@@ -1462,8 +1462,10 @@ static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc) {
     // A Zonai device's copy runs its own update, so a hit here (the proxy's sword) turns it on, with its effects;
     // so does an item's, so this game's Link can pick it up (pickable). Both are still put at the owner's place every
     // tick (place_copy).
-    return copy_of(actor, &s, &k) && s->mir[k].ticks >= COPY_WARMUP && strncmp(s->mir[k].name, "SpObj_", 6) && !pickable(s->mir[k].name) &&
-           !strstr(s->mir[k].name, "Arrow");   // an arrow's: woken (place_copy), its update shows its model again
+    // An arrow's copy is frozen too, after it is woken (place_copy): running its update, a nocked arrow's copy at the
+    // other player's bow could be picked up again and again, and a fused arrow's kept falling asleep and did not
+    // show (a play session, 2026-11-05).
+    return copy_of(actor, &s, &k) && s->mir[k].ticks >= COPY_WARMUP && strncmp(s->mir[k].name, "SpObj_", 6) && !pickable(s->mir[k].name);
 }
 // Each tick, a copy is put where its arrow is: actor position and rotation, model matrix and the push to the model
 // units, as the proxy. Done from the tick, not in one of its own updates: the game stopped calling a frozen arrow's
@@ -1475,7 +1477,7 @@ static void place_copy(Cpu *c, Slot *s, int k) {
     // and sleeps from the third (actor state 6, its model's +0x244 6), where this game's own arrows stay awake (4); a
     // sleeping arrow is not drawn (a play session, 2026-11-05). It is woken as the actor state machine
     // (main+0x54cb00) wakes one: +0x28's reason bits at 0x10, then bit 19 set and the actor queued for the machine
-    // (main+0x2ae413c). Frozen after its warmup, it does not ask again.
+    // (main+0x2ae413c). Frozen after its warmup (copy_place), it does not ask again.
     if (strstr(s->mir[k].name, "Arrow")) {
         int32_t st = 0;
         if (coop_rd(actor + COOP_ACTOR_STATE, &st, 4) && st == 6) {
