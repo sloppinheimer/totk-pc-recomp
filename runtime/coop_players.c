@@ -3941,27 +3941,6 @@ void coop_players_tick(Cpu *c, int numpad3) {
         for (int k = 0; my_eq && k < 3; k++)
             if (coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, my_eq, hand_of[k], 0, 0) & 1) st.flags |= 1u << (8 + k);
         shield_send(me, my_eq, &st);
-        {   // this Link's life going down, with the copies set off near it then (a bomb arrow's blast hurt this Link from
-            // far off, a play session, 2026-11-06)
-            int coop_life_of(uint64_t a);
-            static int was = -1;
-            int l = coop_life_of(me);
-            if (was > 0 && l >= 0 && l < was) {
-                float mp[3] = {0};
-                coop_rd(me + COOP_ACTOR_POS, mp, 12);
-                rt_log("coop: %.2f s: my life %d -> %d, at %.2f %.2f %.2f", frame_step_world_us() / 1e6, was, l, mp[0], mp[1], mp[2]);
-                for (int i = 0; i < COOP_MAX_PLAYERS; i++)
-                    for (int k = 0; k < COOP_OBJS; k++)
-                        if (slots[i].mir[k].state == 3 && slots[i].mir[k].actor) {
-                            float q[3] = {0};
-                            coop_rd(slots[i].mir[k].actor + COOP_ACTOR_POS, q, 12);
-                            rt_log("coop:   copy %u %s%s at %.2f %.2f %.2f, %.2f m away", slots[i].mir[k].id, slots[i].mir[k].name,
-                                   slots[i].mir[k].blowing ? " (set off)" : "", q[0], q[1], q[2],
-                                   sqrtf((q[0] - mp[0]) * (q[0] - mp[0]) + (q[1] - mp[1]) * (q[1] - mp[1]) + (q[2] - mp[2]) * (q[2] - mp[2])));
-                        }
-            }
-            was = l;
-        }
         {   // proxy attacks: its life, so the proxies' match (the Master Sword's beam comes at full life only)
             int coop_life_of(uint64_t a), coop_life_max_of(uint64_t a);
             int l = coop_life_of(me), lm = coop_life_max_of(me);

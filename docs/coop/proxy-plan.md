@@ -139,6 +139,12 @@ right in the tester's own two-pad session.
   (beam_copy). Checked by the tester: size, flight and spin look right. Open: no burst where it hits on the other
   screen. The copy finds no wall of its own (flown on, it went through), and what makes the owner's burst is not
   found (TOTK_COOP_TEST_BEAMLOG, beam_end_watch). Left there for now (the tester's call).
+- **A bomb arrow's blast hurts the far Link** (open, 2026-11-06): P2 shoots bomb arrows at one spot on a wall far
+  from P1; on P1's screen the copies go off at that spot (10-12 ticks after the owner's blast), yet P1 sometimes
+  loses hearts, once until a fairy revived it with the same hearts as before, mostly on the second shot. Not the
+  copies' place (logged at the hit), and not a shared life (the proxy's and P1's are kept apart). P1's life
+  component ([[actor+0x228]+0x2f8]+0x1830, +8) did not go down when it was hurt, and its update (main+0x4400b0)
+  took nothing off it: a Player's hearts are kept elsewhere. Next: find where, then log what hurts P1.
 - Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
 
 ## Plan
