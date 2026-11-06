@@ -570,6 +570,31 @@ int input_pad_stick_percent(double pct[2]) {
     return ok;
 }
 
+// Co-op on one PC with one gamepad (tools/coop/play_two.ps1): every game reads it (TOTK_ASSUME_FOCUS), so one pad
+// moves both Links. Minus with the right stick click, or F9 in any window, switches every game to the focus mode:
+// only the game whose window has the focus takes the pad, the others stand. Pressed again, both again. Each game sees
+// the same press on the same pad, so all switch together. TOTK_PAD_FOCUS_ONLY=1 starts in the focus mode.
+static int pad_focus_only = -1, pad_focus_held, f9_was;
+static void pad_focus_gate(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
+    if (pad_focus_only < 0) {
+        const char *e = cfg_get("TOTK_PAD_FOCUS_ONLY");
+        pad_focus_only = e && *e && strcmp(e, "0") != 0;
+    }
+    const uint64_t combo = 1ull << B_MINUS | 1ull << B_STICK_R;
+    int edge = 0;
+    if (pad_focus_held) pad_focus_held = (*b & combo) != 0;
+    else if ((*b & combo) == combo) pad_focus_held = 1, edge = 1;
+    if (pad_focus_held) *b &= ~combo;   // (the game sees neither while the chord is held)
+    int f9 = ikb_f9_any();
+    if (f9 && !f9_was) edge = 1;
+    f9_was = f9;
+    if (edge) {
+        pad_focus_only = !pad_focus_only;
+        rt_log("input: the gamepad now moves %s", pad_focus_only ? "only the game in focus" : "every game");
+    }
+    if (pad_focus_only && !ikb_foreground()) *b = 0, sl[0] = sl[1] = sr[0] = sr[1] = 0;
+}
+
 static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     uint64_t b = 0;
     int32_t sl[2] = {0, 0}, sr[2] = {0, 0};
@@ -578,6 +603,7 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     if (state > 0) {
         binds_refresh();
         if (state == 1) pad_read(&b, sl, sr);
+        pad_focus_gate(&b, sl, sr);
         if (ikb_foreground()) {
             uint8_t down[KEY_COUNT] = {0};
             // Mouse buttons count only while the cursor is captured, and a button already held when the capture began

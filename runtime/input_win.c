@@ -207,6 +207,8 @@ int ikb_down(int key) {
 
 int ikb_escape(void) { return key_down(VK_ESCAPE); }
 
+int ikb_f9_any(void) { return key_down(VK_F9); }
+
 int ikb_captured(void) { return cur_captured != 0; }
 
 void ikb_mouse_take(int32_t *dx, int32_t *dy) {

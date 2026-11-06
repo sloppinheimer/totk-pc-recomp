@@ -1,10 +1,12 @@
-# Co-op on one PC, one game per gamepad: starts the relay and two games side by side; game 1 reads the first connected
-# gamepad, game 2 the second. Both play copies of the 1.4.3 save (build\prof-play-1 and -2), so nothing is saved back
+# Co-op on one PC: starts the relay and two games side by side, both moved by one gamepad (or one each with -TwoPads,
+# below). Both play copies of the 1.4.3 save (build\prof-play-1 and -2), so nothing is saved back
 # to the real profile. The copies are kept from one start to the next, with what was saved in them; -Fresh makes them
 # again from the real profile. (Made fresh each start, a session's saves were lost at the next one, a play session,
 # 2026-11-06.) Close either window (or this console) to end the session.
-#   powershell -ExecutionPolicy Bypass -File tools\coop\play_two.ps1 [-Fresh]   (or double-click "Play co-op (two pads).vbs")
-param([string]$Name1 = "Player 1", [string]$Name2 = "Player 2", [string]$Size = "1904x1071", [switch]$Fresh)
+#   powershell -ExecutionPolicy Bypass -File tools\coop\play_two.ps1 [-Fresh] [-TwoPads]   (or double-click "Play co-op (two pads).vbs")
+param([string]$Name1 = "Player 1", [string]$Name2 = "Player 2", [string]$Size = "1904x1071", [switch]$Fresh, [switch]$TwoPads)
+# One gamepad (the first) moves both games; Minus with the right stick click, or F9, switches to only the game in
+# focus and back (input.c, pad_focus_gate). -TwoPads: game 1 reads the first gamepad, game 2 the second, as before.
 $ErrorActionPreference = 'Stop'
 # Programs started with no console window at all (CREATE_NO_WINDOW): hiding one after the fact does not work when
 # Windows Terminal hosts the consoles. Their environment is this script's (set below for each game).
@@ -31,7 +33,7 @@ foreach ($f in Get-ChildItem $a -Force) {
 
 $relay = Start-NoConsole (Join-Path $root '.venv\Scripts\python.exe') 'server\coop_relay.py' $root
 $games = @()
-foreach ($g in @(@{dir = $a; n = 1; name = $Name1; pad = '0'}, @{dir = $b; n = 2; name = $Name2; pad = '1'})) {
+foreach ($g in @(@{dir = $a; n = 1; name = $Name1; pad = '0'}, @{dir = $b; n = 2; name = $Name2; pad = $(if ($TwoPads) { '1' } else { '0' })})) {
     $p = Join-Path $root "build\prof-play-$($g.n)"
     if ($Fresh -and (Test-Path $p)) { Remove-Item -Recurse -Force $p }
     if (-not (Test-Path $p)) { Copy-Item -Recurse (Join-Path $root 'build\profile-v143') $p }
@@ -59,7 +61,8 @@ for ($i = 0; $i -lt $games.Count; $i++) {
         [void][W.U]::SetWindowPos($g.MainWindowHandle, [IntPtr]::Zero, $wa.X + $i * [int]($wa.Width / 2), $wa.Y, 0, 0, 0x15)
     }
 }
-"Session running: game 1 = first gamepad, game 2 = second gamepad. Load your save in both windows."
+if ($TwoPads) { "Session running: game 1 = first gamepad, game 2 = second gamepad. Load your save in both windows." }
+else { "Session running: one gamepad moves both games. Minus + right stick click (or F9): only the game in focus, and back." }
 while (-not ($games | Where-Object { $_.HasExited })) { Start-Sleep 1 }
 $games | Where-Object { -not $_.HasExited } | Stop-Process -Force
 Stop-Process -Id $relay.Id -Force -ErrorAction SilentlyContinue

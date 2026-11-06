@@ -217,6 +217,8 @@ void input_sdl_event(const SDL_Event *e) {
 int ikb_foreground(void) { return focused != 0; }
 int ikb_down(int key) { return key > 0 && key < KEY_COUNT && key_held[key]; }
 int ikb_escape(void) { return esc_held != 0; }
+
+int ikb_f9_any(void) { return 0; }   // (no key state outside the window here)
 int ikb_captured(void) { return captured != 0; }
 
 void ikb_mouse_take(int32_t *dx, int32_t *dy) {
