@@ -2,7 +2,7 @@
 # gamepad, game 2 the second. Both play copies of the 1.4.3 save (build\prof-play-1 and -2, made fresh each start), so
 # nothing is saved back to the real profile. Close either window (or this console) to end the session.
 #   powershell -ExecutionPolicy Bypass -File tools\coop\play_two.ps1   (or double-click "Play co-op (two pads).vbs")
-param([string]$Name1 = "Player 1", [string]$Name2 = "Player 2", [string]$Size = "1920x1080")
+param([string]$Name1 = "Player 1", [string]$Name2 = "Player 2", [string]$Size = "1904x1071")
 $ErrorActionPreference = 'Stop'
 # Programs started with no console window at all (CREATE_NO_WINDOW): hiding one after the fact does not work when
 # Windows Terminal hosts the consoles. Their environment is this script's (set below for each game).
@@ -44,6 +44,18 @@ foreach ($g in @(@{dir = $a; n = 1; name = $Name1; pad = '0'}, @{dir = $b; n = 2
     Remove-Item Env:TOTK_INPUT_SCRIPT, Env:TOTK_INPUT, Env:TOTK_COOP_AUTOSPAWN -ErrorAction SilentlyContinue
     $games += Start-NoConsole (Join-Path $g.dir 'totk.exe') '' $g.dir
     Start-Sleep 3
+}
+# Side by side on the primary monitor: game 1 on the left half, game 2 on the right (each window keeps its size).
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -Namespace W -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetWindowPos(System.IntPtr h, System.IntPtr after, int x, int y, int cx, int cy, uint flags); [DllImport("user32.dll")] public static extern System.IntPtr SetThreadDpiAwarenessContext(System.IntPtr c);'
+[void][W.U]::SetThreadDpiAwarenessContext([IntPtr]-4)   # physical pixels, as the games' windows (per-monitor aware)
+$wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+for ($i = 0; $i -lt $games.Count; $i++) {
+    $g = $games[$i]
+    for ($t = 0; $t -lt 100 -and $g.MainWindowHandle -eq [IntPtr]::Zero -and -not $g.HasExited; $t++) { Start-Sleep -Milliseconds 200; $g.Refresh() }
+    if ($g.MainWindowHandle -ne [IntPtr]::Zero) {   # SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+        [void][W.U]::SetWindowPos($g.MainWindowHandle, [IntPtr]::Zero, $wa.X + $i * [int]($wa.Width / 2), $wa.Y, 0, 0, 0x15)
+    }
 }
 "Session running: game 1 = first gamepad, game 2 = second gamepad. Load your save in both windows."
 while (-not ($games | Where-Object { $_.HasExited })) { Start-Sleep 1 }
