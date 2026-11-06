@@ -188,14 +188,19 @@ right in the tester's own two-pad session.
   - **Its hits on the others:** they land on the other players' proxies in the owner's game, which take none of it
     (and the frozen copy in their own game never attacks). The hit's record on the proxy (damage component +0x1a4,
     damage in quarter hearts at +0x1a8, the attacker's reference at +0x1c0) is sent to that player, whose life goes
-    down by it when its game follows that enemy (pair test: two hits of 1, life 14 -> 13 -> 12 and kept). No knock-back
-    or flinch there: the hit's record written into that player's own Link (its changed slots, pointers moved over, the
-    attacker this game's copy; TOTK_COOP_LINKHIT_RECORD=1) is not taken by its update, as with a fan (protocol 16:
-    hits carry the record). A real hit on a Link (TOTK_COOP_TEST_LINKHIT=1, this Link's damage component frame to
-    frame) also writes, the same frame: the attacker's reference and id at +0xa0..+0x180, more of the hit at
-    +0x300..+0x380, a second copy of it at +0x1178..+0x1210, and +0x18e8 0 -> 1. The attack contact (main+0x1b90cb4)
-    reads the damage component as a receiver at +0x190 (its vtable +0x28 called) and counts at +0x1868 / +0x18a0.
-    Next: call the receiver's own hit entry on the player's Link rather than copying words.
+    down by it when its game follows that enemy. The hit itself goes too: main+0x31dbc0 (x0 a damage component's
+    receiver at +0x190, x1 the attack, x2 the hit, 0xe8 bytes: damage, kind, attacker handle, directions, flags) is
+    the game's own delivery, found by a write watch on the Link's hit state (TOTK_COOP_TEST_HITWATCH). The owner's
+    game keeps the one delivered to a proxy (the call with damage and a kind: the hit functions call it up to three
+    times) and sends it with the record (protocol 17); the player's game delivers it to its own Link, with a blank
+    attack that reads as not guarded and no attacker, from inside that Link's hit update (main+0x300a30, on its own
+    thread). Its update then takes it as a hit of its own: pair test, two hits of 3, life 14 -> 11 -> 8 by the
+    update itself, the Link knocked back down the stairs in that game's frames. What did not work: the record's words
+    copied into the Link (not taken, as with a fan); flag +0xe0 bit 3 to skip the guard check (it is the guard's
+    result: every hit blocked); the delivery from the co-op tick (it raced the update on another thread and broke an
+    object at +0x1238: two crashes). Untested: a shield block or perfect guard by that player (the guard check sees
+    the blank attack, not the enemy's), the attacker handle (TOTK_COOP_LINKHIT_ATTACKER=1 names the frozen copy; untried
+    with the update-time delivery).
   - **Its weapons** (a play session: one lagged in the frozen enemy's hand and could be taken from it): the owner
     sends the Weapon_ actors within 2.5 m that are no Link's with each pose; the other games freeze theirs of that name
     nearest that place and put it there after the enemy's model push, its body 300 m under it. Pair test on the tester's

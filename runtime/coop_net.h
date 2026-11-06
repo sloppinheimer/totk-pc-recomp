@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define COOP_MAX_PLAYERS 8
-#define COOP_NET_VERSION 16   // packet header version: games and relays of another version ignore each other
+#define COOP_NET_VERSION 17   // packet header version: games and relays of another version ignore each other
 
 // One player's state, sent about 30 times a second. Positions and directions are world space; the sticks are as the
 // player's own camera saw them, with the camera's horizontal forward and right so a receiver can turn them into its
@@ -73,7 +73,7 @@ int coop_net_pose(int id, void *out, int max, uint64_t *age_ns);   // the latest
 #define COOP_OBJS_PACKET_MAX (4 + COOP_OBJS_PER_PACKET * (int)sizeof(CoopObj))
 void coop_net_objs_send(const void *data, int len);
 int coop_net_objs_take(void *out, int max, int *from);             // the oldest received; its length, 0 when none
-#define COOP_HIT_MAX 768   // a hit on a Link carries its damage record's changed words (coop_world.c, link_hits_send)
+#define COOP_HIT_MAX 1024   // a hit on a Link carries the hit as delivered and its damage record's changed words (coop_world.c, link_hits_send)
 void coop_net_hit_send(const void *data, int len);                 // up to COOP_HIT_MAX bytes
 int coop_net_hit_take(void *out, int max, int *from);              // the oldest hit received; 0 when none
 
