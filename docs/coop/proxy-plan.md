@@ -120,6 +120,11 @@ right in the tester's own two-pad session.
   the other games put the proxy's shield there after its model push, with the shield's own update and body held
   (shield_place). surf.txt pair test (TOTK_COOP_TEST_SURFLOG=1): the proxy's shield matches the owner's sample for
   sample through the surf (-0.15 0.15 0.00 at the feet) and is back on its back after.
+- **Picking up another player's item**: an item's copy (Item_, Weapon_) runs its own update, so it can be picked
+  up; when it goes away near this Link, the owner is told (an OBJS packet, header word 1) and deletes its own, and
+  the copy is not made again. pickup_b_3rd.txt with TOTK_COOP_TEST_PICKUP=1: B picks up the copy of A's apple at
+  the first A press, A deletes its apple. Not checked: that the apple is in B's pouch (no log of the pouch), a
+  weapon (an equipped one goes to the hand, not the pouch), two players picking up the same item at once.
 - Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
 
 ## Plan

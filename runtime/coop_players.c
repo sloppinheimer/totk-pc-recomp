@@ -674,6 +674,29 @@ static void proxy_drive(Cpu *c, Slot *s) {
 }
 static void keep_player_eq(uint64_t me, uint64_t my_eq);
 static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc);
+// Picking up another player's item (the tester's list, 2026-11-05). A frozen copy could not be picked up
+// (pickup_b_3rd.txt: three A presses beside a copied apple at rest, nothing). An item's copy (Item_, Weapon_) runs its
+// own update instead; when it goes away here (state 7..11, or its actor is something else now: picked up), this game
+// tells the owner (an OBJS packet with header word 1: the entries' ids, each with its owner's player id in flags),
+// which deletes its own, and does not make the copy again while the owner still reports it (5 s).
+static int pickable(const char *nm) { return !strncmp(nm, "Item_", 5) || !strncmp(nm, "Weapon_", 7); }
+static struct { int owner; uint32_t id; int until; } taken[32];
+static int taken_tick;
+static int was_taken(int owner, uint32_t id) {
+    for (int i = 0; i < 32; i++) if (taken[i].id == id && taken[i].owner == owner && taken[i].until > taken_tick) return 1;
+    return 0;
+}
+static void take_note(int owner, uint32_t id) {
+    int f = 0;
+    for (int i = 0; i < 32; i++) if (taken[i].until < taken[f].until) f = i;
+    taken[f].owner = owner, taken[f].id = id, taken[f].until = taken_tick + 300;
+    CoopObj o = {.id = id, .flags = (uint8_t)owner};
+    snprintf(o.name, sizeof o.name, "taken");
+    uint8_t pk[4 + sizeof o];
+    uint16_t h[2] = {1, 1};
+    memcpy(pk, h, 4), memcpy(pk + 4, &o, sizeof o);
+    coop_net_objs_send(pk, sizeof pk);
+}
 static void place_copy(Cpu *c, Slot *s, int k);
 // The proxy's shield during a shield surf runs none of its own update: put on its body bone by it, it was back on
 // the proxy's back each frame (surf.txt, 2026-11-05). shield_place puts it where the owner's is instead.
@@ -1331,6 +1354,7 @@ static void arrow_copies(Cpu *c, Slot *s) {
     for (int j = 0; j < COOP_OBJS; j++) {   // new arrows, and where each one is now
         const CoopObj *o = &s->objs_want[j];
         if (!o->id || ((o->id & COOP_OBJ_KEYED) && !key_missing(o->id))) continue;   // keyed: this game's own is moved
+        if (was_taken(s->net_id, o->id)) continue;   // picked up here: the owner deletes its own
         int k = 0;
         while (k < COOP_OBJS && !(s->mir[k].state && s->mir[k].id == o->id)) k++;
         if (k == COOP_OBJS) {
@@ -1356,6 +1380,24 @@ static void arrow_copies(Cpu *c, Slot *s) {
                 if (s->mir[k].actor && said++ < 20) rt_log("coop: slot %d: a copy of object %u (%s) is here", (int)(s - slots), s->mir[k].id, s->mir[k].name);
             }
         } else if (s->mir[k].state == 3 && ++s->mir[k].ticks >= COPY_WARMUP) {
+            if (pickable(s->mir[k].name)) {   // picked up here?
+                int32_t st = 0;
+                char nm[48];
+                float me_p[3] = {1e9f, 1e9f, 1e9f}, *q = s->mir[k].pos;
+                uint64_t me = coop_player_actor();
+                if (me) coop_rd(me + COOP_ACTOR_POS, me_p, 12);
+                float d2 = (me_p[0] - q[0]) * (me_p[0] - q[0]) + (me_p[1] - q[1]) * (me_p[1] - q[1]) + (me_p[2] - q[2]) * (me_p[2] - q[2]);
+                int gone = !coop_rd(s->mir[k].actor + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 ||
+                           strcmp(coop_actor_name(s->mir[k].actor, nm, sizeof nm), s->mir[k].name);
+                if (gone && d2 > 9) { s->mir[k].state = 0, s->mir[k].actor = 0; continue; }   // gone, not by this Link (3 m)
+                if (gone) {
+                    rt_log("coop: slot %d: the copy of object %u (%s) was picked up here (state %d); the owner is told",
+                           (int)(s - slots), s->mir[k].id, s->mir[k].name, st);
+                    take_note(s->net_id, s->mir[k].id);
+                    s->mir[k].state = 0, s->mir[k].actor = 0;
+                    continue;
+                }
+            }
             place_copy(c, s, k);
         }
     }
@@ -1369,8 +1411,9 @@ static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc) {
     int k;
     (void)c, (void)addr, (void)calc;
     // A Zonai device's copy runs its own update, so a hit here (the proxy's sword) turns it on, with its effects;
-    // it is still put at the owner's place every tick (place_copy).
-    return copy_of(actor, &s, &k) && s->mir[k].ticks >= COPY_WARMUP && strncmp(s->mir[k].name, "SpObj_", 6);
+    // so does an item's, so this game's Link can pick it up (pickable). Both are still put at the owner's place every
+    // tick (place_copy).
+    return copy_of(actor, &s, &k) && s->mir[k].ticks >= COPY_WARMUP && strncmp(s->mir[k].name, "SpObj_", 6) && !pickable(s->mir[k].name);
 }
 // Each tick, a copy is put where its arrow is: actor position and rotation, model matrix and the push to the model
 // units, as the proxy. Done from the tick, not in one of its own updates: the game stopped calling a frozen arrow's
@@ -1823,6 +1866,67 @@ static void props_test(Cpu *c, uint64_t me) {
         coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, obj, (uint64_t)(uintptr_t)m, 0, 0);
     }
 }
+// Test (TOTK_COOP_TEST_PICKUP=1, both games on the 100% save; pickup_b_3rd.txt in game B): at 21 s both Links are
+// put on the flat ground the fan test uses, 1.2 m apart and facing each other (player 1 at z 1510.2 facing +z, the
+// other at z 1511.4 facing -z); at 22 s player 1 makes an apple (Item_Fruit_A) between them, 0.5 m from the other;
+// from 22 s to 40 s every 15 ticks both games log each Item_ actor within 3 m: the original, its copy, and whether
+// the copy is still there after B tries to pick it up.
+static void pickup_test(Cpu *c, uint64_t me) {
+    static int on = -1, made;
+    static _Alignas(16) uint8_t handle[0x40], link[0x40];
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_PICKUP") != NULL;
+    if (!on) return;
+    double now = frame_step_world_us() / 1e6;
+    float p[3], r[9];
+    if (!coop_rd(me + COOP_ACTOR_POS, p, 12) || !coop_rd(me + COOP_ACTOR_ROT, r, 36)) return;
+    static int put;
+    if (!put && now > 21) {
+        float m1[12] = {1, 0, 0, 31.5f, 0, 1, 0, 1514.8f, 0, 0, 1, 1510.2f}, m2[12] = {-1, 0, 0, 31.5f, 0, 1, 0, 1514.8f, 0, 0, -1, 1511.4f};
+        coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)(coop_net_id() == 1 ? m1 : m2), 0, 0);
+        put = 1;
+    }
+    if (coop_net_id() == 1 && !made && now > 22) {
+        float at[3] = {31.5f, 1515.0f, 1510.9f}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        made = coop_request_create(c, "Item_Fruit_A", at, rot, handle) ? 1 : 0;
+        rt_log("coop: test: pickup: apple asked for at %.2f %.2f %.2f (%d)", at[0], at[1], at[2], made);
+    }
+    if (made == 1 && coop_handle_status(handle) == 3) {
+        uint64_t ref, a = coop_claim(c, handle, link, &ref);
+        made = 2;
+        rt_log("coop: test: pickup: apple is here (%llx)", (unsigned long long)a);
+    }
+    static int near_put;   // the other game: at 28.5 s (the apple rolls 9 m down to rest) its Link 0.5 m from the copy, facing it
+    if (coop_net_id() != 1 && !near_put && now > 28.5)
+        for (int k = 0; k < COOP_OBJS && !near_put; k++)
+            if (slots[0].mir[k].state == 3 && !strncmp(slots[0].mir[k].name, "Item_", 5)) {
+                float q[3];
+                if (!coop_rd(slots[0].mir[k].actor + COOP_ACTOR_POS, q, 12)) continue;
+                float m[12] = {0, 0, 1, q[0] - 0.5f, 0, 1, 0, q[1] + 0.1f, -1, 0, 0, q[2]};   // facing +x
+                coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
+                near_put = 1;
+                rt_log("coop: test: pickup: this Link put by the copy at %.2f %.2f %.2f", q[0], q[1], q[2]);
+            }
+    static int t;
+    if (now < 22 || now > 40 || ++t % 15) return;
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++)
+        for (int k = 0; k < COOP_OBJS; k++)
+            if (slots[i].mir[k].state && !strncmp(slots[i].mir[k].name, "Item_", 5)) {
+                char nm[48] = "";
+                float q[3] = {0};
+                uint64_t a = slots[i].mir[k].actor;
+                if (a) coop_actor_name(a, nm, sizeof nm), coop_rd(a + COOP_ACTOR_POS, q, 12);
+                rt_log("coop: test: pickup %.2f s: copy %u state %d actor %llx (%s) at %.2f %.2f %.2f", now, slots[i].mir[k].id,
+                       slots[i].mir[k].state, (unsigned long long)a, nm, q[0], q[1], q[2]);
+            }
+    for (int e = 0; e < PROPS_N; e++)
+        if (props[e].actor && props[e].made && !strncmp(props[e].name, "Item_", 5)) {
+            char nm[48] = "";
+            float q[3] = {0};
+            coop_actor_name(props[e].actor, nm, sizeof nm), coop_rd(props[e].actor + COOP_ACTOR_POS, q, 12);
+            rt_log("coop: test: pickup %.2f s: mine %u actor %llx (%s) at %.2f %.2f %.2f, seen %d ticks ago", now, props[e].id,
+                   (unsigned long long)props[e].actor, nm, q[0], q[1], q[2], prop_tick - props[e].seen);
+        }
+}
 // Both games: where the object a co-op player moved last is here (for the test above).
 static void props_test_where(void) {
     static int on = -1, t;
@@ -1958,8 +2062,9 @@ static void objs_send(const CoopObj *cur, int n) {
     }
 #undef OBJS_PUT
 }
-static void objs_receive(void) {
+static void objs_receive(Cpu *c) {
     static int rtick;
+    taken_tick++;
     static uint8_t pk[COOP_OBJS_PACKET_MAX];
     int from = 0, n;
     rtick++;
@@ -1968,6 +2073,21 @@ static void objs_receive(void) {
         uint16_t h[2];
         memcpy(h, pk, 4);
         if (h[0] > COOP_OBJS_PER_PACKET || 4 + h[0] * (int)sizeof(CoopObj) > n) continue;
+        if (h[1] == 1) {   // another player picked up objects: this game's own ones are deleted (take_note)
+            for (int e = 0; e < h[0]; e++) {
+                CoopObj o;
+                memcpy(&o, pk + 4 + e * sizeof(CoopObj), sizeof o);
+                if (o.flags != coop_net_id()) continue;
+                for (int i = 0; i < PROPS_N; i++)
+                    if (props[i].actor && props[i].made && props[i].id == o.id) {
+                        rt_log("coop: player %d picked up my %s (number %u); mine is deleted", from, props[i].name, o.id);
+                        coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, props[i].actor, COOP_DELETE_REASON, 0, 0);
+                        set_driven(props[i].actor);   // not taken for a new object of this game's while it goes away
+                        props[i].actor = 0;
+                    }
+            }
+            continue;
+        }
         Slot *s = slot_for(SRC_NET, from);
         if (!s) continue;
         for (int e = 0; e < h[0]; e++) {
@@ -2908,7 +3028,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         int n_objs = report_arrows(me, cur);
         n_objs += report_props(me, cur + n_objs, COOP_OBJS - n_objs);
         objs_send(cur, n_objs);
-        objs_receive();
+        objs_receive(c);
         for (int k = 0; k < 3; k++) memcpy(st.fuse[k], strcmp(my_gear[k], GEAR_NONE) ? my_fuse[k] : "", 32);   // none when unequipped
         match_my_eq(me);
         uint64_t my_eq = eq_of_actor(me);   // weapon, bow, shield in hand
@@ -2965,7 +3085,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         if (fw && *fw) st.weather = atoi(fw);
         coop_net_publish(&st);
         if (coop_proxy_mode()) props_receive(c), ride_carry(c, me);   // placed objects co-op players move; riding them
-        props_test(c, me), props_test_where(), ride_test(c, me);
+        props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me);
     }
     armor_probe(me);
     arrow_log(me);

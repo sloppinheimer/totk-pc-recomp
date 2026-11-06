@@ -1,0 +1,11 @@
+# The 100% save (third in the Continue list), for TOTK_COOP_TEST_PICKUP=1: both Links stand where the save puts them;
+# the test puts the Links facing each other and game A makes an apple between them at 22 s; this game (B) presses A
+# (pick up) at 29.5, 30.5 and 31.5 s.
+300 A 4
+520 DOWN 4
+580 DOWN 4
+640 A 4
+800 A 4
+@29500 A 150
+@30500 A 150
+@31500 A 150
