@@ -1459,6 +1459,10 @@ static void place_copy(Cpu *c, Slot *s, int k) {
     // body: [[[actor+0x228] +0x50] +0x20] +0x150 (as COOP_FORCE_MATRIX finds it). A moving body can push Links;
     // TOTK_COOP_RIDE=0 leaves copies bodiless as before.
     int ride_on(void);
+    if (pickable(s->mir[k].name)) {   // an item runs its own physics: its body is put with it each tick, not driven
+        coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, actor, (uint64_t)(uintptr_t)m, 0, 0);
+        return;
+    }
     if (ride_on() && !strstr(s->mir[k].name, "Arrow")) {
         static struct { float pos[3], rot[9]; int64_t us, teleported; } last[COOP_MAX_PLAYERS][COOP_OBJS];
         typeof(&last[0][0]) l = &last[s - slots][k];
@@ -2225,13 +2229,16 @@ static int ride_objects(RideObj *out, int max) {
     int n = 0;
     for (int i = 0; i < COOP_MAX_PLAYERS; i++)
         for (int k = 0; k < COOP_OBJS && n < max && copies_live[i]; k++)
-            if (slots[i].mir[k].state == 3 && slots[i].mir[k].ticks >= COPY_WARMUP && !strstr(slots[i].mir[k].name, "Arrow")) {   // not ridden
+            // not ridden: arrows, and items (an item's copy runs its own physics and is put back at its owner's
+            // place; a Link carried by it went through the floor, a play session, 2026-11-05)
+            if (slots[i].mir[k].state == 3 && slots[i].mir[k].ticks >= COPY_WARMUP && !strstr(slots[i].mir[k].name, "Arrow") &&
+                !pickable(slots[i].mir[k].name)) {
                 out[n].actor = slots[i].mir[k].actor, out[n].owner = slots[i].net_id, out[n].id = slots[i].mir[k].id;
                 memcpy(out[n].pos, slots[i].mir[k].pos, 12), memcpy(out[n].rot, slots[i].mir[k].rot, 36);
                 n++;
             }
     for (int k = 0; k < 128 && n < max; k++)
-        if (key_found[k].actor && key_found[k].last && prop_tick - key_found[k].last < 150) {
+        if (key_found[k].actor && key_found[k].last && prop_tick - key_found[k].last < 150 && !pickable(key_found[k].name)) {
             out[n].actor = key_found[k].actor, out[n].owner = key_found[k].from, out[n].id = COOP_OBJ_KEYED | key_found[k].key;
             memcpy(out[n].pos, key_found[k].pos, 12), quat_mat(key_found[k].q, out[n].rot);
             n++;
