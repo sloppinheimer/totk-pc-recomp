@@ -157,6 +157,18 @@ right in the tester's own two-pad session.
   copies' place (logged at the hit), and not a shared life (the proxy's and P1's are kept apart). P1's life
   component ([[actor+0x228]+0x2f8]+0x1830, +8) did not go down when it was hurt, and its update (main+0x4400b0)
   took nothing off it: a Player's hearts are kept elsewhere. Next: find where, then log what hurts P1.
+- **Open after the 2026-11-06 sessions** (the sync audit on a play sessions, kept in `build/session-*`):
+  - Proxy hands: the proxy keeps its weapon and shield out after its owner put them away, for up to minutes
+    (`link-hands`, in every session). The biggest one.
+  - Dropped items rest at another place in each game, 1 to 12 m apart, for minutes (`object-place`); some copies'
+    actors went away while still shown (`dead`).
+  - Enemies: place and life match within 1 to 3 m, but each game runs its own AI, so what they do differs (the tester:
+    "desync BADLY"). Needs the host's enemy pose copied to the guest, as the proxy's is.
+  - A Zonai device fused to a shield: the proxy's shield made with it shows it at full size; it is not sent for now.
+    TOTK_COOP_TEST_FUSELOG logs the actor on each shield, its scale and place, to compare the owner's with the
+    proxy's (not run yet).
+  - Weather differs at times with the two Links together; the sword beam's burst; the proxy may no longer flinch when
+    hit (its life update is skipped).
 - Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
 
 ## Plan

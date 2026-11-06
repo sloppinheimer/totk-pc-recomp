@@ -4075,6 +4075,33 @@ static void fused_from_world(uint64_t a) {
             return;
         }
 }
+// Test (TOTK_COOP_TEST_FUSELOG): once a second, the actor on this Link's shield and on each co-op Link's, with its
+// scale (+0x2e4) and place in the shield's frame: the proxy's shield made with a Zonai device showed it at full size.
+static void fuse_log_one(const char *who, uint64_t shield) {
+    ShieldScan ss = {.best_d2 = 4.0f, .shield = shield};
+    if (!shield || !coop_rd(shield + COOP_ACTOR_POS, ss.at, 12)) return;
+    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
+    coop_actors_live(shield_fuse_fn, &ss);
+    char sn[48], an[48] = "";
+    coop_actor_name(shield, sn, sizeof sn);
+    float sc[3] = {0}, ssc[3] = {0}, p[3] = {0}, r[9] = {0};
+    if (ss.best) coop_actor_name(ss.best, an, sizeof an), coop_rd(ss.best + 0x2e4, sc, 12), coop_rd(ss.best + COOP_ACTOR_POS, p, 12);
+    coop_rd(shield + 0x2e4, ssc, 12), coop_rd(shield + COOP_ACTOR_ROT, r, 36);
+    float d[3] = {p[0] - ss.at[0], p[1] - ss.at[1], p[2] - ss.at[2]}, l[3];
+    for (int j = 0; j < 3; j++) l[j] = r[j] * d[0] + r[3 + j] * d[1] + r[6 + j] * d[2];
+    rt_log("coop: test: fuse %s: %s (scale %.3f) has %s %llx, scale %.3f %.3f %.3f, at %.3f %.3f %.3f in its frame (%.2f m)", who, sn, ssc[0],
+           an[0] ? an : "nothing", (unsigned long long)ss.best, sc[0], sc[1], sc[2], l[0], l[1], l[2], sqrtf(ss.best_d2));
+}
+static void fuse_log(uint64_t me, uint64_t my_eq) {
+    static int on = -1, t;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_FUSELOG") != NULL;
+    if (!on || ++t % 60) return;
+    if (my_eq && eq_points_to(my_eq, me)) fuse_log_one("mine", eq_item(my_eq, 2));
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++) {
+        uint64_t eq = slots[i].actor ? eq_of_actor(slots[i].actor) : 0;
+        if (eq && eq_points_to(eq, slots[i].actor)) fuse_log_one("the proxy's", eq_item(eq, 2));
+    }
+}
 static void shield_fuse_tick(uint64_t me, uint64_t my_eq) {
     static int t, same, none;
     static uint64_t last;
@@ -4247,7 +4274,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         // A Zonai device fused to the shield is not sent: the proxy's shield made with it as its material showed the
         // device at its full size, far larger than on the owner's shield (a play session, 2026-11-06; how the game
         // sizes it is not known). Left out of world objects all the same (prop_skip), so no loose copy either.
-        if (!strncmp(st.fuse[2], "SpObj_", 6)) st.fuse[2][0] = 0;
+        if (!strncmp(st.fuse[2], "SpObj_", 6) && !cfg_get("TOTK_COOP_TEST_FUSELOG")) st.fuse[2][0] = 0;
         match_my_eq(me);
         uint64_t my_eq = eq_of_actor(me);   // weapon, bow, shield in hand (only on its own EquipmentUser: see report_arrows)
         if (my_eq && !eq_points_to(my_eq, me)) my_eq = 0;
@@ -4256,6 +4283,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
             if (coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, my_eq, hand_of[k], 0, 0) & 1) st.flags |= 1u << (8 + k);
         shield_send(me, my_eq, &st);
         shield_fuse_tick(me, my_eq);
+        fuse_log(me, my_eq);
         audit_tick(c, me, cur, n_objs, &st);
         {   // test: this Link's life when it changes, with each proxy's and whether it runs its own update then (P1's
             // hearts went up and down while P2 swung, a play session, 2026-11-06)
