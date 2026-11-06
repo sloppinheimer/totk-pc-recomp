@@ -16,6 +16,8 @@ $cases = @(
       want = @('A:my arrow 1 is fused with BombFruit', 'B:the copy of BombFruit \(2\) went off', 'B:the copy of BombFruit \(4\) went off')},
     @{n = 'equip'; s = 60; a = 'equip_draw_3rd.txt'; b = 'idle_3rd.txt'; env = @{};
       want = @("B:owner's gear slot 0 is Weapon_Sword_070")},
+    @{n = 'hands'; s = 70; a = 'equip_bow_3rd.txt'; b = 'idle_3rd.txt'; env = @{};
+      want = @("B:owner's gear slot 0 is Weapon_")},
     @{n = 'pickup'; s = 50; a = 'idle_3rd.txt'; b = 'pickup_b_3rd.txt'; env = @{TOTK_COOP_TEST_PICKUP = '1'};
       want = @('B:was picked up here', 'A:picked up or destroyed my')}
 )

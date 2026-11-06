@@ -31,6 +31,7 @@ typedef struct {
 typedef struct {
     uint32_t seq, flags;              // flags bits 8..10: weapon, bow, shield in hand (puppet mode draws them);
                                       // bit 11: the shield is placed as shield_pos / shield_q say (a shield surf)
+                                      // bit 12: lightning is about to strike this Link (its sparks; coop_players.c)
     float pos[3], rot[9];
     float cam_fwd[2], cam_right[2];   // x, z
     uint64_t buttons;                 // Switch buttons (input_map.h B_*)

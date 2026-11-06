@@ -223,13 +223,13 @@ static void read_weather(Cpu *c, uint64_t me) {
     weather_now = w;
 }
 
-// Set again every 5 s while the weather here is not the host's: set once, it went back to this game's forecast (it
+// Set again every 2 s while the weather here is not the host's: set once, it went back to this game's forecast (it
 // read 0, 3, 1, 0 and 2 while the host's stayed 7, a play session, 2026-11-06).
 static void follow_host_weather(Cpu *c, int32_t host) {   // host -1: no host (alone, or it left)
     uint64_t wx = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + WX_SLOT));
     static uint64_t last_ms;
     uint64_t now_ms = plat_now_ns() / 1000000;
-    int again = host >= 0 && host == weather_forced && weather_now >= 0 && weather_now != host && now_ms - last_ms > 5000;
+    int again = host >= 0 && host == weather_forced && weather_now >= 0 && weather_now != host && now_ms - last_ms > 2000;
     if (!wx || (host == weather_forced && !again)) return;
     last_ms = now_ms;
     if (host < 0) {
@@ -1668,7 +1668,8 @@ static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc) {
     // show (a play session, 2026-11-05).
     // (a paraglider's copy from its first tick: it went away by itself about 0.5 s after it was made, glide.txt)
     return copy_of(actor, &s, &k) && (s->mir[k].ticks >= COPY_WARMUP || (s->mir[k].flags & COOP_OBJ_ONLINK)) &&
-           strncmp(s->mir[k].name, "SpObj_", 6) && !pickable(s->mir[k].name) && !s->mir[k].blowing && strcmp(s->mir[k].name, "PlayerBeam");
+           strncmp(s->mir[k].name, "SpObj_", 6) && !pickable(s->mir[k].name) && !s->mir[k].blowing && strcmp(s->mir[k].name, "PlayerBeam") &&
+           strcmp(s->mir[k].name, "LightningStrike");   // (a strike's copy plays out by itself)
 }
 // A beam's copy. Made at scale 1, it showed much larger: the owner's beam is at 0.3 (actor +0x2e4..+0x2ec, set by the
 // swing that makes it; TOTK_COOP_TEST_BEAMDUMP, a play session, 2026-11-06). Driven from the reports, its speed went
@@ -1818,6 +1819,18 @@ static void place_copy(Cpu *c, Slot *s, int k) {
     }
     if (pickable(s->mir[k].name)) {   // an item runs its own physics: its body is put with it each tick, not driven
         coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, actor, (uint64_t)(uintptr_t)m, 0, 0);
+        // ForceSetMatrix takes in the actor's own update, which an item at rest no longer runs (it sleeps): a dropped
+        // monster part's copy stayed 1.75 m off for minutes, a spear's 6.6 m (the sync audit, a play session,
+        // 2026-11-06). More than 0.3 m off, its body and place are set at once, as an arrow copy's are.
+        float ap[3];
+        if (coop_rd(actor + COOP_ACTOR_POS, ap, 12) &&
+            (ap[0] - m[3]) * (ap[0] - m[3]) + (ap[1] - m[7]) * (ap[1] - m[7]) + (ap[2] - m[11]) * (ap[2] - m[11]) > 0.09f) {
+            _Alignas(16) float mb[12];
+            memcpy(mb, m, sizeof mb);
+            uint64_t ph = coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x50), ct = ph ? coop_rd_ptr(ph + 0x20) : 0, bd = ct ? coop_rd_ptr(ct + 0x150) : 0;
+            if (bd) coop_guest_call(c, MOD_MAIN_BASE + 0x25a450, bd, (uint64_t)(uintptr_t)mb, 0, 0);
+            memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_POS), s->mir[k].pos, 12);
+        }
         // ... and stopped there: with its speed kept, a rolling apple's copy rolled on 1.5 m past where the owner's
         // came to rest (the sync audit, pickup test, 2026-11-06)
         uint64_t phys = coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x50), ctl = phys ? coop_rd_ptr(phys + 0x20) : 0;
@@ -1970,9 +1983,9 @@ static int prop_skip(const char *nm) {
                                 // point, a cannon terminal and door; taken as made, each game had copies of the other's,
                                 // and a warp to a place with a copied warp point hung about a minute (a play session,
                                 // 2026-11-06)
-                                "DgnObj_ZonauShrineEntrance", "DgnObj_WarpPoint", "ZonauShrine_EntranceGate", "FldObj_Cannon",
-                                // the weather's own (a thunderstorm's strike near the Link was sent as made, 2026-11-06)
-                                "LightningStrike"};   // chests: each player's own
+                                "DgnObj_ZonauShrineEntrance", "DgnObj_WarpPoint", "ZonauShrine_EntranceGate", "FldObj_Cannon"};
+    // (LightningStrike, a thunderstorm's strike, was left out here for a while; it is sent again, the one that hits
+    // this Link, so the others see it struck: the tester's list, 2026-11-06. Its copy runs its own update, copy_place.)   // chests: each player's own
     for (size_t i = 0; i < sizeof pre / sizeof *pre; i++) if (!strncmp(nm, pre[i], strlen(pre[i]))) return 1;
     if (strstr(nm, "Arrow")) return 1;
     // Helpers that go with this Link and are not things in the world: EventCamera and CameraXLinkControl were sent
@@ -2291,12 +2304,18 @@ static void force_to(Cpu *c, uint64_t a, const float pos[3], const float q[4]) {
     uint64_t body = ctl ? coop_rd_ptr(ctl + 0x150) : 0;
     if (!body || dx * dx + dy * dy + dz * dz > 0.25f || dt <= 0 || dt > 0.5f) {
         if (dx * dx + dy * dy + dz * dz >= 4e-4f || !body) {
-            float m[12];
+            _Alignas(16) float m[12];
             for (int row = 0; row < 3; row++) {
                 for (int j = 0; j < 3; j++) m[row * 4 + j] = r[row * 3 + j];
                 m[row * 4 + 3] = pos[row];
             }
             coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, a, (uint64_t)(uintptr_t)m, 0, 0);
+            // (an object at rest runs no update, where ForceSetMatrix takes: its body and place set at once too; a
+            // rock part held at another's report stayed 12 m off, the sync audit, 2026-11-06)
+            if (body && dx * dx + dy * dy + dz * dz > 0.09f) {
+                coop_guest_call(c, MOD_MAIN_BASE + 0x25a450, body, (uint64_t)(uintptr_t)m, 0, 0);
+                memcpy((void *)(uintptr_t)(a + COOP_ACTOR_POS), pos, 12);
+            }
         }
     } else {
         float wf[3], wc[3];
@@ -4282,6 +4301,25 @@ void coop_players_tick(Cpu *c, int numpad3) {
         for (int k = 0; my_eq && k < 3; k++)
             if (coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, my_eq, hand_of[k], 0, 0) & 1) st.flags |= 1u << (8 + k);
         shield_send(me, my_eq, &st);
+        // Lightning about to strike this Link (its metal gear sparks): AI node OneShotEquipmentUserSetLightningWait sets
+        // bit 16 of the EquipmentUser's flags at +0x4600 (and the wait time at +0x3f14 to 0; main+0x2529c3c, its
+        // ResetLightningWait clears it). Sent as NetState flags bit 12, so the proxy sparks too (the tester's list).
+        if (my_eq && eq_points_to(my_eq, me) && (LD64(my_eq + 0x4600) >> 16 & 1)) st.flags |= 1u << 12;
+        {   // test (TOTK_COOP_TEST_LIGHTNING): at 20 s this Link's lightning wait is set, as the AI node sets it; logged
+            // each second while it lasts, and each LightningStrike that shows up near this Link
+            static int on = -1, done, said;
+            if (on < 0) on = cfg_get("TOTK_COOP_TEST_LIGHTNING") != NULL;
+            if (on && my_eq && eq_points_to(my_eq, me)) {
+                if (!done && frame_step_world_us() > 20000000) {
+                    done = 1;
+                    __atomic_fetch_or((uint64_t *)(uintptr_t)(my_eq + 0x4600), 1ull << 16, __ATOMIC_SEQ_CST), ST32(my_eq + 0x3f14, 0);
+                    rt_log("coop: test: lightning: this Link's lightning wait set");
+                }
+                static int t;
+                if (done && ++t % 30 == 0 && said++ < 30)
+                    rt_log("coop: test: lightning: wait %d, time %.3f", (int)(LD64(my_eq + 0x4600) >> 16 & 1), *(float *)(uintptr_t)(my_eq + 0x3f14));
+            }
+        }
         shield_fuse_tick(me, my_eq);
         fuse_log(me, my_eq);
         audit_tick(c, me, cur, n_objs, &st);
@@ -4380,7 +4418,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
     int host_id = coop_net_on() && coop_net_id() ? coop_net_id() : 0;
     float host_time = -1;
     int32_t host_weather = -1;
-    int have_host = 0;
+    int have_host = 0, host_far = 0;
 
     // Remote players in, slots for new ones, let go of the ones that left.
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++) {
@@ -4410,7 +4448,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
             float mp[3];
             if (coop_rd(me + COOP_ACTOR_POS, mp, 12) &&
                 (mp[0] - st.pos[0]) * (mp[0] - st.pos[0]) + (mp[1] - st.pos[1]) * (mp[1] - st.pos[1]) + (mp[2] - st.pos[2]) * (mp[2] - st.pos[2]) > 300.0f * 300.0f)
-                host_weather = -1;
+                host_weather = -1, host_far = 1;
         }
         if (!s && !(s = slot_new(SRC_NET, id))) continue;
         if (st.seq != s->last_seq) {   // a new report: the owner's velocity since the previous one
@@ -4450,6 +4488,21 @@ void coop_players_tick(Cpu *c, int numpad3) {
         memcpy(s->want_pos, st.pos, 12), memcpy(s->want_rot, st.rot, 36), s->have_want = 1;
         s->ride_owner = st.ride_owner, s->ride_id = st.ride_id, memcpy(s->ride_off, st.ride_off, 12);
         s->shield_placed = (st.flags >> 11) & 1;
+        {   // its owner's lightning wait (flags bit 12) on the proxy's EquipmentUser, with its own update running while
+            // it lasts so its sparks play (a frozen proxy shows none)
+            int want_l = (st.flags >> 12) & 1;
+            uint64_t peq = s->actor ? eq_of_actor(s->actor) : 0;
+            if (proxied(s) && peq && eq_points_to(peq, s->actor)) {
+                uint64_t f = LD64(peq + 0x4600);
+                int has_l = (int)(f >> 16 & 1);
+                if (want_l != has_l) {
+                    if (want_l) __atomic_fetch_or((uint64_t *)(uintptr_t)(peq + 0x4600), 1ull << 16, __ATOMIC_SEQ_CST), ST32(peq + 0x3f14, 0);
+                    else __atomic_fetch_and((uint64_t *)(uintptr_t)(peq + 0x4600), ~(1ull << 16), __ATOMIC_SEQ_CST);
+                    rt_log("coop: proxy: slot %d: lightning %s its owner", (int)(s - slots), want_l ? "about to strike" : "no longer after");
+                }
+                if (want_l && s->thaw < 10) s->thaw = 10;
+            }
+        }
         if (proxied(s) && st.life > 0 && st.life_max > 0) {   // proxy attacks: its life and most life as its owner's
             int coop_life_of(uint64_t a), coop_life_max_of(uint64_t a);
             void coop_set_life(uint64_t a, int v), coop_set_life_max(uint64_t a, int v);
@@ -4500,7 +4553,10 @@ void coop_players_tick(Cpu *c, int numpad3) {
     if (host_time >= 0) follow_host_time(c, host_time);
     else if (!have_host) own_time_back(c);
     if (have_host && host_weather >= 0) follow_host_weather(c, host_weather);
-    else if (weather_forced >= 0) follow_host_weather(c, -1);   // the host left, is far, or this game is the host
+    // (let go when the host left, is far, or this game is the host; not for a moment the host's weather is unknown,
+    // its load or a menu: let go then, this game went back to its forecast and changed again a few seconds later,
+    // the sync audit, 2026-11-06)
+    else if (weather_forced >= 0 && (!have_host || host_far)) follow_host_weather(c, -1);
 
     // A second gamepad on this PC drives one more Link (Numpad 3 spawns it; the pad alone does not).
     Slot *pad = slot_for(SRC_PAD, 0);
@@ -4652,6 +4708,15 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 if (proxied(s) && s->thaw <= 0 && now != s->out_want && *retries < 4 && !cfg_get("TOTK_COOP_TEST_NORETRY")) {
                     s->thaw = PROXY_THAW_TICKS, ++*retries;
                     rt_log("coop: proxy: slot %d holds %#x, owner %#x: its own update runs again (%d)", i, now, s->out_want, *retries);
+                    // ... and each item held otherwise than its owner holds it made again that way (in hand or put
+                    // away): the update alone, with no input, never put an item away, and after the four tries the
+                    // proxy kept its sword and shield out for minutes after its owner had put them away (the sync audit,
+                    // link-hands, every session of 2026-11-06).
+                    for (int k = 0; k < 3; k++)
+                        if (((now ^ s->out_want) >> k & 1) && s->gear_want[k][0] && strcmp(s->gear_want[k], GEAR_NONE)) {
+                            give_gear(c, eq, k, s->gear_want[k], -1, s->out_want >> k & 1, s->gear_str[k], s->fuse_want[k], s->att_str[k]);
+                            rt_log("coop: proxy: slot %d: %s made again %s", i, s->gear_want[k], s->out_want >> k & 1 ? "in hand" : "put away");
+                        }
                 } else if (now == s->out_want) *retries = 0;
             }
             if (s->state == LIVE && s->source == SRC_NET && coop_proxy_mode()) arrow_copies(c, s);
