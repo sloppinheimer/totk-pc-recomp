@@ -63,6 +63,7 @@ typedef struct {
         int state;                     // 0 free, 1 wanted, 2 requested, 3 live
         char name[48];
         uint8_t flags;                 // the owner's CoopObj.flags
+        uint8_t blowing;               // set off here (its life taken): runs its own update to do so
         float lpos[3], lrot[9];        // with COOP_OBJ_LOCAL: its place in the owner's bow's frame
         float pos[3], rot[9];
         _Alignas(16) uint8_t handle[0x40], link[0x40];
@@ -1424,6 +1425,38 @@ static void arrow_copies(Cpu *c, Slot *s) {
         int still = 0;
         for (int j = 0; j < COOP_OBJS && !still; j++) still = s->objs_want[j].id == s->mir[k].id;
         if (still) continue;
+        // A shot arrow's fused material that goes in its owner's game went off where the arrow hit (a bomb flower's
+        // blast; the tester's list: all arrow effects): its copy here is set off the same way, its life taken and its
+        // own update let run, instead of being deleted. (A nocked one goes when the bow is put away: deleted.)
+        if (s->mir[k].state == 3 && s->mir[k].actor && (s->mir[k].flags & COOP_OBJ_FUSED) && !(s->mir[k].flags & COOP_OBJ_LOCAL) &&
+            !s->mir[k].blowing) {
+            int coop_life_of(uint64_t a);
+            void coop_set_life(uint64_t a, int v);
+            s->mir[k].blowing = 1, s->mir[k].ticks = COPY_WARMUP;   // ticks: from now on, how long it has been going off
+            // back where it is shown first: its place and body were kept 300 m under it (place_copy), and it goes off there
+            uint64_t a = s->mir[k].actor;
+            _Alignas(16) float mb[12];
+            for (int r = 0; r < 3; r++) {
+                for (int j = 0; j < 3; j++) mb[r * 4 + j] = s->mir[k].rot[r * 3 + j];
+                mb[r * 4 + 3] = s->mir[k].pos[r];
+            }
+            memcpy((void *)(uintptr_t)(a + COOP_ACTOR_POS), s->mir[k].pos, 12);
+            uint64_t phys = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x50), ctl = phys ? coop_rd_ptr(phys + 0x20) : 0, body = ctl ? coop_rd_ptr(ctl + 0x150) : 0;
+            if (body) coop_guest_call(c, MOD_MAIN_BASE + 0x25a450, body, (uint64_t)(uintptr_t)mb, 0, 0);
+            int life = coop_life_of(s->mir[k].actor);
+            coop_set_life(s->mir[k].actor, 0);
+            static int said;
+            if (said++ < 20) rt_log("coop: slot %d: the fused %s (%u) went off in its owner's game: set off here (life %d)", (int)(s - slots),
+                                    s->mir[k].name, s->mir[k].id, life);
+            continue;
+        }
+        if (s->mir[k].blowing && s->mir[k].state == 3) {   // going off: left to do it, then let go (3 s)
+            int32_t st = 0;
+            if (++s->mir[k].ticks < COPY_WARMUP + 180 && coop_rd(s->mir[k].actor + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6) continue;
+            if (st >= 2 && st <= 6) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0);
+            s->mir[k].state = 0, s->mir[k].actor = 0;
+            continue;
+        }
         if (s->mir[k].actor) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0);
         if (s->mir[k].state == 2) continue;   // its create is still pending: claimed (then deleted) once it is there
         s->mir[k].state = 0, s->mir[k].actor = 0;
@@ -1437,7 +1470,7 @@ static void arrow_copies(Cpu *c, Slot *s) {
         if (k == COOP_OBJS) {
             for (k = 0; k < COOP_OBJS && s->mir[k].state; k++) {}
             if (k == COOP_OBJS) continue;
-            s->mir[k].id = o->id, s->mir[k].state = 1, s->mir[k].ticks = 0, s->mir[k].actor = 0;
+            s->mir[k].id = o->id, s->mir[k].state = 1, s->mir[k].ticks = 0, s->mir[k].actor = 0, s->mir[k].blowing = 0;
             memcpy(s->mir[k].name, o->name, sizeof s->mir[k].name), s->mir[k].name[sizeof s->mir[k].name - 1] = 0;
         }
         s->mir[k].flags = o->flags;
@@ -1528,7 +1561,8 @@ static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc) {
     // An arrow's copy is frozen too, after it is woken (place_copy): running its update, a nocked arrow's copy at the
     // other player's bow could be picked up again and again, and a fused arrow's kept falling asleep and did not
     // show (a play session, 2026-11-05).
-    return copy_of(actor, &s, &k) && s->mir[k].ticks >= COPY_WARMUP && strncmp(s->mir[k].name, "SpObj_", 6) && !pickable(s->mir[k].name);
+    return copy_of(actor, &s, &k) && s->mir[k].ticks >= COPY_WARMUP && strncmp(s->mir[k].name, "SpObj_", 6) && !pickable(s->mir[k].name) &&
+           !s->mir[k].blowing;
 }
 // Each tick, a copy is put where its arrow is: actor position and rotation, model matrix and the push to the model
 // units, as the proxy. Done from the tick, not in one of its own updates: the game stopped calling a frozen arrow's
@@ -1575,7 +1609,7 @@ static void place_copy(Cpu *c, Slot *s, int k) {
     // session, 2026-11-05). The pick-up goes by the actor's place: that is kept 300 m under it, as its body; it is
     // drawn from its model matrix, below.
     // (A material fused to an arrow too: it could be taken off the arrow the same way, a play session.)
-    int arrowish = strstr(s->mir[k].name, "Arrow") || (s->mir[k].flags & COOP_OBJ_FUSED);
+    int arrowish = (strstr(s->mir[k].name, "Arrow") || (s->mir[k].flags & COOP_OBJ_FUSED)) && !s->mir[k].blowing;   // not one going off
     if (arrowish) {
         float low[3] = {s->mir[k].pos[0], s->mir[k].pos[1] - 300.0f, s->mir[k].pos[2]};
         memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_POS), low, 12);
@@ -2045,6 +2079,24 @@ static void props_test(Cpu *c, uint64_t me) {
         float m[12] = {1, 0, 0, base[0], 0, 1, 0, base[1] + (float)(now - 28) * 0.75f, 0, 0, 1, base[2]};
         coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, obj, (uint64_t)(uintptr_t)m, 0, 0);
     }
+    // TOTK_COOP_TEST_PROPS=blast: at 32 s the other game takes its copy's life (and lets it run its own update): does
+    // a BombFruit's copy go off? This Link's life (it stands by it) is logged before and after.
+    static int blasted;
+    if (!blasted && now > 32 && coop_net_id() != 1 && !strcmp(cfg_get("TOTK_COOP_TEST_PROPS"), "blast"))
+        for (int i = 0; i < COOP_MAX_PLAYERS && !blasted; i++)
+            for (int k = 0; k < COOP_OBJS && !blasted; k++)
+                if (slots[i].mir[k].state == 3 && !strcmp(slots[i].mir[k].name, "BombFruit")) {
+                    int coop_life_of(uint64_t a);
+                    void coop_set_life(uint64_t a, int v);
+                    int before = coop_life_of(slots[i].mir[k].actor);
+                    slots[i].mir[k].blowing = 1;
+                    coop_set_life(slots[i].mir[k].actor, 0);
+                    blasted = 1;
+                    rt_log("coop: test: props: the copy of BombFruit %u: life %d -> 0; this Link's life %d", slots[i].mir[k].id, before,
+                           coop_life_of(me));
+                }
+    static int after;
+    if (blasted && !after && now > 35) after = 1, rt_log("coop: test: props: 3 s later this Link's life is %d", ({ int coop_life_of(uint64_t a); coop_life_of(me); }));
     // TOTK_COOP_TEST_PROPS=kill: at 32 s the other game deletes its copy of the BombFruit, as a blast would; the
     // first game's own one should go too (the destroyed-copy notice).
     static int killed;
@@ -2246,6 +2298,70 @@ static void bone_arrow_test(uint64_t me) {
     }
     rt_log("coop: test: bone arrow %.2f s: nearest bone %d, %.3f m (arrow %.2f %.2f %.2f, bone %.2f %.2f %.2f, Link %.2f %.2f %.2f)",
            frame_step_world_us() / 1e6, best, sqrtf(bd), a[0], a[1], a[2], bw[0], bw[1], bw[2], lp[0], lp[1], lp[2]);
+}
+// Test (TOTK_COOP_TEST_IMPACT=1): what a fused arrow makes where it hits. This Link's fused materials are watched
+// each tick (their place, whether they are still there: state 2..6 and the same name); when one goes, the actors
+// within 4 m of its last place are noted, and for 1.5 s after every actor within 4 m that was not among them is
+// logged (name, place, state). For the arrows' effects on the other screens (a bomb arrow's blast; the tester's list).
+typedef struct { float at[3]; uint64_t known[256]; int nk, logged; } ImpactScan;
+static void impact_known_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
+    ImpactScan *is = arg;
+    (void)nm, (void)key;
+    float p[3];
+    if (is->nk >= 256 || !coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+    if ((p[0] - is->at[0]) * (p[0] - is->at[0]) + (p[1] - is->at[1]) * (p[1] - is->at[1]) + (p[2] - is->at[2]) * (p[2] - is->at[2]) < 16)
+        is->known[is->nk++] = a;
+}
+static void impact_new_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
+    ImpactScan *is = arg;
+    (void)key;
+    float p[3];
+    if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+    if ((p[0] - is->at[0]) * (p[0] - is->at[0]) + (p[1] - is->at[1]) * (p[1] - is->at[1]) + (p[2] - is->at[2]) * (p[2] - is->at[2]) >= 16) return;
+    for (int i = 0; i < is->nk; i++) if (is->known[i] == a) return;
+    if (is->nk < 256) is->known[is->nk++] = a;   // logged once
+    int32_t st = 0;
+    coop_rd(a + COOP_ACTOR_STATE, &st, 4);
+    if (is->logged++ < 40)
+        rt_log("coop: test: impact %.2f s: new %s %llx at %.2f %.2f %.2f, state %d", frame_step_world_us() / 1e6, nm, (unsigned long long)a,
+               p[0], p[1], p[2], st);
+}
+static void impact_test(void) {
+    static int on = -1;
+    static struct { uint64_t actor; char name[48]; float last[3]; } w[8];
+    static uint64_t done[32];   // materials already seen going (still in my_arrows for a while after)
+    static int ndone;
+    static ImpactScan is;
+    static int64_t until;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_IMPACT") != NULL;
+    if (!on) return;
+    void coop_actors_all(void (*fn)(uint64_t, const char *, uint32_t, void *), void *arg);   // coop_world.c: at rest too
+    int64_t now = frame_step_world_us();
+    for (int i = 0; i < 32; i++)   // fused materials of this Link's arrows, watched
+        if (my_arrows[i].actor && my_arrows[i].fused_to) {
+            int seen_go = 0;
+            for (int d = 0; d < 32; d++) seen_go |= done[d] == my_arrows[i].actor;
+            if (seen_go) continue;
+            int k = 0, free = -1;
+            while (k < 8 && w[k].actor != my_arrows[i].actor) { if (free < 0 && !w[k].actor) free = k; k++; }
+            if (k == 8 && free >= 0) k = free, w[k].actor = my_arrows[i].actor, coop_actor_name(w[k].actor, w[k].name, sizeof w[k].name);
+        }
+    for (int k = 0; k < 8; k++) {
+        if (!w[k].actor) continue;
+        int32_t st = 0;
+        char nm[48];
+        int gone = !coop_rd(w[k].actor + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || strcmp(coop_actor_name(w[k].actor, nm, sizeof nm), w[k].name);
+        if (!gone) { coop_rd(w[k].actor + COOP_ACTOR_POS, w[k].last, 12); continue; }
+        rt_log("coop: test: impact %.2f s: the fused %s went (state %d) at %.2f %.2f %.2f", now / 1e6, w[k].name, st, w[k].last[0], w[k].last[1], w[k].last[2]);
+        memset(&is, 0, sizeof is);
+        memcpy(is.at, w[k].last, 12);
+        is.known[is.nk++] = w[k].actor;
+        coop_actors_all(impact_known_fn, &is);
+        until = now + 1500000;
+        done[ndone++ % 32] = w[k].actor;
+        w[k].actor = 0;
+    }
+    if (now < until) coop_actors_all(impact_new_fn, &is);
 }
 // Both games: where the object a co-op player moved last is here (for the test above).
 static void props_test_where(void) {
@@ -3415,7 +3531,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         if (fw && *fw) st.weather = atoi(fw);
         coop_net_publish(&st);
         if (coop_proxy_mode()) props_receive(c), ride_carry(c, me);   // placed objects co-op players move; riding them
-        props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test(), bone_arrow_test(me);
+        props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test(), bone_arrow_test(me), impact_test();
     }
     armor_probe(me);
     arrow_log(me);

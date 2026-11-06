@@ -87,6 +87,8 @@ static void set_life(uint64_t a, int v) {
     uint64_t p = life_word(a, 0);
     if (p) ST32(p, (uint32_t)(v < 0 ? 0 : v));
 }
+int coop_life_of(uint64_t a) { return life_of(a); }          // -1: no life component
+void coop_set_life(uint64_t a, int v) { set_life(a, v); }
 
 static uint32_t enemy_key(const char *name, const float home[3]) {
     uint32_t h = 2166136261u;
