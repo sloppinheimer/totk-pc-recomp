@@ -19,9 +19,11 @@
 #define COOP_OBJ_KEYED 0x80000000u
 typedef struct {
     uint32_t id;                      // the owner's number for it, or COOP_OBJ_KEYED | key (0: an empty entry)
-    char name[48];                    // its actor name (NormalArrow, SpObj_LiftGeneratorWing_A_01...)
+    char name[47];                    // its actor name (NormalArrow, SpObj_LiftGeneratorWing_A_01...)
+    uint8_t flags;                    // COOP_OBJ_AUTOBUILT: a device made by the owner's autobuild
     float pos[3], q[4];               // world position, rotation as a quaternion x y z w
 } CoopObj;
+#define COOP_OBJ_AUTOBUILT 1
 typedef struct {
     uint32_t seq, flags;              // flags bits 8..10: weapon, bow, shield in hand (puppet mode draws them)
     float pos[3], rot[9];

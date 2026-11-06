@@ -62,6 +62,7 @@ typedef struct {
         uint32_t id;
         int state;                     // 0 free, 1 wanted, 2 requested, 3 live
         char name[48];
+        uint8_t flags, tagged;         // the owner's CoopObj.flags; the autobuild label put on the copy
         float pos[3], rot[9];
         _Alignas(16) uint8_t handle[0x40], link[0x40];
         uint64_t actor, ref;
@@ -1035,6 +1036,35 @@ static void set_input(Slot *s, uint64_t buttons, const int32_t sticks[4]) {
     for (int k = 0; k < 4; k++) s->stick[k] = sticks[k] / 32767.0f;
     plat_mutex_unlock(&lock);
 }
+// Autobuild. The game labels each device it makes for an autobuild with the string "ImaginaryAutoBuildedActor" at
+// actor +0x18 (where other actors carry their own name) and sets actor +0x668 bit 0x10000000, both when it creates
+// it (main+0x6898dc); its code tests the label by name (main+0x9e6af0, main+0x1b37958; the AI query
+// QuerySpecialPowerIsImaginaryAutoBuildedActor). The label stays once the build is confirmed: devices made from
+// Zonaite keep it, and the game draws them green.
+#define COOP_AUTOBUILT_LABEL (MOD_MAIN_BASE + 0x2c1bd5a)   // the game's own "ImaginaryAutoBuildedActor"
+static int is_imaginary(uint64_t a) {
+    static const char tag[] = "ImaginaryAutoBuildedActor";
+    char buf[sizeof tag];
+    uint64_t s = coop_rd_ptr(a + 0x18);
+    return s && coop_rd(s, buf, sizeof buf) && !memcmp(buf, tag, sizeof tag);
+}
+// The preview, before the build is confirmed: the see-through devices; copied, it showed solid in the other game
+// (a play session, 2026-11-05). A memory diff over a build (a play session, 2026-11-05) found what confirming does
+// to every device at once: actor +0x440 gains bit 0x10 and +0x5d0 (a position, NaN until then) is filled in.
+static int is_preview(uint64_t a) {
+    uint32_t f440 = 0, p = 0;
+    if (!is_imaginary(a) || !coop_rd(a + 0x440, &f440, 4) || !coop_rd(a + 0x5d0, &p, 4)) return 0;
+    return !(f440 & 0x10) && p == 0x7fc00000;
+}
+// A copy of a device the owner's autobuild made: the same label and flag, so it is drawn as the owner's is.
+static void tag_autobuilt(uint64_t a) {
+    if (!a) return;
+    *(uint64_t *)(uintptr_t)(a + 0x18) = COOP_AUTOBUILT_LABEL;
+    *(uint32_t *)(uintptr_t)(a + 0x668) |= 0x10000000;
+    static int said;
+    char nm[48];
+    if (said++ < 20) rt_log("coop: a copy of %s is labelled as built by autobuild", coop_actor_name(a, nm, sizeof nm));
+}
 
 // Test (TOTK_COOP_TEST_ARMORPROBE=1): what holds this Link's worn armor after a save loads. Once before (12 s into
 // the world) and 3 s and 10 s after this Link moves more than 100 m in a tick (a load): the live armor and shield
@@ -1303,11 +1333,12 @@ static void arrow_copies(Cpu *c, Slot *s) {
         if (k == COOP_OBJS) {
             for (k = 0; k < COOP_OBJS && s->mir[k].state; k++) {}
             if (k == COOP_OBJS) continue;
-            s->mir[k].id = o->id, s->mir[k].state = 1, s->mir[k].ticks = 0, s->mir[k].actor = 0;
+            s->mir[k].id = o->id, s->mir[k].state = 1, s->mir[k].ticks = 0, s->mir[k].actor = 0, s->mir[k].tagged = 0;
             memcpy(s->mir[k].name, o->name, sizeof s->mir[k].name), s->mir[k].name[sizeof s->mir[k].name - 1] = 0;
         }
         memcpy(s->mir[k].pos, o->pos, 12);
         quat_mat(o->q, s->mir[k].rot);
+        s->mir[k].flags = o->flags;
     }
     for (int k = 0; k < COOP_OBJS; k++) {
         if (s->mir[k].state == 1 && coop_request_create(c, s->mir[k].name, s->mir[k].pos, s->mir[k].rot, s->mir[k].handle))
@@ -1321,7 +1352,10 @@ static void arrow_copies(Cpu *c, Slot *s) {
                 static int said;
                 if (s->mir[k].actor && said++ < 20) rt_log("coop: slot %d: a copy of object %u (%s) is here", (int)(s - slots), s->mir[k].id, s->mir[k].name);
             }
-        } else if (s->mir[k].state == 3 && ++s->mir[k].ticks >= COPY_WARMUP) place_copy(c, s, k);
+        } else if (s->mir[k].state == 3 && ++s->mir[k].ticks >= COPY_WARMUP) {
+            if ((s->mir[k].flags & COOP_OBJ_AUTOBUILT) && !s->mir[k].tagged) s->mir[k].tagged = 1, tag_autobuilt(s->mir[k].actor);
+            place_copy(c, s, k);
+        }
     }
     int live = 0;
     for (int k = 0; k < COOP_OBJS; k++) live += s->mir[k].state == 3;
@@ -1475,41 +1509,53 @@ static int copy_pending_near(const float *p) {
         }
     return 0;
 }
-// An autobuild preview: the see-through devices shown before a build is confirmed. The game labels each with the
-// string "ImaginaryAutoBuildedActor" at actor +0x18 and checks it by name (main+0x9e6af0, main+0x1b37958; the AI
-// query QuerySpecialPowerIsImaginaryAutoBuildedActor). Copied, a preview showed solid in the other game (the tester's
-// session, 2026-11-05).
-static int is_imaginary(uint64_t a) {
-    static const char tag[] = "ImaginaryAutoBuildedActor";
-    char buf[sizeof tag];
-    uint64_t s = coop_rd_ptr(a + 0x18);
-    return s && coop_rd(s, buf, sizeof buf) && !memcmp(buf, tag, sizeof tag);
-}
-// Research log for the autobuild tint: a Zonai device within 20 m, each time its creation label (actor +0x18), its
-// flags (actor +0x668, where the label's creation sets 0x10000000; actor +0x440 bit 0x100000) or its attachment byte
-// ([actor+0x228]+0x120, +0x428) change. Does a built device keep the preview's label? Remove once known.
+// Research log for the autobuild tint: what in a device's memory changes when an autobuild preview is built. Each
+// device labelled "ImaginaryAutoBuildedActor" (actor +0x18) within 20 m is read every 30 ticks: the actor (0x700
+// bytes), its model ([[[actor+0x228]+8]+0x28], 0x300) and component 0x120 ([actor+0x228]+0x120, 0x500). Words that
+// changed since the last read are logged, except words that changed in 3 reads before (timers, positions). The
+// label stays on a built device (a play session, 2026-11-05), so another field must tell a preview from a build.
+// Remove once known.
+#define BW_A (0x700 / 4)
+#define BW_M (0x300 / 4)
+#define BW_C (0x500 / 4)
 static void build_watch(uint64_t a, const char *nm, const float *me, int copy) {
-    static struct { uint64_t actor, label; uint32_t f668, f440; uint8_t att; } w[64];
+    static struct { uint64_t actor; int last; uint32_t w[BW_A + BW_M + BW_C]; uint8_t n[BW_A + BW_M + BW_C]; } bw[8];
     static int logged;
-    if (strncmp(nm, "SpObj_", 6) || logged > 400) return;
+    if (strncmp(nm, "SpObj_", 6) || logged > 300 || !is_imaginary(a)) return;
     float p[3];
     if (!coop_rd(a + COOP_ACTOR_POS, p, 12) ||
         (p[0] - me[0]) * (p[0] - me[0]) + (p[1] - me[1]) * (p[1] - me[1]) + (p[2] - me[2]) * (p[2] - me[2]) > 400) return;
-    uint64_t label = coop_rd_ptr(a + 0x18), comp = coop_rd_ptr(a + 0x228), c120 = comp ? coop_rd_ptr(comp + 0x120) : 0;
-    uint32_t f668 = 0, f440 = 0;
-    uint8_t att = 0;
-    coop_rd(a + 0x668, &f668, 4), coop_rd(a + 0x440, &f440, 4), f440 &= 0x100000;   // the bit main+0x9e6af0 tests
-    if (c120) coop_rd(c120 + 0x428, &att, 1);
-    int e = -1, free = 0;
-    for (int i = 0; i < 64 && e < 0; i++) if (w[i].actor == a) e = i; else if (!w[i].actor) free = i;
-    if (e >= 0 && w[e].label == label && w[e].f668 == f668 && w[e].f440 == f440 && w[e].att == att) return;
-    if (e < 0) e = free;
-    char ls[32] = "none";
-    if (label) coop_rd(label, ls, sizeof ls - 1), ls[sizeof ls - 1] = 0;
-    rt_log("coop: build watch %s %s%s: label %s, flags 668 %08x 440 %08x, attachment %02x", nm, copy ? "(copy) " : "",
-           w[e].actor == a ? "changed" : "seen", ls, f668, f440, att);
-    w[e].actor = a, w[e].label = label, w[e].f668 = f668, w[e].f440 = f440, w[e].att = att;
-    logged++;
+    int e = -1, old = 0;
+    for (int i = 0; i < 8 && e < 0; i++) if (bw[i].actor == a) e = i; else if (bw[i].last < bw[old].last) old = i;
+    if (e >= 0 && prop_tick - bw[e].last < 30) return;
+    uint64_t comp = coop_rd_ptr(a + 0x228), m1 = comp ? coop_rd_ptr(comp + 8) : 0, model = m1 ? coop_rd_ptr(m1 + 0x28) : 0;
+    uint64_t c120 = comp ? coop_rd_ptr(comp + 0x120) : 0;
+    static uint32_t now[BW_A + BW_M + BW_C];
+    memset(now, 0, sizeof now);
+    coop_rd(a, now, BW_A * 4);
+    if (model) coop_rd(model, now + BW_A, BW_M * 4);
+    if (c120) coop_rd(c120, now + BW_A + BW_M, BW_C * 4);
+    if (e < 0) {
+        e = old, memset(&bw[e], 0, sizeof bw[e]), bw[e].actor = a, bw[e].last = prop_tick;
+        memcpy(bw[e].w, now, sizeof now);
+        rt_log("coop: build watch %s%s %llx seen at tick %d", copy ? "(copy) " : "", nm, (unsigned long long)a, prop_tick);
+        logged++;
+        return;
+    }
+    char line[1400];
+    int len = 0, k = 0;
+    for (int i = 0; i < BW_A + BW_M + BW_C; i++) {
+        if (now[i] == bw[e].w[i]) continue;
+        if (bw[e].n[i] < 255) bw[e].n[i]++;
+        if (bw[e].n[i] <= 3 && k < 40 && len < (int)sizeof line - 40) {
+            const char *part = i < BW_A ? "a" : i < BW_A + BW_M ? "m" : "c";
+            int off = (i < BW_A ? i : i < BW_A + BW_M ? i - BW_A : i - BW_A - BW_M) * 4;
+            len += snprintf(line + len, sizeof line - len, " %s+%x:%x>%x", part, off, bw[e].w[i], now[i]), k++;
+        }
+        bw[e].w[i] = now[i];
+    }
+    bw[e].last = prop_tick;
+    if (k) rt_log("coop: build watch %s%s %llx tick %d:%s", copy ? "(copy) " : "", nm, (unsigned long long)a, prop_tick, line), logged++;
 }
 typedef struct { float me[3]; int cand[32], n_cand, n_first_near; } PropScan;
 static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *arg) {
@@ -1517,7 +1563,7 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
     Slot *cs;
     int ck;
     build_watch(a, nm, ps->me, copy_of(a, &cs, &ck));
-    if (prop_skip(nm) || copy_of(a, &cs, &ck) || is_driven(a) || is_imaginary(a)) return;
+    if (prop_skip(nm) || copy_of(a, &cs, &ck) || is_driven(a) || is_preview(a)) return;
     for (int i = 0; i < 32; i++) if (my_arrows[i].actor == a) return;   // an arrow's fused material
     float p[3];
     if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
@@ -1614,6 +1660,7 @@ static int report_props(uint64_t me, CoopObj *out, int max) {
         if (!coop_rd(props[e].actor + COOP_ACTOR_POS, o->pos, 12) || !coop_rd(props[e].actor + COOP_ACTOR_ROT, r, 36)) continue;
         o->id = id;
         coop_actor_name(props[e].actor, o->name, sizeof o->name);
+        o->flags = is_imaginary(props[e].actor) ? COOP_OBJ_AUTOBUILT : 0;
         mat_quat(r, o->q);
         static int said;
         if (!props[e].said && said < 60) {
