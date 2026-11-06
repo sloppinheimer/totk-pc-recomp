@@ -619,6 +619,7 @@ static void shield_place(Cpu *c, Slot *s);
 static uint64_t eq_item(uint64_t eq, int kind);
 static void drop_old_item(Cpu *c, uint64_t eq, int k, uint64_t old);
 static int item_local(uint64_t link, uint64_t item, float local[3]);
+static void beam_dump(uint64_t a, int copy);
 static void place_copy(Cpu *c, Slot *s, int k);
 #define COPY_WARMUP 5   // ticks a copy runs its own update after it is made (arrow_copies)
 // Where a Link's bow is drawn: its model's world matrix (model +0x1f8, 3x4 rows), which the model push puts on the
@@ -1515,6 +1516,7 @@ static void arrow_copies(Cpu *c, Slot *s) {
                 arrow_watch_start(s->mir[k].actor, s->mir[k].name);
             }
         } else if (s->mir[k].state == 3 && ++s->mir[k].ticks >= COPY_WARMUP) {
+            if (s->mir[k].ticks == 5 && !strcmp(s->mir[k].name, "PlayerBeam")) beam_dump(s->mir[k].actor, 1);
             // picked up here? An arrow's copy too: awake, a stuck arrow's copy could be picked up again and again
             // (a play session, 2026-11-05)
             if (pickable(s->mir[k].name) || strstr(s->mir[k].name, "Arrow")) {
@@ -1685,6 +1687,12 @@ static void place_copy(Cpu *c, Slot *s, int k) {
         coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, actor, (uint64_t)(uintptr_t)m, 0, 0);
         return;
     }
+    // A beam's copy is made at scale 1; the owner's beam is at 0.3 (actor +0x2e4..+0x2ec, set by the swing that makes
+    // it; TOTK_COOP_TEST_BEAMDUMP), and the copy showed much larger (a play session, 2026-11-06).
+    if (!strcmp(s->mir[k].name, "PlayerBeam")) {
+        float sc[3] = {0.3f, 0.3f, 0.3f};
+        memcpy((void *)(uintptr_t)(actor + 0x2e4), sc, sizeof sc);
+    }
     if (ride_on() && !strstr(s->mir[k].name, "Arrow")) {
         static struct { float pos[3], rot[9]; int64_t us, teleported; } last[COOP_MAX_PLAYERS][COOP_OBJS];
         typeof(&last[0][0]) l = &last[s - slots][k];
@@ -1768,6 +1776,30 @@ static void set_driven(uint64_t a) {
 // where it was made (TOTK_COOP_TEST_BEAMLOG: the copy was put where the owner's beam is, 30 m/s along). So its copy
 // runs its own update and its body is driven at the owner's beam's speed (as a ridden copy's is).
 static int is_beam(const char *nm) { return !strcmp(nm, "PlayerBeam"); }
+// Test (TOTK_COOP_TEST_BEAMDUMP=1): the first beam of this Link's 5 ticks after it woke, and the first beam copy here
+// 5 ticks after it was made, each written once to logs/beamdump.bin (tag 0 own, 1 copy): the actor's first 0x800
+// bytes and 0x200 of each of its first 64 components. The copy showed much larger than the owner's beam (the tester's
+// session, 2026-11-06); diffed offline, one game's own against the other's copy.
+static void beam_dump(uint64_t a, int copy) {
+    static int on = -1, done[2];
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_BEAMDUMP") != NULL;
+    if (!on || done[copy]) return;
+    done[copy] = 1;
+    static uint8_t buf[0x800 + 64 * 0x200];
+    memset(buf, 0, sizeof buf);
+    coop_rd(a, buf, 0x800);
+    uint64_t tbl = coop_rd_ptr(a + 0x228);
+    for (int k = 0; k < 64 && tbl; k++) {
+        uint64_t cp = coop_rd_ptr(tbl + 8 * (uint64_t)k);
+        if (cp && !(cp & 7)) coop_rd(cp, buf + 0x800 + k * 0x200, 0x200);
+    }
+    FILE *f = fopen("logs/beamdump.bin", "ab");
+    if (!f) return;
+    uint32_t tag = (uint32_t)copy;
+    fwrite(&tag, 4, 1, f), fwrite(buf, sizeof buf, 1, f), fclose(f);
+    rt_log("coop: test: beam dump: %s %llx", copy ? "a copy" : "this Link's", (unsigned long long)a);
+}
+
 static int prop_skip(const char *nm) {
     if (is_beam(nm)) return 0;
     // (Parasail, the Link's paraglider, was left out here: a copy of it seemed to take the other game down with the
@@ -1866,7 +1898,9 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
         for (int i = 0; i < PROPS_N && ie < 0; i++) if (props[i].actor == a) ie = i;
         if (est != 4) { if (ie >= 0) props[ie].actor = 0; return; }
         if (ie < 0) {
-            if (d2 > 36 || d2 > dco + 1) return;   // not this Link's
+            // within 6 m: this Link's. (Not "nearer it than a co-op Link" as other made objects: P1 standing in front of
+            // P2 took P2's beams, which spawn 2.4 m ahead, for nobody's; a proxy makes no beam here, so any is ours.)
+            if (d2 > 36) return;
             for (int i = 0; i < PROPS_N && ie < 0; i++) if (!props[i].actor) ie = i;
             if (ie < 0) return;
             memset(&props[ie], 0, sizeof props[ie]);
@@ -1874,6 +1908,7 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
             snprintf(props[ie].name, sizeof props[ie].name, "%s", nm);
         }
         props[ie].seen = prop_tick, props[ie].near_me = 1;
+        if (prop_tick - props[ie].born == 5) beam_dump(a, 0);
         static int beamlog = -1, bn;   // TOTK_COOP_TEST_BEAMLOG=1: where the beam actor and its model are, while awake
         if (beamlog < 0) beamlog = cfg_get("TOTK_COOP_TEST_BEAMLOG") != NULL;
         if (beamlog && bn++ % 3 == 0 && bn < 600) {
