@@ -1475,12 +1475,22 @@ static int copy_pending_near(const float *p) {
         }
     return 0;
 }
+// An autobuild preview: the see-through devices shown before a build is confirmed. The game labels each with the
+// string "ImaginaryAutoBuildedActor" at actor +0x18 and checks it by name (main+0x9e6af0, main+0x1b37958; the AI
+// query QuerySpecialPowerIsImaginaryAutoBuildedActor). Copied, a preview showed solid in the other game (the tester's
+// session, 2026-11-05).
+static int is_imaginary(uint64_t a) {
+    static const char tag[] = "ImaginaryAutoBuildedActor";
+    char buf[sizeof tag];
+    uint64_t s = coop_rd_ptr(a + 0x18);
+    return s && coop_rd(s, buf, sizeof buf) && !memcmp(buf, tag, sizeof tag);
+}
 typedef struct { float me[3]; int cand[32], n_cand, n_first_near; } PropScan;
 static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *arg) {
     PropScan *ps = arg;
     Slot *cs;
     int ck;
-    if (prop_skip(nm) || copy_of(a, &cs, &ck) || is_driven(a)) return;
+    if (prop_skip(nm) || copy_of(a, &cs, &ck) || is_driven(a) || is_imaginary(a)) return;
     for (int i = 0; i < 32; i++) if (my_arrows[i].actor == a) return;   // an arrow's fused material
     float p[3];
     if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
