@@ -88,6 +88,9 @@ typedef struct {
     int live_ticks;
     int thaw;                          // proxy mode: frames of its own update still to run (a gear change)
     int atk_thaw;                      // proxy mode: of those, frames the owner's attack button is let through                    // ticks since it went LIVE (proxy mode freezes it after PROXY_WARMUP_TICKS)
+    uint64_t yq_ns[8];                 // proxy mode: the owner's attack button changes, when they arrived (y_delayed)
+    uint8_t yq_v[8];
+    int yq_len, y_now, y_late;         // queued changes; the button as it arrived and as of the pose shown
     float px_top, px_y, px_root;              // proxy mode: its body top and world height last frame (jump watch)
     int px_have;
     _Alignas(16) uint8_t gear_str[COOP_GEAR_SLOTS][0x60];   // the names handed to the creates, kept while they run
@@ -803,6 +806,7 @@ int coop_players_phase(Cpu *c, uint64_t addr) {
 // snap() every tick. Returns 1 when it ran the step.
 static void owner_matrix(Slot *s, float m[12]);
 static int puppet_delay_ms(void);
+static int y_delayed(Slot *s);
 // The highest body bone of an actor's body skeleton, above its root bone (bone 0); -1e9 unknown. The skeleton's
 // +0x20 matrices (0x40 a bone, translation in row 3) are world-space but from an origin of the game's own (the
 // numbers differ from the actor position by metres, and by different amounts in two games), so only differences
@@ -992,6 +996,7 @@ int coop_players_calc(Cpu *c, uint64_t addr) {
     memcpy(s->ctl, (void *)(uintptr_t)real, sizeof s->ctl);
     plat_mutex_lock(&lock);
     uint64_t buttons = s->buttons;
+    if (coop_proxy_mode()) buttons = (buttons & ~(1ull << 3)) | (uint64_t)y_delayed(s) << 3;
     float stick[4];
     memcpy(stick, s->stick, sizeof stick);
     plat_mutex_unlock(&lock);
@@ -1132,10 +1137,29 @@ static int attack_thaw_on(void) {   // TOTK_COOP_PROXY_SWING=0: the proxy does n
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_PROXY_SWING"); on = !(e && *e == '0'); }
     return on;
 }
+// Proxy mode: the owner's attack button as of the pose this game shows for them, which is the one that arrived
+// TOTK_COOP_PUPPET_DELAY_MS ago (pose_put_delayed, coop_world.c). Taken as it arrived, the proxy's own swing (what
+// makes its hits, and the sword trail its game draws) ran that much ahead of the swing seen, the trail apart from
+// the blade (the tester: "the sword trails are delayed on the puppet", 2026-11-06). Called with lock held.
+static int y_delayed(Slot *s) {
+    static int sync = -1;   // TOTK_COOP_PROXY_SWING_SYNC=0: the button as it arrives (the swing ahead of the pose)
+    if (sync < 0) { const char *e = cfg_get("TOTK_COOP_PROXY_SWING_SYNC"); sync = !(e && *e == '0'); }
+    uint64_t t = plat_now_ns() - (sync ? (uint64_t)puppet_delay_ms() * 1000000ull : 0);
+    int k = 0;
+    while (k < s->yq_len && s->yq_ns[k] <= t) s->y_late = s->yq_v[k++];
+    if (k) memmove(s->yq_ns, s->yq_ns + k, (s->yq_len - k) * sizeof s->yq_ns[0]),
+           memmove(s->yq_v, s->yq_v + k, (size_t)(s->yq_len - k)), s->yq_len -= k;
+    return s->y_late;
+}
 static void set_input(Slot *s, uint64_t buttons, const int32_t sticks[4]) {
     plat_mutex_lock(&lock);
     s->buttons = buttons;
     for (int k = 0; k < 4; k++) s->stick[k] = sticks[k] / 32767.0f;
+    int y = (int)(buttons >> 3 & 1);
+    if (y != s->y_now) {
+        if (s->yq_len == 8) s->y_late = s->yq_v[0], memmove(s->yq_ns, s->yq_ns + 1, 7 * sizeof s->yq_ns[0]), memmove(s->yq_v, s->yq_v + 1, 7), s->yq_len = 7;
+        s->yq_ns[s->yq_len] = plat_now_ns(), s->yq_v[s->yq_len++] = (uint8_t)y, s->y_now = y;
+    }
     plat_mutex_unlock(&lock);
 }
 // Autobuild. The game labels each device it makes for an autobuild with the string "ImaginaryAutoBuildedActor" at
@@ -4651,12 +4675,15 @@ void coop_players_tick(Cpu *c, int numpad3) {
             static uint64_t was[COOP_MAX_PLAYERS];
             int k = (int)(s - slots);
             int ride_on(void);
-            if (proxied(s) && (st.buttons >> 3 & 1) && attack_thaw_on()) {
+            plat_mutex_lock(&lock);
+            int y_late = y_delayed(s);
+            plat_mutex_unlock(&lock);
+            if (proxied(s) && y_late && attack_thaw_on()) {
                 if (s->thaw < 40) s->thaw = 40;
                 s->atk_thaw = 40;
-                if (!(was[k] >> 3 & 1)) rt_log("coop: proxy: slot %d swings (its own update while Y is held and 40 frames after, Y through)", k);
+                if (!was[k]) rt_log("coop: proxy: slot %d swings (its own update while Y is held and 40 frames after, Y through; Y as of the pose shown)", k);
             }
-            was[k] = st.buttons;
+            was[k] = (uint64_t)y_late;
         }
         s->idle = !st.buttons && abs(st.sticks[0]) < 3000 && abs(st.sticks[1]) < 3000;
     }

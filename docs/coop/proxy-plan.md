@@ -182,6 +182,11 @@ right in the tester's own two-pad session.
     killed while alone stays dead.
   - **Hits:** a following game's sword hit lands through its player's proxy swinging in the owner's game (one Master
     Sword swing killed the owner's Bokoblin, the copy died after it); its own swing does nothing to its frozen copy.
+    The proxy's own swing takes the owner's attack button as of the pose shown (TOTK_COOP_PUPPET_DELAY_MS after it
+    arrived; coop_players.c, y_delayed): taken as it arrived, that swing ran ahead of the blade seen and its game drew
+    its sword trail apart from the blade, white arcs where no blade was (frames saved with TOTK_SHOTS_CROP). Synced,
+    those arcs are gone and its hits still land (one kill in two runs either way). TOTK_COOP_PROXY_SWING_SYNC=0 takes
+    the button as it arrives.
   - **Tested** (pair runs, TOTK_COOP_TEST_SPAWN with TOTK_COOP_TEST_SPAWN_AT so both games make one enemy at one
     place; tools/coop/enemy_compare.py on the audit): a Bokoblin chasing a walking Link for 83 m was 0.09 m off on
     average (0.61 m most) and its body's height within 0.1 m; the Chuchus near the save's start within 2 cm.

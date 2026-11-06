@@ -230,15 +230,19 @@ static void save_shot(const tex_t *t, const char *path) {
 
 // TOTK_SHOTS=lo-hi:step [TOTK_SHOTS_DIR=dir]: every step-th present in [lo, hi] saved as <dir>/f<n>.png (n the
 // present), box-filtered to 480x270; TOTK_SHOTS=w<lo>-<hi>:<step> takes them by world-clock seconds instead, the first
-// present at or after each step (full size with TOTK_SHOTS_FULL=1), for finding short glitches. Pipeline builds stay asynchronous, so the
+// present at or after each step (full size with TOTK_SHOTS_FULL=1; TOTK_SHOTS_CROP=x,y,w,h saves only that part of
+// the frame, in its own pixels, unscaled), for finding short glitches. Pipeline builds stay asynchronous, so the
 // pictures show what a player sees.
 static void series_shot(const tex_t *t, uint64_t n) {
     static int parsed;
     static unsigned long long lo, hi, step, next;
     static const char *dir;
     static int full, world;
+    static unsigned cx, cy, cw, ch;
     if (!parsed) {
         full = cfg_get("TOTK_SHOTS_FULL") != NULL;
+        const char *cr = cfg_get("TOTK_SHOTS_CROP");
+        if (!cr || sscanf(cr, "%u,%u,%u,%u", &cx, &cy, &cw, &ch) != 4) cw = ch = 0;
         const char *e = cfg_get("TOTK_SHOTS");
         double wl, wh, ws;
         if (e && e[0] == 'w' && sscanf(e + 1, "%lf-%lf:%lf", &wl, &wh, &ws) == 3 && ws > 0)   // world-clock seconds
@@ -260,6 +264,8 @@ static void series_shot(const tex_t *t, uint64_t n) {
     int bgra = fmt == NVN_FORMAT_BGRA8 || fmt == NVN_FORMAT_BGRA8_SRGB;
     if (!bgra && fmt != NVN_FORMAT_RGBA8 && fmt != NVN_FORMAT_RGBA8_SRGB) return;
     uint32_t w = t->d.width, h = t->d.height, ow = full ? w : 480, oh = full ? h : 270;
+    int crop = cw && ch && cx + cw <= w && cy + ch <= h;
+    if (crop) ow = cw, oh = ch;
     uint8_t *px = malloc(4ull * w * h), *out = malloc(4ull * ow * oh);
     if (!px || !out) rt_fatal("boot: out of memory for a TOTK_SHOTS frame");
     view_t view;
@@ -270,6 +276,7 @@ static void series_shot(const tex_t *t, uint64_t n) {
     for (uint32_t y = 0; y < oh; y++)
         for (uint32_t x = 0; x < ow; x++) {
             uint32_t x0 = x * w / ow, x1 = (x + 1) * w / ow, y0 = y * h / oh, y1 = (y + 1) * h / oh;
+            if (crop) x0 = cx + x, x1 = x0 + 1, y0 = cy + y, y1 = y0 + 1;
             if (x1 <= x0) x1 = x0 + 1;
             if (y1 <= y0) y1 = y0 + 1;
             uint32_t sum[4] = {0}, k = 0;
