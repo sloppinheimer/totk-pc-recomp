@@ -381,7 +381,9 @@ static const char *link_of(uint64_t v) {
         if (v && v == tp_links[i]) { snprintf(s, sizeof s, i ? "co-op Link %d" : "this Link", i); return s; }
         if (v && v == tp_refs[i]) { snprintf(s, sizeof s, i ? "ref of co-op Link %d" : "ref of this Link", i); return s; }
         if (tp_ids[i] != 0xffffffffu && tp_ids[i] > 16 && ((uint32_t)v == tp_ids[i] || (uint32_t)(v >> 32) == tp_ids[i])) {
-            snprintf(s, sizeof s, i ? "id of co-op Link %d (%s)" : "id of this Link (%s)", i, (uint32_t)v == tp_ids[i] ? "low" : "high");
+            const char *half = (uint32_t)v == tp_ids[i] ? "low" : "high";
+            if (i) snprintf(s, sizeof s, "id of co-op Link %d (%s)", i, half);
+            else snprintf(s, sizeof s, "id of this Link (%s)", half);   // (one format for both took i for the %s)
             return s;
         }
     }
