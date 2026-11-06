@@ -1541,7 +1541,7 @@ static int prop_skip(const char *nm) {
     // Parasail: the Link's paraglider, made when it opens; a copy of it in the other game took that game down with
     // the Ultrahand crash (a play session, 2026-11-05)
     static const char *pre[] = {"Player", "Armor_", "Accessory_", "PlayerRaul", "Npc", "Animal_", "Enemy_",
-                                "Weapon_Sheath", "Weapon_Quiver", "Parasail"};
+                                "Weapon_Sheath", "Weapon_Quiver", "Parasail", "TBox_"};   // chests: each player's own
     for (size_t i = 0; i < sizeof pre / sizeof *pre; i++) if (!strncmp(nm, pre[i], strlen(pre[i]))) return 1;
     if (strstr(nm, "Arrow")) return 1;
     // Helpers that go with this Link and are not things in the world: EventCamera and CameraXLinkControl were sent
@@ -1940,6 +1940,38 @@ static void pickup_test(Cpu *c, uint64_t me) {
             rt_log("coop: test: pickup %.2f s: mine %u actor %llx (%s) at %.2f %.2f %.2f, seen %d ticks ago", now, props[e].id,
                    (unsigned long long)props[e].actor, nm, q[0], q[1], q[2], prop_tick - props[e].seen);
         }
+}
+// Test (TOTK_COOP_TEST_CHEST=1, both games on the 100% save; chest_a_3rd.txt / chest_b_3rd.txt): at 21 s this Link
+// is put on the flat ground the fan test uses (player 1 at x 31.5, the other 3 m along x), facing +z; at 22 s a chest
+// (TBox_Field_Iron) of this game's own is made 1.2 m in front of it. The scripts open it (player 1 at 25 s, player 2
+// at 30 s) and walk at 36 s; every 30 ticks from 24 s to 42 s this Link's place is logged. For the input freeze when
+// player 2 opened a chest (a play session, 2026-11-05).
+static void chest_test(Cpu *c, uint64_t me) {
+    static int on = -1, stage;
+    static _Alignas(16) uint8_t handle[0x40], link[0x40];
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_CHEST") != NULL;
+    if (!on) return;
+    double now = frame_step_world_us() / 1e6;
+    float x = coop_net_id() == 1 ? 31.5f : 34.5f;
+    if (stage == 0 && now > 21) {
+        float m[12] = {1, 0, 0, x, 0, 1, 0, 1514.8f, 0, 0, 1, 1510.2f};
+        coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
+        stage = 1;
+    }
+    if (stage == 1 && now > 22) {
+        float at[3] = {x, 1514.9f, 1511.4f}, rot[9] = {-1, 0, 0, 0, 1, 0, 0, 0, -1};   // its front to the Link
+        stage = coop_request_create(c, "TBox_Field_Iron", at, rot, handle) ? 2 : 9;
+        rt_log("coop: test: chest: asked for at %.2f %.2f %.2f (%d)", at[0], at[1], at[2], stage);
+    }
+    if (stage == 2 && coop_handle_status(handle) == 3) {
+        uint64_t ref, a = coop_claim(c, handle, link, &ref);
+        stage = 3;
+        rt_log("coop: test: chest: here (%llx)", (unsigned long long)a);
+    }
+    static int t;
+    float p[3];
+    if (now < 24 || now > 42 || ++t % 30 || !coop_rd(me + COOP_ACTOR_POS, p, 12)) return;
+    rt_log("coop: test: chest %.2f s: this Link at %.2f %.2f %.2f", now, p[0], p[1], p[2]);
 }
 // Both games: where the object a co-op player moved last is here (for the test above).
 static void props_test_where(void) {
@@ -3103,7 +3135,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         if (fw && *fw) st.weather = atoi(fw);
         coop_net_publish(&st);
         if (coop_proxy_mode()) props_receive(c), ride_carry(c, me);   // placed objects co-op players move; riding them
-        props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me);
+        props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me);
     }
     armor_probe(me);
     arrow_log(me);
