@@ -341,8 +341,8 @@ static void scan_pads(void) {
     if (pad && SDL_GamepadConnected(pad) && cfg_get("TOTK_PAD_INDEX")) {
         int n = 0;
         SDL_JoystickID *ids = SDL_GetGamepads(&n);
-        int want = atoi(cfg_get("TOTK_PAD_INDEX"));
-        int wrong = n != last_n && (!ids || want >= n || ids[want] != SDL_GetGamepadID(pad));
+        int want = atoi(cfg_get("TOTK_PAD_INDEX"));   // (a negative one read ids[-1]; code review, 2026-11-06)
+        int wrong = n != last_n && (!ids || want < 0 || want >= n || ids[want] != SDL_GetGamepadID(pad));
         last_n = n;
         SDL_free(ids);
         if (!wrong) return;

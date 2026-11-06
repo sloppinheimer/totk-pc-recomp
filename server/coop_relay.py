@@ -40,11 +40,19 @@ def main():
     players = {}   # addr -> {'id', 'name', 'seen'}
     print(f'relay: listening on UDP {a.port}', flush=True)
 
+    def send(data, addr):
+        # A send can fail (the network gone for a moment, a peer unreachable): only recvfrom was guarded, and a
+        # failed send ended the relay for everyone (code review, 2026-11-06).
+        try:
+            sock.sendto(data, addr)
+        except OSError as e:
+            print(f'relay: could not send to {addr[0]}:{addr[1]}: {e}', flush=True)
+
     def leave(addr, why):
         p = players.pop(addr)
         print(f'relay: player {p["id"]} "{p["name"]}" left ({why}); {len(players)} connected', flush=True)
         for other in players:
-            sock.sendto(header(LEAVE, p['id']), other)
+            send(header(LEAVE, p['id']), other)
 
     while True:
         try:
@@ -74,14 +82,14 @@ def main():
             me = players[addr]
             me['seen'] = now
             others = b''.join(struct.pack('<B16s', p['id'], p['name'].encode()[:16]) for k, p in players.items() if k != addr)
-            sock.sendto(header(WELCOME, me['id']) + others, addr)
+            send(header(WELCOME, me['id']) + others, addr)
         elif kind in (STATE, WORLD, HIT, POSE, OBJS) and addr in players:
             me = players[addr]
             me['seen'] = now
             out = header(kind, me['id']) + data[HEADER.size:]
             for other in players:
                 if other != addr:
-                    sock.sendto(out, other)
+                    send(out, other)
         elif kind == BYE and addr in players:
             leave(addr, 'said bye')
 

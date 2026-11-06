@@ -30,6 +30,7 @@ enum { FREE, WANTED, REQUESTED, LIVE, LET_GO };
 enum { SRC_PAD, SRC_NET };
 typedef struct {
     int state, source, net_id;
+    int leaving;                       // its player left while its Player was being made: deleted once it is there
     _Alignas(16) uint8_t handle[0x40], link[0x40];
     uint64_t actor, ref;
     _Alignas(16) uint8_t ctl[0x400];   // the slot's controller (a copy of controller 0 each frame, then its input)
@@ -485,7 +486,13 @@ int coop_players_gear(Cpu *c, uint64_t addr) {
 }
 
 static uint64_t gear_owner(uint64_t eq, uint64_t me) {
-    for (int i = 0; i < 32; i++) if (eq_owner[i].eq == eq) return eq_owner[i].actor;
+    // (the cached owner only while that EquipmentUser still points to it: a save load makes new ones, and one can come
+    // at an old one's address; code review, 2026-11-06)
+    for (int i = 0; i < 32; i++)
+        if (eq_owner[i].eq == eq) {
+            if (eq_points_to(eq, eq_owner[i].actor)) return eq_owner[i].actor;
+            eq_owner[i].eq = eq_owner[i].actor = 0;
+        }
     uint64_t words[0x400 / 8];
     if (!coop_rd(eq, words, sizeof words)) return 0;
     uint64_t found = 0;
@@ -529,6 +536,7 @@ static Slot *slot_new(int source, int net_id) {
             memset(s->dye_want, -1, sizeof s->dye_want), memset(s->dye_have, -1, sizeof s->dye_have);
             s->out_want = 0, s->out_have = -1, s->have_phys = 0, s->top_last = -1e9f, s->have_body = 0, s->shield_actor = 0, s->shield_placed = 0;
             s->live_ticks = 0, s->px_have = 0, s->thaw = 0;
+            s->atk_thaw = 0, s->leaving = 0, s->ride_owner = 0;   // (left from the slot's last player, code review)
             s->state = WANTED;
             rt_log("coop: player slot %d for %s %d", i, source == SRC_NET ? "remote player" : "local pad", net_id);
             return s;
@@ -1291,6 +1299,15 @@ static int zr_tick = -1000;
 static struct { uint64_t key, until_ms; } blown[16];
 static int blown_n;
 static int copies_live[COOP_MAX_PLAYERS];   // per slot, its copies in state 3 (arrow_copies): copy_of runs for every actor
+// A copy's actor is still the one made: alive (state 2..6) and of the copy's name. The game can free a copy's actor
+// (a paraglider's went away by itself) and give its memory to another; one not checked was still placed, woken and
+// deleted (code review, 2026-11-06).
+static int actor_is(uint64_t a, const char *name) {   // alive, and of that name (not another actor in its memory)
+    int32_t st = 0;
+    char nm[48];
+    return a && coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6 && !strcmp(coop_actor_name(a, nm, sizeof nm), name);
+}
+static int copy_alive(const Slot *s, int k) { return actor_is(s->mir[k].actor, s->mir[k].name); }
 static int copy_of(uint64_t actor, Slot **out_s, int *out_k) {
     for (int i = 0; i < COOP_MAX_PLAYERS; i++)
         for (int k = 0; k < COOP_OBJS && actor && copies_live[i]; k++)
@@ -1473,7 +1490,7 @@ static void arrow_copies(Cpu *c, Slot *s) {
         // blast; the tester's list: all arrow effects): its copy here is set off the same way, its life taken and its
         // own update let run, instead of being deleted. (A nocked one goes when the bow is put away: deleted.)
         if (s->mir[k].state == 3 && s->mir[k].actor && (s->mir[k].flags & COOP_OBJ_FUSED) && !(s->mir[k].flags & COOP_OBJ_LOCAL) &&
-            !s->mir[k].blowing) {
+            !s->mir[k].blowing && copy_alive(s, k)) {
             int coop_life_of(uint64_t a);
             void coop_set_life(uint64_t a, int v);
             s->mir[k].blowing = 1, s->mir[k].ticks = COPY_WARMUP;   // ticks: from now on, how long it has been going off
@@ -1508,7 +1525,7 @@ static void arrow_copies(Cpu *c, Slot *s) {
             if (said_go++ < 40)
                 rt_log("coop: slot %d: the copy of %s (%u) %s %d ticks after it was set off", (int)(s - slots), s->mir[k].name, s->mir[k].id,
                        alive ? "had not gone off" : "went off", s->mir[k].ticks - COPY_WARMUP);
-            if (st >= 2 && st <= 6) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0);
+            if (copy_alive(s, k)) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0);
             set_driven(s->mir[k].actor);   // (below)
             s->mir[k].state = 0, s->mir[k].actor = 0;
             continue;
@@ -1516,7 +1533,8 @@ static void arrow_copies(Cpu *c, Slot *s) {
         // A copy let go is not taken for this game's own object while it goes away: a fused BombFruit's copy, left
         // after its blast, was sent back as a placed BombFruit this game moved, and the other game showed a copy of it,
         // a bomb that could go off there (a play session, 2026-11-06).
-        if (s->mir[k].actor) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0), set_driven(s->mir[k].actor);
+        if (s->mir[k].actor && copy_alive(s, k))   // (not another actor in its memory)
+            coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0), set_driven(s->mir[k].actor);
         if (s->mir[k].state == 2) continue;   // its create is still pending: claimed (then deleted) once it is there
         s->mir[k].state = 0, s->mir[k].actor = 0;
     }
@@ -1674,6 +1692,10 @@ static void beam_copy(Cpu *c, Slot *s, int k, float m[12]) {
 // 2026-11-05).
 static void place_copy(Cpu *c, Slot *s, int k) {
     uint64_t actor = s->mir[k].actor;
+    if (!copy_alive(s, k)) {   // gone, or its memory is another actor's now: forgotten, nothing done to it
+        s->mir[k].state = 0, s->mir[k].actor = 0;
+        return;
+    }
     // An arrow's copy asks to sleep in its first tick (reason 0, through main+0x55251c: TOTK_COOP_TEST_ARROWWATCH)
     // and sleeps from the third (actor state 6, its model's +0x244 6), where this game's own arrows stay awake (4); a
     // sleeping arrow is not drawn (a play session, 2026-11-05). It is woken as the actor state machine
@@ -1948,7 +1970,7 @@ static int copy_pending_near(const float *p) {
 // proxy let go of it later, it lay on the ground, was sent as a world object and could be picked up in the owner's
 // game (a play session, 2026-11-05: "holds Weapon_Shield_030, owner -" four times, then "I move Weapon_Shield_030").
 // It is watched for 30 s; once it is out of the proxy's gear it is deleted, and it is never sent meanwhile.
-static struct { uint64_t actor, eq; int k, until, since; } old_items[16];
+static struct { uint64_t actor, eq; int k, until, since; char name[48]; } old_items[16];
 static void drop_old_item(Cpu *c, uint64_t eq, int k, uint64_t old) {
     (void)c;
     int f = 0;
@@ -1957,6 +1979,7 @@ static void drop_old_item(Cpu *c, uint64_t eq, int k, uint64_t old) {
         if (old_items[i].until < old_items[f].until) f = i;
     }
     old_items[f].actor = old, old_items[f].eq = eq, old_items[f].k = k, old_items[f].until = prop_tick + 900, old_items[f].since = prop_tick;
+    coop_actor_name(old, old_items[f].name, sizeof old_items[f].name);
 }
 static int old_item(uint64_t a) {
     for (int i = 0; i < 16; i++) if (old_items[i].actor == a && old_items[i].until >= prop_tick) return 1;
@@ -1965,8 +1988,8 @@ static int old_item(uint64_t a) {
 static void old_items_tick(Cpu *c) {
     for (int i = 0; i < 16; i++) {
         if (!old_items[i].actor || old_items[i].until < prop_tick) continue;
-        int32_t st = 0;
-        if (!coop_rd(old_items[i].actor + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6) { old_items[i].actor = 0; continue; }
+        // (gone, or another actor in its memory: forgotten, not deleted; code review, 2026-11-06)
+        if (!actor_is(old_items[i].actor, old_items[i].name)) { old_items[i].actor = 0; continue; }
         // Still the proxy's: making its gear again with no item does not take it (load_3rd.txt: four tries, the
         // shield stayed in hand). After 2 s it is deleted all the same, as a broken weapon is, and the gear lets go.
         int held = eq_item(old_items[i].eq, old_items[i].k) == old_items[i].actor;
@@ -2033,6 +2056,9 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
     }
     int e = -1, free = -1;
     for (int i = 0; i < PROPS_N && e < 0; i++) {
+        // (an entry of another name at this address is another actor in a gone one's memory: the entry is let go, so
+        // the new one is not sent under the old one's number; code review, 2026-11-06)
+        if (props[i].actor == a && strcmp(props[i].name, nm)) props[i].actor = 0;
         if (props[i].actor == a) e = i;
         else if (free < 0 && (!props[i].actor || (prop_tick - props[i].seen > 30 && !props[i].made && !props[i].touched))) free = i;
     }
@@ -2376,7 +2402,8 @@ static void props_receive(Cpu *c) {
         }
         if (!a) {
             if (last_scan == prop_tick && !key_missing(kf.key[i])) {   // a scan of every actor found none
-                missing_key[missing_n % 64] = kf.key[i];
+                static int missing_next;   // (a ring: once full, each new key took slot 0, code review 2026-11-06)
+                missing_key[missing_next++ % 64] = kf.key[i];
                 if (missing_n < 64) missing_n++;
             }
             continue;
@@ -2992,7 +3019,7 @@ static void objs_receive(Cpu *c) {
                 memcpy(&o, pk + 4 + e * sizeof(CoopObj), sizeof o);
                 if (o.flags != coop_net_id()) continue;
                 for (int i = 0; i < 32; i++)   // an arrow of this Link's (picked up where it stuck)
-                    if (my_arrows[i].actor && my_arrows[i].mine && my_arrows[i].id == o.id) {
+                    if (my_arrows[i].actor && my_arrows[i].mine && my_arrows[i].id == o.id && actor_is(my_arrows[i].actor, my_arrows[i].name)) {
                         rt_log("coop: player %d picked up my arrow (number %u); mine is deleted", from, o.id);
                         coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, my_arrows[i].actor, COOP_DELETE_REASON, 0, 0);
                         my_arrows[i].actor = 0;
@@ -3000,7 +3027,9 @@ static void objs_receive(Cpu *c) {
                 for (int i = 0; i < PROPS_N; i++)   // one it made (by number) or a placed one it moved (by key)
                     // (never a resident actor or the paraglider, which both Links here use: deleting the paraglider for
                     // a copy of it that went away by itself in the other game took this game down, glide.txt)
+                    // (and only while it is still that object: an entry can outlive its actor, code review 2026-11-06)
                     if (props[i].actor && !coop_is_resident(props[i].actor) && strncmp(props[i].name, "Parasail", 8) &&
+                        actor_is(props[i].actor, props[i].name) &&
                         ((props[i].made && props[i].id == o.id) ||
                                            (!props[i].made && (o.id & COOP_OBJ_KEYED) && (COOP_OBJ_KEYED | (props[i].key & ~COOP_OBJ_KEYED)) == o.id))) {
                         rt_log("coop: player %d picked up or destroyed my %s (%08x); mine is deleted", from, props[i].name, o.id);
@@ -4074,13 +4103,15 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 s->state = LET_GO;
                 set_input(s, 0, (const int32_t[4]){0, 0, 0, 0});
                 if (s->actor) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->actor, COOP_DELETE_REASON, 0, 0);
-                for (int k = 0; k < COOP_OBJS; k++)   // their arrows' copies too
-                    if (s->mir[k].actor) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0);
+                for (int k = 0; k < COOP_OBJS; k++)   // their arrows' copies too (each still that copy)
+                    if (s->mir[k].state == 3 && copy_alive(s, k)) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0);
                 memset(s->mir, 0, sizeof s->mir);
                 rt_log("coop: remote player %d left; their Link is deleted", id);
-            } else if (s && s->state != LET_GO) s->state = FREE;
+            } else if (s && s->state == REQUESTED) s->leaving = 1;   // (a create on its way: deleted when it comes)
+            else if (s && s->state != LET_GO) s->state = FREE;
             continue;
         }
+        if (s) s->leaving = 0;   // back before its Player came
         if (id < host_id && age < 2000000000ull) {
             host_id = id, host_time = st.day_seconds, host_weather = st.weather, have_host = 1;
             // The weather is the place's: the host's only within 300 m of the host's Link. Followed from afar, a
@@ -4193,9 +4224,17 @@ void coop_players_tick(Cpu *c, int numpad3) {
         if (s->state == WANTED) spawn_slot(c, s);
         else if (s->state == REQUESTED) {
             int st = coop_handle_status(s->handle);
-            if (st == 4) { rt_log("coop: slot %d: the game could not make the Player", i); s->state = WANTED; }
+            if (st == 4) { rt_log("coop: slot %d: the game could not make the Player", i); s->state = s->leaving ? FREE : WANTED; }
             if (st != 3) continue;
             s->actor = coop_claim(c, s->handle, s->link, &s->ref);
+            // Its player left while it was being made: set FREE then, the create was left unclaimed and an extra
+            // Player stayed in the world (code review, 2026-11-06). Claimed and deleted now.
+            if (s->leaving && s->actor && s->actor != me) {
+                coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->actor, COOP_DELETE_REASON, 0, 0);
+                rt_log("coop: slot %d: its player left while its Player was made; deleted", i);
+                s->actor = 0, s->state = FREE, s->leaving = 0;
+                continue;
+            }
             if (!s->actor || s->actor == me) { rt_log("coop: slot %d: claim gave no new Player", i); s->state = WANTED; continue; }
             coop_copy_dependencies(c, me, s->actor, 0);
             s->state = LIVE;
@@ -4279,13 +4318,15 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 }
                 s->out_have = s->out_want;
             }
-            static int hand_ticks, hand_said = -1;
-            if (eq && coop_puppet_mode() && ++hand_ticks % 30 == 0) {
+            // Per slot: shared, the count went up once per slot each tick, so with two co-op Links only one ever came to
+            // a multiple of 30, and one slot's tries used up or reset another's (code review, 2026-11-06).
+            static int hand_ticks[COOP_MAX_PLAYERS], hand_said[COOP_MAX_PLAYERS] = {[0 ... COOP_MAX_PLAYERS - 1] = -1};
+            if (eq && coop_puppet_mode() && ++hand_ticks[i] % 30 == 0) {
                 static const uint64_t hand_of[3] = {0, 3, 4};
                 int now = 0;
                 for (int k = 0; k < 3; k++) now |= (int)(coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, eq, hand_of[k], 0, 0) & 1) << k;
-                if ((now | s->out_want << 4) != hand_said)
-                    rt_log("coop: puppet: slot %d holds %#x, owner %#x", i, now, s->out_want), hand_said = now | s->out_want << 4;
+                if ((now | s->out_want << 4) != hand_said[i])
+                    rt_log("coop: puppet: slot %d holds %#x, owner %#x", i, now, s->out_want), hand_said[i] = now | s->out_want << 4;
                 // Proxy mode: a put-away that did not take (a play session: "holds 0x4, owner 0" stayed after sword and
                 // shield were put away together, and the shield was then held with the bow, 2026-11-05). Once a thaw is
                 // over and the proxy still holds something else than its owner, its own update runs again (at most 4
@@ -4293,8 +4334,9 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 // Proxy mode, gear by state: what the proxy's EquipmentUser holds against what its owner reports,
                 // each slot, and any that differs made again with a thaw (at most 4 times in a row). A change made
                 // while this game sat in a menu stayed unseen (menu_3rd.txt, a play session, 2026-11-05).
-                static int gear_fixes;
-                if (proxied(s) && s->thaw <= 0 && gear_fixes < 4) {
+                static int gear_fixes_[COOP_MAX_PLAYERS];
+                int *gear_fixes = &gear_fixes_[i];
+                if (proxied(s) && s->thaw <= 0 && *gear_fixes < 4) {
                     char held2[COOP_GEAR_SLOTS][32];
                     eq_gear(eq, held2);
                     int fixed = 0;
@@ -4309,14 +4351,15 @@ void coop_players_tick(Cpu *c, int numpad3) {
                         if (old) drop_old_item(c, eq, k, old);
                         fixed = 1;
                     }
-                    if (fixed) s->thaw = PROXY_THAW_TICKS, gear_fixes++;
-                    else gear_fixes = 0;
+                    if (fixed) s->thaw = PROXY_THAW_TICKS, ++*gear_fixes;
+                    else *gear_fixes = 0;
                 }
-                static int retries;
-                if (proxied(s) && s->thaw <= 0 && now != s->out_want && retries < 4 && !cfg_get("TOTK_COOP_TEST_NORETRY")) {
-                    s->thaw = PROXY_THAW_TICKS, retries++;
-                    rt_log("coop: proxy: slot %d holds %#x, owner %#x: its own update runs again (%d)", i, now, s->out_want, retries);
-                } else if (now == s->out_want) retries = 0;
+                static int retries_[COOP_MAX_PLAYERS];
+                int *retries = &retries_[i];
+                if (proxied(s) && s->thaw <= 0 && now != s->out_want && *retries < 4 && !cfg_get("TOTK_COOP_TEST_NORETRY")) {
+                    s->thaw = PROXY_THAW_TICKS, ++*retries;
+                    rt_log("coop: proxy: slot %d holds %#x, owner %#x: its own update runs again (%d)", i, now, s->out_want, *retries);
+                } else if (now == s->out_want) *retries = 0;
             }
             if (s->state == LIVE && s->source == SRC_NET && coop_proxy_mode()) arrow_copies(c, s);
             if (proxied(s)) {   // proxy mode: placed by proxy_drive, no teleports

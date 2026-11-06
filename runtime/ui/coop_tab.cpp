@@ -152,8 +152,16 @@ extern "C" void tab_coop(float scale) {
     const char *target = coop_net_target();
     int hosting = coop_relay_port() != 0, id = coop_net_id();
     if (hosting) {
+        // This PC's address, asked once a second, not twice a frame (each ask opens and closes a socket; code review,
+        // 2026-11-06).
+        static char ip_seen[64];
+        static int have_ip;
+        static uint64_t ip_at;
+        uint64_t now_ns = plat_now_ns();
+        if (!ip_at || now_ns - ip_at > 1000000000ull) have_ip = coop_local_address(ip_seen, sizeof ip_seen), ip_at = now_ns;
         char ip[64];
-        if (!coop_local_address(ip, sizeof ip)) snprintf(ip, sizeof ip, "this PC's address");
+        if (have_ip) snprintf(ip, sizeof ip, "%s", ip_seen);
+        else snprintf(ip, sizeof ip, "this PC's address");
         snprintf(line, sizeof line, menu_text(UI_MENU_COOP_HOSTING), ip);
         opt_text_str(line);
         char detail[160];
@@ -165,7 +173,7 @@ extern "C" void tab_coop(float scale) {
         char addr[80];   // what a joining player types: the address, and the port when it is not the usual one
         if (coop_relay_port() == COOP_PORT) snprintf(addr, sizeof addr, "%s", ip);
         else snprintf(addr, sizeof addr, "%s:%d", ip, coop_relay_port());
-        if (coop_local_address(ip, sizeof ip)) copy_button("##coop_copy_lan", UI_MENU_COOP_COPY_LAN, UI_MENU_COOP_COPY_LAN_DESC, addr, scale);
+        if (have_ip) copy_button("##coop_copy_lan", UI_MENU_COOP_COPY_LAN, UI_MENU_COOP_COPY_LAN_DESC, addr, scale);
         if (up == COOP_UPNP_OPEN && detail[0]) {
             if (coop_relay_port() == COOP_PORT) snprintf(addr, sizeof addr, "%s", detail);
             else snprintf(addr, sizeof addr, "%s:%d", detail, coop_relay_port());

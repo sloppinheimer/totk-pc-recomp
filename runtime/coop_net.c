@@ -60,6 +60,20 @@ static int hit_out_n, hit_in_n;   // lock
 
 static void header(uint8_t *p, int kind) { memcpy(p, "TKCO", 4), p[4] = VERSION, p[5] = (uint8_t)kind, p[6] = (uint8_t)my_id, p[7] = 0; }
 
+// The same address and port (IPv4 or IPv6).
+static int same_addr(const struct sockaddr_storage *a, socklen_t alen, const struct sockaddr *b, int blen) {
+    if (a->ss_family != b->sa_family) return 0;
+    if (a->ss_family == AF_INET && alen >= (socklen_t)sizeof(struct sockaddr_in) && blen >= (int)sizeof(struct sockaddr_in)) {
+        const struct sockaddr_in *x = (const void *)a, *y = (const void *)b;
+        return x->sin_port == y->sin_port && x->sin_addr.s_addr == y->sin_addr.s_addr;
+    }
+    if (a->ss_family == AF_INET6 && alen >= (socklen_t)sizeof(struct sockaddr_in6) && blen >= (int)sizeof(struct sockaddr_in6)) {
+        const struct sockaddr_in6 *x = (const void *)a, *y = (const void *)b;
+        return x->sin6_port == y->sin6_port && !memcmp(&x->sin6_addr, &y->sin6_addr, sizeof x->sin6_addr);
+    }
+    return 0;
+}
+
 static void net_thread(void *arg) {
     int gen = (int)(intptr_t)arg;
     const char *name = my_name;
@@ -165,10 +179,16 @@ static void net_thread(void *arg) {
                 sendto(s, (const char *)w, HEADER + hits[i].len, 0, res->ai_addr, (int)res->ai_addrlen);
             }
         }
-        int n = (int)recvfrom(s, (char *)buf, sizeof buf, 0, NULL, NULL);
+        struct sockaddr_storage from;
+        socklen_t from_len = sizeof from;
+        int n = (int)recvfrom(s, (char *)buf, sizeof buf, 0, (struct sockaddr *)&from, &from_len);
+        // Only the relay's: any datagram that read as ours was taken, from anyone who could reach this port, and
+        // could set this player's id or feed states, objects and hits (code review, 2026-11-06).
+        if (n >= 0 && !same_addr(&from, from_len, res->ai_addr, (int)res->ai_addrlen)) continue;
         // The relay went quiet (the host left, or the network dropped) or never answered: end here and say why.
         uint64_t t_now = plat_now_ns();
         if ((joined && t_now - heard_ns > 6000000000ull) || (!joined && t_now - started_ns > 15000000000ull)) {
+            if (net_gen != gen) break;   // (left already: the new session's error stays)
             snprintf(last_error, sizeof last_error, joined ? "the session ended (the host left or cannot be reached)"
                                                            : "no answer from %s", host);
             rt_log("coop net: %s", last_error);
@@ -186,6 +206,8 @@ static void net_thread(void *arg) {
         heard_ns = plat_now_ns();
         int kind = buf[5], id = buf[6];
         if (kind == WELCOME) {
+            if (id < 1 || id > COOP_MAX_PLAYERS) continue;
+            if (net_gen != gen) break;   // (a left session's thread does not set the new one's id)
             if (!my_id) rt_log("coop net: joined as player %d", id);
             joined = 1;
             my_id = id;
@@ -203,7 +225,7 @@ static void net_thread(void *arg) {
             others[id].at_ns = plat_now_ns();
             others[id].live = 1;
             plat_mutex_unlock(&lock);
-        } else if (kind == WORLD && n - HEADER <= WORLD_MAX) {
+        } else if (kind == WORLD && id >= 1 && id <= COOP_MAX_PLAYERS && n - HEADER <= WORLD_MAX) {
             plat_mutex_lock(&lock);
             memcpy(world_in, buf + HEADER, n - HEADER), world_in_len = n - HEADER, world_in_from = id;
             world_in_at = plat_now_ns();
@@ -246,6 +268,10 @@ void coop_net_leave(void) {
     plat_mutex_lock(&lock);
     for (int i = 0; i <= COOP_MAX_PLAYERS; i++) others[i].live = 0;
     mine_set = 0, world_in_len = 0, hit_out_n = hit_in_n = 0, objs_out_n = objs_in_n = 0;
+    // (and what was waiting to go or came for the last session: its world and pose went first in the next one,
+    // code review 2026-11-06)
+    world_out_new = 0, pose_out_new = 0, world_in_from = 0;
+    for (int i = 0; i <= COOP_MAX_PLAYERS; i++) pose_in[i].len = 0, pose_in[i].at_ns = 0, others[i].name[0] = 0;
     plat_mutex_unlock(&lock);
 }
 

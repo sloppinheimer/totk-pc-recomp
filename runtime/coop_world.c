@@ -215,9 +215,11 @@ static void host_one(int cell, uint64_t a, void *arg) {
     }
     if (!near) return;
     int life = life_of(a);
+    // (no life yet, just made: not sent, sent as life 0 the guest set its copy's life to 0; code review, 2026-11-06)
+    if (life < 0) return;
     int32_t st = 0;
     coop_rd(a + COOP_ACTOR_STATE, &st, 4);
-    e.life = (uint16_t)(life < 0 ? 0 : life > 65535 ? 65535 : life);
+    e.life = (uint16_t)(life > 65535 ? 65535 : life);
     if (life == 0 || st > 6) e.flags |= 1;
     h->pk.e[h->pk.count++] = e;
     // Remembered for the hits, and for reporting its death once it is gone.
@@ -238,8 +240,16 @@ static void host_tick(Cpu *c, uint64_t me) {
     int from = 0, n;
     while ((n = coop_net_hit_take(&hp, sizeof hp, &from)) != 0) {
         if (n != (int)sizeof hp) continue;
+        // (a damage that is not 1..65535 is not a hit: a negative one healed, a huge one overflowed; code review)
+        if (hp.damage <= 0 || hp.damage > 65535) continue;
         for (int i = 0; i < 256; i++)
             if (host_known[i].key == hp.key && host_known[i].actor) {
+                // still that enemy: alive and an Enemy_ (its entry outlives it by up to 0.4 s)
+                int32_t est = 0;
+                char enm[64];
+                if (!coop_rd(host_known[i].actor + COOP_ACTOR_STATE, &est, 4) || est < 2 || est > 6 ||
+                    strncmp(coop_actor_name(host_known[i].actor, enm, sizeof enm), "Enemy_", 6))
+                    break;
                 int life = life_of(host_known[i].actor);
                 if (life > 0) {
                     set_life(host_known[i].actor, life - hp.damage);
@@ -283,15 +293,19 @@ static void host_tick(Cpu *c, uint64_t me) {
 }
 
 // ---- guest
-static struct { uint32_t key; int life; } guest_last[256];   // the life this game last set or saw for each
+// The life this game last set or saw for each, and when. One not used for 30 s is free again: kept for good, the
+// table filled in a long session and two live enemies took turns in one place, each clearing the other's life, so
+// neither's hits were sent (code review, 2026-11-06).
+static struct { uint32_t key; int life; int64_t at_us; } guest_last[256];
 static int *guest_life_slot(uint32_t key) {
     int free_i = -1;
+    int64_t now = frame_step_world_us();
     for (int i = 0; i < 256; i++) {
-        if (guest_last[i].key == key) return &guest_last[i].life;
-        if (free_i < 0 && !guest_last[i].key) free_i = i;
+        if (guest_last[i].key == key) { guest_last[i].at_us = now; return &guest_last[i].life; }
+        if (free_i < 0 && (!guest_last[i].key || now - guest_last[i].at_us > 30000000)) free_i = i;
     }
     if (free_i < 0) free_i = (int)(key & 255);
-    guest_last[free_i].key = key, guest_last[free_i].life = -1;
+    guest_last[free_i].key = key, guest_last[free_i].life = -1, guest_last[free_i].at_us = now;
     return &guest_last[free_i].life;
 }
 
@@ -304,6 +318,10 @@ static void guest_one(int cell, uint64_t a, void *arg) {
     const NetEnemy *e = NULL;
     for (int i = 0; i < g->pk.count; i++) if (g->pk.e[i].key == key) { e = &g->pk.e[i]; break; }
     if (!e) return;   // the host does not have it near anyone: this game's own
+    // Listed for a second after its last update, it may be gone (and its memory another's): written to only while
+    // alive (code review, 2026-11-06).
+    int32_t ast = 0;
+    if (!coop_rd(a + COOP_ACTOR_STATE, &ast, 4) || ast < 2 || ast > 6) return;
     int life = life_of(a), *last = guest_life_slot(key);
     if (life < 0) return;
     if (e->flags & 1) {   // dead on the host
@@ -1610,6 +1628,19 @@ static void as_play_test(Cpu *c, uint64_t me) {
            nm, slot, (unsigned long long)x, (unsigned long long)mgr, comp, off, off2, (unsigned long long)r);
 }
 void coop_world_tick(Cpu *c, uint64_t me) {
+    {   // The enemy tables start again with a session, and when this Link becomes another actor (a save loaded): kept,
+        // enemies made again at the same place within 5 s were still reported dead and died at once, and old lives
+        // made hits that were not (code review, 2026-11-06).
+        static int was_on;
+        static uint64_t was_me;
+        int on = coop_net_on();
+        if ((on && !was_on) || (me && was_me && me != was_me)) {
+            memset(dead, 0, sizeof dead), memset(host_known, 0, sizeof host_known), memset(guest_last, 0, sizeof guest_last);
+            rt_log("coop: enemy tables cleared (%s)", on && !was_on ? "a session began" : "this Link is another actor");
+        }
+        was_on = on;
+        if (me) was_me = me;
+    }
     refscan(me);
     as_play_test(c, me);
     target_swap(me);

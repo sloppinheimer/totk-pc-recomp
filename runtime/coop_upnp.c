@@ -40,7 +40,11 @@ static char external_ip[64];    // lock; "" until known
 static volatile int upnp_gen;   // a new value stops the running thread (and its mapping is deleted)
 static int upnp_state;          // lock; COOP_UPNP_*
 
+// A thread of an ended session (Leave, or a new Host) no longer sets the status: it went on to "open" or "failed"
+// after the session had ended (code review, 2026-11-06). The thread's own session, -1 outside one.
+static __thread int cur_gen = -1;
 static void set_status(int state, const char *arg) {
+    if (cur_gen >= 0 && cur_gen != upnp_gen) return;
     plat_mutex_lock(&lock);
     upnp_state = state;
     snprintf(status_arg, sizeof status_arg, "%s", arg ? arg : "");
@@ -256,8 +260,19 @@ static void delete_mapping(const Gateway *gw, char *out, int max) {
     if (desc[0]) rt_log("coop upnp: the router said: %s", desc);
 }
 
+static void upnp_session(int gen);
+// One at a time: a new session's thread waits for the last one, which removes its forwarding first. Overlapping, the
+// old one's removal of the same port could come after the new one's forwarding, and both used the same buffers
+// (code review, 2026-11-06).
+static PlatMutex run_lock = PLAT_MUTEX_INIT;
 static void upnp_thread(void *arg) {
     int gen = (int)(intptr_t)arg;
+    plat_mutex_lock(&run_lock);
+    cur_gen = gen;
+    if (upnp_gen == gen) upnp_session(gen);
+    plat_mutex_unlock(&run_lock);
+}
+static void upnp_session(int gen) {
 #ifdef _WIN32
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -280,7 +295,7 @@ static void upnp_thread(void *arg) {
         return;
     }
     plat_mutex_lock(&lock);
-    snprintf(external_ip, sizeof external_ip, "%s", ip);
+    if (upnp_gen == gen) snprintf(external_ip, sizeof external_ip, "%s", ip);
     plat_mutex_unlock(&lock);
     if (ip[0] && private_v4(ip))
         set_status(COOP_UPNP_SHARED, ip);
