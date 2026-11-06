@@ -617,6 +617,7 @@ static int proxied(const Slot *s) {
 static int ride_place(const Slot *s, float out[3]);   // the owner rides an object: where, here
 static void shield_place(Cpu *c, Slot *s);
 static uint64_t eq_item(uint64_t eq, int kind);
+static void drop_old_item(Cpu *c, uint64_t eq, int k, uint64_t old);
 static int item_local(uint64_t link, uint64_t item, float local[3]);
 static void place_copy(Cpu *c, Slot *s, int k);
 #define COPY_WARMUP 5   // ticks a copy runs its own update after it is made (arrow_copies)
@@ -1340,6 +1341,7 @@ static void arrow_track_fn(uint64_t a, void *arg) {
 }
 static void mat_quat(const float *r, float q[4]);
 static void quat_mat(const float q[4], float *r);
+static int this_paused;   // (set by the tick; defined below)
 static int report_arrows(Cpu *c, uint64_t me, CoopObj *out) {
     void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
     arrow_tick++;
@@ -1350,8 +1352,11 @@ static int report_arrows(Cpu *c, uint64_t me, CoopObj *out) {
     // Whether the bow is in hand: an arrow near this Link is sent only while it is. After the bow was put away the
     // nocked arrow's copy stayed at the proxy's hand for a while (a play session, 2026-11-05): the arrow is still
     // there in this game for a moment.
+    // (only on this Link's own EquipmentUser, and not while the game is paused: during a save load eq_of_actor gave a
+    // co-op Link's half-built one and main+0x3e322c on it crashed, load_3rd.txt; unknown counts as in hand)
     uint64_t eq = eq_of_actor(me);
-    int bow_out = eq && (coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, eq, 3, 0, 0) & 1);
+    int bow_out = 1;
+    if (eq && !this_paused && eq_points_to(eq, me)) bow_out = (int)(coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, eq, 3, 0, 0) & 1);
     float mp[3] = {0};
     coop_rd(me + COOP_ACTOR_POS, mp, 12);
     for (int i = 0; i < 32; i++) {
@@ -1760,7 +1765,10 @@ static int prop_skip(const char *nm) {
     // objects, their copies came and went over and over and the bow showed on the other Link (glide.txt on the Rito
     // save, the tester watching, 2026-11-05).
     static const char *pre[] = {"Player", "Armor_", "Accessory_", "PlayerRaul", "Npc", "Animal_", "Enemy_",
-                                "Weapon_Sheath", "Weapon_Quiver", "TBox_", "Sage_", "Weapon_Bow_128"};   // chests: each player's own
+                                "Weapon_Sheath", "Weapon_Quiver", "TBox_", "Sage_", "Weapon_Bow_128",
+                                // the Link's own helpers (its edges): a save load took the WakeBoardRope for a destroyed
+                                // object, and the other game deleted its own (load_3rd.txt)
+                                "WakeBoardRope", "Obj_OneTouch_Connection", "Dm_Npc_RevivalFairy", "CarryBox", "ThrowBox"};   // chests: each player's own
     for (size_t i = 0; i < sizeof pre / sizeof *pre; i++) if (!strncmp(nm, pre[i], strlen(pre[i]))) return 1;
     if (strstr(nm, "Arrow")) return 1;
     // Helpers that go with this Link and are not things in the world: EventCamera and CameraXLinkControl were sent
@@ -1786,12 +1794,42 @@ static int copy_pending_near(const float *p) {
         }
     return 0;
 }
+// A proxy's weapon, bow or shield taken away because its owner has none now (after loading another save): the
+// proxy let go of it later, it lay on the ground, was sent as a world object and could be picked up in the owner's
+// game (a play session, 2026-11-05: "holds Weapon_Shield_030, owner -" four times, then "I move Weapon_Shield_030").
+// It is watched for 30 s; once it is out of the proxy's gear it is deleted, and it is never sent meanwhile.
+static struct { uint64_t actor, eq; int k, until; } old_items[16];
+static void drop_old_item(Cpu *c, uint64_t eq, int k, uint64_t old) {
+    (void)c;
+    int f = 0;
+    for (int i = 0; i < 16; i++) {
+        if (old_items[i].actor == old) { old_items[i].until = prop_tick + 900; return; }
+        if (old_items[i].until < old_items[f].until) f = i;
+    }
+    old_items[f].actor = old, old_items[f].eq = eq, old_items[f].k = k, old_items[f].until = prop_tick + 900;
+}
+static int old_item(uint64_t a) {
+    for (int i = 0; i < 16; i++) if (old_items[i].actor == a && old_items[i].until >= prop_tick) return 1;
+    return 0;
+}
+static void old_items_tick(Cpu *c) {
+    for (int i = 0; i < 16; i++) {
+        if (!old_items[i].actor || old_items[i].until < prop_tick) continue;
+        int32_t st = 0;
+        if (!coop_rd(old_items[i].actor + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6) { old_items[i].actor = 0; continue; }
+        if (eq_item(old_items[i].eq, old_items[i].k) == old_items[i].actor) continue;   // still the proxy's
+        char nm[48];
+        rt_log("coop: proxy: its old %s, out of its gear, is deleted", coop_actor_name(old_items[i].actor, nm, sizeof nm));
+        coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, old_items[i].actor, COOP_DELETE_REASON, 0, 0);
+        old_items[i].actor = 0;
+    }
+}
 typedef struct { float me[3]; int cand[32], n_cand, n_first_near; } PropScan;
 static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *arg) {
     PropScan *ps = arg;
     Slot *cs;
     int ck;
-    if (prop_skip(nm) || copy_of(a, &cs, &ck) || is_driven(a) || is_preview(a)) return;
+    if (prop_skip(nm) || copy_of(a, &cs, &ck) || is_driven(a) || is_preview(a) || old_item(a)) return;
     for (int i = 0; i < 32; i++) if (my_arrows[i].actor == a) return;   // an arrow's fused material
     float p[3];
     if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
@@ -2009,7 +2047,8 @@ static void dwatch_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
     float p[3];
     Slot *cs;
     int ck;
-    if (prop_skip(nm) || !strncmp(nm, "Parasail", 8) || copy_of(a, &cs, &ck) || coop_is_resident(a) || !coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+    if (prop_skip(nm) || !strncmp(nm, "Parasail", 8) || copy_of(a, &cs, &ck) || coop_is_resident(a) || old_item(a) ||
+        !coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
     if ((p[0] - me[0]) * (p[0] - me[0]) + (p[1] - me[1]) * (p[1] - me[1]) + (p[2] - me[2]) * (p[2] - me[2]) > 400) return;
     for (int i = 0; i < 32; i++) if (my_arrows[i].actor == a) return;
     int free = -1;
@@ -2025,6 +2064,17 @@ static void destroy_watch(uint64_t me) {
     if (++dtick % 10) return;
     float p[3];
     if (!coop_rd(me + COOP_ACTOR_POS, p, 12)) return;
+    // A save load or a warp unloads the area over several scans: when this Link's actor changes or it moves more than
+    // 30 m between scans, what is noted is forgotten and nothing is told for 3 s.
+    static uint64_t last_me;
+    static float last_p[3];
+    static int quiet_until;
+    float jump = (p[0] - last_p[0]) * (p[0] - last_p[0]) + (p[1] - last_p[1]) * (p[1] - last_p[1]) + (p[2] - last_p[2]) * (p[2] - last_p[2]);
+    if (me != last_me || jump > 30 * 30) {
+        memset(dwatch, 0, sizeof dwatch);
+        quiet_until = dtick + 180;
+    }
+    last_me = me, memcpy(last_p, p, 12);
     void coop_actors_all(void (*fn)(uint64_t, const char *, uint32_t, void *), void *arg);   // coop_world.c
     CoopObj gone[COOP_OBJS_PER_PACKET];
     int ng = 0, going = 0;
@@ -2055,7 +2105,7 @@ static void destroy_watch(uint64_t me) {
     }
     coop_actors_all(dwatch_fn, p);
     for (int i = 0; i < 512; i++) if (dwatch[i].actor && dtick - dwatch[i].seen > 60) dwatch[i].actor = 0;   // out of reach
-    if (!ng || going > 4) return;   // more at once: an area going away, not a blast
+    if (!ng || going > 4 || dtick < quiet_until) return;   // more at once: an area going away, not a blast
     uint8_t pk[4 + COOP_OBJS_PER_PACKET * sizeof(CoopObj)];
     uint16_t h[2] = {(uint16_t)ng, 3};
     memcpy(pk, h, 4), memcpy(pk + 4, gone, ng * sizeof(CoopObj));
@@ -3642,7 +3692,8 @@ void coop_players_tick(Cpu *c, int numpad3) {
         objs_receive(c);
         for (int k = 0; k < 3; k++) memcpy(st.fuse[k], strcmp(my_gear[k], GEAR_NONE) ? my_fuse[k] : "", 32);   // none when unequipped
         match_my_eq(me);
-        uint64_t my_eq = eq_of_actor(me);   // weapon, bow, shield in hand
+        uint64_t my_eq = eq_of_actor(me);   // weapon, bow, shield in hand (only on its own EquipmentUser: see report_arrows)
+        if (my_eq && !eq_points_to(my_eq, me)) my_eq = 0;
         static const uint64_t hand_of[3] = {0, 3, 4};
         for (int k = 0; my_eq && k < 3; k++)
             if (coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, my_eq, hand_of[k], 0, 0) & 1) st.flags |= 1u << (8 + k);
@@ -3695,7 +3746,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         const char *fw = cfg_get("TOTK_COOP_FAKEWEATHER");   // test: report this weather type instead
         if (fw && *fw) st.weather = atoi(fw);
         coop_net_publish(&st);
-        if (coop_proxy_mode()) props_receive(c), ride_carry(c, me), destroy_watch(me);   // placed objects co-op players move; riding them; destroyed
+        if (coop_proxy_mode()) props_receive(c), ride_carry(c, me), destroy_watch(me), old_items_tick(c);   // placed objects co-op players move; riding them; destroyed
         props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test(), bone_arrow_test(me), impact_test(), glide_log(me);
     }
     armor_probe(me);
@@ -3870,8 +3921,10 @@ void coop_players_tick(Cpu *c, int numpad3) {
                     if ((none && k > 2) || (!strcmp(held[k], s->gear_want[k]) && !redye)) continue;   // nothing to change
                     rt_log("coop: slot %d: owner's gear slot %d is %s (dye %d%s%s)", i, coop_gear_slot[k], s->gear_want[k], s->dye_want[k],
                            k <= 2 && s->fuse_want[k][0] ? ", fused with " : "", k <= 2 ? s->fuse_want[k] : "");
+                    uint64_t old = none && k <= 2 ? eq_item(eq, k) : 0;
                     give_gear(c, eq, k, none ? "" : s->gear_want[k], s->dye_want[k], -1, s->gear_str[k], k <= 2 ? s->fuse_want[k] : NULL,
                               s->att_str[k < 3 ? k : 0]);
+                    if (old) drop_old_item(c, eq, k, old);
                     // Proxy mode: armor made on the frozen proxy did not show (the hood and tunic stayed as they
                     // were; the default mode shows them, 2026-11-05). Its own update runs for a while to take it.
                     if (proxied(s)) s->thaw = PROXY_THAW_TICKS, rt_log("coop: proxy: slot %d runs its own update for %d ticks (gear)", i, PROXY_THAW_TICKS);
@@ -3942,8 +3995,10 @@ void coop_players_tick(Cpu *c, int numpad3) {
                         if (!strcmp(held2[k], s->gear_want[k])) continue;
                         rt_log("coop: proxy: slot %d gear slot %d holds %s, owner %s: made again", i, coop_gear_slot[k], held2[k], s->gear_want[k]);
                         int none = !strcmp(s->gear_want[k], GEAR_NONE);
+                        uint64_t old = none && k <= 2 ? eq_item(eq, k) : 0;
                         give_gear(c, eq, k, none ? "" : s->gear_want[k], s->dye_want[k], k <= 2 ? (s->out_want >> k & 1) : -1, s->gear_str[k],
                                   k <= 2 ? s->fuse_want[k] : NULL, s->att_str[k < 3 ? k : 0]);
+                        if (old) drop_old_item(c, eq, k, old);
                         fixed = 1;
                     }
                     if (fixed) s->thaw = PROXY_THAW_TICKS, gear_fixes++;
