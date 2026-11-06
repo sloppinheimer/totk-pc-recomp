@@ -319,6 +319,11 @@ static void spawn(Cpu *c, int k) {
     }
     // Guess: the rotation is row-major (MacNativeGames force_at) and Link faces his local +Z, column 2.
     float at[3] = {pos[0] + 2 * rot[2], pos[1] + 0.5f, pos[2] + 2 * rot[8]};
+    {   // TOTK_COOP_TEST_SPAWN_AT=x,y,z: at that world place instead (the same enemy in two games: its key is its place)
+        const char *e = k == 1 ? cfg_get("TOTK_COOP_TEST_SPAWN_AT") : NULL;
+        float q[3];
+        if (e && sscanf(e, "%f,%f,%f", &q[0], &q[1], &q[2]) == 3) memcpy(at, q, sizeof at);
+    }
 
     // The frame the AI node builds (main+0x231fa58): stack args at sp, the name pointer at sp+0x20, the create
     // argument at sp+0x28 (position, rotation, scale 1, a string at +0x40, flags at +0x90).
@@ -893,8 +898,11 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // (PlayerCamera's main+0x245030 while the camera follows Link#2 goes on to the camera bracket below: taken here
     // always, that bracket's case for it never ran; code review, 2026-11-06)
     int cam_phase = addr == MOD_MAIN_BASE + 0x245030 && !in_camera && c->x[0] && c->x[0] == camera_actor && cam_two && second_player;
-    if ((addr == MOD_MAIN_BASE + 0x245030 && !cam_phase) || addr == MOD_MAIN_BASE + 0x2f9910 || addr == MOD_MAIN_BASE + 0x194fd7c)
+    if ((addr == MOD_MAIN_BASE + 0x245030 && !cam_phase) || addr == MOD_MAIN_BASE + 0x2f9910 || addr == MOD_MAIN_BASE + 0x194fd7c) {
+        int coop_enemy_puppet_phase(Cpu *c, uint64_t addr);   // coop_world.c: an enemy puppet's phases (driven, or skipped)
+        if (coop_enemy_puppet_phase(c, addr)) return 1;
         return coop_players_phase(c, addr);
+    }
     // main+0x2e9c80 (animation binding): Havok's pose into a g3d model. For the co-op Link's model the copied pose
     // (TOTK_COOP_TEST_SKELCOPY) goes over its own right after, so its own animation does not undo it (2026-11-05).
     static int skelcopy = -1;   // (looked up once: it was on every call, code review 2026-11-06)
@@ -1220,6 +1228,8 @@ int coop_hook(Cpu *c, uint64_t addr) {
     if (addr == MOD_MAIN_BASE + 0xc4961c || addr == MOD_MAIN_BASE + 0xaf100c) return coop_players_gear(c, addr);
     if (addr == MOD_MAIN_BASE + ACTOR_CALC) {
         coop_actor_seen(c->x[0]);   // every live actor passes here each frame (coop_world.c)
+        int coop_enemy_puppet_calc(uint64_t actor);   // coop_world.c: an enemy another game runs, frozen here
+        if (coop_enemy_puppet_calc(c->x[0])) return 1;
     if (prof4 && !enemy_calc && c->x[0]) {   // an enemy's calc, bracketed for the profiler
         char en[16];
         actor_name(c->x[0], en, sizeof en);

@@ -2809,6 +2809,35 @@ static void impact_new_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
         rt_log("coop: test: impact %.2f s: new %s %llx at %.2f %.2f %.2f, state %d", frame_step_world_us() / 1e6, nm, (unsigned long long)a,
                p[0], p[1], p[2], st);
 }
+// Test (TOTK_COOP_TEST_LINKHIT=1): the hit record in each Link's damage component ([actor+0x228]+0x2f8, +0x1a0..;
+// re-notes "The hit's mark on the device": +0x1a4 state, +0x1c8 the attacker's id, +0x1d0 flags, +0x1d8 type, +0x1dc
+// power, +0x1fc the hit place) for this Link and each co-op Link, logged when +0x1a4 turns nonzero, with the life: what
+// an enemy's hit leaves on a frozen proxy (its update, which takes the record, does not run) against this Link's.
+int coop_life_of(uint64_t a);   // coop_world.c
+static void link_hit_test(uint64_t me) {
+    static int on = -1;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_LINKHIT") != NULL;
+    if (!on) return;
+    static uint32_t last[COOP_MAX_PLAYERS + 1];
+    static int said;
+    for (int i = 0; i <= COOP_MAX_PLAYERS && said < 60; i++) {
+        uint64_t a = i == COOP_MAX_PLAYERS ? me : slots[i].actor;
+        if (!a || (i < COOP_MAX_PLAYERS && slots[i].state != LIVE)) continue;
+        uint64_t dc = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x2f8);
+        uint32_t w[0x60 / 4];
+        if (!dc || !coop_rd(dc + 0x1a0, w, sizeof w)) continue;
+        uint32_t stt = w[1];
+        if (stt && stt != last[i]) {
+            float pw, hp[3];
+            memcpy(&pw, &w[0x3c / 4], 4), memcpy(hp, &w[0x5c / 4], 12);
+            rt_log("coop: test: linkhit %s at %.3f s: state %u, attacker id %u, flags %#x, type %u, power %u (%.2f), place %.2f %.2f %.2f; life %d",
+                   i == COOP_MAX_PLAYERS ? "this Link" : "a co-op Link", frame_step_world_us() / 1e6, stt, w[0x28 / 4], w[0x30 / 4], w[0x38 / 4],
+                   w[0x3c / 4], pw, hp[0], hp[1], hp[2], coop_life_of(a));
+            said++;
+        }
+        last[i] = stt;
+    }
+}
 static void impact_test(void) {
     static int on = -1;
     static struct { uint64_t actor; char name[48]; float last[3]; } w[8];
@@ -4422,7 +4451,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         if (fw && *fw) st.weather = atoi(fw);
         coop_net_publish(&st);
         if (coop_proxy_mode()) props_receive(c), ride_carry(c, me), destroy_watch(me), old_items_tick(c);   // placed objects co-op players move; riding them; destroyed
-        props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test(), bone_arrow_test(me), impact_test(), glide_log(me), newnear_test(me), beam_test(me), beam_end_tick();
+        props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test(), bone_arrow_test(me), impact_test(), glide_log(me), newnear_test(me), beam_test(me), beam_end_tick(), link_hit_test(me);
     }
     armor_probe(me);
     arrow_log(me);

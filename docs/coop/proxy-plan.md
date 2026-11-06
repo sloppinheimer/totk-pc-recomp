@@ -163,12 +163,30 @@ right in the tester's own two-pad session.
   - Dropped items rest at another place in each game, 1 to 12 m apart, for minutes (`object-place`); some copies'
     actors went away while still shown (`dead`).
   - Enemies: place and life match within 1 to 3 m, but each game runs its own AI, so what they do differs (the tester:
-    "desync BADLY"). Needs the host's enemy pose copied to the guest, as the proxy's is.
+    "desync BADLY"). Done since (protocol 15, below): one game runs each enemy, the others pose it.
   - A Zonai device fused to a shield: the proxy's shield made with it shows it at full size; it is not sent for now.
     TOTK_COOP_TEST_FUSELOG logs the actor on each shield, its scale and place, to compare the owner's with the
     proxy's (not run yet).
   - Weather differs at times with the two Links together; the sword beam's burst; the proxy may no longer flinch when
     hit (its life update is skipped).
+- **Enemies shared** (protocol 15, 2026-11-06; the tester's calls: "host decides all", and "whoever was there" first):
+  - **Whose:** each enemy near more than one Link is run by one game, the one that has had it longest (its age since
+    that game first saw it run; within 2 s, the lower player id). A player fighting alone keeps the fight when the
+    others arrive. The others follow that game while it reports the enemy; when it stops (its player left the area),
+    the next game runs its own from where it stands.
+  - **Poses:** the owner sends an EPOSE packet per enemy each frame (the 12 nearest another Link, every third frame
+    beyond 40 m): place, rotation and the body skeleton's local records (model +0x18 +0 +0x58 +0xb0; a Link's path
+    from the actor finds none on an enemy). The others' one runs no calc and no update phase; in place of main+0x245030
+    it gets the pose of 100 ms ago, the model push and its body put there (coop_world.c, enemy puppets).
+  - **Deaths:** reported 5 s to all, and for the session to anyone who comes near where the enemy stood, so one
+    killed while alone stays dead.
+  - **Hits:** a following game's sword hit lands through its player's proxy swinging in the owner's game (one Master
+    Sword swing killed the owner's Bokoblin, the copy died after it); its own swing does nothing to its frozen copy.
+  - **Tested** (pair runs, TOTK_COOP_TEST_SPAWN with TOTK_COOP_TEST_SPAWN_AT so both games make one enemy at one
+    place; tools/coop/enemy_compare.py on the audit): a Bokoblin chasing a walking Link for 83 m was 0.09 m off on
+    average (0.61 m most) and its body's height within 0.1 m; the Chuchus near the save's start within 2 cm.
+  - **Not done:** arrows and bombs from a following game (their copies in the owner's game hit nothing); the owner's
+    enemy hitting a following player's Link (its proxy takes the hit in the owner's game); not seen on screen.
 - Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
 
 ## Plan

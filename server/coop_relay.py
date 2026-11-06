@@ -17,8 +17,8 @@ import struct
 import sys
 import time
 
-MAGIC, VERSION = b'TKCO', 14
-HELLO, WELCOME, STATE, LEAVE, BYE, WORLD, HIT, POSE, OBJS = 1, 2, 3, 4, 5, 6, 7, 8, 9
+MAGIC, VERSION = b'TKCO', 15
+HELLO, WELCOME, STATE, LEAVE, BYE, WORLD, HIT, POSE, OBJS, EPOSE = 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
 MAX_PLAYERS, TIMEOUT = 8, 5.0
 HEADER = struct.Struct('<4sBBBB')
 
@@ -35,6 +35,7 @@ def main():
     if a.log:
         sys.stdout = sys.stderr = open(a.log, 'w', buffering=1, encoding='utf-8')
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)   # enemy poses come in bursts
     sock.bind(('0.0.0.0', a.port))
     sock.settimeout(0.5)
     players = {}   # addr -> {'id', 'name', 'seen'}
@@ -83,7 +84,7 @@ def main():
             me['seen'] = now
             others = b''.join(struct.pack('<B16s', p['id'], p['name'].encode()[:16]) for k, p in players.items() if k != addr)
             send(header(WELCOME, me['id']) + others, addr)
-        elif kind in (STATE, WORLD, HIT, POSE, OBJS) and addr in players:
+        elif kind in (STATE, WORLD, HIT, POSE, OBJS, EPOSE) and addr in players:
             me = players[addr]
             me['seen'] = now
             out = header(kind, me['id']) + data[HEADER.size:]
