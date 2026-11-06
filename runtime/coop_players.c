@@ -1259,7 +1259,7 @@ static void arrow_log(uint64_t me) {
 // copy of each: made with the same name, then after COPY_WARMUP ticks its own update is off and it is put where the
 // owner's is every tick (place_copy), so it does not fly, hit or get picked up here. A copy goes when its arrow is no
 // longer reported.
-static struct { uint64_t actor; uint32_t id; int mine, seen, fused_to; } my_arrows[32];
+static struct { uint64_t actor; uint32_t id; int mine, seen, fused_to, shot; } my_arrows[32];   // shot: has left the bow
 static struct { uint64_t actor; int seen; } near_actors[64];   // other actors within 3 m of this Link, last tick seen
 static uint32_t next_arrow_id = 1;
 static int arrow_tick;
@@ -1308,7 +1308,7 @@ static void arrow_track_fn(uint64_t a, void *arg) {
         if (!by) return;
         for (int i = 0; i < 32; i++)
             if (!my_arrows[i].actor) {
-                my_arrows[i].actor = a, my_arrows[i].mine = 1, my_arrows[i].seen = arrow_tick, my_arrows[i].fused_to = by;
+                my_arrows[i].actor = a, my_arrows[i].mine = 1, my_arrows[i].seen = arrow_tick, my_arrows[i].fused_to = by, my_arrows[i].shot = 0;
                 my_arrows[i].id = next_arrow_id++;
                 rt_log("coop: my arrow %d is fused with %s (%u, %llx)", by, nm, my_arrows[i].id, (unsigned long long)a);
                 return;
@@ -1328,7 +1328,7 @@ static void arrow_track_fn(uint64_t a, void *arg) {
     for (int i = 0; i < 32; i++)
         if (!my_arrows[i].actor) {
             my_arrows[i].actor = a, my_arrows[i].mine = arrow_tick - zr_tick <= 90 && d2 < 9 && d2 < dco, my_arrows[i].seen = arrow_tick;
-            my_arrows[i].fused_to = 0;
+            my_arrows[i].fused_to = 0, my_arrows[i].shot = 0;
             my_arrows[i].id = my_arrows[i].mine ? next_arrow_id++ : 0;
             if (my_arrows[i].mine) rt_log("coop: my arrow %u is %s (%llx)", my_arrows[i].id, nm, (unsigned long long)a);
             return;
@@ -1358,8 +1358,15 @@ static int report_arrows(Cpu *c, uint64_t me, CoopObj *out) {
         CoopObj *o = &out[n];
         float r[9];
         if (!coop_rd(my_arrows[i].actor + COOP_ACTOR_POS, o->pos, 12) || !coop_rd(my_arrows[i].actor + COOP_ACTOR_ROT, r, 36)) continue;
-        if (!bow_out && (o->pos[0] - mp[0]) * (o->pos[0] - mp[0]) + (o->pos[1] - mp[1]) * (o->pos[1] - mp[1]) +
-                            (o->pos[2] - mp[2]) * (o->pos[2] - mp[2]) < 2.5f * 2.5f) continue;   // put away
+        // Nocked: within 1.5 m of the bow and never farther since it was made. Once farther it is shot for good: a
+        // shot arrow lying near its owner was taken for a nocked one, sent on the bow, and followed the owner about
+        // on the other screen (a play session, 2026-11-05).
+        float br[9], bp[3];
+        int on_bow = bow_frame(me, br, bp) && (o->pos[0] - bp[0]) * (o->pos[0] - bp[0]) + (o->pos[1] - bp[1]) * (o->pos[1] - bp[1]) +
+                                                  (o->pos[2] - bp[2]) * (o->pos[2] - bp[2]) < 1.5f * 1.5f;
+        if (!on_bow && bow_out) my_arrows[i].shot = 1;   // (made at the ZR press, it can come before the bow is in hand)
+        int nocked = !my_arrows[i].shot;
+        if (!bow_out && nocked) continue;   // put away
         o->id = my_arrows[i].id;
         coop_actor_name(my_arrows[i].actor, o->name, sizeof o->name);
         // Within 2.5 m of this Link (nocked): sent in the frame of its bow's model, so the other games put it on the
@@ -1367,8 +1374,7 @@ static int report_arrows(Cpu *c, uint64_t me, CoopObj *out) {
         // 0.3 m about the proxy's bow as the owner walked (bow_walk_3rd.txt); in the Link's frame it still trailed the
         // bow a little, which comes with the proxy's pose (a play session, 2026-11-05).
         float lp[3], lr[9], mp[3];
-        if (coop_rd(me + COOP_ACTOR_POS, mp, 12) && bow_frame(me, lr, lp) &&
-            (o->pos[0] - mp[0]) * (o->pos[0] - mp[0]) + (o->pos[1] - mp[1]) * (o->pos[1] - mp[1]) + (o->pos[2] - mp[2]) * (o->pos[2] - mp[2]) < 2.5f * 2.5f) {
+        if (nocked && coop_rd(me + COOP_ACTOR_POS, mp, 12) && bow_frame(me, lr, lp)) {
             float d[3] = {o->pos[0] - lp[0], o->pos[1] - lp[1], o->pos[2] - lp[2]};
             {
                 float rl[9];
