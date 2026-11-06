@@ -1365,10 +1365,14 @@ static int report_arrows(Cpu *c, uint64_t me, CoopObj *out) {
         int on_bow = bow_frame(me, br, bp) && (o->pos[0] - bp[0]) * (o->pos[0] - bp[0]) + (o->pos[1] - bp[1]) * (o->pos[1] - bp[1]) +
                                                   (o->pos[2] - bp[2]) * (o->pos[2] - bp[2]) < 1.5f * 1.5f;
         if (!on_bow && bow_out) my_arrows[i].shot = 1;   // (made at the ZR press, it can come before the bow is in hand)
+        if (my_arrows[i].fused_to)   // a fused material (about 1 m from its arrow) is nocked or shot as its arrow is
+            for (int j = 0; j < 32; j++)
+                if (my_arrows[j].actor && my_arrows[j].id == (uint32_t)my_arrows[i].fused_to) my_arrows[i].shot = my_arrows[j].shot;
         int nocked = !my_arrows[i].shot;
         if (!bow_out && nocked) continue;   // put away
         o->id = my_arrows[i].id;
         coop_actor_name(my_arrows[i].actor, o->name, sizeof o->name);
+        if (my_arrows[i].fused_to) o->flags |= COOP_OBJ_FUSED;   // shown and kept out of reach as its arrow is
         // Within 2.5 m of this Link (nocked): sent in the frame of its bow's model, so the other games put it on the
         // proxy's bow as they show it. Sent as a world place, with this Link's own place in another packet, it shook
         // 0.3 m about the proxy's bow as the owner walked (bow_walk_3rd.txt); in the Link's frame it still trailed the
@@ -1570,7 +1574,9 @@ static void place_copy(Cpu *c, Slot *s, int k) {
     // invisible arrow was left where it was taken, and gave an arrow again each time the owner shot; the tester's
     // session, 2026-11-05). The pick-up goes by the actor's place: that is kept 300 m under it, as its body; it is
     // drawn from its model matrix, below.
-    if (strstr(s->mir[k].name, "Arrow")) {
+    // (A material fused to an arrow too: it could be taken off the arrow the same way, a play session.)
+    int arrowish = strstr(s->mir[k].name, "Arrow") || (s->mir[k].flags & COOP_OBJ_FUSED);
+    if (arrowish) {
         float low[3] = {s->mir[k].pos[0], s->mir[k].pos[1] - 300.0f, s->mir[k].pos[2]};
         memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_POS), low, 12);
     }
@@ -1600,7 +1606,7 @@ static void place_copy(Cpu *c, Slot *s, int k) {
     // body: [[[actor+0x228] +0x50] +0x20] +0x150 (as COOP_FORCE_MATRIX finds it). A moving body can push Links;
     // TOTK_COOP_RIDE=0 leaves copies bodiless as before.
     int ride_on(void);
-    if (strstr(s->mir[k].name, "Arrow")) {
+    if (arrowish) {
         // An arrow's copy could be taken once where it was first made, and left a "Take" prompt on the floor there
         // (a play session, 2026-11-05): its model is moved, but its body stayed. The body is kept 300 m under it,
         // out of any Link's reach, set on the body itself (main+0x25a450 (body, m), which the physics takes; the
