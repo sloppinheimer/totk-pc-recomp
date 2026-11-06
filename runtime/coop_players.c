@@ -1268,7 +1268,7 @@ static void arrow_log(uint64_t me) {
 // copy of each: made with the same name, then after COPY_WARMUP ticks its own update is off and it is put where the
 // owner's is every tick (place_copy), so it does not fly, hit or get picked up here. A copy goes when its arrow is no
 // longer reported.
-static struct { uint64_t actor; uint32_t id; int mine, seen, fused_to, shot; } my_arrows[32];   // shot: has left the bow
+static struct { uint64_t actor; uint32_t id; int mine, seen, fused_to, shot; char name[48]; } my_arrows[32];   // shot: has left the bow
 static struct { uint64_t actor; int seen; } near_actors[64];   // other actors within 3 m of this Link, last tick seen
 static uint32_t next_arrow_id = 1;
 static int arrow_tick;
@@ -1277,6 +1277,10 @@ static int arrow_tick;
 // ZR is not this Link's: each game made two arrows 0.45 m from each Link at load, and one with no other Link in yet
 // took them as its own.
 static int zr_tick = -1000;
+// The fused materials set off here (arrow_copies), for 10 s: owner net id << 32 | number, and until when (ms). (Not
+// for good: a game started again numbers its objects from 1 again.)
+static struct { uint64_t key, until_ms; } blown[16];
+static int blown_n;
 static int copies_live[COOP_MAX_PLAYERS];   // per slot, its copies in state 3 (arrow_copies): copy_of runs for every actor
 static int copy_of(uint64_t actor, Slot **out_s, int *out_k) {
     for (int i = 0; i < COOP_MAX_PLAYERS; i++)
@@ -1321,6 +1325,7 @@ static void arrow_track_fn(uint64_t a, void *arg) {
             if (!my_arrows[i].actor) {
                 my_arrows[i].actor = a, my_arrows[i].mine = 1, my_arrows[i].seen = arrow_tick, my_arrows[i].fused_to = by, my_arrows[i].shot = 0;
                 my_arrows[i].id = next_arrow_id++;
+                snprintf(my_arrows[i].name, sizeof my_arrows[i].name, "%s", nm);
                 rt_log("coop: my arrow %d is fused with %s (%u, %llx)", by, nm, my_arrows[i].id, (unsigned long long)a);
                 return;
             }
@@ -1341,6 +1346,7 @@ static void arrow_track_fn(uint64_t a, void *arg) {
             my_arrows[i].actor = a, my_arrows[i].mine = arrow_tick - zr_tick <= 90 && d2 < 9 && d2 < dco, my_arrows[i].seen = arrow_tick;
             my_arrows[i].fused_to = 0, my_arrows[i].shot = 0;
             my_arrows[i].id = my_arrows[i].mine ? next_arrow_id++ : 0;
+            snprintf(my_arrows[i].name, sizeof my_arrows[i].name, "%s", nm);
             if (my_arrows[i].mine) rt_log("coop: my arrow %u is %s (%llx)", my_arrows[i].id, nm, (unsigned long long)a);
             return;
         }
@@ -1369,12 +1375,18 @@ static int report_arrows(Cpu *c, uint64_t me, CoopObj *out) {
         if (!my_arrows[i].actor) continue;
         if (arrow_tick - my_arrows[i].seen > 30) { my_arrows[i].actor = 0; continue; }   // gone (not updated for 1 s)
         if (my_arrows[i].seen != arrow_tick) continue;
+        char anm[48];   // another actor in its memory (below)
+        if (strcmp(coop_actor_name(my_arrows[i].actor, anm, sizeof anm), my_arrows[i].name)) { my_arrows[i].actor = 0; continue; }
         if (!my_arrows[i].mine || n >= COOP_OBJS) continue;
         // Going away (state 7..11: a fused material set off where its arrow hit): not sent, so the other games hear
         // of it at once. It stays in the live list for about 0.5 s more, and the copy's blast came 1 s late
         // (TOTK_COOP_TEST_IMPACT, bow_fuse_3rd.txt).
+        // Once going away it is no longer this Link's (kept, so it is not taken for a new one while it is still in the
+        // live list), and one whose name changed is another actor in its memory (above): a fused BombFruit's number was
+        // sent again after its blast, as a new BombFruit 5 m off and then as the PouchPlayer at 0 0 0, and the other
+        // game set off a second blast there that hurt its own Link (a play session, 2026-11-06).
         int32_t ast = 0;
-        if (!coop_rd(my_arrows[i].actor + COOP_ACTOR_STATE, &ast, 4) || ast < 2 || ast > 6) continue;
+        if (!coop_rd(my_arrows[i].actor + COOP_ACTOR_STATE, &ast, 4) || ast < 2 || ast > 6) { my_arrows[i].mine = 0; continue; }
         CoopObj *o = &out[n];
         float r[9];
         if (!coop_rd(my_arrows[i].actor + COOP_ACTOR_POS, o->pos, 12) || !coop_rd(my_arrows[i].actor + COOP_ACTOR_ROT, r, 36)) continue;
@@ -1452,6 +1464,7 @@ static void arrow_copies(Cpu *c, Slot *s) {
             int coop_life_of(uint64_t a);
             void coop_set_life(uint64_t a, int v);
             s->mir[k].blowing = 1, s->mir[k].ticks = COPY_WARMUP;   // ticks: from now on, how long it has been going off
+            blown[blown_n % 16].key = (uint64_t)s->net_id << 32 | s->mir[k].id, blown[blown_n++ % 16].until_ms = plat_now_ns() / 1000000 + 10000;
             // back where it is shown first: its place and body were kept 300 m under it (place_copy), and it goes off there
             uint64_t a = s->mir[k].actor;
             _Alignas(16) float mb[12];
@@ -1493,6 +1506,10 @@ static void arrow_copies(Cpu *c, Slot *s) {
         const CoopObj *o = &s->objs_want[j];
         if (!o->id || ((o->id & COOP_OBJ_KEYED) && !key_missing(o->id))) continue;   // keyed: this game's own is moved
         if (was_taken(s->net_id, o->id)) continue;   // picked up here: the owner deletes its own
+        int went = 0;   // set off here already: not made again (one was, and went off a second time, see report_arrows)
+        for (int b = 0; b < 16 && !went; b++)
+            went = blown[b].key == ((uint64_t)s->net_id << 32 | o->id) && blown[b].until_ms > plat_now_ns() / 1000000;
+        if (went) continue;
         int k = 0;
         while (k < COOP_OBJS && !(s->mir[k].state && s->mir[k].id == o->id)) k++;
         if (k == COOP_OBJS) {
