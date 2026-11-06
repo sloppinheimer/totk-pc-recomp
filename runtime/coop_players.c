@@ -1854,6 +1854,27 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
         }
     }
     if (d2 > 400 && dco > 400) return;   // within 20 m of a Link, this one or a co-op one
+    // A beam or shockwave of this Link's (link_effect): pooled actors, reused, so not new to the key scan: taken as
+    // made by this Link whenever one is awake (state 4) within 6 m and nearer it, with a new number each time it wakes,
+    // and forgotten when it sleeps again. As moved placed objects their copies lingered and went wrong (the tester's
+    // session, 2026-11-05).
+    if (link_effect(nm)) {
+        int32_t est = 0;
+        coop_rd(a + COOP_ACTOR_STATE, &est, 4);
+        int ie = -1;
+        for (int i = 0; i < PROPS_N && ie < 0; i++) if (props[i].actor == a) ie = i;
+        if (est != 4) { if (ie >= 0) props[ie].actor = 0; return; }
+        if (ie < 0) {
+            if (d2 > 36 || d2 > dco + 1) return;   // not this Link's
+            for (int i = 0; i < PROPS_N && ie < 0; i++) if (!props[i].actor) ie = i;
+            if (ie < 0) return;
+            memset(&props[ie], 0, sizeof props[ie]);
+            props[ie].actor = a, props[ie].key = key, props[ie].made = 1, props[ie].born = prop_tick, props[ie].id = next_arrow_id++;
+            snprintf(props[ie].name, sizeof props[ie].name, "%s", nm);
+        }
+        props[ie].seen = prop_tick, props[ie].near_me = 1;
+        return;
+    }
     int e = -1, free = -1;
     for (int i = 0; i < PROPS_N && e < 0; i++) {
         if (props[i].actor == a) e = i;
@@ -1926,7 +1947,7 @@ static int report_props(uint64_t me, CoopObj *out, int max) {
         int ck;
         uint32_t id = 0;
         if (props[e].made) {
-            if (prop_tick - props[e].born < 10 || prop_skip(props[e].name)) continue;   // a copy made here is known by now; gear worn again
+            if ((prop_tick - props[e].born < 10 && !link_effect(props[e].name)) || prop_skip(props[e].name)) continue;   // a copy made here is known by now; gear worn again (a beam at once: it is short)
             if (copy_of(props[e].actor, &cs, &ck)) { props[e].made = 0; continue; }
             id = props[e].id;
         } else if (props[e].touched)
@@ -2058,7 +2079,7 @@ static void dwatch_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
     float p[3];
     Slot *cs;
     int ck;
-    if (prop_skip(nm) || !strncmp(nm, "Parasail", 8) || copy_of(a, &cs, &ck) || coop_is_resident(a) || old_item(a) ||
+    if (prop_skip(nm) || link_effect(nm) || !strncmp(nm, "Parasail", 8) || copy_of(a, &cs, &ck) || coop_is_resident(a) || old_item(a) ||
         !coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
     if ((p[0] - me[0]) * (p[0] - me[0]) + (p[1] - me[1]) * (p[1] - me[1]) + (p[2] - me[2]) * (p[2] - me[2]) > 400) return;
     for (int i = 0; i < 32; i++) if (my_arrows[i].actor == a) return;
