@@ -498,21 +498,22 @@ int coop_players_gear(Cpu *c, uint64_t addr) {
 }
 
 static uint64_t gear_owner(uint64_t eq, uint64_t me) {
-    // (the cached owner only while that EquipmentUser still points to it: a save load makes new ones, and one can come
-    // at an old one's address; code review, 2026-11-06)
-    for (int i = 0; i < 32; i++)
-        if (eq_owner[i].eq == eq) {
-            if (eq_points_to(eq, eq_owner[i].actor)) return eq_owner[i].actor;
-            eq_owner[i].eq = eq_owner[i].actor = 0;
-        }
+    // (The cached owner is kept: checked again whenever the EquipmentUser still pointed to it, as a code review asked,
+    // a co-op Link's one that did not for a moment was looked for again and found this PC's Link in it first (its
+    // words hold a pointer to it too), and this PC's gear was read from the co-op Link's: each game took the other
+    // player's weapon and fused material for its own; a play session, 2026-11-06. A gone EquipmentUser is dropped
+    // where its Player goes, coop_players_tick.)
+    for (int i = 0; i < 32; i++) if (eq_owner[i].eq == eq) return eq_owner[i].actor;
     uint64_t words[0x400 / 8];
     if (!coop_rd(eq, words, sizeof words)) return 0;
-    uint64_t found = 0;
+    // A co-op Link's before this PC's: a co-op Link's EquipmentUser holds a pointer to this PC's Link as well.
+    uint64_t found = 0, found_me = 0;
     for (int w = 0; w < 0x400 / 8 && !found; w++) {
-        if (words[w] == me) found = me;
+        if (words[w] == me) found_me = me;
         for (int i = 0; i < COOP_MAX_PLAYERS && !found; i++)
             if (slots[i].actor && words[w] == slots[i].actor) found = slots[i].actor;
     }
+    if (!found) found = found_me;
     if (!found) return 0;
     for (int i = 0; i < 32; i++)
         if (!eq_owner[i].eq || eq_owner[i].actor == found) {
@@ -2187,6 +2188,10 @@ static int report_props(uint64_t me, CoopObj *out, int max) {
         Slot *cs;
         int ck;
         uint32_t id = 0;
+        // (prop_skip for a moved one too: a world wheel fused to a shield, sent as moved before it was known fused,
+        // went on being sent, and the other game dragged its own full-size wheel along with the proxy; the tester's
+        // session, 2026-11-06)
+        if (!props[e].made && prop_skip(props[e].name)) { props[e].touched = 0; continue; }
         if (props[e].made) {
             if ((prop_tick - props[e].born < 10 && !is_beam(props[e].name)) || prop_skip(props[e].name)) continue;   // a copy made here is known by now; gear worn again (the beam at once: it is short)
             if (copy_of(props[e].actor, &cs, &ck)) { props[e].made = 0; continue; }
@@ -4027,6 +4032,71 @@ static int this_paused;   // this game sits in a menu (the clock and this Link b
 // it sends (at their real place) and the copies it shows of others', the placed objects it holds at another game's
 // report, the enemies near any Link, the time of day and weather. The script pairs the two games' lines by time and
 // lists what does not match. TOTK_COOP_AUDIT=0: none.
+// The material fused to this Link's shield. A weapon is made again with its material when one is fused (the weapon
+// create's attachment, coop_players_gear); a shield is not: the material is attached to the shield there is, and its
+// create says nothing (TOTK_COOP_TEST_EQLOG, a play session, 2026-11-06: a wheel and a plank fused to a shield went
+// to the other game as loose objects). Taken here as the actor that stays within 0.8 m of the shield for 5 looks in a
+// row (every 10 ticks), not a Link's, a weapon or armor; none for 3 looks, the shield has none.
+typedef struct { float at[3]; uint64_t best; float best_d2; uint64_t shield; } ShieldScan;
+static void shield_fuse_fn(uint64_t a, void *arg) {
+    ShieldScan *ss = arg;
+    if (a == ss->shield) return;
+    float p[3];
+    if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+    float d2 = (p[0] - ss->at[0]) * (p[0] - ss->at[0]) + (p[1] - ss->at[1]) * (p[1] - ss->at[1]) + (p[2] - ss->at[2]) * (p[2] - ss->at[2]);
+    if (d2 > 0.64f || d2 >= ss->best_d2) return;
+    char nm[48];
+    coop_actor_name(a, nm, sizeof nm);
+    if (!nm[0] || !strncmp(nm, "Player", 6) || !strncmp(nm, "Weapon_", 7) || !strncmp(nm, "Armor_", 6) || !strncmp(nm, "Accessory_", 10) ||
+        strstr(nm, "Arrow") || !strncmp(nm, "Parasail", 8) || !strncmp(nm, "Obj_OneTouch", 12))   // (the fuse's own link)
+        return;
+    Slot *cs;
+    int ck;
+    if (copy_of(a, &cs, &ck) || is_driven(a)) return;   // (not a copy, or this game's own one moved to another's report)
+    ss->best = a, ss->best_d2 = d2;
+}
+// A placed object fused to this Link's shield (a world wheel picked up and fused) is gone from the world here, but
+// stays an actor, so no game was told: the other game kept its own lying where it was (a play session,
+// 2026-11-06). Told as destroyed (an OBJS packet, header word 3, as destroy_watch tells), by its key.
+static void fused_from_world(uint64_t a) {
+    for (int i = 0; i < 512; i++)
+        if (dwatch[i].actor == a) {
+            CoopObj o;
+            memset(&o, 0, sizeof o);
+            o.id = COOP_OBJ_KEYED | dwatch[i].key;
+            snprintf(o.name, sizeof o.name, "%s", dwatch[i].name);
+            coop_rd(a + COOP_ACTOR_POS, o.pos, 12);
+            uint8_t pk[4 + sizeof(CoopObj)];
+            uint16_t h[2] = {1, 3};
+            memcpy(pk, h, 4), memcpy(pk + 4, &o, sizeof o);
+            coop_net_objs_send(pk, (int)sizeof pk);
+            rt_log("coop: %s (key %08x) was fused to my shield; the others are told it is gone", o.name, o.id & ~COOP_OBJ_KEYED);
+            dwatch[i].actor = 0;   // (not told again as it goes)
+            return;
+        }
+}
+static void shield_fuse_tick(uint64_t me, uint64_t my_eq) {
+    static int t, same, none;
+    static uint64_t last;
+    if (++t % 10 || !my_eq || !eq_points_to(my_eq, me)) return;
+    uint64_t shield = eq_item(my_eq, 2);
+    ShieldScan ss = {.best_d2 = 1e9f, .shield = shield};
+    if (!shield || !coop_rd(shield + COOP_ACTOR_POS, ss.at, 12)) { last = 0, same = 0; return; }
+    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
+    coop_actors_live(shield_fuse_fn, &ss);
+    if (ss.best && ss.best == last) same++;
+    else same = ss.best ? 1 : 0;
+    last = ss.best;
+    none = ss.best ? 0 : none + 1;
+    char nm[48] = "";
+    if (same >= 5) coop_actor_name(ss.best, nm, sizeof nm);
+    else if (none < 3) return;   // not sure yet either way
+    if (strcmp(nm, my_fuse[2])) {
+        rt_log("coop: my shield (%s) is fused with %s", my_gear[2], nm[0] ? nm : "nothing");
+        snprintf(my_fuse[2], sizeof my_fuse[2], "%s", nm);
+        if (nm[0]) fused_from_world(ss.best);
+    }
+}
 static void audit_vec(FILE *f, const char *key, const float *p) { fprintf(f, ",\"%s\":[%.3f,%.3f,%.3f]", key, p[0], p[1], p[2]); }
 static void audit_str(FILE *f, const char *s) {
     fputc('"', f);
@@ -4174,6 +4244,10 @@ void coop_players_tick(Cpu *c, int numpad3) {
         // (none when unequipped; copied as a string: 32 bytes copied from "" sent what followed it as the name, code
         // review, 2026-11-06)
         for (int k = 0; k < 3; k++) snprintf(st.fuse[k], sizeof st.fuse[k], "%s", strcmp(my_gear[k], GEAR_NONE) ? my_fuse[k] : "");
+        // A Zonai device fused to the shield is not sent: the proxy's shield made with it as its material showed the
+        // device at its full size, far larger than on the owner's shield (a play session, 2026-11-06; how the game
+        // sizes it is not known). Left out of world objects all the same (prop_skip), so no loose copy either.
+        if (!strncmp(st.fuse[2], "SpObj_", 6)) st.fuse[2][0] = 0;
         match_my_eq(me);
         uint64_t my_eq = eq_of_actor(me);   // weapon, bow, shield in hand (only on its own EquipmentUser: see report_arrows)
         if (my_eq && !eq_points_to(my_eq, me)) my_eq = 0;
@@ -4181,6 +4255,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         for (int k = 0; my_eq && k < 3; k++)
             if (coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, my_eq, hand_of[k], 0, 0) & 1) st.flags |= 1u << (8 + k);
         shield_send(me, my_eq, &st);
+        shield_fuse_tick(me, my_eq);
         audit_tick(c, me, cur, n_objs, &st);
         {   // test: this Link's life when it changes, with each proxy's and whether it runs its own update then (P1's
             // hearts went up and down while P2 swung, a play session, 2026-11-06)
