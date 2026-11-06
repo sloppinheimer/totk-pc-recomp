@@ -1798,15 +1798,15 @@ static int copy_pending_near(const float *p) {
 // proxy let go of it later, it lay on the ground, was sent as a world object and could be picked up in the owner's
 // game (a play session, 2026-11-05: "holds Weapon_Shield_030, owner -" four times, then "I move Weapon_Shield_030").
 // It is watched for 30 s; once it is out of the proxy's gear it is deleted, and it is never sent meanwhile.
-static struct { uint64_t actor, eq; int k, until; } old_items[16];
+static struct { uint64_t actor, eq; int k, until, since; } old_items[16];
 static void drop_old_item(Cpu *c, uint64_t eq, int k, uint64_t old) {
     (void)c;
     int f = 0;
     for (int i = 0; i < 16; i++) {
-        if (old_items[i].actor == old) { old_items[i].until = prop_tick + 900; return; }
+        if (old_items[i].actor == old) { old_items[i].until = prop_tick + 900; return; }   // (since stays: the first time)
         if (old_items[i].until < old_items[f].until) f = i;
     }
-    old_items[f].actor = old, old_items[f].eq = eq, old_items[f].k = k, old_items[f].until = prop_tick + 900;
+    old_items[f].actor = old, old_items[f].eq = eq, old_items[f].k = k, old_items[f].until = prop_tick + 900, old_items[f].since = prop_tick;
 }
 static int old_item(uint64_t a) {
     for (int i = 0; i < 16; i++) if (old_items[i].actor == a && old_items[i].until >= prop_tick) return 1;
@@ -1817,9 +1817,12 @@ static void old_items_tick(Cpu *c) {
         if (!old_items[i].actor || old_items[i].until < prop_tick) continue;
         int32_t st = 0;
         if (!coop_rd(old_items[i].actor + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6) { old_items[i].actor = 0; continue; }
-        if (eq_item(old_items[i].eq, old_items[i].k) == old_items[i].actor) continue;   // still the proxy's
+        // Still the proxy's: making its gear again with no item does not take it (load_3rd.txt: four tries, the
+        // shield stayed in hand). After 2 s it is deleted all the same, as a broken weapon is, and the gear lets go.
+        int held = eq_item(old_items[i].eq, old_items[i].k) == old_items[i].actor;
+        if (held && prop_tick - old_items[i].since < 60) continue;
         char nm[48];
-        rt_log("coop: proxy: its old %s, out of its gear, is deleted", coop_actor_name(old_items[i].actor, nm, sizeof nm));
+        rt_log("coop: proxy: its old %s, %s, is deleted", coop_actor_name(old_items[i].actor, nm, sizeof nm), held ? "still in its gear" : "out of its gear");
         coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, old_items[i].actor, COOP_DELETE_REASON, 0, 0);
         old_items[i].actor = 0;
     }
