@@ -1294,7 +1294,9 @@ static void arrow_track_fn(uint64_t a, void *arg) {
         if (d2 >= 9) return;
         int free = -1;
         for (int i = 0; i < 64; i++) {
-            if (near_actors[i].actor == a) { near_actors[i].seen = arrow_tick; return; }
+            // (a stale entry is not this actor: a new BombFruit got the address of one that had gone 2 s before and
+            // was not taken for the next arrow's material, bow_fuse_3rd.txt)
+            if (near_actors[i].actor == a && arrow_tick - near_actors[i].seen <= 30) { near_actors[i].seen = arrow_tick; return; }
             if (free < 0 && (!near_actors[i].actor || arrow_tick - near_actors[i].seen > 30)) free = i;
         }
         if (free >= 0) near_actors[free].actor = a, near_actors[free].seen = arrow_tick;
@@ -1356,6 +1358,11 @@ static int report_arrows(Cpu *c, uint64_t me, CoopObj *out) {
         if (arrow_tick - my_arrows[i].seen > 30) { my_arrows[i].actor = 0; continue; }   // gone (not updated for 1 s)
         if (my_arrows[i].seen != arrow_tick) continue;
         if (!my_arrows[i].mine || n >= COOP_OBJS) continue;
+        // Going away (state 7..11: a fused material set off where its arrow hit): not sent, so the other games hear
+        // of it at once. It stays in the live list for about 0.5 s more, and the copy's blast came 1 s late
+        // (TOTK_COOP_TEST_IMPACT, bow_fuse_3rd.txt).
+        int32_t ast = 0;
+        if (!coop_rd(my_arrows[i].actor + COOP_ACTOR_STATE, &ast, 4) || ast < 2 || ast > 6) continue;
         CoopObj *o = &out[n];
         float r[9];
         if (!coop_rd(my_arrows[i].actor + COOP_ACTOR_POS, o->pos, 12) || !coop_rd(my_arrows[i].actor + COOP_ACTOR_ROT, r, 36)) continue;
@@ -1446,8 +1453,9 @@ static void arrow_copies(Cpu *c, Slot *s) {
             int life = coop_life_of(s->mir[k].actor);
             coop_set_life(s->mir[k].actor, 0);
             static int said;
-            if (said++ < 20) rt_log("coop: slot %d: the fused %s (%u) went off in its owner's game: set off here (life %d)", (int)(s - slots),
-                                    s->mir[k].name, s->mir[k].id, life);
+            if (said++ < 20) rt_log("coop: slot %d: %.2f s: the fused %s (%u) went off in its owner's game: set off here (life %d, at %.2f %.2f %.2f; wall %llu ms)",
+                                    (int)(s - slots), frame_step_world_us() / 1e6, s->mir[k].name, s->mir[k].id, life, s->mir[k].pos[0],
+                                    s->mir[k].pos[1], s->mir[k].pos[2], (unsigned long long)(plat_now_ns() / 1000000));
             continue;
         }
         if (s->mir[k].blowing && s->mir[k].state == 3) {   // going off: left to do it, then let go (3 s)
@@ -2352,7 +2360,8 @@ static void impact_test(void) {
         char nm[48];
         int gone = !coop_rd(w[k].actor + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || strcmp(coop_actor_name(w[k].actor, nm, sizeof nm), w[k].name);
         if (!gone) { coop_rd(w[k].actor + COOP_ACTOR_POS, w[k].last, 12); continue; }
-        rt_log("coop: test: impact %.2f s: the fused %s went (state %d) at %.2f %.2f %.2f", now / 1e6, w[k].name, st, w[k].last[0], w[k].last[1], w[k].last[2]);
+        rt_log("coop: test: impact %.2f s: the fused %s went (state %d) at %.2f %.2f %.2f; wall %llu ms", now / 1e6, w[k].name, st, w[k].last[0],
+               w[k].last[1], w[k].last[2], (unsigned long long)(plat_now_ns() / 1000000));
         memset(&is, 0, sizeof is);
         memcpy(is.at, w[k].last, 12);
         is.known[is.nk++] = w[k].actor;
