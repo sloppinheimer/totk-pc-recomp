@@ -115,6 +115,11 @@ right in the tester's own two-pad session.
   proxy swing in the other games, so a hit turns the copy on there too (a fan in the pair test). Effects are the
   copies' own (not yet looked at on screen). Not covered: devices turned on other ways (arrows, a steering stick,
   contact for rockets), the copy drawing the other player's battery, the swing hitting other things there.
+- **Shield surf** (protocol 13): the surfing owner's shield is under its feet and out of hand; the frozen proxy kept
+  it on its back. The owner sends where its shield is (in its own frame) while it is out of hand and below 0.5 m;
+  the other games put the proxy's shield there after its model push, with the shield's own update and body held
+  (shield_place). surf.txt pair test (TOTK_COOP_TEST_SURFLOG=1): the proxy's shield matches the owner's sample for
+  sample through the surf (-0.15 0.15 0.00 at the feet) and is back on its back after.
 - Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
 
 ## Plan

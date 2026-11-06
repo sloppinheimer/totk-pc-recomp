@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define COOP_MAX_PLAYERS 8
-#define COOP_NET_VERSION 12   // packet header version: games and relays of another version ignore each other
+#define COOP_NET_VERSION 13   // packet header version: games and relays of another version ignore each other
 
 // One player's state, sent about 30 times a second. Positions and directions are world space; the sticks are as the
 // player's own camera saw them, with the camera's horizontal forward and right so a receiver can turn them into its
@@ -25,7 +25,8 @@ typedef struct {
 } CoopObj;
 #define COOP_OBJ_AUTOBUILT 1
 typedef struct {
-    uint32_t seq, flags;              // flags bits 8..10: weapon, bow, shield in hand (puppet mode draws them)
+    uint32_t seq, flags;              // flags bits 8..10: weapon, bow, shield in hand (puppet mode draws them);
+                                      // bit 11: the shield is placed as shield_pos / shield_q say (a shield surf)
     float pos[3], rot[9];
     float cam_fwd[2], cam_right[2];   // x, z
     uint64_t buttons;                 // Switch buttons (input_map.h B_*)
@@ -39,8 +40,10 @@ typedef struct {
                                       // create's 7th argument, e.g. AsbObj_RockParts_C_S_01)
     uint32_t ride_id;                 // riding: that object's id as its owner sends it (CoopObj.id)
     float ride_off[3];                // riding: where this Link is in the object's frame
+    float shield_pos[3], shield_q[4]; // with flags bit 11: the shield in this Link's frame (rotation as x y z w)
+    uint32_t pad2;
 } NetState;
-_Static_assert(sizeof(NetState) == 416, "NetState wire size");
+_Static_assert(sizeof(NetState) == 448, "NetState wire size");
 #define COOP_GEAR_SLOTS 6
 extern const int coop_gear_slot[COOP_GEAR_SLOTS];   // the EquipmentUser slots they are (coop_players.c)
 

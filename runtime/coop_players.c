@@ -69,6 +69,9 @@ typedef struct {
         int ticks;
     } mir[COOP_OBJS];
     _Alignas(16) uint8_t att_str[3][0x60];     // the material names handed to the weapon creates
+    int shield_placed;                 // the owner's shield is off its back and out of hand (a shield surf):
+    uint64_t shield_actor;             // the proxy's shield while shield_place puts it there (its own update skipped)
+    float shield_local[3], shield_rot[9];   // where, in the owner's frame (NetState flags bit 11)
     int8_t dye_want[COOP_GEAR_SLOTS], dye_have[COOP_GEAR_SLOTS];   // the armor's dye colour, the same way (-1 none)
     int out_want, out_have;            // puppet mode: bits 0..2 weapon, bow, shield in the owner's hands; as last made
     float phys_pos[3];                 // puppet mode: where its physics step put it (before placement), for snap
@@ -513,7 +516,7 @@ static Slot *slot_new(int source, int net_id) {
             memset(s->fuse_want, 0, sizeof s->fuse_want), memset(s->fuse_have, 0, sizeof s->fuse_have);
             memset(s->objs_want, 0, sizeof s->objs_want), memset(s->mir, 0, sizeof s->mir);
             memset(s->dye_want, -1, sizeof s->dye_want), memset(s->dye_have, -1, sizeof s->dye_have);
-            s->out_want = 0, s->out_have = -1, s->have_phys = 0, s->top_last = -1e9f, s->have_body = 0;
+            s->out_want = 0, s->out_have = -1, s->have_phys = 0, s->top_last = -1e9f, s->have_body = 0, s->shield_actor = 0, s->shield_placed = 0;
             s->live_ticks = 0, s->px_have = 0, s->thaw = 0;
             s->state = WANTED;
             rt_log("coop: player slot %d for %s %d", i, source == SRC_NET ? "remote player" : "local pad", net_id);
@@ -610,6 +613,7 @@ static int proxied(const Slot *s) {
            coop_puppet_pose_obj(body_skeleton(s->actor));
 }
 static int ride_place(const Slot *s, float out[3]);   // the owner rides an object: where, here
+static void shield_place(Cpu *c, Slot *s);
 static void proxy_drive(Cpu *c, Slot *s) {
     uint64_t actor = s->actor;
     float m[12], pos[3], rot[9];
@@ -635,6 +639,9 @@ static void proxy_drive(Cpu *c, Slot *s) {
     int coop_proxy_put_records(uint64_t skel);   // coop_world.c
     if (sk && !no_pose && !coop_proxy_put_records(sk) && pose) coop_guest_call(c, MOD_MAIN_BASE + PROXY_POSE_WRITER, pose, sk, 0, 0);
     if (model) coop_guest_call(c, MOD_MAIN_BASE + PROXY_MODEL_PUSH, model, 0, 0, 0);
+    // A shield surf: the shield where the owner's is. After the push, which puts items on their body bones (on the
+    // back for a shield out of hand): put there from the tick, it was back there every other frame (surf.txt).
+    shield_place(c, s);
     // Jump watch: its body top (model space, skeleton +0x20) and its world height, frame to frame; standing = the
     // owner's reported velocity under 5 cm/s with no stick or buttons held. Summary every 600 frames, each standing jump over 1 cm logged.
     float root_y = 0, top = body_top_root(actor, &root_y);
@@ -668,8 +675,14 @@ static void proxy_drive(Cpu *c, Slot *s) {
 static void keep_player_eq(uint64_t me, uint64_t my_eq);
 static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc);
 static void place_copy(Cpu *c, Slot *s, int k);
+// The proxy's shield during a shield surf runs none of its own update: put on its body bone by it, it was back on
+// the proxy's back each frame (surf.txt, 2026-11-05). shield_place puts it where the owner's is instead.
+static int surf_shield(uint64_t actor) {
+    for (int i = 0; actor && i < COOP_MAX_PLAYERS; i++) if (slots[i].actor && slots[i].shield_actor == actor) return 1;
+    return 0;
+}
 int coop_players_phase(Cpu *c, uint64_t addr) {
-    if (!inside && copy_place(c, c->x[0], addr, 0)) return 1;
+    if (!inside && (copy_place(c, c->x[0], addr, 0) || surf_shield(c->x[0]))) return 1;
     if (inside || !slot_of_actor(c->x[0])) return 0;
     {   // before any co-op Link's update: the save-load rebuild runs in one (keep_player_eq)
         uint64_t me = coop_player_actor();
@@ -873,7 +886,7 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
 }
 int coop_players_calc(Cpu *c, uint64_t addr) {
     Slot *s;
-    if (!inside && copy_place(c, c->x[0], addr, 1)) return 1;
+    if (!inside && (copy_place(c, c->x[0], addr, 1) || surf_shield(c->x[0]))) return 1;
     if (inside || !(s = slot_of_actor(c->x[0]))) return 0;
     {
         uint64_t me = coop_player_actor();
@@ -2419,6 +2432,90 @@ static void zd_fn(uint64_t a, void *arg) {
         (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]) > 625) return;   // 25 m
     found[1] = a;
 }
+// An EquipmentUser's item of a synced slot kind (0 weapon, 1 bow, 2 shield): its actor, or 0.
+static uint64_t eq_item(uint64_t eq, int kind) {
+    for (int row = 0; eq && row < 24; row++) {
+        uint64_t ref = coop_rd_ptr(eq + GEAR_TABLE + 0x18 * (uint64_t)row), a = ref ? coop_rd_ptr(ref + 0x40) : 0;
+        char nm[32];
+        if (a && gear_kind(coop_actor_name(a, nm, sizeof nm)) == kind) return a;
+    }
+    return 0;
+}
+// Where an item is relative to a Link, in the Link's own frame (x right, y up, z forward, as its rotation rows give
+// them): world = rot * local.
+static int item_local(uint64_t link, uint64_t item, float local[3]) {
+    float lp[3], r[9], ip[3];
+    if (!coop_rd(link + COOP_ACTOR_POS, lp, 12) || !coop_rd(link + COOP_ACTOR_ROT, r, 36) || !coop_rd(item + COOP_ACTOR_POS, ip, 12)) return 0;
+    float d[3] = {ip[0] - lp[0], ip[1] - lp[1], ip[2] - lp[2]};
+    for (int j = 0; j < 3; j++) local[j] = r[j] * d[0] + r[3 + j] * d[1] + r[6 + j] * d[2];
+    return 1;
+}
+// Shield surf. The surfing Link's shield is under its feet, out of hand (surf.txt: 0.14 m up in the Link's frame,
+// against 1.2 m on its back; main+0x3e322c says not in hand), and the frozen proxy kept it on its back (the tester's
+// session, 2026-11-05). The owner sends where its shield is whenever it is out of hand and lower than 0.5 m in its
+// frame (NetState flags bit 11); the other games put the proxy's shield there each frame, after the proxy's model
+// push, with the shield's own update off (shield_place, surf_shield).
+static void shield_send(uint64_t me, uint64_t eq, NetState *st) {
+    uint64_t sh = eq_item(eq, 2);
+    float l[3], r[9], sr[9], m[9];
+    if (!sh || (st->flags >> 10 & 1) || !item_local(me, sh, l) || l[1] > 0.5f) return;
+    if (!coop_rd(me + COOP_ACTOR_ROT, r, 36) || !coop_rd(sh + COOP_ACTOR_ROT, sr, 36)) return;
+    for (int i = 0; i < 3; i++)   // the shield's rotation in the Link's frame: R^T S
+        for (int j = 0; j < 3; j++) m[i * 3 + j] = r[0 * 3 + i] * sr[0 * 3 + j] + r[1 * 3 + i] * sr[1 * 3 + j] + r[2 * 3 + i] * sr[2 * 3 + j];
+    st->flags |= 1u << 11;
+    memcpy(st->shield_pos, l, 12);
+    mat_quat(m, st->shield_q);
+}
+static void shield_place(Cpu *c, Slot *s) {
+    s->shield_actor = 0;
+    if (!s->shield_placed || !s->actor) return;
+    uint64_t sh = eq_item(eq_of_actor(s->actor), 2);
+    float p[3], r[9], w[9], m[12];
+    if (!sh || !coop_rd(s->actor + COOP_ACTOR_POS, p, 12) || !coop_rd(s->actor + COOP_ACTOR_ROT, r, 36)) return;
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) w[i * 3 + j] = r[i * 3 + 0] * s->shield_rot[0 * 3 + j] + r[i * 3 + 1] * s->shield_rot[1 * 3 + j] + r[i * 3 + 2] * s->shield_rot[2 * 3 + j];
+        float t = p[i] + r[i * 3 + 0] * s->shield_local[0] + r[i * 3 + 1] * s->shield_local[1] + r[i * 3 + 2] * s->shield_local[2];
+        for (int j = 0; j < 3; j++) m[i * 4 + j] = w[i * 3 + j];
+        m[i * 4 + 3] = t;
+    }
+    float t3[3] = {m[3], m[7], m[11]};
+    s->shield_actor = sh;
+    memcpy((void *)(uintptr_t)(sh + COOP_ACTOR_POS), t3, 12);
+    memcpy((void *)(uintptr_t)(sh + COOP_ACTOR_ROT), w, 36);
+    uint64_t model = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(sh + 0x228) + 0x8) + 0x28);
+    if (model) {
+        memcpy((void *)(uintptr_t)(model + 0x1f8), m, sizeof m);
+        ST8(model + 0x240, LD8(model + 0x240) | 1);
+        coop_guest_call(c, MOD_MAIN_BASE + PROXY_MODEL_PUSH, model, 0, 0, 0);
+    }
+    // its physics body too: it wrote the actor's place back to where the body was (surf.txt, 2026-11-05)
+    coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, sh, (uint64_t)(uintptr_t)m, 0, 0);
+}
+// Test (TOTK_COOP_TEST_SURFLOG=1): every 15 ticks, for this Link and each co-op Link here, where its shield is
+// (relative to it), whether the shield is in hand, and its EquipmentUser's per-slot bytes +0x4620..+0x4627. For the
+// shield surf, which the proxy showed with the shield on its back (a play session, 2026-11-05).
+static void surf_log(Cpu *c, uint64_t me) {
+    static int on = -1, t;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_SURFLOG") != NULL;
+    if (!on || ++t % 15) return;
+    for (int i = -1; i < COOP_MAX_PLAYERS; i++) {
+        uint64_t link = i < 0 ? me : slots[i].actor, eq = link ? eq_of_actor(link) : 0, sh = eq_item(eq, 2);
+        float l[3];
+        uint8_t b[8] = {0};
+        if (!sh || !item_local(link, sh, l)) continue;
+        coop_rd(eq + 0x4620, b, 8);
+        float mt[12] = {0}, ml[3] = {0}, lp[3], lr[9];
+        uint64_t model = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(sh + 0x228) + 0x8) + 0x28);
+        if (model && coop_rd(model + 0x1f8, mt, sizeof mt) && coop_rd(link + COOP_ACTOR_POS, lp, 12) && coop_rd(link + COOP_ACTOR_ROT, lr, 36)) {
+            float d[3] = {mt[3] - lp[0], mt[7] - lp[1], mt[11] - lp[2]};
+            for (int j = 0; j < 3; j++) ml[j] = lr[j] * d[0] + lr[3 + j] * d[1] + lr[6 + j] * d[2];
+        }
+        int hand = (int)(coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, eq, 4, 0, 0) & 1);
+        rt_log("coop: test: surf %.2f s %s: shield at %.2f %.2f %.2f (model %.2f %.2f %.2f), in hand %d, slots %02x %02x %02x %02x %02x %02x %02x %02x",
+               frame_step_world_us() / 1e6, i < 0 ? "this Link" : "co-op Link", l[0], l[1], l[2], ml[0], ml[1], ml[2], hand, b[0], b[1], b[2], b[3],
+               b[4], b[5], b[6], b[7]);
+    }
+}
 static void zonai_dump(uint64_t me) {
     static int on = -1, t;
     static FILE *f;
@@ -2818,6 +2915,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         static const uint64_t hand_of[3] = {0, 3, 4};
         for (int k = 0; my_eq && k < 3; k++)
             if (coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, my_eq, hand_of[k], 0, 0) & 1) st.flags |= 1u << (8 + k);
+        shield_send(me, my_eq, &st);
         // TOTK_COOP_FAKE_AT=<s>: the fakes below apply only from that world time (a change during the session)
         const char *fat = cfg_get("TOTK_COOP_FAKE_AT");
         int fakes = !fat || frame_step_world_us() / 1e6 >= atof(fat);
@@ -2876,6 +2974,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
     zonai_test(c, me);
     zonai_log(me);
     zonai_dump(me);
+    surf_log(c, me);
     fanset_test(c, me);
     fanstate_log(me);
     fanwatch(me);
@@ -2949,6 +3048,8 @@ void coop_players_tick(Cpu *c, int numpad3) {
         }
         memcpy(s->want_pos, st.pos, 12), memcpy(s->want_rot, st.rot, 36), s->have_want = 1;
         s->ride_owner = st.ride_owner, s->ride_id = st.ride_id, memcpy(s->ride_off, st.ride_off, 12);
+        s->shield_placed = (st.flags >> 11) & 1;
+        if (s->shield_placed) memcpy(s->shield_local, st.shield_pos, 12), quat_mat(st.shield_q, s->shield_rot);
         for (int k = 0; k < COOP_GEAR_SLOTS; k++) {
             memcpy(s->gear_want[k], st.gear[k], 32);
             s->gear_want[k][31] = 0;
