@@ -1681,6 +1681,37 @@ static void as_play_test(Cpu *c, uint64_t me) {
     rt_log("coop: test: asplay %s slot %d on the co-op Link's manager %llx (this Link's %llx at comp +%#x +%#x +%#x): returned %llu",
            nm, slot, (unsigned long long)x, (unsigned long long)mgr, comp, off, off2, (unsigned long long)r);
 }
+// The sync audit (coop_players.c, audit_tick): the enemies this game updates within SYNC_M of any Link, as a JSON
+// array of key, place, life and whether it is dead (life 0 or going away).
+typedef struct { FILE *f; float links[COOP_MAX_PLAYERS + 1][3]; int nl, n; } AuditScan;
+static void audit_one(int cell, uint64_t a, void *arg) {
+    AuditScan *as = arg;
+    char nm[64];
+    uint32_t key = enemy_of(cell, a, nm, sizeof nm);
+    float p[3];
+    int32_t st = 0;
+    if (!key || !coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(a + COOP_ACTOR_STATE, &st, 4)) return;
+    int near = 0;
+    for (int i = 0; i < as->nl && !near; i++) {
+        float dx = p[0] - as->links[i][0], dz = p[2] - as->links[i][2];
+        near = dx * dx + dz * dz < SYNC_M * SYNC_M;
+    }
+    if (!near) return;
+    int life = life_of(a);
+    fprintf(as->f, "%s{\"key\":%u,\"name\":\"%s\",\"life\":%d,\"dead\":%d,\"dup\":%d,\"p\":[%.3f,%.3f,%.3f]}", as->n++ ? "," : "", key, nm,
+            life, life == 0 || st > 6, dup_key(key), p[0], p[1], p[2]);
+}
+void coop_audit_enemies(FILE *f, uint64_t me) {
+    static AuditScan as;
+    as.f = f, as.n = 0;
+    as.nl = coop_player_positions(as.links, COOP_MAX_PLAYERS);
+    if (me && coop_rd(me + COOP_ACTOR_POS, as.links[as.nl], 12)) as.nl++;
+    dup_count();
+    fputc('[', f);
+    each_live(audit_one, &as);
+    fputc(']', f);
+}
+
 void coop_world_tick(Cpu *c, uint64_t me) {
     {   // The enemy tables start again with a session, and when this Link becomes another actor (a save loaded): kept,
         // enemies made again at the same place within 5 s were still reported dead and died at once, and old lives

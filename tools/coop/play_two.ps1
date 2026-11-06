@@ -64,3 +64,9 @@ while (-not ($games | Where-Object { $_.HasExited })) { Start-Sleep 1 }
 $games | Where-Object { -not $_.HasExited } | Stop-Process -Force
 Stop-Process -Id $relay.Id -Force -ErrorAction SilentlyContinue
 "Session ended."
+# The sync audit of the session: what the two games showed differently (tools/coop/sync_audit.py), kept in
+# build/audit_report.txt and shown here.
+$report = Join-Path $root 'build/audit_report.txt'
+& (Join-Path $root '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'sync_audit.py') (Join-Path $a 'logs/audit.jsonl') (Join-Path $b 'logs/audit.jsonl') |
+    Tee-Object -FilePath $report
+"(kept in $report)"

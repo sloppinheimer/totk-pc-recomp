@@ -1014,18 +1014,11 @@ int coop_hook(Cpu *c, uint64_t addr) {
             static _Atomic int said;
             if (atomic_fetch_add(&said, 1) < 8) rt_log("coop: a co-op Link's damage %u not taken here", 0x3fffffffu - after);
         }
-        // Put back: life lifted for the call and taken off it is not taken; healed above it, the heal is kept. Left at
-        // its most life, it was the clamp of the lifted value: back to before. Set to another value far below the lift,
-        // the game set it outright (a revival, a new most life): that is kept (put back to before, it was lost; code
-        // review, 2026-11-06).
-        uint32_t max = 0;
-        uint64_t pm = rd_ptr(c->x[0] + 0x1838);
-        int have_max = pm && rd(pm + 8, &max, 4);
-        uint32_t put = after > 0x3fffffffu ? before + (after - 0x3fffffffu)
-                     : after > 0x3fff0000u ? before
-                     : (have_max && after == max) ? before
-                     : after;
-        ST32(p + 8, put);
+        // Put back: life lifted for the call and taken off it is not taken; healed above it, the heal is kept; any
+        // other value (the clamp of the lifted value to most life, every update) is the lift's, not the game's, and is
+        // put back. (Keeping a value set outright, unless it was the most life, kept the clamp: the most life could not
+        // be read in here, and the proxy went to full life in each update it ran; the sync audit, 2026-11-06.)
+        ST32(p + 8, after > 0x3fffffffu ? before + (after - 0x3fffffffu) : before);
         return 1;
     }
     // main+0x207ea50 (instant tips manager, tip id) queues an instant tip ("To shield surf...") and records the action

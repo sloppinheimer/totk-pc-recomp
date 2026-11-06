@@ -56,6 +56,18 @@ right in the tester's own two-pad session.
     (`idle_3rd.txt`).
   - Each game's world clock starts at its own load, so screenshot windows need slack.
   - Full-size screenshots slow the games and hid the shake: measure with logs instead.
+- **Suite:** `tools\coop\run_suite.ps1 [-Only tour,fuse]`: the pair tests in one go (tour, fuse, equip, pickup), each
+  passing on the log lines it expects, no FATAL, and the sync audit. Each case's logs stay in `build/suite/<case>/A` and
+  `B`.
+- **Sync audit:** each game writes one snapshot a second to `logs/audit.jsonl` (`TOTK_COOP_AUDIT=0`: none):
+  - this Link, each co-op Link as shown, the objects sent and the copies shown, the held placed objects;
+  - the enemies near a Link, the time of day and weather.
+
+  `tools/coop/sync_audit.py <A> <B>` pairs the two games' snapshots by time and lists what does not match, as a Link
+  (place, life, gear, hands, fuse, dyes), an object (missing, off, stale, two copies, a dead copy), an enemy (place,
+  life), time or weather. A mismatch counts when it holds two snapshots in a row. `play_two.ps1` runs it when the
+  session ends (`build/audit_report.txt`). First run (2026-11-06) found the proxy going to full life in each of its
+  updates, an apple's copy rolling on past the owner's, and the guest's clock running ahead in the host's menus.
 - **Frame tracer:** `TOTK_COOP_TRACE_AT=<s,...>`, `TOTK_COOP_TRACE_MS`, then `tools/coop/trace_report.py <csv>`. A
   window stalls both games, so don't judge positions across one.
 - **Logs:**

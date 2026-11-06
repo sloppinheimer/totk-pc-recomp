@@ -191,7 +191,7 @@ static char my_fuse[3][32];
 #define WM_TIME 0x98
 #define TIME_NOW 0x28
 #define WM_SET_TIME 0x21cd794
-#define TIME_FOLLOW_S 90.0f        // game seconds off the host before this game is set to its time (60 a real second)
+#define TIME_FOLLOW_S 60.0f        // game seconds off the host before this game is set to its time (60 a real second)
 
 static float day_seconds(void) {
     uint64_t tm = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + WM_SLOT) + WM_TIME);
@@ -271,9 +271,12 @@ static void follow_host_time(Cpu *c, float host) {
     if (d < -43200.0f) d += 86400.0f;
     if (!time_following) time_following = 1, own_offset = -d;
     uint64_t now = plat_now_ns();
-    if (fabsf(d) < TIME_FOLLOW_S || now - last_ns < 5000000000ull) return;
+    // (checked once a second: every 5 s, with the host's clock stopped in a menu, this game ran up to 3 game minutes
+    // ahead and jumped back; the sync audit, fuse test, 2026-11-06)
+    if (fabsf(d) < TIME_FOLLOW_S || now - last_ns < 1000000000ull) return;
     last_ns = now;
-    rt_log("coop: time of day %.0f s, the host's %.0f s: set to the host's", mine, host);
+    static int said;
+    if (said++ < 40) rt_log("coop: time of day %.0f s, the host's %.0f s: set to the host's", mine, host);
     set_day_seconds(c, host);
 }
 
@@ -1805,6 +1808,15 @@ static void place_copy(Cpu *c, Slot *s, int k) {
     }
     if (pickable(s->mir[k].name)) {   // an item runs its own physics: its body is put with it each tick, not driven
         coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, actor, (uint64_t)(uintptr_t)m, 0, 0);
+        // ... and stopped there: with its speed kept, a rolling apple's copy rolled on 1.5 m past where the owner's
+        // came to rest (the sync audit, pickup test, 2026-11-06)
+        uint64_t phys = coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x50), ctl = phys ? coop_rd_ptr(phys + 0x20) : 0;
+        uint64_t body = ctl ? coop_rd_ptr(ctl + 0x150) : 0;
+        if (body) {
+            _Alignas(16) float z[4] = {0, 0, 0, 0};
+            coop_guest_call(c, MOD_MAIN_BASE + 0x567750, body, (uint64_t)(uintptr_t)z, 0, 0);   // SetLinearVelocity
+            coop_guest_call(c, MOD_MAIN_BASE + 0x25a1f0, body, (uint64_t)(uintptr_t)z, 0, 0);   // SetAngularVelocity
+        }
         return;
     }
     if (ride_on() && !strstr(s->mir[k].name, "Arrow")) {
@@ -3984,6 +3996,136 @@ static void fanstate_log(uint64_t me) {
            (unsigned long long)so, w[0], w[1], w[2], w[3], w[4], w[5], v[0], v[1], v[2]);
 }
 static int this_paused;   // this game sits in a menu (the clock and this Link both still; set by the tick)
+// ---- the sync audit (tools/coop/sync_audit.py). Once a second, at the turn of a second of plat_now_ns (the
+// performance counter, one clock for every game on this PC), each game writes what it shows to logs/audit.jsonl, one
+// JSON line: this Link (place, life, gear, dyes, fused materials, hands), each co-op Link as shown here, the objects
+// it sends (at their real place) and the copies it shows of others', the placed objects it holds at another game's
+// report, the enemies near any Link, the time of day and weather. The script pairs the two games' lines by time and
+// lists what does not match. TOTK_COOP_AUDIT=0: none.
+static void audit_vec(FILE *f, const char *key, const float *p) { fprintf(f, ",\"%s\":[%.3f,%.3f,%.3f]", key, p[0], p[1], p[2]); }
+static void audit_str(FILE *f, const char *s) {
+    fputc('"', f);
+    for (; *s; s++) if (*s != '"' && *s != '\\' && (unsigned char)*s >= 32) fputc(*s, f);
+    fputc('"', f);
+}
+static void audit_gear(FILE *f, const char *key, char g[][32], int n) {
+    fprintf(f, ",\"%s\":[", key);
+    for (int k = 0; k < n; k++) fputs(k ? "," : "", f), audit_str(f, g[k]);
+    fputc(']', f);
+}
+static uint64_t made_actor(uint32_t id) {   // the actor of an object this game sends, by its number or key
+    for (int i = 0; i < 32; i++) if (my_arrows[i].actor && my_arrows[i].mine && my_arrows[i].id == id) return my_arrows[i].actor;
+    for (int e = 0; e < PROPS_N; e++) {
+        if (!props[e].actor) continue;
+        if (props[e].made && props[e].id == id) return props[e].actor;
+        if (!props[e].made && (id & COOP_OBJ_KEYED) && (COOP_OBJ_KEYED | (props[e].key & ~COOP_OBJ_KEYED)) == id) return props[e].actor;
+    }
+    return 0;
+}
+static void audit_tick(Cpu *c, uint64_t me, const CoopObj *sent, int n_sent, const NetState *st) {
+    static int on = -1;
+    static FILE *f;
+    static uint64_t last_s;
+    if (on < 0) {
+        const char *e = cfg_get("TOTK_COOP_AUDIT");
+        on = !(e && !strcmp(e, "0"));
+    }
+    uint64_t now = plat_now_ns(), sec = now / 1000000000ull;
+    if (!on || sec == last_s) return;
+    last_s = sec;
+    if (!f && !(f = fopen("logs/audit.jsonl", "w"))) { on = 0; return; }
+    int coop_life_of(uint64_t a), coop_life_max_of(uint64_t a);
+    float p[3] = {0};
+    coop_rd(me + COOP_ACTOR_POS, p, 12);
+    fprintf(f, "{\"t\":%.3f,\"id\":%d,\"world\":%.2f,\"tod\":%.1f,\"weather\":%d", now / 1e9, coop_net_id(), frame_step_world_us() / 1e6,
+            day_seconds(), weather_now);
+    fprintf(f, ",\"me\":{\"life\":%d,\"max\":%d,\"hands\":%u", coop_life_of(me), coop_life_max_of(me), (st->flags >> 8) & 7);
+    audit_vec(f, "p", p);
+    audit_gear(f, "gear", my_gear, COOP_GEAR_SLOTS);
+    char fz[3][32];
+    for (int k = 0; k < 3; k++) snprintf(fz[k], 32, "%s", st->fuse[k]);
+    audit_gear(f, "fuse", fz, 3);
+    fprintf(f, ",\"dye\":[%d,%d,%d,%d,%d,%d]}", my_dye[0], my_dye[1], my_dye[2], my_dye[3], my_dye[4], my_dye[5]);
+    // the co-op Links as shown here
+    fputs(",\"links\":[", f);
+    int first = 1;
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++) {
+        Slot *s = &slots[i];
+        if (s->source != SRC_NET || (s->state != LIVE && s->state != LET_GO) || !s->actor) continue;
+        float q[3] = {0};
+        coop_rd(s->actor + COOP_ACTOR_POS, q, 12);
+        char g[COOP_GEAR_SLOTS][32];
+        for (int k = 0; k < COOP_GEAR_SLOTS; k++) strcpy(g[k], "");
+        uint64_t eq = eq_of_actor(s->actor);
+        unsigned hands = 0;
+        if (eq && eq_points_to(eq, s->actor) && !this_paused) {
+            eq_gear(eq, g);
+            static const uint64_t hand_of[3] = {0, 3, 4};
+            for (int k = 0; k < 3; k++) if (coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, eq, hand_of[k], 0, 0) & 1) hands |= 1u << k;
+        }
+        fprintf(f, "%s{\"owner\":%d,\"life\":%d,\"max\":%d,\"hands\":%u", first ? "" : ",", s->net_id, coop_life_of(s->actor),
+                coop_life_max_of(s->actor), hands);
+        first = 0;
+        audit_vec(f, "p", q);
+        audit_gear(f, "gear", g, COOP_GEAR_SLOTS);
+        audit_gear(f, "fuse", s->fuse_have, 3);
+        fprintf(f, ",\"dye\":[%d,%d,%d,%d,%d,%d]}", s->dye_have[0], s->dye_have[1], s->dye_have[2], s->dye_have[3], s->dye_have[4], s->dye_have[5]);
+    }
+    // the objects this game sends, at their real place
+    fputs("],\"sent\":[", f);
+    for (int i = 0; i < n_sent; i++) {
+        uint64_t a = made_actor(sent[i].id);
+        float q[3];
+        memcpy(q, sent[i].pos, 12);
+        if (a) coop_rd(a + COOP_ACTOR_POS, q, 12);
+        if (a && (sent[i].flags & COOP_OBJ_LOCAL)) {   // nocked: kept where its model is
+            uint64_t model = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x8) + 0x28);
+            float mt[12];
+            if (model && coop_rd(model + 0x1f8, mt, sizeof mt)) q[0] = mt[3], q[1] = mt[7], q[2] = mt[11];
+        }
+        fprintf(f, "%s{\"id\":%u,\"name\":", i ? "," : "", sent[i].id);
+        audit_str(f, sent[i].name);
+        fprintf(f, ",\"flags\":%u", sent[i].flags);
+        audit_vec(f, "p", q);
+        fputc('}', f);
+    }
+    // the copies shown here of the others' objects (where they are shown) and the placed objects held here at
+    // another game's report
+    fputs("],\"copies\":[", f);
+    first = 1;
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++)
+        for (int k = 0; k < COOP_OBJS; k++) {
+            Slot *s = &slots[i];
+            if (s->mir[k].state != 3 || !s->mir[k].actor) continue;
+            float q[3];
+            memcpy(q, s->mir[k].pos, 12);   // where it is put (an arrow's actor is kept 300 m under)
+            int arrowish = strstr(s->mir[k].name, "Arrow") || (s->mir[k].flags & (COOP_OBJ_FUSED | COOP_OBJ_ONLINK));
+            if (!arrowish || s->mir[k].blowing) coop_rd(s->mir[k].actor + COOP_ACTOR_POS, q, 12);
+            fprintf(f, "%s{\"owner\":%d,\"id\":%u,\"name\":", first ? "" : ",", s->net_id, s->mir[k].id);
+            first = 0;
+            audit_str(f, s->mir[k].name);
+            fprintf(f, ",\"alive\":%d,\"blowing\":%d", copy_alive(s, k), s->mir[k].blowing);
+            audit_vec(f, "p", q);
+            fputc('}', f);
+        }
+    fputs("],\"held\":[", f);
+    first = 1;
+    for (int k = 0; k < 128; k++) {
+        if (!key_found[k].actor || !key_found[k].last || prop_tick - key_found[k].last > 60) continue;
+        float q[3];
+        if (!coop_rd(key_found[k].actor + COOP_ACTOR_POS, q, 12)) continue;
+        fprintf(f, "%s{\"owner\":%d,\"id\":%u,\"name\":", first ? "" : ",", key_found[k].from, COOP_OBJ_KEYED | key_found[k].key);
+        first = 0;
+        audit_str(f, key_found[k].name);
+        audit_vec(f, "p", q);
+        fputc('}', f);
+    }
+    fputs("],\"enemies\":", f);
+    void coop_audit_enemies(FILE *f, uint64_t me);   // coop_world.c
+    coop_audit_enemies(f, me);
+    fputs("}\n", f);
+    fflush(f);
+}
 void coop_players_tick(Cpu *c, int numpad3) {
     if (frame_step_world_us() <= 0) return;   // not in the world yet
     coop_session_tests(frame_step_world_us());
@@ -4014,6 +4156,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         for (int k = 0; my_eq && k < 3; k++)
             if (coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, my_eq, hand_of[k], 0, 0) & 1) st.flags |= 1u << (8 + k);
         shield_send(me, my_eq, &st);
+        audit_tick(c, me, cur, n_objs, &st);
         {   // test: this Link's life when it changes, with each proxy's and whether it runs its own update then (P1's
             // hearts went up and down while P2 swung, a play session, 2026-11-06)
             int coop_life_of(uint64_t a);

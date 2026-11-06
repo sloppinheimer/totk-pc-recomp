@@ -1,6 +1,7 @@
 # The co-op pair tests in one go: each case runs tools\coop\run_pair.ps1 (two games through a local relay, scripted
-# input, copies of the 1.4.3 profile) and passes when every pattern it expects is in the log it names and no game
-# hit a FATAL. Prints one line per case and a total. About 2 minutes a case.
+# input, copies of the 1.4.3 profile) and passes when every pattern it expects is in the log it names, no game hit a
+# FATAL, and the sync audit (tools\coop\sync_audit.py on both games' logs\audit.jsonl) finds nothing that does not
+# match. Prints one line per case (the audit's report under a failed one) and a total. About 2 minutes a case.
 #   powershell -ExecutionPolicy Bypass -File tools\coop\run_suite.ps1 [-Only tour,fuse]
 param([string]$Only = "")
 $ErrorActionPreference = 'Stop'
@@ -29,8 +30,19 @@ foreach ($c in $cases) {
         $log = if ($w.StartsWith('A:')) { $A } else { $B }
         if (-not (Select-String -Path $log -Pattern $w.Substring(2) -Quiet)) { $missing += $w }
     }
+    # each case's logs and audit snapshots kept in build\suite\<case>\A and \B (the next case writes over the games')
+    foreach ($g in @(@{d = 'v143'; k = 'A'}, @{d = 'v143b'; k = 'B'})) {
+        $keep = Join-Path $root "build\suite\$($c.n)\$($g.k)"
+        New-Item -ItemType Directory -Force $keep | Out-Null
+        Copy-Item "build\$($g.d)\logs\totk.log", "build\$($g.d)\logs\audit.jsonl" $keep -ErrorAction SilentlyContinue
+    }
     $fatal = @(Select-String -Path $A, $B -Pattern 'FATAL' | ForEach-Object { "$(Split-Path -Leaf (Split-Path -Parent (Split-Path -Parent $_.Path))): $($_.Line)" })
-    if (!$missing -and !$fatal) { $pass++; "PASS $($c.n)" }
-    else { $fail++; "FAIL $($c.n)"; $missing | ForEach-Object { "  missing $_" }; $fatal | ForEach-Object { "  $_" } }
+    $audit = & (Join-Path $root '.venv\Scripts\python.exe') (Join-Path $PSScriptRoot 'sync_audit.py') 'build\v143\logs\audit.jsonl' 'build\v143b\logs\audit.jsonl'
+    $audit_ok = $LASTEXITCODE -eq 0
+    if (!$missing -and !$fatal -and $audit_ok) { $pass++; "PASS $($c.n)  ($($audit[0]))" }
+    else {
+        $fail++; "FAIL $($c.n)"; $missing | ForEach-Object { "  missing $_" }; $fatal | ForEach-Object { "  $_" }
+        if (!$audit_ok) { $audit | ForEach-Object { "  audit: $_" } }
+    }
 }
 "$pass passed, $fail failed"
