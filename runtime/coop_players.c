@@ -222,14 +222,21 @@ static void read_weather(Cpu *c, uint64_t me) {
     weather_now = w;
 }
 
+// Set again every 5 s while the weather here is not the host's: set once, it went back to this game's forecast (it
+// read 0, 3, 1, 0 and 2 while the host's stayed 7, a play session, 2026-11-06).
 static void follow_host_weather(Cpu *c, int32_t host) {   // host -1: no host (alone, or it left)
     uint64_t wx = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + WX_SLOT));
-    if (!wx || host == weather_forced) return;
+    static uint64_t last_ms;
+    uint64_t now_ms = plat_now_ns() / 1000000;
+    int again = host >= 0 && host == weather_forced && weather_now >= 0 && weather_now != host && now_ms - last_ms > 5000;
+    if (!wx || (host == weather_forced && !again)) return;
+    last_ms = now_ms;
     if (host < 0) {
         rt_log("coop: weather back to this game's forecast");
         coop_guest_call(c, MOD_MAIN_BASE + WX_RELEASE, wx, 0, 0, 0);
     } else {
-        rt_log("coop: weather %d, the host's %d: set to the host's", weather_now, host);
+        static int said;
+        if (said++ < 40) rt_log("coop: weather %d, the host's %d: set to the host's%s", weather_now, host, again ? " (again)" : "");
         coop_guest_call(c, MOD_MAIN_BASE + WX_FORCE, wx, (uint64_t)(uint32_t)host, 0, 0);
     }
     weather_forced = host;
@@ -1905,7 +1912,12 @@ static int prop_skip(const char *nm) {
                                 "Weapon_Sheath", "Weapon_Quiver", "TBox_", "Sage_", "Weapon_Bow_128",
                                 // the Link's own helpers (its edges): a save load took the WakeBoardRope for a destroyed
                                 // object, and the other game deleted its own (load_3rd.txt)
-                                "WakeBoardRope", "Obj_OneTouch_Connection", "Dm_Npc_RevivalFairy", "CarryBox", "ThrowBox"};   // chests: each player's own
+                                "WakeBoardRope", "Obj_OneTouch_Connection", "Dm_Npc_RevivalFairy", "CarryBox", "ThrowBox",
+                                // what a warp brings in about the Link where it lands: the shrine entrance and its warp
+                                // point, a cannon terminal and door; taken as made, each game had copies of the other's,
+                                // and a warp to a place with a copied warp point hung about a minute (a play session,
+                                // 2026-11-06)
+                                "DgnObj_ZonauShrineEntrance", "DgnObj_WarpPoint", "ZonauShrine_EntranceGate", "FldObj_Cannon"};   // chests: each player's own
     for (size_t i = 0; i < sizeof pre / sizeof *pre; i++) if (!strncmp(nm, pre[i], strlen(pre[i]))) return 1;
     if (strstr(nm, "Arrow")) return 1;
     // Helpers that go with this Link and are not things in the world: EventCamera and CameraXLinkControl were sent
@@ -2062,8 +2074,17 @@ static int report_props(uint64_t me, CoopObj *out, int max) {
     if (!coop_rd(me + COOP_ACTOR_POS, ps.me, 12)) return 0;
     coop_actors_keyed(prop_fn, &ps);
     const float *me_p = ps.me;
-    // More at once: a load or a streamed-in area, the world's own. A glider made 6+ at once (its parts): 20.
-    if (ps.n_first_near <= 20 && frame_step_world_us() > 20000000)
+    // More at once: a load or a streamed-in area, the world's own. A glider made 6+ at once (its parts): 20. And none
+    // for 10 s after this Link moved more than 30 m in a tick or became another actor (a warp or a load: the area
+    // comes in over several seconds, a few at a time).
+    static uint64_t last_me;
+    static float last_p[3];
+    static int made_quiet_until;
+    float jump = (ps.me[0] - last_p[0]) * (ps.me[0] - last_p[0]) + (ps.me[1] - last_p[1]) * (ps.me[1] - last_p[1]) +
+                 (ps.me[2] - last_p[2]) * (ps.me[2] - last_p[2]);
+    if (me != last_me || jump > 30 * 30) made_quiet_until = prop_tick + 600;
+    last_me = me, memcpy(last_p, ps.me, 12);
+    if (ps.n_first_near <= 20 && frame_step_world_us() > 20000000 && prop_tick >= made_quiet_until)
         for (int i = 0; i < ps.n_cand; i++) {
             int e = ps.cand[i];
             props[e].made = 1, props[e].born = prop_tick, props[e].id = next_arrow_id++;
@@ -3941,6 +3962,23 @@ void coop_players_tick(Cpu *c, int numpad3) {
         for (int k = 0; my_eq && k < 3; k++)
             if (coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, my_eq, hand_of[k], 0, 0) & 1) st.flags |= 1u << (8 + k);
         shield_send(me, my_eq, &st);
+        {   // test: this Link's life when it changes, with each proxy's and whether it runs its own update then (P1's
+            // hearts went up and down while P2 swung, a play session, 2026-11-06)
+            int coop_life_of(uint64_t a);
+            static int was = -1, said;
+            int l = coop_life_of(me);
+            if (l != was && said < 300) {
+                said++;
+                char buf[160];
+                int o = snprintf(buf, sizeof buf, "coop: %.2f s: my life %d -> %d", frame_step_world_us() / 1e6, was, l);
+                for (int i = 0; i < COOP_MAX_PLAYERS && o < (int)sizeof buf; i++)
+                    if (slots[i].actor)
+                        o += snprintf(buf + o, sizeof buf - o, "; slot %d's proxy %d, thaw %d, attack thaw %d", i, coop_life_of(slots[i].actor),
+                                      slots[i].thaw, slots[i].atk_thaw);
+                rt_log("%s", buf);
+            }
+            was = l;
+        }
         {   // proxy attacks: its life, so the proxies' match (the Master Sword's beam comes at full life only)
             int coop_life_of(uint64_t a), coop_life_max_of(uint64_t a);
             int l = coop_life_of(me), lm = coop_life_max_of(me);
