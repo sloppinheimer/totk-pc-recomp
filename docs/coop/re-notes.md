@@ -767,3 +767,11 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   co-op Link there are two Players; both running it at once on two worker threads breaks the list. It is hooked
   now and run by one thread at a time (coop_spawn.c beam_hook, logs "drawn by two threads at once" when that
   happens). Not yet confirmed in play.
+- the tester's autobuild test: (1) the autobuild preview's devices (real actors drawn as a hologram) were sent as moved
+  objects and copied solid; (2) built devices are tinted green, copies by name are not; (3) the steering stick
+  (SpObj_ControlStick) was never sent: "Control" was in the helper filter, now not for SpObj_; (5) a Link on a copy
+  jiggled: the rider's forced height is not taken (the Link's own physics keeps its up and down), so holding it at
+  its boarding height only jolted it now and then (a 0.25 m bob in the ride test); that is gone, and a placed object
+  another player moves is now driven by speed (teleported only when 0.5 m off) instead of teleported each tick.
+  Ride test at 5 m/s after: the rider stays 0.30 m above the glider within 0.01 m for 50 m. Open: (1), (2), and a
+  Recall-moved tree another game keeps merged (no actor of its own there) shows twice.

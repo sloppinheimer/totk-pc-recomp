@@ -1454,8 +1454,9 @@ static int prop_skip(const char *nm) {
     if (strstr(nm, "Arrow")) return 1;
     // Helpers that go with this Link and are not things in the world: EventCamera and CameraXLinkControl were sent
     // as moved objects (pair test, 2026-11-05).
+    // (Not for Zonai devices: SpObj_ControlStick, the steering stick, has "Control" in it and was never sent.)
     static const char *in[] = {"Camera", "Event", "Control", "Manager", "Sensor", "Area", "System"};
-    for (size_t i = 0; i < sizeof in / sizeof *in; i++) if (strstr(nm, in[i])) return 1;
+    for (size_t i = 0; i < sizeof in / sizeof *in && strncmp(nm, "SpObj_", 6); i++) if (strstr(nm, in[i])) return 1;
     if (!strncmp(nm, "Weapon_", 7)) {   // gear still worn by this Link or given to a co-op Link
         for (int k = 0; k < 3; k++) if (!strcmp(nm, my_gear[k])) return 1;
         for (int i = 0; i < COOP_MAX_PLAYERS; i++)
@@ -1609,18 +1610,57 @@ static uint64_t key_cached(uint32_t key, const char *name) {
         }
     return 0;
 }
-static void force_to(Cpu *c, uint64_t a, const float pos[3], const float q[4]) {
-    float p[3];
-    if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
-    float dx = p[0] - pos[0], dy = p[1] - pos[1], dz = p[2] - pos[2];
-    if (dx * dx + dy * dy + dz * dz < 4e-4f) return;
-    float r[9], m[12];
-    quat_mat(q, r);
-    for (int row = 0; row < 3; row++) {
-        for (int k = 0; k < 3; k++) m[row * 4 + k] = r[row * 3 + k];
-        m[row * 4 + 3] = pos[row];
+// The rotation that takes rb to ra (ra * rb^T) as axis * angle, in w; 0 for none.
+static void rot_delta(const float *ra, const float *rb, float w[3]) {
+    float d[9];
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) d[i * 3 + j] = ra[i * 3 + 0] * rb[j * 3 + 0] + ra[i * 3 + 1] * rb[j * 3 + 1] + ra[i * 3 + 2] * rb[j * 3 + 2];
+    float ca = (d[0] + d[4] + d[8] - 1) * 0.5f;
+    ca = ca > 1 ? 1 : ca < -1 ? -1 : ca;
+    float ang = acosf(ca), sa = sinf(ang);
+    w[0] = w[1] = w[2] = 0;
+    if (ang > 1e-4f && sa > 1e-4f) {
+        float f = ang / (2 * sa);
+        w[0] = (d[7] - d[5]) * f, w[1] = (d[2] - d[6]) * f, w[2] = (d[3] - d[1]) * f;
     }
-    coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, a, (uint64_t)(uintptr_t)m, 0, 0);
+}
+// A placed object another player moves goes where they have it: by speed, so what stands on it is carried smoothly
+// (teleported every tick, a Link standing on it jiggled heavily, the tester's autobuild test, 2026-11-05): the speed
+// from the last place sent to this one, plus a fifth of a second's worth of the gap to where it is; teleported
+// (COOP_FORCE_MATRIX) when it is more than 0.5 m off or has no physics body.
+static void force_to(Cpu *c, uint64_t a, const float pos[3], const float q[4]) {
+    static struct { uint64_t actor; float pos[3], rot[9]; int64_t us; } last[128];
+    float p[3], ar[9], r[9];
+    if (!coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(a + COOP_ACTOR_ROT, ar, 36)) return;
+    quat_mat(q, r);
+    int k = 0, free = -1;
+    for (; k < 128 && last[k].actor != a; k++) if (free < 0 && !last[k].actor) free = k;
+    if (k == 128) k = free >= 0 ? free : (int)((a >> 4) & 127), last[k].actor = a, last[k].us = 0;
+    int64_t now = frame_step_world_us();
+    if (last[k].us == now) return;   // the tick runs twice at one world time: once a frame
+    float dt = last[k].us ? (float)(now - last[k].us) / 1e6f : 0;
+    float dx = p[0] - pos[0], dy = p[1] - pos[1], dz = p[2] - pos[2];
+    uint64_t phys = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x50), ctl = phys ? coop_rd_ptr(phys + 0x20) : 0;
+    uint64_t body = ctl ? coop_rd_ptr(ctl + 0x150) : 0;
+    if (!body || dx * dx + dy * dy + dz * dz > 0.25f || dt <= 0 || dt > 0.5f) {
+        if (dx * dx + dy * dy + dz * dz >= 4e-4f || !body) {
+            float m[12];
+            for (int row = 0; row < 3; row++) {
+                for (int j = 0; j < 3; j++) m[row * 4 + j] = r[row * 3 + j];
+                m[row * 4 + 3] = pos[row];
+            }
+            coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, a, (uint64_t)(uintptr_t)m, 0, 0);
+        }
+    } else {
+        float wf[3], wc[3];
+        rot_delta(r, last[k].rot, wf), rot_delta(r, ar, wc);
+        _Alignas(16) float v[4] = {(pos[0] - last[k].pos[0]) / dt - dx * 5, (pos[1] - last[k].pos[1]) / dt - dy * 5,
+                                   (pos[2] - last[k].pos[2]) / dt - dz * 5, 0};
+        _Alignas(16) float w[4] = {wf[0] / dt + wc[0] * 5, wf[1] / dt + wc[1] * 5, wf[2] / dt + wc[2] * 5, 0};
+        coop_guest_call(c, MOD_MAIN_BASE + 0x567750, body, (uint64_t)(uintptr_t)v, 0, 0);   // SetLinearVelocity
+        coop_guest_call(c, MOD_MAIN_BASE + 0x25a1f0, body, (uint64_t)(uintptr_t)w, 0, 0);   // SetAngularVelocity
+    }
+    memcpy(last[k].pos, pos, 12), memcpy(last[k].rot, r, 36), last[k].us = now;
 }
 static void props_hold(Cpu *c);
 static int my_report(uint64_t a) {   // this game sends a as moved
@@ -2105,12 +2145,10 @@ static void ride_carry(Cpu *c, uint64_t me) {
             for (int j = 0; j < 3; j++)
                 d[i * 3 + j] = on->rot[i * 3 + 0] * last_rot[j * 3 + 0] + on->rot[i * 3 + 1] * last_rot[j * 3 + 1] + on->rot[i * 3 + 2] * last_rot[j * 3 + 2];
         for (int i = 0; i < 3; i++) np[i] = on->pos[i] + d[i * 3 + 0] * off[0] + d[i * 3 + 1] * off[1] + d[i * 3 + 2] * off[2];
-        // The copy does not hold a Link up (it sank 0.4 m into a rising glider in 2 s and fell, ride test): below its
-        // boarding height it is put back up to it, in the object's frame; above it (a jump) it is left alone.
-        float lo[3] = {np[0] - on->pos[0], np[1] - on->pos[1], np[2] - on->pos[2]};
-        float ly = on->rot[1] * lo[0] + on->rot[4] * lo[1] + on->rot[7] * lo[2];
-        if (ly < stand_y)
-            for (int i = 0; i < 3; i++) np[i] += on->rot[i * 3 + 1] * (stand_y - ly);
+        // No height of its own: the forced place's height is not taken (the Link's own physics keeps its up and
+        // down; it went on falling while the forced height stayed), and holding it at its boarding height only
+        // jolted it now and then (it bobbed 0.25 m twice a second, the tester: "jiggles heavily"). The copy's body, moved
+        // by speed, holds it up.
         for (int i = 0; i < 3; i++)
             for (int j = 0; j < 3; j++) nr[i * 3 + j] = d[i * 3 + 0] * r[0 * 3 + j] + d[i * 3 + 1] * r[1 * 3 + j] + d[i * 3 + 2] * r[2 * 3 + j];
         float mv = (np[0] - p[0]) * (np[0] - p[0]) + (np[1] - p[1]) * (np[1] - p[1]) + (np[2] - p[2]) * (np[2] - p[2]);
