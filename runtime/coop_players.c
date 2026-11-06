@@ -4078,7 +4078,15 @@ void coop_players_tick(Cpu *c, int numpad3) {
             } else if (s && s->state != LET_GO) s->state = FREE;
             continue;
         }
-        if (id < host_id && age < 2000000000ull) host_id = id, host_time = st.day_seconds, host_weather = st.weather, have_host = 1;
+        if (id < host_id && age < 2000000000ull) {
+            host_id = id, host_time = st.day_seconds, host_weather = st.weather, have_host = 1;
+            // The weather is the place's: the host's only within 300 m of the host's Link. Followed from afar, a
+            // Link warped away kept the cold of where the host stood and lost life to it (a play session, 2026-11-06).
+            float mp[3];
+            if (coop_rd(me + COOP_ACTOR_POS, mp, 12) &&
+                (mp[0] - st.pos[0]) * (mp[0] - st.pos[0]) + (mp[1] - st.pos[1]) * (mp[1] - st.pos[1]) + (mp[2] - st.pos[2]) * (mp[2] - st.pos[2]) > 300.0f * 300.0f)
+                host_weather = -1;
+        }
         if (!s && !(s = slot_new(SRC_NET, id))) continue;
         if (st.seq != s->last_seq) {   // a new report: the owner's velocity since the previous one
             uint64_t at = plat_now_ns() - age;
@@ -4165,7 +4173,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
     if (host_time >= 0) follow_host_time(c, host_time);
     else if (!have_host) own_time_back(c);
     if (have_host && host_weather >= 0) follow_host_weather(c, host_weather);
-    else if (!have_host && weather_forced >= 0) follow_host_weather(c, -1);   // the host left, or this game is the host
+    else if (weather_forced >= 0) follow_host_weather(c, -1);   // the host left, is far, or this game is the host
 
     // A second gamepad on this PC drives one more Link (Numpad 3 spawns it; the pad alone does not).
     Slot *pad = slot_for(SRC_PAD, 0);
