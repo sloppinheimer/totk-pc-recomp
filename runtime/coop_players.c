@@ -617,6 +617,7 @@ static int proxied(const Slot *s) {
 static int ride_place(const Slot *s, float out[3]);   // the owner rides an object: where, here
 static void shield_place(Cpu *c, Slot *s);
 static uint64_t eq_item(uint64_t eq, int kind);
+static int item_local(uint64_t link, uint64_t item, float local[3]);
 static void place_copy(Cpu *c, Slot *s, int k);
 #define COPY_WARMUP 5   // ticks a copy runs its own update after it is made (arrow_copies)
 // Where a Link's bow is drawn: its model's world matrix (model +0x1f8, 3x4 rows), which the model push puts on the
@@ -660,8 +661,8 @@ static void proxy_drive(Cpu *c, Slot *s) {
     // A shield surf: the shield where the owner's is. After the push, which puts items on their body bones (on the
     // back for a shield out of hand): put there from the tick, it was back there every other frame (surf.txt).
     shield_place(c, s);
-    for (int k = 0; k < COOP_OBJS; k++)   // nocked arrows' copies on the bow the push just put on the hand
-        if (s->mir[k].state == 3 && s->mir[k].ticks >= COPY_WARMUP && (s->mir[k].flags & COOP_OBJ_LOCAL)) place_copy(c, s, k);
+    for (int k = 0; k < COOP_OBJS; k++)   // nocked arrows' copies on the bow the push just put on the hand; the paraglider
+        if (s->mir[k].state == 3 && s->mir[k].ticks >= COPY_WARMUP && (s->mir[k].flags & (COOP_OBJ_LOCAL | COOP_OBJ_ONLINK))) place_copy(c, s, k);
     // Jump watch: its body top (model space, skeleton +0x20) and its world height, frame to frame; standing = the
     // owner's reported velocity under 5 cm/s with no stick or buttons held. Summary every 600 frames, each standing jump over 1 cm logged.
     float root_y = 0, top = body_top_root(actor, &root_y);
@@ -1482,11 +1483,12 @@ static void arrow_copies(Cpu *c, Slot *s) {
             memcpy(s->mir[k].name, o->name, sizeof s->mir[k].name), s->mir[k].name[sizeof s->mir[k].name - 1] = 0;
         }
         s->mir[k].flags = o->flags;
-        if (o->flags & COOP_OBJ_LOCAL) {   // in the owner's bow's frame: put on the proxy's bow as shown here (place_copy)
+        if (o->flags & (COOP_OBJ_LOCAL | COOP_OBJ_ONLINK)) {   // in the owner's bow's or Link's frame: put on the proxy (place_copy)
             memcpy(s->mir[k].lpos, o->pos, 12);
             quat_mat(o->q, s->mir[k].lrot);
             float pp[3] = {0}, pr[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-            if (s->actor && !bow_frame(s->actor, pr, pp)) coop_rd(s->actor + COOP_ACTOR_POS, pp, 12), coop_rd(s->actor + COOP_ACTOR_ROT, pr, 36);
+            if (s->actor && ((o->flags & COOP_OBJ_ONLINK) || !bow_frame(s->actor, pr, pp)))
+                coop_rd(s->actor + COOP_ACTOR_POS, pp, 12), coop_rd(s->actor + COOP_ACTOR_ROT, pr, 36);
             for (int i = 0; i < 3; i++) s->mir[k].pos[i] = pp[i] + pr[i * 3] * o->pos[0] + pr[i * 3 + 1] * o->pos[1] + pr[i * 3 + 2] * o->pos[2];
             memcpy(s->mir[k].rot, pr, 36);
         } else {
@@ -1536,7 +1538,7 @@ static void arrow_copies(Cpu *c, Slot *s) {
                     s->mir[k].state = 0, s->mir[k].actor = 0;
                     continue;
                 }
-            } else if (!strstr(s->mir[k].name, "Arrow")) {
+            } else if (!strstr(s->mir[k].name, "Arrow") && !(s->mir[k].flags & COOP_OBJ_ONLINK)) {
                 // Destroyed here (a bomb flower's copy shot by this game's Link blew up, a play session,
                 // 2026-11-05): the owner's own goes too (the same notice as a pick-up), so it cannot be picked up
                 // there again; it went off there only when the copy of this Link's arrow happened to touch it.
@@ -1569,8 +1571,9 @@ static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc) {
     // An arrow's copy is frozen too, after it is woken (place_copy): running its update, a nocked arrow's copy at the
     // other player's bow could be picked up again and again, and a fused arrow's kept falling asleep and did not
     // show (a play session, 2026-11-05).
-    return copy_of(actor, &s, &k) && s->mir[k].ticks >= COPY_WARMUP && strncmp(s->mir[k].name, "SpObj_", 6) && !pickable(s->mir[k].name) &&
-           !s->mir[k].blowing;
+    // (a paraglider's copy from its first tick: it went away by itself about 0.5 s after it was made, glide.txt)
+    return copy_of(actor, &s, &k) && (s->mir[k].ticks >= COPY_WARMUP || (s->mir[k].flags & COOP_OBJ_ONLINK)) &&
+           strncmp(s->mir[k].name, "SpObj_", 6) && !pickable(s->mir[k].name) && !s->mir[k].blowing;
 }
 // Each tick, a copy is put where its arrow is: actor position and rotation, model matrix and the push to the model
 // units, as the proxy. Done from the tick, not in one of its own updates: the game stopped calling a frozen arrow's
@@ -1583,7 +1586,7 @@ static void place_copy(Cpu *c, Slot *s, int k) {
     // sleeping arrow is not drawn (a play session, 2026-11-05). It is woken as the actor state machine
     // (main+0x54cb00) wakes one: +0x28's reason bits at 0x10, then bit 19 set and the actor queued for the machine
     // (main+0x2ae413c). Frozen after its warmup (copy_place), it does not ask again.
-    if (strstr(s->mir[k].name, "Arrow")) {
+    if (strstr(s->mir[k].name, "Arrow") || (s->mir[k].flags & COOP_OBJ_ONLINK)) {   // (and the paraglider's: it sleeps closed)
         int32_t st = 0;
         if (coop_rd(actor + COOP_ACTOR_STATE, &st, 4) && st == 6) {
             uint32_t w = LD32(actor + 0x28);
@@ -1602,7 +1605,8 @@ static void place_copy(Cpu *c, Slot *s, int k) {
     // (also from proxy_drive, right after the push that puts the bow on the hand). Put at the reported world place,
     // it lagged behind the proxy's bow as the owner moved (a play session, 2026-11-05).
     float pp[3], pr[9];
-    if ((s->mir[k].flags & COOP_OBJ_LOCAL) && s->actor && bow_frame(s->actor, pr, pp)) {
+    if (((s->mir[k].flags & COOP_OBJ_LOCAL) && s->actor && bow_frame(s->actor, pr, pp)) ||
+        ((s->mir[k].flags & COOP_OBJ_ONLINK) && s->actor && coop_rd(s->actor + COOP_ACTOR_POS, pp, 12) && coop_rd(s->actor + COOP_ACTOR_ROT, pr, 36))) {
         const float *l = s->mir[k].lpos, *lr = s->mir[k].lrot;
         for (int i = 0; i < 3; i++) {   // on the proxy: P R_local, P t_local
             for (int j = 0; j < 3; j++) m[i * 4 + j] = pr[i * 3 + 0] * lr[0 * 3 + j] + pr[i * 3 + 1] * lr[1 * 3 + j] + pr[i * 3 + 2] * lr[2 * 3 + j];
@@ -1617,7 +1621,8 @@ static void place_copy(Cpu *c, Slot *s, int k) {
     // session, 2026-11-05). The pick-up goes by the actor's place: that is kept 300 m under it, as its body; it is
     // drawn from its model matrix, below.
     // (A material fused to an arrow too: it could be taken off the arrow the same way, a play session.)
-    int arrowish = (strstr(s->mir[k].name, "Arrow") || (s->mir[k].flags & COOP_OBJ_FUSED)) && !s->mir[k].blowing;   // not one going off
+    // (the paraglider too: held over the proxy, it is not ridden or taken)
+    int arrowish = (strstr(s->mir[k].name, "Arrow") || (s->mir[k].flags & (COOP_OBJ_FUSED | COOP_OBJ_ONLINK))) && !s->mir[k].blowing;   // not one going off
     if (arrowish) {
         float low[3] = {s->mir[k].pos[0], s->mir[k].pos[1] - 300.0f, s->mir[k].pos[2]};
         memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_POS), low, 12);
@@ -1632,8 +1637,10 @@ static void place_copy(Cpu *c, Slot *s, int k) {
         if (s->actor) coop_rd(s->actor + COOP_ACTOR_POS, pp, 12);
         if (s->actor && bow_frame(s->actor, br, bp)) memcpy(pp, bp, 12);   // from its bow when it has one
         float dm = sqrtf((m[3] - pp[0]) * (m[3] - pp[0]) + (m[7] - pp[1]) * (m[7] - pp[1]) + (m[11] - pp[2]) * (m[11] - pp[2]));
-        rt_log("coop: test: copy %.2f s %u %s at %.2f %.2f %.2f, model %llx at %.2f %.2f %.2f; put %.2f m from the proxy's bow", frame_step_world_us() / 1e6,
-               s->mir[k].id, s->mir[k].name, s->mir[k].pos[0], s->mir[k].pos[1], s->mir[k].pos[2], (unsigned long long)model, mt[3], mt[7], mt[11], dm);
+        int32_t cst = 0;
+        coop_rd(actor + COOP_ACTOR_STATE, &cst, 4);
+        rt_log("coop: test: copy %.2f s %u %s at %.2f %.2f %.2f, model %llx at %.2f %.2f %.2f; put %.2f m from the proxy's bow; state %d", frame_step_world_us() / 1e6,
+               s->mir[k].id, s->mir[k].name, s->mir[k].pos[0], s->mir[k].pos[1], s->mir[k].pos[2], (unsigned long long)model, mt[3], mt[7], mt[11], dm, cst);
     }
     if (model) {
         memcpy((void *)(uintptr_t)(model + 0x1f8), m, sizeof m);
@@ -1747,10 +1754,10 @@ static void set_driven(uint64_t a) {
 }
 // Not world objects: Links and what they wear and carry, people, animals, enemies (synced on their own), arrows.
 static int prop_skip(const char *nm) {
-    // Parasail: the Link's paraglider, made when it opens; a copy of it in the other game took that game down with
-    // the Ultrahand crash (a play session, 2026-11-05)
+    // (Parasail, the Link's paraglider, was left out here: a copy of it seemed to take the other game down with the
+    // Ultrahand crash, which was the beam's race (beam_hook). It is sent in its Link's frame: COOP_OBJ_ONLINK.)
     static const char *pre[] = {"Player", "Armor_", "Accessory_", "PlayerRaul", "Npc", "Animal_", "Enemy_",
-                                "Weapon_Sheath", "Weapon_Quiver", "Parasail", "TBox_"};   // chests: each player's own
+                                "Weapon_Sheath", "Weapon_Quiver", "TBox_"};   // chests: each player's own
     for (size_t i = 0; i < sizeof pre / sizeof *pre; i++) if (!strncmp(nm, pre[i], strlen(pre[i]))) return 1;
     if (strstr(nm, "Arrow")) return 1;
     // Helpers that go with this Link and are not things in the world: EventCamera and CameraXLinkControl were sent
@@ -1879,6 +1886,21 @@ static int report_props(uint64_t me, CoopObj *out, int max) {
         o->id = id;
         coop_actor_name(props[e].actor, o->name, sizeof o->name);
         o->flags = is_imaginary(props[e].actor) ? COOP_OBJ_AUTOBUILT : 0;   // not used here yet: copies are not green
+        // The paraglider: sent in its Link's frame, so the other games hold it over the proxy as they show it (sent as
+        // a world place it would trail the proxy, as a nocked arrow did).
+        float lp[3], lr[9];
+        if (!strncmp(o->name, "Parasail", 8)) {   // sent only while open: closed, it sleeps (state 6) far off (glide.txt)
+            int32_t gst = 0;
+            if (!coop_rd(props[e].actor + COOP_ACTOR_STATE, &gst, 4) || gst != 4) continue;
+        }
+        if (!strncmp(o->name, "Parasail", 8) && coop_rd(me + COOP_ACTOR_POS, lp, 12) && coop_rd(me + COOP_ACTOR_ROT, lr, 36)) {
+            float d[3] = {o->pos[0] - lp[0], o->pos[1] - lp[1], o->pos[2] - lp[2]}, rl[9];
+            for (int j = 0; j < 3; j++) o->pos[j] = lr[0 * 3 + j] * d[0] + lr[1 * 3 + j] * d[1] + lr[2 * 3 + j] * d[2];
+            for (int a = 0; a < 3; a++)
+                for (int b = 0; b < 3; b++) rl[a * 3 + b] = lr[0 * 3 + a] * r[0 * 3 + b] + lr[1 * 3 + a] * r[1 * 3 + b] + lr[2 * 3 + a] * r[2 * 3 + b];
+            memcpy(r, rl, sizeof rl);
+            o->flags |= COOP_OBJ_ONLINK;
+        }
         mat_quat(r, o->q);
         static int said;
         if (!props[e].said && said < 60) {
@@ -1984,7 +2006,7 @@ static void dwatch_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
     float p[3];
     Slot *cs;
     int ck;
-    if (prop_skip(nm) || copy_of(a, &cs, &ck) || !coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+    if (prop_skip(nm) || !strncmp(nm, "Parasail", 8) || copy_of(a, &cs, &ck) || coop_is_resident(a) || !coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
     if ((p[0] - me[0]) * (p[0] - me[0]) + (p[1] - me[1]) * (p[1] - me[1]) + (p[2] - me[2]) * (p[2] - me[2]) > 400) return;
     for (int i = 0; i < 32; i++) if (my_arrows[i].actor == a) return;
     int free = -1;
@@ -2045,8 +2067,8 @@ static void destroy_apply(Cpu *c, const CoopObj *o, int from) {
     coop_actors_all(keyfind_fn, &kf);
     uint64_t a = kf.actor[0];
     char nm[48];
-    if (!a || strcmp(coop_actor_name(a, nm, sizeof nm), o->name)) {
-        rt_log("coop: player %d destroyed %s (key %08x): not here", from, o->name, o->id & ~COOP_OBJ_KEYED);
+    if (!a || strcmp(coop_actor_name(a, nm, sizeof nm), o->name) || coop_is_resident(a) || !strncmp(nm, "Parasail", 8)) {
+        rt_log("coop: player %d destroyed %s (key %08x): not here (or one not to destroy)", from, o->name, o->id & ~COOP_OBJ_KEYED);
         return;
     }
     int coop_life_of(uint64_t a);
@@ -2468,6 +2490,29 @@ static void impact_test(void) {
     }
     if (now < until) coop_actors_all(impact_new_fn, &is);
 }
+// Test (TOTK_COOP_TEST_GLIDELOG=1): every 15 ticks, where this Link's paraglider is in the Link's frame, its state and
+// its model's +0x240 byte, open or not: what tells an open glider from a closed one.
+static void glide_log_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
+    (void)key;
+    if (strncmp(nm, "Parasail", 8)) return;
+    uint64_t me = *(uint64_t *)arg;
+    float l[3];
+    if (!item_local(me, a, l)) return;
+    int32_t st = 0;
+    coop_rd(a + COOP_ACTOR_STATE, &st, 4);
+    uint64_t model = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x8) + 0x28);
+    uint8_t mb[8] = {0};
+    if (model) coop_rd(model + 0x240, mb, 8);
+    rt_log("coop: test: glide %.2f s: %s %llx at %.2f %.2f %.2f in the Link's frame, state %d, model +0x240 %02x %02x %02x %02x", frame_step_world_us() / 1e6,
+           nm, (unsigned long long)a, l[0], l[1], l[2], st, mb[0], mb[1], mb[2], mb[3]);
+}
+static void glide_log(uint64_t me) {
+    static int on = -1, t;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_GLIDELOG") != NULL;
+    if (!on || ++t % 15) return;
+    void coop_actors_all(void (*fn)(uint64_t, const char *, uint32_t, void *), void *arg);   // coop_world.c
+    coop_actors_all(glide_log_fn, &me);
+}
 // Both games: where the object a co-op player moved last is here (for the test above).
 static void props_test_where(void) {
     static int on = -1, t;
@@ -2635,7 +2680,10 @@ static void objs_receive(Cpu *c) {
                         my_arrows[i].actor = 0;
                     }
                 for (int i = 0; i < PROPS_N; i++)   // one it made (by number) or a placed one it moved (by key)
-                    if (props[i].actor && ((props[i].made && props[i].id == o.id) ||
+                    // (never a resident actor or the paraglider, which both Links here use: deleting the paraglider for
+                    // a copy of it that went away by itself in the other game took this game down, glide.txt)
+                    if (props[i].actor && !coop_is_resident(props[i].actor) && strncmp(props[i].name, "Parasail", 8) &&
+                        ((props[i].made && props[i].id == o.id) ||
                                            (!props[i].made && (o.id & COOP_OBJ_KEYED) && (COOP_OBJ_KEYED | (props[i].key & ~COOP_OBJ_KEYED)) == o.id))) {
                         rt_log("coop: player %d picked up or destroyed my %s (%08x); mine is deleted", from, props[i].name, o.id);
                         coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, props[i].actor, COOP_DELETE_REASON, 0, 0);
@@ -2774,7 +2822,7 @@ static int ride_objects(RideObj *out, int max) {
             // not ridden: arrows, and items (an item's copy runs its own physics and is put back at its owner's
             // place; a Link carried by it went through the floor, a play session, 2026-11-05)
             if (slots[i].mir[k].state == 3 && slots[i].mir[k].ticks >= COPY_WARMUP && !strstr(slots[i].mir[k].name, "Arrow") &&
-                !pickable(slots[i].mir[k].name)) {
+                !pickable(slots[i].mir[k].name) && !(slots[i].mir[k].flags & COOP_OBJ_ONLINK)) {
                 out[n].actor = slots[i].mir[k].actor, out[n].owner = slots[i].net_id, out[n].id = slots[i].mir[k].id;
                 memcpy(out[n].pos, slots[i].mir[k].pos, 12), memcpy(out[n].rot, slots[i].mir[k].rot, 36);
                 n++;
@@ -3645,7 +3693,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         if (fw && *fw) st.weather = atoi(fw);
         coop_net_publish(&st);
         if (coop_proxy_mode()) props_receive(c), ride_carry(c, me), destroy_watch(me);   // placed objects co-op players move; riding them; destroyed
-        props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test(), bone_arrow_test(me), impact_test();
+        props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test(), bone_arrow_test(me), impact_test(), glide_log(me);
     }
     armor_probe(me);
     arrow_log(me);
