@@ -959,12 +959,6 @@ int coop_players_calc(Cpu *c, uint64_t addr) {
     // Proxy mode: no input, except the owner's attack button in an attack thaw, so its sword really swings here and
     // what it hits (a Zonai device's copy) gets the game's own hit (the tester: "try the proxy's sword", 2026-11-05).
     if (noinput) buttons = s->atk_thaw > 0 ? buttons & (1ull << 3) : 0, memset(stick, 0, sizeof stick);
-    // ... but not before the proxy's weapon is in its hand: the first press only drew it, and the first Earthwake after
-    // a weapon change did not come (a play session, 2026-11-05). Held back, Y comes as a new press once it is.
-    if (noinput && s->atk_thaw > 0 && (buttons >> 3 & 1)) {
-        uint64_t peq = eq_of_actor(s->actor);
-        if (peq && eq_points_to(peq, s->actor) && !(coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, peq, 0, 0, 0) & 1)) buttons &= ~(1ull << 3);
-    }
     coop_fill_controller(own, buttons, stick, &s->prev, s->held);
     ST64(mgr + 0xa0, own);
     static int diff_on = -1;   // TOTK_COOP_TRACE=diff: main's writable data the co-op Link's calc changes
@@ -1584,7 +1578,7 @@ static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc) {
     // show (a play session, 2026-11-05).
     // (a paraglider's copy from its first tick: it went away by itself about 0.5 s after it was made, glide.txt)
     return copy_of(actor, &s, &k) && (s->mir[k].ticks >= COPY_WARMUP || (s->mir[k].flags & COOP_OBJ_ONLINK)) &&
-           strncmp(s->mir[k].name, "SpObj_", 6) && !pickable(s->mir[k].name) && !s->mir[k].blowing;
+           strncmp(s->mir[k].name, "SpObj_", 6) && !pickable(s->mir[k].name) && !s->mir[k].blowing && strcmp(s->mir[k].name, "PlayerBeam");
 }
 // Each tick, a copy is put where its arrow is: actor position and rotation, model matrix and the push to the model
 // units, as the proxy. Done from the tick, not in one of its own updates: the game stopped calling a frozen arrow's
@@ -1633,7 +1627,7 @@ static void place_copy(Cpu *c, Slot *s, int k) {
     // drawn from its model matrix, below.
     // (A material fused to an arrow too: it could be taken off the arrow the same way, a play session.)
     // (the paraglider too: held over the proxy, it is not ridden or taken)
-    int arrowish = (strstr(s->mir[k].name, "Arrow") || !strcmp(s->mir[k].name, "PlayerBeam") || (s->mir[k].flags & (COOP_OBJ_FUSED | COOP_OBJ_ONLINK))) &&
+    int arrowish = (strstr(s->mir[k].name, "Arrow") || (s->mir[k].flags & (COOP_OBJ_FUSED | COOP_OBJ_ONLINK))) &&
                    !s->mir[k].blowing;   // not one going off
     if (arrowish) {
         float low[3] = {s->mir[k].pos[0], s->mir[k].pos[1] - 300.0f, s->mir[k].pos[2]};
@@ -1769,8 +1763,10 @@ static void set_driven(uint64_t a) {
 // Technique's shockwave, are left out with the "Player" names: sent as copies they played out wrong, the beam spun in
 // place and the shockwave's glow stayed in the air, a play session, 2026-11-05. The proxy makes its own: its
 // attack thaw lasts while its owner holds the button, and its life follows its owner's, see "proxy attacks".)
-// The beam, though, is sent: the proxy made none (it seems to go by this game's own hearts), so its copy is shown,
-// frozen like an arrow's (woken, put where the owner's is each tick, so it flies with it).
+// The beam, though, is sent: the proxy made none (it seems to go by this game's own hearts). It has no model: what
+// shows is its effect, on its body. Frozen and kept 300 m under as an arrow's copy is, the effect stayed spinning
+// where it was made (TOTK_COOP_TEST_BEAMLOG: the copy was put where the owner's beam is, 30 m/s along). So its copy
+// runs its own update and its body is driven at the owner's beam's speed (as a ridden copy's is).
 static int is_beam(const char *nm) { return !strcmp(nm, "PlayerBeam"); }
 static int prop_skip(const char *nm) {
     if (is_beam(nm)) return 0;
@@ -1878,6 +1874,15 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
             snprintf(props[ie].name, sizeof props[ie].name, "%s", nm);
         }
         props[ie].seen = prop_tick, props[ie].near_me = 1;
+        static int beamlog = -1, bn;   // TOTK_COOP_TEST_BEAMLOG=1: where the beam actor and its model are, while awake
+        if (beamlog < 0) beamlog = cfg_get("TOTK_COOP_TEST_BEAMLOG") != NULL;
+        if (beamlog && bn++ % 3 == 0 && bn < 600) {
+            uint64_t model = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x8) + 0x28);
+            float mt[12] = {0};
+            if (model) coop_rd(model + 0x1f8, mt, sizeof mt);
+            rt_log("coop: test: beam %.2f s: actor at %.2f %.2f %.2f, model at %.2f %.2f %.2f", frame_step_world_us() / 1e6, p[0], p[1], p[2],
+                   mt[3], mt[7], mt[11]);
+        }
         return;
     }
     int e = -1, free = -1;
@@ -2632,6 +2637,19 @@ static void newnear_test(uint64_t me) {
     if (!on || !coop_rd(me + COOP_ACTOR_POS, p, 12)) return;
     void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
     coop_actors_live(newnear_fn, p);
+}
+// Test (TOTK_COOP_TEST_BEAM=1, with -FakeGearA Weapon_Sword_070): at 20 s this Link's life is set to its most, so a
+// Master Sword swing makes its beam.
+static void beam_test(uint64_t me) {
+    static int on = -1, done;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_BEAM") != NULL;
+    if (!on || done || frame_step_world_us() < 20000000) return;
+    done = 1;
+    int coop_life_max_of(uint64_t a);
+    void coop_set_life(uint64_t a, int v);
+    int m = coop_life_max_of(me);
+    if (m > 0) coop_set_life(me, m);
+    rt_log("coop: test: beam: this Link's life set to %d", m);
 }
 // Both games: where the object a co-op player moved last is here (for the test above).
 static void props_test_where(void) {
@@ -3819,7 +3837,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         if (fw && *fw) st.weather = atoi(fw);
         coop_net_publish(&st);
         if (coop_proxy_mode()) props_receive(c), ride_carry(c, me), destroy_watch(me), old_items_tick(c);   // placed objects co-op players move; riding them; destroyed
-        props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test(), bone_arrow_test(me), impact_test(), glide_log(me), newnear_test(me);
+        props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test(), bone_arrow_test(me), impact_test(), glide_log(me), newnear_test(me), beam_test(me);
     }
     armor_probe(me);
     arrow_log(me);
