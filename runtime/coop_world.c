@@ -1787,6 +1787,7 @@ static uint32_t key_of_actor(uint64_t actor) {
 // When the receiver is a proxy's, the hit is kept here for link_hits_send to send to that proxy's player.
 #define RCV_N COOP_MAX_PLAYERS
 static _Atomic uint64_t proxy_rcv[RCV_N];   // the proxies' receivers, set by link_hits_send
+static _Atomic int proxy_id[RCV_N];         // their players
 static struct { _Atomic uint32_t seq; uint8_t info[HIT_INFO]; uint64_t atk, dc; } rcv_hit[RCV_N];
 void coop_hit_delivered(Cpu *c) {
     uint64_t r = c->x[0], h = c->x[2];
@@ -1823,6 +1824,7 @@ static void link_hits_send(void) {
     for (int i = 0; i < RCV_N; i++) {
         uint64_t dc = i < n ? coop_rd_ptr(coop_rd_ptr(acts[i] + 0x228) + 0x2f8) : 0;
         atomic_store(&proxy_rcv[i], dc ? dc + 0x190 : 0);
+        atomic_store(&proxy_id[i], i < n ? ids[i] : 0);
     }
     static uint64_t last_actor[COOP_MAX_PLAYERS];
     static uint32_t last_state[COOP_MAX_PLAYERS];
@@ -1937,7 +1939,191 @@ static _Alignas(16) uint8_t lh_info[HIT_INFO], lh_atk[0x400];
 static _Atomic uint64_t lh_dc;   // the damage component a hit waits for, 0 none
 static _Atomic int lh_guarded;   // the last hit delivered was guarded (flag +0xe0 bit 3 after the delivery)
 static _Atomic uint64_t lh_x1;   // the attack it is delivered with
+// Contact replay (TOTK_COOP_LINKHIT_CONTACT=1, a test): the hit is built in the hit player's own game from the
+// contact, as the game builds one. A body's hits are built in its damage component's hit update, main+0x300a30 (the
+// call chain of a hit on a proxy: TOTK_COOP_TEST_HITCHAIN, 2026-11-06), from the contacts waiting in the list at
+// [dc+0x1910]+0x50 (count +0x18, capacity +8, 0x1c0-byte records from +0x10; main+0x1cd0c80 runs main+0x1cd263c on
+// each): the attack's power (+0xa0), its kind (+0x90), the attacker's handles (+0x60, +0x78 with +0x94 bit 0), and
+// the receiving body's own state, through main+0x1cd1b1c, which can cancel the hit (damage 0): a raised shield. So
+// the owner's game sends the contacts waiting on a proxy as its hit update begins, and the player's game adds them
+// to its own Link's list as that Link's hit update begins; its own update builds the hit, guard and all.
+#define CONTACT_KIND 0x4c43   // "CL"
+#define CONTACT_SZ 0x1c0
+#define CONTACT_MAX 2
+// brel: where the contact's body (+0x58) sat from the proxy's main body (enemy_body), plus 1; 0 not near it (a Link's
+// is that body +0xb558, guarding or not, both Links, every run: TOTK_COOP_TEST_CONTACTS, 2026-11-06).
+typedef struct { uint32_t key, to, kind, n, brel[CONTACT_MAX]; uint8_t e[CONTACT_MAX][CONTACT_SZ]; } ContactPacket;
+_Static_assert(sizeof(ContactPacket) <= COOP_HIT_MAX, "ContactPacket fits a HIT packet");
+static int contact_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_LINKHIT_CONTACT"); on = e && *e == '1'; }
+    return on;
+}
+static uint64_t contact_list(uint64_t dc) {
+    uint64_t o = coop_rd_ptr(dc + 0x1910);
+    return o ? coop_rd_ptr(o + 0x50) : 0;
+}
+static uint32_t key_of_actor(uint64_t a);
+static uint64_t enemy_body(uint64_t a);
+static uint64_t pup_ready_actor(uint32_t key);
+static uint64_t actor_ref(uint64_t a);
+static void contact_send(uint64_t dc, int to) {
+    uint64_t l = contact_list(dc);
+    int32_t cnt = 0, cap = 0;
+    uint64_t base = 0;
+    if (!l || !coop_rd(l + 0x18, &cnt, 4) || cnt <= 0 || !coop_rd(l + 8, &cap, 4) || !(base = coop_rd_ptr(l + 0x10))) return;
+    static ContactPacket cp;   // (one proxy's hit update at a time: the update runs them in turn)
+    static uint32_t last_id[RCV_N];
+    memset(&cp, 0, offsetof(ContactPacket, e));
+    cp.to = (uint32_t)to, cp.kind = CONTACT_KIND;
+    for (int k = 0; k < cnt && cp.n < CONTACT_MAX; k++) {
+        uint8_t *e = cp.e[cp.n];
+        if (!coop_rd(base + (uint64_t)(k < cap ? k : 0) * CONTACT_SZ, e, CONTACT_SZ)) break;
+        uint32_t id;
+        memcpy(&id, e + 0x38, 4);
+        // the attacker: either handle (+0x60 the weapon and +0x78 its holder, or +0x60 the enemy itself)
+        uint64_t att = 0;
+        char nm[64] = "";
+        for (int hk = 0; hk < 2 && strncmp(nm, "Enemy_", 6); hk++) {
+            uint64_t ref;
+            memcpy(&ref, e + (hk ? 0x80 : 0x68), 8);
+            att = ref ? coop_rd_ptr(ref + 0x40) : 0;
+            nm[0] = 0;
+            if (att) coop_actor_name(att, nm, sizeof nm);
+        }
+        static int said;
+        if (said++ < 3) {
+            char line[1400];
+            int m = snprintf(line, sizeof line, "coop: test: contact on player %d's proxy by %s:", to, nm[0] ? nm : "?");
+            for (int w = 0; w < CONTACT_SZ / 8 && m < 1360; w++) {
+                uint64_t v;
+                memcpy(&v, e + 8 * w, 8);
+                if (v) m += snprintf(line + m, sizeof line - m, " %02x:%llx", 8 * w, (unsigned long long)v);
+            }
+            rt_log("%s", line);
+        }
+        if (strncmp(nm, "Enemy_", 6)) continue;   // an enemy's, this game's to run
+        int slot = to > 0 && to <= RCV_N ? to - 1 : 0;
+        if (id && id == last_id[slot]) continue;   // sent already (a contact waits there over several frames)
+        last_id[slot] = id;
+        cp.key = key_of_actor(att);
+        uint64_t body;
+        memcpy(&body, e + 0x58, 8);
+        uint64_t mb0 = enemy_body(coop_rd_ptr(dc + 0x198));
+        cp.brel[cp.n] = body && mb0 && body >= mb0 && body - mb0 < 0x20000 ? (uint32_t)(body - mb0) + 1 : 0;
+        cp.n++;
+    }
+    if (cp.n) coop_net_hit_send(&cp, (int)(offsetof(ContactPacket, e) + cp.n * CONTACT_SZ));
+}
+static _Alignas(16) uint8_t ct_in[CONTACT_MAX][CONTACT_SZ];
+static _Atomic int ct_n;                  // contacts waiting for this Link's hit update
+static uint32_t ct_brel[CONTACT_MAX], ct_key;
+static _Atomic uint64_t ct_dc;            // this Link's damage component they wait for
+static void contact_add(uint64_t dc) {
+    uint64_t me_actor = coop_rd_ptr(dc + 0x198);
+    int n = atomic_exchange(&ct_n, 0);
+    if (!n) return;
+    uint64_t l = contact_list(dc);
+    int32_t cnt = 0, cap = 0;
+    uint64_t base = 0;
+    if (!l || !coop_rd(l + 0x18, &cnt, 4) || !coop_rd(l + 8, &cap, 4) || !(base = coop_rd_ptr(l + 0x10))) {
+        rt_log("coop: test: contact: this Link has no contact list (%llx)", (unsigned long long)l);
+        return;
+    }
+    for (int k = 0; k < n && cnt < cap; k++, cnt++) {
+        uint8_t *e = ct_in[k];
+        // the attacker's handles (+0x60, +0x78: +8 the reference, +0x10 its serial): this game's frozen copy of the
+        // enemy for each one that was set (its weapon's as well, for now), none without a copy
+        static int att_on = -1;   // TOTK_COOP_CONTACT_ATTACKER=0: both left empty
+        if (att_on < 0) { const char *ev = cfg_get("TOTK_COOP_CONTACT_ATTACKER"); att_on = !(ev && *ev == '0'); }
+        uint64_t cref = att_on ? actor_ref(pup_ready_actor(ct_key)) : 0;
+        uint32_t cser = 0xffffffffu;
+        if (cref) coop_rd(cref + 0x48, &cser, 4);
+        for (int hk = 0; hk < 2; hk++) {
+            uint64_t was, r = cref;
+            uint32_t sr = cser;
+            memcpy(&was, e + (hk ? 0x80 : 0x68), 8);
+            if (!was) r = 0, sr = 0xffffffffu;
+            memcpy(e + (hk ? 0x80 : 0x68), &r, 8), memcpy(e + (hk ? 0x88 : 0x70), &sr, 4);
+        }
+        // the body touched: the same place from this Link's main body, else none
+        uint64_t mb = ct_brel[k] && enemy_body(me_actor) ? enemy_body(me_actor) + ct_brel[k] - 1 : 0;
+        memcpy(e + 0x58, &mb, 8);
+        // Test (TOTK_COOP_CONTACT_SHIELD=1): mark the contact as one that met the shield (+0x0b 1: the only byte apart
+        // from places and directions between a guarding Link's blocked contact and its proxy's, same swing, 2026-11-06)
+        static int sh = -1;
+        if (sh < 0) { const char *ev = cfg_get("TOTK_COOP_CONTACT_SHIELD"); sh = ev && *ev == '1'; }
+        if (sh) e[0x0b] = 1;
+        memcpy((void *)(uintptr_t)(base + (uint64_t)cnt * CONTACT_SZ), e, CONTACT_SZ);
+    }
+    memcpy((void *)(uintptr_t)(l + 0x18), &cnt, 4);
+    rt_log("coop: test: contact: %d added to this Link's list (now %d; body %s, attacker %s)", n, cnt,
+           ct_brel[0] ? "from its main body" : "none", actor_ref(pup_ready_actor(ct_key)) ? "this game's copy" : "none");
+}
+// Test (TOTK_COOP_TEST_CONTACTS=1): every damage component's hit update with contacts waiting: its actor (dc+0x198),
+// and each contact's kind (+0x90), power (+0xa0), body (+0x58) and attacker handles' actors; 40 lines.
+static void contacts_test(uint64_t dc) {
+    static int on = -1;
+    static _Atomic int said;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_CONTACTS") != NULL;
+    if (!on || atomic_load(&said) > 40) return;
+    uint64_t l = contact_list(dc), base;
+    int32_t cnt = 0;
+    if (!l || !coop_rd(l + 0x18, &cnt, 4) || cnt <= 0 || !(base = coop_rd_ptr(l + 0x10))) return;
+    atomic_fetch_add(&said, 1);
+    char an[64] = "", line[600];
+    coop_actor_name(coop_rd_ptr(dc + 0x198), an, sizeof an);
+    int m = snprintf(line, sizeof line, "coop: test: contacts on %s (%d; its main body %llx):", an, cnt,
+                     (unsigned long long)enemy_body(coop_rd_ptr(dc + 0x198)));
+    for (int k = 0; k < cnt && k < 3; k++) {
+        uint8_t e[0xb0];
+        if (!coop_rd(base + (uint64_t)k * CONTACT_SZ, e, sizeof e)) break;
+        uint64_t body, r1, r2;
+        memcpy(&body, e + 0x58, 8), memcpy(&r1, e + 0x68, 8), memcpy(&r2, e + 0x80, 8);
+        char n1[48] = "", n2[48] = "";
+        if (r1) coop_actor_name(coop_rd_ptr(r1 + 0x40), n1, sizeof n1);
+        if (r2) coop_actor_name(coop_rd_ptr(r2 + 0x40), n2, sizeof n2);
+        uint32_t pw;
+        memcpy(&pw, e + 0xa0, 4);
+        // whose body: the first actor its first 0x200 bytes point to (directly or one level down), and where
+        char bn[48] = "?";
+        int boff = -1, blv = 0;
+        for (int w = 0; w < 0x200 / 8 && boff < 0; w++) {
+            uint64_t q = coop_rd_ptr(body + 8 * w);
+            for (int lv = 0; lv < 2 && q && boff < 0; lv++) {
+                char t[48] = "";
+                coop_actor_name(q, t, sizeof t);
+                if (t[0] && (!strncmp(t, "Player", 6) || !strncmp(t, "Weapon_", 7) || !strncmp(t, "Armor_", 6)))
+                    memcpy(bn, t, sizeof bn), boff = w * 8, blv = lv;
+                q = coop_rd_ptr(q);
+            }
+        }
+        m += snprintf(line + m, sizeof line - m, " [kind %u power %u body %llx (%s at +%#x%s) by %s / %s]", e[0x90], pw,
+                      (unsigned long long)body, bn, boff, blv ? " ->+0" : "", n1, n2);
+    }
+    rt_log("%s", line);
+    {   // and the first contact's every word, against the main body: a blocked one beside an unblocked one
+        static uint8_t e[CONTACT_SZ];
+        if (coop_rd(base, e, sizeof e)) {
+            char w2[1600];
+            int m2 = snprintf(w2, sizeof w2, "coop: test: contact words on %s:", an);
+            for (int w = 0; w < CONTACT_SZ / 4 && m2 < 1560; w++) {
+                uint32_t v;
+                memcpy(&v, e + 4 * w, 4);
+                if (v && v != 0xbf800000u) m2 += snprintf(w2 + m2, sizeof w2 - m2, " %x:%x", 4 * w, v);
+            }
+            rt_log("%s", w2);
+        }
+    }
+}
 void coop_hit_update(Cpu *c) {
+    contacts_test(c->x[0]);
+    if (contact_on()) {
+        uint64_t x0 = c->x[0];
+        if (x0 && x0 == atomic_load(&ct_dc)) contact_add(x0);
+        for (int i = 0; i < RCV_N; i++)
+            if (x0 && atomic_load_explicit(&proxy_rcv[i], memory_order_relaxed) == x0 + 0x190) contact_send(x0, atomic_load(&proxy_id[i]));
+    }
     uint64_t dc = atomic_load_explicit(&lh_dc, memory_order_acquire);
     if (!dc || c->x[0] != dc || !atomic_compare_exchange_strong(&lh_dc, &dc, 0)) return;
     uint64_t keep[31];
@@ -2113,9 +2299,25 @@ static void peer_tick(Cpu *c, uint64_t me) {
     int from = 0, n;
     static LinkHitPacket lhp;
     while ((n = coop_net_hit_take(&lhp, sizeof lhp, &from)) != 0) {
+        {   // contact replay (a test)
+            const ContactPacket *cp = (const ContactPacket *)&lhp;
+            if (n >= (int)offsetof(ContactPacket, e) && cp->kind == CONTACT_KIND) {
+                if (contact_on() && (int)cp->to == my_id && cp->n && cp->n <= CONTACT_MAX &&
+                    n == (int)(offsetof(ContactPacket, e) + cp->n * CONTACT_SZ) && !atomic_load(&ct_n)) {
+                    uint64_t mdc = coop_rd_ptr(coop_rd_ptr(me + 0x228) + 0x2f8);
+                    memcpy(ct_in, cp->e, cp->n * CONTACT_SZ);
+                    memcpy(ct_brel, cp->brel, sizeof ct_brel), ct_key = cp->key;
+                    atomic_store(&ct_dc, mdc);
+                    atomic_store(&ct_n, (int)cp->n);
+                    rt_log("coop: test: contact by enemy %08x from player %d: %u waiting for this Link's hit update", cp->key, from, cp->n);
+                }
+                continue;
+            }
+        }
         if (n >= (int)offsetof(LinkHitPacket, s) && lhp.kind == LINKHIT_KIND && lhp.nslots <= LH_SLOTS &&
             n == (int)(offsetof(LinkHitPacket, s) + lhp.nslots * sizeof(LinkHitSlot))) {
-            if ((int)lhp.to == my_id && lhp.damage > 0 && lhp.damage <= 4000) link_hit_take(c, &lhp, from, me);
+            // (with contact replay on, the contact makes the hit here instead)
+            if ((int)lhp.to == my_id && lhp.damage > 0 && lhp.damage <= 4000 && !contact_on()) link_hit_take(c, &lhp, from, me);
             continue;
         }
         memcpy(&hp, &lhp, sizeof hp);
