@@ -2834,6 +2834,23 @@ static void link_hit_test(uint64_t me) {
                    i == COOP_MAX_PLAYERS ? "this Link" : "a co-op Link", frame_step_world_us() / 1e6, stt, w[0x28 / 4], w[0x30 / 4], w[0x38 / 4],
                    w[0x3c / 4], pw, hp[0], hp[1], hp[2], coop_life_of(a));
             said++;
+            if (said <= 6) {   // the whole record, and where the attacker's id and reference are on the attacker
+                uint32_t r[0x160 / 4];
+                if (coop_rd(dc + 0x1a0, r, sizeof r)) {
+                    char line[1400];
+                    int m = 0;
+                    for (int k = 0; k < 0x160 / 4; k++) m += snprintf(line + m, sizeof line - m, "%s%x", k % 8 ? " " : " |", r[k]);
+                    rt_log("coop: test: linkhit record:%s", line);
+                    uint64_t ref;
+                    memcpy(&ref, &r[0x20 / 4], 8);
+                    uint64_t ra = coop_rd_ptr(ref + 0x40);   // a reference object's actor (+0x40) and id (+0x48), as Player#2's
+                    uint32_t rid = 0;
+                    coop_rd(ref + 0x48, &rid, 4);
+                    char an[48] = "";
+                    if (ra) coop_actor_name(ra, an, sizeof an);
+                    rt_log("coop: test: linkhit attacker reference %llx: actor %llx '%s', id %u", (unsigned long long)ref, (unsigned long long)ra, an, rid);
+                }
+            }
         }
         last[i] = stt;
     }
@@ -3623,6 +3640,25 @@ static uint64_t eq_item(uint64_t eq, int kind) {
         uint64_t ref = coop_rd_ptr(eq + GEAR_TABLE + 0x18 * (uint64_t)row), a = ref ? coop_rd_ptr(ref + 0x40) : 0;
         char nm[32];
         if (a && gear_kind(coop_actor_name(a, nm, sizeof nm)) == kind) return a;
+    }
+    return 0;
+}
+// An item of a Link's (in this Link's or a co-op Link's EquipmentUser) or a copy of another player's object: not an
+// enemy's weapon (coop_world.c, enemy puppets).
+int coop_is_players_item(uint64_t a) {
+    Slot *s;
+    int k;
+    if (!a || copy_of(a, &s, &k)) return a != 0;
+    uint64_t links[COOP_MAX_PLAYERS + 1];
+    int n = 0;
+    links[n++] = coop_player_actor();
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++) if (slots[i].actor && slots[i].state == LIVE) links[n++] = slots[i].actor;
+    for (int i = 0; i < n; i++) {
+        uint64_t eq = links[i] ? eq_of_actor(links[i]) : 0;
+        for (int row = 0; eq && row < 24; row++) {
+            uint64_t ref = coop_rd_ptr(eq + GEAR_TABLE + 0x18 * (uint64_t)row);
+            if (ref && coop_rd_ptr(ref + 0x40) == a) return 1;
+        }
     }
     return 0;
 }

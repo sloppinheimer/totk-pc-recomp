@@ -1554,6 +1554,10 @@ _Static_assert(sizeof(NetEnemy) == 60, "NetEnemy wire size");
 #define CLAIM_TIE_MS 2000
 typedef struct { uint16_t count, reserved; NetEnemy e[MAX_SENT]; } WorldPacket;
 typedef struct { uint32_t key; int32_t damage; uint32_t to; } HitPacket;   // to: the owner's player id
+// An enemy's hit on a player's proxy here, for that player (to): the enemy's key and the damage (quarter hearts).
+// Told from a HitPacket by its size.
+typedef struct { uint32_t key; int32_t damage; uint32_t to, kind, flags; } LinkHitPacket;
+#define LINKHIT_KIND 0x4c48   // "HL"
 
 // The enemies this game runs, as last seen (for the hits on them, their deaths and their poses); d2 the square of the
 // distance to the nearest other Link.
@@ -1731,14 +1735,90 @@ static void peer_one(int cell, uint64_t a, void *arg) {
 }
 
 static void epose_send_tick(void);
-static void epose_take_tick(void);
+static void epose_take_tick(Cpu *c);
+static void enemy_weapon_test(void);
 
+// The Weapon_ actors this game updates that are no Link's (an enemy's weapon), refreshed with the enemy scan.
+static uint64_t weaps[128];
+static int nweaps;
+static void weap_collect(int cell, uint64_t a, void *arg) {
+    (void)cell, (void)arg;
+    char nm[48];
+    int coop_is_players_item(uint64_t a);   // coop_players.c
+    if (nweaps < 128 && !strncmp(coop_actor_name(a, nm, sizeof nm), "Weapon_", 7) && !coop_is_players_item(a)) weaps[nweaps++] = a;
+}
+// The key of an enemy this game updates (0: not one, or not seen).
+static uint32_t key_of_actor(uint64_t actor) {
+    uint32_t h = (uint32_t)((actor >> 4) * 2654435761u) & (SEEN_N - 1);
+    for (int k = 0; k < 32; k++, h = (h + 1) & (SEEN_N - 1))
+        if (atomic_load_explicit(&seen[h].actor, memory_order_relaxed) == actor) {
+            char nm[64];
+            return enemy_of((int)h, actor, nm, sizeof nm);
+        }
+    return 0;
+}
+// An enemy's hit on a player's proxy here goes to that player. The game's hit leaves a record in the proxy's damage
+// component ([actor+0x228]+0x2f8, +0x1a0..; re-notes "The hit's mark on the device"): +0x1a4 nonzero the frame it
+// lands, +0x1a8 the damage in quarter hearts (on this Link, 1 and 4 for a loss of 1 and 4: TOTK_COOP_TEST_LINKHIT,
+// 2026-11-06), +0x1c0 the attacker's reference (+0x40 its actor). The proxy takes none of it (its life update does
+// not run), and the enemy that hit it is frozen in its owner's game, so the owner's Link was never hurt (the same
+// test: 14 hits on the proxy, its owner's life unchanged).
+static void link_hits_send(void) {
+    uint64_t acts[COOP_MAX_PLAYERS];
+    int ids[COOP_MAX_PLAYERS], n = coop_player_actors(acts, ids, COOP_MAX_PLAYERS);
+    static uint64_t last_actor[COOP_MAX_PLAYERS];
+    static uint32_t last_state[COOP_MAX_PLAYERS];
+    for (int i = 0; i < n; i++) {
+        uint64_t dc = coop_rd_ptr(coop_rd_ptr(acts[i] + 0x228) + 0x2f8);
+        uint32_t w[0x28 / 4];
+        if (!dc || !coop_rd(dc + 0x1a0, w, sizeof w)) continue;
+        uint32_t st = w[1], was = last_actor[i] == acts[i] ? last_state[i] : st;
+        last_actor[i] = acts[i], last_state[i] = st;
+        if (!st || st == was) continue;
+        uint64_t ref;
+        memcpy(&ref, &w[0x20 / 4], 8);
+        uint64_t att = ref ? coop_rd_ptr(ref + 0x40) : 0;
+        int32_t dmg = (int32_t)w[2];
+        char nm[64] = "";
+        if (att) coop_actor_name(att, nm, sizeof nm);
+        uint32_t key = strncmp(nm, "Enemy_", 6) ? 0 : key_of_actor(att);
+        static int said;
+        if (said++ < 40)
+            rt_log("coop: %s %08x hit player %d's Link here for %d%s", nm[0] ? nm : "something", key, ids[i], dmg,
+                   key && dmg > 0 ? ", sent to them" : "");
+        if (!key || dmg <= 0 || dmg > 4000) continue;
+        LinkHitPacket lh = {key, dmg, (uint32_t)ids[i], LINKHIT_KIND, w[0x30 / 4]};
+        coop_net_hit_send(&lh, sizeof lh);
+    }
+}
+// A hit on this Link's proxy in another game, by an enemy that game runs: taken here, when this game shows that
+// enemy as that game's (it follows it: its own one does not attack). The life goes down by the damage; the hit's
+// knock-back and flinch are not made here.
+static void link_hit_take(const LinkHitPacket *lh, int from, uint64_t me) {
+    const Follow *f = NULL;
+    for (int k = 0; k < FOLLOW_N; k++) if (follow[k].key == lh->key) f = &follow[k];
+    if (!me || !f || f->owner != from) {
+        rt_log("coop: player %d says enemy %08x hit this Link for %d; not taken (this game runs that enemy)", from, lh->key, lh->damage);
+        return;
+    }
+    int life = life_of(me);
+    if (life <= 0) return;
+    int now = life - lh->damage < 0 ? 0 : life - lh->damage;
+    set_life(me, now);
+    rt_log("coop: enemy %08x hit this Link in player %d's game for %d (life %d -> %d)", lh->key, from, lh->damage, life, now);
+}
 static void peer_tick(Cpu *c, uint64_t me) {
     int my_id = coop_net_id();
     // Hits from the others on the enemies this game runs: the damage taken from this game's one.
     HitPacket hp;
     int from = 0, n;
-    while ((n = coop_net_hit_take(&hp, sizeof hp, &from)) != 0) {
+    LinkHitPacket lhp;
+    while ((n = coop_net_hit_take(&lhp, sizeof lhp, &from)) != 0) {
+        if (n == (int)sizeof lhp && lhp.kind == LINKHIT_KIND) {
+            if ((int)lhp.to == my_id && lhp.damage > 0 && lhp.damage <= 4000) link_hit_take(&lhp, from, me);
+            continue;
+        }
+        memcpy(&hp, &lhp, sizeof hp);
         if (n != (int)sizeof hp || (int)hp.to != my_id) continue;
         // (a damage that is not 1..65535 is not a hit: a negative one healed, a huge one overflowed; code review)
         if (hp.damage <= 0 || hp.damage > 65535) continue;
@@ -1759,8 +1839,10 @@ static void peer_tick(Cpu *c, uint64_t me) {
                 break;
             }
     }
-    epose_take_tick();
+    epose_take_tick(c);
     epose_send_tick();
+    link_hits_send();
+    enemy_weapon_test();
     static int t;
     if (++t % 3) return;   // the rest about 10 times a second
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++) {
@@ -1784,6 +1866,8 @@ static void peer_tick(Cpu *c, uint64_t me) {
             dead_keys[nd++] = killed[i].key;
         }
     s.live_max = MAX_SENT - nd;
+    nweaps = 0;
+    each_live(weap_collect, NULL);
     dup_count();
     each_live(peer_one, &s);
     // Enemies this game ran that are no longer seen: gone; those whose life was 0 when last seen died here.
@@ -1817,15 +1901,33 @@ static void peer_tick(Cpu *c, uint64_t me) {
 // between the two around it, as the proxy is (proxy_drive in coop_players.c): actor place, model world matrix, the
 // records, the model push, and its physics body put there (main+0x25a450, which takes on a body whose actor does not
 // run). Poses missing for PUP_STALE_NS: its own update runs again.
+// Its weapons: an enemy's weapon is an actor of its own, which put itself on the hand a frame late and could be taken
+// from the frozen enemy's hand (a play session, 2026-11-06), as an arrow's copy could. No pointer from a held
+// weapon to its holder was found, so they go by place: the owner sends with each pose the Weapon_ actors within
+// EPOSE_ITEM_M of the enemy that are no Link's (coop_is_players_item), by name and world place; here the Weapon_ of
+// that name nearest that place is frozen as the enemy is and put there right after the enemy's model push, with its
+// body kept 300 m under it so it cannot be taken. One the owner no longer sends (dropped and left behind, or the enemy
+// let go here) runs its own update again from where it is, its body put back first.
 #define EPOSE_MAX 12
 #define EPOSE_NEAR_M 40.0f
 #define PUP_N 32
 #define PUP_HIST 6
 #define PUP_BONES 330
 #define PUP_STALE_NS 600000000ull
-typedef struct { uint32_t key; float pos[3], rot[9]; } EPoseHead;   // then the pose (n | 0x8000, scaled count, bones)
-_Static_assert(sizeof(EPoseHead) == 52, "EPOSE header size");
-typedef struct { uint64_t ns; float pos[3], q[4]; int n; float bq[PUP_BONES][4], bt[PUP_BONES][3], bs[PUP_BONES][3]; } PupRec;
+#define EPOSE_ITEMS 3
+#define EPOSE_ITEM_M 2.5f
+// then nitems EItem, then the pose (n | 0x8000, scaled count, bones)
+typedef struct { uint32_t key; float pos[3], rot[9]; uint8_t nitems, pad[3]; } EPoseHead;
+typedef struct { uint32_t hash; float pos[3], rot[9]; } EItem;   // hash: its name's (name_hash_of)
+_Static_assert(sizeof(EPoseHead) == 56 && sizeof(EItem) == 52 && 56 + EPOSE_ITEMS * 52 == 212, "EPOSE header size (COOP_EPOSE_MAX)");
+typedef struct {
+    uint64_t ns;
+    float pos[3], q[4];
+    int n, ni;
+    uint32_t ih[EPOSE_ITEMS];
+    float ip[EPOSE_ITEMS][3], iq[EPOSE_ITEMS][4];
+    float bq[PUP_BONES][4], bt[PUP_BONES][3], bs[PUP_BONES][3];
+} PupRec;
 static struct {
     _Atomic uint64_t actor;   // this game's one, while it follows its owner (pup_bind)
     _Atomic int ready;        // frozen and driven from the poses
@@ -1833,8 +1935,13 @@ static struct {
     int owner;
     unsigned count;
     uint64_t last_ns;
+    _Atomic uint64_t weap[EPOSE_ITEMS];   // this game's weapons of it, frozen and put in its hand (0 none)
+    uint32_t weap_hash[EPOSE_ITEMS];
     PupRec r[PUP_HIST];
 } pups[PUP_N];
+// Weapons let go (their enemy no longer posed here) whose body is still to be put back, by epose_take_tick.
+static uint64_t weap_free[64];
+static int weap_free_n;
 static PlatMutex pup_lock = PLAT_MUTEX_INIT;
 static int pup_find(uint32_t key) {
     for (int i = 0; i < PUP_N; i++) if (pups[i].key == key) return i;
@@ -1851,6 +1958,10 @@ static void pup_release(uint32_t key) {
     plat_mutex_lock(&pup_lock);
     if (atomic_load(&pups[i].ready)) rt_log("coop: enemy %08x: its own update runs again", key);
     atomic_store(&pups[i].ready, 0), atomic_store(&pups[i].actor, 0);
+    for (int j = 0; j < EPOSE_ITEMS; j++) {
+        uint64_t w = atomic_exchange(&pups[i].weap[j], 0);
+        if (w && weap_free_n < 64) weap_free[weap_free_n++] = w;
+    }
     pups[i].key = 0, pups[i].count = 0;
     plat_mutex_unlock(&pup_lock);
 }
@@ -1894,6 +2005,47 @@ static uint64_t enemy_body(uint64_t a) {
     return ctl ? coop_rd_ptr(ctl + 0x150) : 0;
 }
 static uint64_t audit_skeleton(uint64_t a) { return enemy_skeleton(a); }
+// Test (TOTK_COOP_TEST_ENEMYWEAPON=1): for each enemy this game runs, the Weapon_ actors within 3 m, and the offsets
+// in each one's first 0x1000 bytes that hold the enemy's actor, its model or its body skeleton: how a held weapon
+// knows its holder (the tester, 2026-11-06: an enemy puppet's weapon lags and can be taken from its hand).
+typedef struct { uint64_t enemy; float at[3]; } WeapScan;
+static void weap_one(uint64_t a, void *arg) {
+    WeapScan *ws = arg;
+    char nm[48];
+    coop_actor_name(a, nm, sizeof nm);
+    if (strncmp(nm, "Weapon_", 7)) return;
+    float p[3];
+    if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+    float dx = p[0] - ws->at[0], dy = p[1] - ws->at[1], dz = p[2] - ws->at[2];
+    if (dx * dx + dy * dy + dz * dz > 9) return;
+    uint64_t model = enemy_model(ws->enemy), sk = enemy_skeleton(ws->enemy);
+    static uint64_t w[0x1000 / 8];
+    if (!coop_rd(a, w, sizeof w)) return;
+    char line[600];
+    int m = 0;
+    for (int i = 0; i < 0x1000 / 8 && m < 560; i++) {
+        uint64_t v = w[i];
+        if (v == ws->enemy) m += snprintf(line + m, sizeof line - m, " +%#x=actor", i * 8);
+        else if (v && v == model) m += snprintf(line + m, sizeof line - m, " +%#x=model", i * 8);
+        else if (v && v == sk) m += snprintf(line + m, sizeof line - m, " +%#x=skeleton", i * 8);
+        else if (v > ws->enemy && v < ws->enemy + 0x1000) m += snprintf(line + m, sizeof line - m, " +%#x=actor+%#llx", i * 8, (unsigned long long)(v - ws->enemy));
+    }
+    line[m] = 0;
+    char en[48];
+    rt_log("coop: test: enemy weapon: %s %llx, %.2f m from %s %llx:%s", nm, (unsigned long long)a, sqrtf(dx * dx + dy * dy + dz * dz),
+           coop_actor_name(ws->enemy, en, sizeof en), (unsigned long long)ws->enemy, m ? line : " (no pointer to it)");
+}
+static void enemy_weapon_test(void) {
+    static int on = -1, t, said;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_ENEMYWEAPON") != NULL;
+    if (!on || ++t % 300 || said++ > 6) return;
+    for (int i = 0; i < KNOWN_N; i++) {
+        if (!mine_known[i].key || !mine_known[i].actor) continue;
+        WeapScan ws = {mine_known[i].actor};
+        if (!coop_rd(ws.enemy + COOP_ACTOR_POS, ws.at, 12)) continue;
+        coop_actors_live(weap_one, &ws);
+    }
+}
 // The g3d skeletons reachable from an enemy whose skeleton enemy_skeleton does not find (pointers followed up to 6
 // deep, 0x400 bytes each, from its model and from the actor), with the offsets on the way, logged once per enemy name
 // (up to 4 names).
@@ -1947,9 +2099,24 @@ static int epose_pack(uint64_t a, uint32_t key, uint8_t *out, int max) {
         if (!sk) enemy_skel_probe(a);
         return 0;
     }
-    memcpy(out, &h, sizeof h);
-    uint8_t *o = out + sizeof h;
-    int at = 4 + n * POSE_BONE, nsc = 0, lim = max - (int)sizeof h;
+    // its weapons: the Weapon_ actors near it that are no Link's
+    EItem items[EPOSE_ITEMS];
+    for (int i = 0; i < nweaps && h.nitems < EPOSE_ITEMS; i++) {
+        EItem it;
+        int32_t wst = 0;
+        if (!coop_rd(weaps[i] + COOP_ACTOR_STATE, &wst, 4) || wst < 2 || wst > 6 || !coop_rd(weaps[i] + COOP_ACTOR_POS, it.pos, 12) ||
+            !coop_rd(weaps[i] + COOP_ACTOR_ROT, it.rot, 36))
+            continue;
+        float dx = it.pos[0] - h.pos[0], dy = it.pos[1] - h.pos[1], dz = it.pos[2] - h.pos[2];
+        if (dx * dx + dy * dy + dz * dz > EPOSE_ITEM_M * EPOSE_ITEM_M) continue;
+        it.hash = name_hash_of(weaps[i]);
+        items[h.nitems++] = it;
+    }
+    int hl = (int)sizeof h + h.nitems * (int)sizeof(EItem);
+    if (hl + 4 + n * POSE_BONE > max) return 0;
+    memcpy(out, &h, sizeof h), memcpy(out + sizeof h, items, (size_t)h.nitems * sizeof(EItem));
+    uint8_t *o = out + hl;
+    int at = 4 + n * POSE_BONE, nsc = 0, lim = max - hl;
     for (int b = 0; b < n; b++) {
         const float *f = rec[b];
         float R[9] = {f[8], f[12], f[16], f[9], f[13], f[17], f[10], f[14], f[18]}, q[4];   // rows, from the record's columns
@@ -1971,7 +2138,7 @@ static int epose_pack(uint64_t a, uint32_t key, uint8_t *out, int max) {
     }
     uint16_t hdr = (uint16_t)(n | 0x8000), ns = (uint16_t)nsc;
     memcpy(o, &hdr, 2), memcpy(o + 2, &ns, 2);
-    return (int)sizeof h + at;
+    return hl + at;
 }
 static void epose_send_tick(void) {
     if (!enemy_puppets_on()) return;
@@ -1982,7 +2149,7 @@ static void epose_send_tick(void) {
         if (mine_known[i].key && mine_known[i].actor && mine_known[i].life > 0 && mine_known[i].d2 < SYNC_M * SYNC_M) idx[n++] = i;
     for (int i = 1; i < n; i++)   // nearest another Link first
         for (int j = i; j > 0 && mine_known[idx[j]].d2 < mine_known[idx[j - 1]].d2; j--) { int t = idx[j]; idx[j] = idx[j - 1], idx[j - 1] = t; }
-    static uint8_t buf[sizeof(EPoseHead) + COOP_POSE_MAX];
+    static uint8_t buf[COOP_EPOSE_MAX];
     int sent = 0;
     for (int k = 0; k < n && k < EPOSE_MAX; k++) {
         int i = idx[k];
@@ -2000,6 +2167,14 @@ static int pup_decode(const uint8_t *in, int len, PupRec *r) {
     if (len < (int)sizeof h + 4) return 0;
     memcpy(&h, in, sizeof h);
     in += sizeof h, len -= (int)sizeof h;
+    if (h.nitems > EPOSE_ITEMS || len < h.nitems * (int)sizeof(EItem) + 4) return 0;
+    r->ni = h.nitems;
+    for (int k = 0; k < h.nitems; k++) {
+        EItem it;
+        memcpy(&it, in + k * sizeof it, sizeof it);
+        r->ih[k] = it.hash, memcpy(r->ip[k], it.pos, 12), mat_quat(it.rot, r->iq[k]);
+    }
+    in += h.nitems * sizeof(EItem), len -= h.nitems * (int)sizeof(EItem);
     uint16_t n = 0, nsc = 0;
     memcpy(&n, in, 2), memcpy(&nsc, in + 2, 2);
     n &= 0x7fff;
@@ -2026,8 +2201,67 @@ static int pup_decode(const uint8_t *in, int len, PupRec *r) {
     return 1;
 }
 // Poses that came: into their enemy's history (a slot taken for a new one when this game follows that owner for it).
-static void epose_take_tick(void) {
-    static uint8_t in[sizeof(EPoseHead) + COOP_POSE_MAX];
+// A weapon let go: its body (kept 300 m under it) put back where it is, then its own update runs again.
+static void weap_let_go(Cpu *c, uint64_t w) {
+    int32_t st = 0;
+    _Alignas(16) float m[12], p[3], r[9];
+    if (!coop_rd(w + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || !coop_rd(w + COOP_ACTOR_POS, p, 12) || !coop_rd(w + COOP_ACTOR_ROT, r, 36)) return;
+    for (int i = 0; i < 3; i++) {
+        for (int k = 0; k < 3; k++) m[i * 4 + k] = r[i * 3 + k];
+        m[i * 4 + 3] = p[i];
+    }
+    uint64_t body = enemy_body(w);
+    if (body) coop_guest_call(c, MOD_MAIN_BASE + 0x25a450, body, (uint64_t)(uintptr_t)m, 0, 0);
+    coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, w, (uint64_t)(uintptr_t)m, 0, 0);
+}
+static int weap_bound(uint64_t w) {
+    for (int i = 0; i < PUP_N; i++)
+        for (int j = 0; j < EPOSE_ITEMS; j++) if (atomic_load_explicit(&pups[i].weap[j], memory_order_relaxed) == w) return 1;
+    return 0;
+}
+// A ready enemy puppet's weapons: each one the owner sends bound to this game's nearest of that name; one no longer
+// sent let go.
+static void pup_weapons(Cpu *c, int k) {
+    const PupRec *r = pups[k].count ? &pups[k].r[(pups[k].count - 1) % PUP_HIST] : NULL;
+    for (int j = 0; j < EPOSE_ITEMS; j++) {   // let go: no longer sent, or gone
+        uint64_t w = atomic_load(&pups[k].weap[j]);
+        if (!w) continue;
+        int sent = 0;
+        for (int q = 0; r && q < r->ni; q++) sent |= r->ih[q] == pups[k].weap_hash[j];
+        int32_t st = 0;
+        int alive = coop_rd(w + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6;
+        if (sent && alive) continue;
+        atomic_store(&pups[k].weap[j], 0);
+        if (alive) weap_let_go(c, w);
+        rt_log("coop: enemy %08x: its weapon %llx is its own again (%s)", pups[k].key, (unsigned long long)w, alive ? "no longer sent" : "gone");
+    }
+    for (int q = 0; r && q < r->ni; q++) {
+        int have = 0, free_j = -1;
+        for (int j = 0; j < EPOSE_ITEMS; j++) {
+            if (atomic_load(&pups[k].weap[j]) && pups[k].weap_hash[j] == r->ih[q]) have = 1;
+            if (free_j < 0 && !atomic_load(&pups[k].weap[j])) free_j = j;
+        }
+        if (have || free_j < 0) continue;
+        uint64_t best = 0;
+        float bd = 3.0f * 3.0f;
+        for (int i = 0; i < nweaps; i++) {
+            float p[3];
+            if (name_hash_of(weaps[i]) != r->ih[q] || weap_bound(weaps[i]) || !coop_rd(weaps[i] + COOP_ACTOR_POS, p, 12)) continue;
+            float dx = p[0] - r->ip[q][0], dy = p[1] - r->ip[q][1], dz = p[2] - r->ip[q][2], d = dx * dx + dy * dy + dz * dz;
+            if (d < bd) bd = d, best = weaps[i];
+        }
+        if (!best) continue;
+        pups[k].weap_hash[free_j] = r->ih[q];
+        atomic_store(&pups[k].weap[free_j], best);
+        char nm[48];
+        rt_log("coop: enemy %08x: its weapon %s %llx (%.2f m from the owner's) is put in its hand from the owner's", pups[k].key,
+               coop_actor_name(best, nm, sizeof nm), (unsigned long long)best, sqrtf(bd));
+    }
+}
+static void epose_take_tick(Cpu *c) {
+    for (int i = 0; i < weap_free_n; i++) if (!weap_bound(weap_free[i])) weap_let_go(c, weap_free[i]);
+    weap_free_n = 0;
+    static uint8_t in[COOP_EPOSE_MAX];
     int from = 0, len;
     uint64_t age = 0, now = plat_now_ns();
     while ((len = coop_net_epose_take(in, sizeof in, &from, &age)) != 0) {
@@ -2069,6 +2303,12 @@ static void epose_take_tick(void) {
                    ok ? "is posed from its owner's (its own update stops here)" : "no longer gets poses (its own update runs again)");
             atomic_store(&pups[k].ready, ok);
         }
+        if (ok) pup_weapons(c, k);
+        else
+            for (int j = 0; j < EPOSE_ITEMS; j++) {
+                uint64_t w = atomic_exchange(&pups[k].weap[j], 0);
+                if (w) weap_let_go(c, w);
+            }
         if (!ok && pups[k].count && now - pups[k].last_ns > 5 * PUP_STALE_NS) pup_release(pups[k].key);
     }
 }
@@ -2083,13 +2323,20 @@ static int epose_delay_ms(void) {
     if (d < 0) { const char *e = cfg_get("TOTK_COOP_ENEMY_DELAY_MS"); d = e ? atoi(e) : 100; }
     return d;
 }
-// The calc hook: 1 when the actor is a frozen enemy puppet (its calc is skipped).
-int coop_enemy_puppet_calc(uint64_t actor) { return pup_of_actor(actor) >= 0; }
+static int pup_weapon_of(uint64_t a) {
+    if (!a) return 0;
+    for (int i = 0; i < PUP_N; i++)
+        if (atomic_load_explicit(&pups[i].ready, memory_order_relaxed))
+            for (int j = 0; j < EPOSE_ITEMS; j++) if (atomic_load_explicit(&pups[i].weap[j], memory_order_relaxed) == a) return 1;
+    return 0;
+}
+// The calc hook: 1 when the actor is a frozen enemy puppet or one of its weapons (its calc is skipped).
+int coop_enemy_puppet_calc(uint64_t actor) { return pup_of_actor(actor) >= 0 || pup_weapon_of(actor); }
 // An update phase of an enemy puppet (1: taken; main+0x245030 is replaced by the drive, the others skipped).
 int coop_enemy_puppet_phase(Cpu *c, uint64_t addr) {
     uint64_t a = c->x[0];
     int i = pup_of_actor(a);
-    if (i < 0) return 0;
+    if (i < 0) return pup_weapon_of(a);   // a puppet's weapon: no phase (put in the hand in its enemy's drive)
     if (addr != MOD_MAIN_BASE + 0x245030) return 1;
     static __thread PupRec out;
     uint64_t t = plat_now_ns() - (uint64_t)epose_delay_ms() * 1000000ull;
@@ -2120,6 +2367,16 @@ int coop_enemy_puppet_phase(Cpu *c, uint64_t addr) {
             }
             out.n = A->n;
         }
+        out.ni = 0;   // its weapons, as both poses have them
+        for (int q = 0; q < B->ni; q++)
+            for (int p = 0; p < A->ni; p++)
+                if (A->ih[p] == B->ih[q]) {
+                    out.ih[out.ni] = B->ih[q];
+                    for (int k = 0; k < 3; k++) out.ip[out.ni][k] = A->ip[p][k] + (B->ip[q][k] - A->ip[p][k]) * f;
+                    qblend(A->iq[p], B->iq[q], f, out.iq[out.ni]);
+                    out.ni++;
+                    break;
+                }
         ok = 1;
     }
     plat_mutex_unlock(&pup_lock);
@@ -2148,6 +2405,30 @@ int coop_enemy_puppet_phase(Cpu *c, uint64_t addr) {
     if (model) coop_guest_call(c, MOD_MAIN_BASE + 0x24cc30, model, 0, 0, 0);
     uint64_t body = enemy_body(a);
     if (body) coop_guest_call(c, MOD_MAIN_BASE + 0x25a450, body, (uint64_t)(uintptr_t)m, 0, 0);
+    for (int j = 0; j < EPOSE_ITEMS; j++) {   // its weapons, after the push: in its hand as on the owner's
+        uint64_t w = atomic_load(&pups[i].weap[j]);
+        int q = -1;
+        for (int k = 0; w && k < out.ni; k++) if (out.ih[k] == pups[i].weap_hash[j]) q = k;
+        if (q < 0) continue;
+        float wr[9];
+        _Alignas(16) float wm[12];
+        quat_mat(out.iq[q], wr);
+        for (int r = 0; r < 3; r++) {
+            for (int k = 0; k < 3; k++) wm[r * 4 + k] = wr[r * 3 + k];
+            wm[r * 4 + 3] = out.ip[q][r];
+        }
+        memcpy((void *)(uintptr_t)(w + COOP_ACTOR_POS), out.ip[q], 12);
+        memcpy((void *)(uintptr_t)(w + COOP_ACTOR_ROT), wr, 36);
+        uint64_t wmod = enemy_model(w);
+        if (wmod) {
+            memcpy((void *)(uintptr_t)(wmod + 0x1f8), wm, sizeof wm);
+            ST8(wmod + 0x240, LD8(wmod + 0x240) | 1);
+            coop_guest_call(c, MOD_MAIN_BASE + 0x24cc30, wmod, 0, 0, 0);
+        }
+        uint64_t wb = enemy_body(w);
+        wm[7] -= 300.0f;   // its body out of reach: taken from the frozen enemy's hand, it was the player's
+        if (wb) coop_guest_call(c, MOD_MAIN_BASE + 0x25a450, wb, (uint64_t)(uintptr_t)wm, 0, 0);
+    }
     static _Atomic int said, said_nb;
     if (atomic_fetch_add(&said, 1) == 0)
         rt_log("coop: an enemy puppet is driven (skeleton %llx, %u bones, model %llx, body %llx)", (unsigned long long)sk, have,

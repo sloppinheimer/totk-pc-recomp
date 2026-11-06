@@ -7,9 +7,10 @@
 #   -FakeDyeA ",,,,3,3": game A reports these armor dyes (slot order; empty keeps the real one)
 #   -QuitBAfter 60: game B is closed 60 s after it starts (a player leaving)
 #   -SpawnA / -SpawnB "Enemy_Bokoblin_Junior@20": that game spawns the actor beside its Link at that world time
+#   -Profile build\prof-play-1: both games play copies of that profile instead of the 1.4.3 one (it is not written)
 #   -FakeAtA 25: game A's fakes (-FakeGearA, -FakeDyeA, -FakeHandA) apply only from 25 s into its world
 param([int]$Seconds = 90, [string]$ScriptA = "tools\coop\walk.txt", [string]$ScriptB = "tools\coop\idle.txt", [string]$FakeGearA = "", [string]$FakeDyeA = "", [string]$FakeHandA = "",
-      [string]$ShotsA = "", [string]$ShotsB = "", [string]$ShotsDir = "", [int]$QuitBAfter = 0, [string]$FakeAtA = "", [string]$SpawnA = "", [string]$SpawnB = "")
+      [string]$ShotsA = "", [string]$ShotsB = "", [string]$ShotsDir = "", [int]$QuitBAfter = 0, [string]$FakeAtA = "", [string]$SpawnA = "", [string]$SpawnB = "", [string]$Profile = "build\profile-v143")
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
@@ -34,7 +35,7 @@ foreach ($g in @(@{dir = $a; prof = 'build\prof-coop-a'; script = $ScriptA; name
                  @{dir = $b; prof = 'build\prof-coop-b'; script = $ScriptB; name = 'B'; input = 'none'})) {
     $p = Join-Path $root $g.prof
     if (Test-Path $p) { Remove-Item -Recurse -Force $p }
-    Copy-Item -Recurse (Join-Path $root 'build\profile-v143') $p
+    Copy-Item -Recurse (Join-Path $root $Profile) $p
     $env:TOTK_PROFILE_DIR = $p
     $env:TOTK_INPUT_SCRIPT = (Resolve-Path $g.script).Path
     $env:TOTK_ASSUME_FOCUS = '1'; $env:TOTK_FULLSCREEN = '0'; $env:TOTK_WINDOW_SIZE = '960x540'

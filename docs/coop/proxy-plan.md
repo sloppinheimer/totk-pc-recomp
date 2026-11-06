@@ -185,8 +185,18 @@ right in the tester's own two-pad session.
   - **Tested** (pair runs, TOTK_COOP_TEST_SPAWN with TOTK_COOP_TEST_SPAWN_AT so both games make one enemy at one
     place; tools/coop/enemy_compare.py on the audit): a Bokoblin chasing a walking Link for 83 m was 0.09 m off on
     average (0.61 m most) and its body's height within 0.1 m; the Chuchus near the save's start within 2 cm.
-  - **Not done:** arrows and bombs from a following game (their copies in the owner's game hit nothing); the owner's
-    enemy hitting a following player's Link (its proxy takes the hit in the owner's game); not seen on screen.
+  - **Its hits on the others:** they land on the other players' proxies in the owner's game, which take none of it
+    (and the frozen copy in their own game never attacks). The hit's record on the proxy (damage component +0x1a4,
+    damage in quarter hearts at +0x1a8, the attacker's reference at +0x1c0) is sent to that player, whose life goes
+    down by it when its game follows that enemy (pair test: two hits of 1, life 14 -> 13 -> 12 and kept). No knock-back
+    or flinch there.
+  - **Its weapons** (a play session: one lagged in the frozen enemy's hand and could be taken from it): the owner
+    sends the Weapon_ actors within 2.5 m that are no Link's with each pose; the other games freeze theirs of that name
+    nearest that place and put it there after the enemy's model push, its body 300 m under it. Pair test on the tester's
+    save: a Dark Bokoblin's sword and shield and a Bokoblin's bow found and held. Not seen on screen; the camp stood
+    still. A weapon lying within 2.5 m of a frozen enemy is held too and cannot be picked up while it is there.
+  - **Not done:** arrows and bombs from a following game (their copies in the owner's game hit nothing); an enemy
+    with no skeleton found (a bee swarm) is only put at the owner's place; not seen on screen.
 - Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
 
 ## Plan
