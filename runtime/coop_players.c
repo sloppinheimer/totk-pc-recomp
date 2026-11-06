@@ -626,6 +626,7 @@ static void beam_log(uint64_t a, uint32_t id, const char *who);
 static void beam_end_watch(const float at[3]);
 static void place_copy(Cpu *c, Slot *s, int k);
 static void beam_copy(Cpu *c, Slot *s, int k, float m[12]);
+static void set_driven(uint64_t a);
 #define COPY_WARMUP 5   // ticks a copy runs its own update after it is made (arrow_copies)
 // Where a Link's bow is drawn: its model's world matrix (model +0x1f8, 3x4 rows), which the model push puts on the
 // hand bone each frame. A nocked arrow is sent and shown in this frame (COOP_OBJ_LOCAL). 1 when it has a bow.
@@ -1489,16 +1490,21 @@ static void arrow_copies(Cpu *c, Slot *s) {
         // beam_end_watch.)
         if (s->mir[k].blowing && s->mir[k].state == 3) {   // going off: left to do it, then let go (3 s)
             int32_t st = 0;
-            int beam = s->mir[k].launched == 2;
             int alive = coop_rd(s->mir[k].actor + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6;
-            if (++s->mir[k].ticks < COPY_WARMUP + (beam ? 30 : 180) && alive) continue;
-            if (beam) rt_log("coop: slot %d: the copy of beam %u %s (state %d, %d ticks on)", (int)(s - slots), s->mir[k].id,
-                             alive ? "is let go" : "ended by itself", st, s->mir[k].ticks - COPY_WARMUP);
+            if (++s->mir[k].ticks < COPY_WARMUP + 180 && alive) continue;
+            static int said_go;
+            if (said_go++ < 40)
+                rt_log("coop: slot %d: the copy of %s (%u) %s %d ticks after it was set off", (int)(s - slots), s->mir[k].name, s->mir[k].id,
+                       alive ? "had not gone off" : "went off", s->mir[k].ticks - COPY_WARMUP);
             if (st >= 2 && st <= 6) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0);
+            set_driven(s->mir[k].actor);   // (below)
             s->mir[k].state = 0, s->mir[k].actor = 0;
             continue;
         }
-        if (s->mir[k].actor) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0);
+        // A copy let go is not taken for this game's own object while it goes away: a fused BombFruit's copy, left
+        // after its blast, was sent back as a placed BombFruit this game moved, and the other game showed a copy of it,
+        // a bomb that could go off there (a play session, 2026-11-06).
+        if (s->mir[k].actor) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0), set_driven(s->mir[k].actor);
         if (s->mir[k].state == 2) continue;   // its create is still pending: claimed (then deleted) once it is there
         s->mir[k].state = 0, s->mir[k].actor = 0;
     }
@@ -1661,7 +1667,10 @@ static void place_copy(Cpu *c, Slot *s, int k) {
     // sleeping arrow is not drawn (a play session, 2026-11-05). It is woken as the actor state machine
     // (main+0x54cb00) wakes one: +0x28's reason bits at 0x10, then bit 19 set and the actor queued for the machine
     // (main+0x2ae413c). Frozen after its warmup (copy_place), it does not ask again.
-    if (strstr(s->mir[k].name, "Arrow") || (s->mir[k].flags & COOP_OBJ_ONLINK) || !strcmp(s->mir[k].name, "PlayerBeam")) {   // (the paraglider's, the beam's)
+    // (the paraglider's, the beam's, and a fused material's set off: asleep, it did not go off until this Link's camera
+    // turned to it, about half the blasts did not show, and one came late enough to hurt this Link, a play session,
+    // 2026-11-06)
+    if (strstr(s->mir[k].name, "Arrow") || (s->mir[k].flags & COOP_OBJ_ONLINK) || !strcmp(s->mir[k].name, "PlayerBeam") || s->mir[k].blowing) {
         int32_t st = 0;
         if (coop_rd(actor + COOP_ACTOR_STATE, &st, 4) && st == 6) {
             uint32_t w = LD32(actor + 0x28);
@@ -1958,6 +1967,8 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
     int ck;
     if (prop_skip(nm) || copy_of(a, &cs, &ck) || is_driven(a) || is_preview(a) || old_item(a)) return;
     for (int i = 0; i < 32; i++) if (my_arrows[i].actor == a) return;   // an arrow's fused material
+    int32_t ast = 0;   // one going away (state 7..11) is not sent (a bomb after its blast, see arrow_copies)
+    if (coop_rd(a + COOP_ACTOR_STATE, &ast, 4) && ast > 6 && !is_beam(nm)) return;
     float p[3];
     if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
     float d2 = (p[0] - ps->me[0]) * (p[0] - ps->me[0]) + (p[1] - ps->me[1]) * (p[1] - ps->me[1]) + (p[2] - ps->me[2]) * (p[2] - ps->me[2]);
