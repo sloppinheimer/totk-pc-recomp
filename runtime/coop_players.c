@@ -702,7 +702,6 @@ static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc);
 // tells the owner (an OBJS packet with header word 1: the entries' ids, each with its owner's player id in flags),
 // which deletes its own, and does not make the copy again while the owner still reports it (5 s).
 static int pickable(const char *nm) { return !strncmp(nm, "Item_", 5) || !strncmp(nm, "Weapon_", 7); }
-static int link_effect(const char *nm);   // the Link's beam and shockwave (below)
 static struct { int owner; uint32_t id; int until; } taken[32];
 static int taken_tick;
 static int was_taken(int owner, uint32_t id) {
@@ -1544,7 +1543,7 @@ static void arrow_copies(Cpu *c, Slot *s) {
                     s->mir[k].state = 0, s->mir[k].actor = 0;
                     continue;
                 }
-            } else if (!strstr(s->mir[k].name, "Arrow") && !(s->mir[k].flags & COOP_OBJ_ONLINK) && !link_effect(s->mir[k].name)) {
+            } else if (!strstr(s->mir[k].name, "Arrow") && !(s->mir[k].flags & COOP_OBJ_ONLINK)) {
                 // Destroyed here (a bomb flower's copy shot by this game's Link blew up, a play session,
                 // 2026-11-05): the owner's own goes too (the same notice as a pick-up), so it cannot be picked up
                 // there again; it went off there only when the copy of this Link's arrow happened to touch it.
@@ -1579,7 +1578,7 @@ static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc) {
     // show (a play session, 2026-11-05).
     // (a paraglider's copy from its first tick: it went away by itself about 0.5 s after it was made, glide.txt)
     return copy_of(actor, &s, &k) && (s->mir[k].ticks >= COPY_WARMUP || (s->mir[k].flags & COOP_OBJ_ONLINK)) &&
-           strncmp(s->mir[k].name, "SpObj_", 6) && !pickable(s->mir[k].name) && !s->mir[k].blowing && !link_effect(s->mir[k].name);
+           strncmp(s->mir[k].name, "SpObj_", 6) && !pickable(s->mir[k].name) && !s->mir[k].blowing;
 }
 // Each tick, a copy is put where its arrow is: actor position and rotation, model matrix and the push to the model
 // units, as the proxy. Done from the tick, not in one of its own updates: the game stopped calling a frozen arrow's
@@ -1681,7 +1680,6 @@ static void place_copy(Cpu *c, Slot *s, int k) {
                    (unsigned long long)body, bt[7], m[7]);
         return;
     }
-    if (link_effect(s->mir[k].name)) return;   // a beam or shockwave: placed, no body driven for riding
     if (pickable(s->mir[k].name)) {   // an item runs its own physics: its body is put with it each tick, not driven
         coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, actor, (uint64_t)(uintptr_t)m, 0, 0);
         return;
@@ -1760,13 +1758,11 @@ static void set_driven(uint64_t a) {
     driven[free].actor = a, driven[free].until = prop_tick + 60;
 }
 // Not world objects: Links and what they wear and carry, people, animals, enemies (synced on their own), arrows.
-// The Link's own attack effects: PlayerBeam, the Master Sword's beam at full life, and PlayerAttackGrave, the
-// Earthwake Technique's shockwave (TOTK_COOP_TEST_NEWNEAR in a play session, 2026-11-05). They are world objects
-// (made by their Link) although their names start with "Player"; their copies run their own update to play out, are
-// not ridden, and one that ends by itself is not taken for a pick-up.
-static int link_effect(const char *nm) { return !strcmp(nm, "PlayerBeam") || !strcmp(nm, "PlayerAttackGrave"); }
+// (The Link's own attack effects, PlayerBeam, the Master Sword's beam, and PlayerAttackGrave, the Earthwake
+// Technique's shockwave, are left out with the "Player" names: sent as copies they played out wrong, the beam spun in
+// place and the shockwave's glow stayed in the air, a play session, 2026-11-05. The proxy makes its own: its
+// attack thaw lasts while its owner holds the button, and its life follows its owner's, see "proxy attacks".)
 static int prop_skip(const char *nm) {
-    if (link_effect(nm)) return 0;
     // (Parasail, the Link's paraglider, was left out here: a copy of it seemed to take the other game down with the
     // Ultrahand crash, which was the beam's race (beam_hook). It is sent in its Link's frame: COOP_OBJ_ONLINK.)
     // Sage_: the sages' companion spirits, and Weapon_Bow_128, Tulin's bow, which follow the Link: sent as moved
@@ -1854,27 +1850,6 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
         }
     }
     if (d2 > 400 && dco > 400) return;   // within 20 m of a Link, this one or a co-op one
-    // A beam or shockwave of this Link's (link_effect): pooled actors, reused, so not new to the key scan: taken as
-    // made by this Link whenever one is awake (state 4) within 6 m and nearer it, with a new number each time it wakes,
-    // and forgotten when it sleeps again. As moved placed objects their copies lingered and went wrong (the tester's
-    // session, 2026-11-05).
-    if (link_effect(nm)) {
-        int32_t est = 0;
-        coop_rd(a + COOP_ACTOR_STATE, &est, 4);
-        int ie = -1;
-        for (int i = 0; i < PROPS_N && ie < 0; i++) if (props[i].actor == a) ie = i;
-        if (est != 4) { if (ie >= 0) props[ie].actor = 0; return; }
-        if (ie < 0) {
-            if (d2 > 36 || d2 > dco + 1) return;   // not this Link's
-            for (int i = 0; i < PROPS_N && ie < 0; i++) if (!props[i].actor) ie = i;
-            if (ie < 0) return;
-            memset(&props[ie], 0, sizeof props[ie]);
-            props[ie].actor = a, props[ie].key = key, props[ie].made = 1, props[ie].born = prop_tick, props[ie].id = next_arrow_id++;
-            snprintf(props[ie].name, sizeof props[ie].name, "%s", nm);
-        }
-        props[ie].seen = prop_tick, props[ie].near_me = 1;
-        return;
-    }
     int e = -1, free = -1;
     for (int i = 0; i < PROPS_N && e < 0; i++) {
         if (props[i].actor == a) e = i;
@@ -1947,7 +1922,7 @@ static int report_props(uint64_t me, CoopObj *out, int max) {
         int ck;
         uint32_t id = 0;
         if (props[e].made) {
-            if ((prop_tick - props[e].born < 10 && !link_effect(props[e].name)) || prop_skip(props[e].name)) continue;   // a copy made here is known by now; gear worn again (a beam at once: it is short)
+            if (prop_tick - props[e].born < 10 || prop_skip(props[e].name)) continue;   // a copy made here is known by now; gear worn again
             if (copy_of(props[e].actor, &cs, &ck)) { props[e].made = 0; continue; }
             id = props[e].id;
         } else if (props[e].touched)
@@ -2079,7 +2054,7 @@ static void dwatch_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
     float p[3];
     Slot *cs;
     int ck;
-    if (prop_skip(nm) || link_effect(nm) || !strncmp(nm, "Parasail", 8) || copy_of(a, &cs, &ck) || coop_is_resident(a) || old_item(a) ||
+    if (prop_skip(nm) || !strncmp(nm, "Parasail", 8) || copy_of(a, &cs, &ck) || coop_is_resident(a) || old_item(a) ||
         !coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
     if ((p[0] - me[0]) * (p[0] - me[0]) + (p[1] - me[1]) * (p[1] - me[1]) + (p[2] - me[2]) * (p[2] - me[2]) > 400) return;
     for (int i = 0; i < 32; i++) if (my_arrows[i].actor == a) return;
@@ -2937,7 +2912,7 @@ static int ride_objects(RideObj *out, int max) {
             // not ridden: arrows, and items (an item's copy runs its own physics and is put back at its owner's
             // place; a Link carried by it went through the floor, a play session, 2026-11-05)
             if (slots[i].mir[k].state == 3 && slots[i].mir[k].ticks >= COPY_WARMUP && !strstr(slots[i].mir[k].name, "Arrow") &&
-                !pickable(slots[i].mir[k].name) && !(slots[i].mir[k].flags & COOP_OBJ_ONLINK) && !link_effect(slots[i].mir[k].name)) {
+                !pickable(slots[i].mir[k].name) && !(slots[i].mir[k].flags & COOP_OBJ_ONLINK)) {
                 out[n].actor = slots[i].mir[k].actor, out[n].owner = slots[i].net_id, out[n].id = slots[i].mir[k].id;
                 memcpy(out[n].pos, slots[i].mir[k].pos, 12), memcpy(out[n].rot, slots[i].mir[k].rot, 36);
                 n++;
@@ -3760,6 +3735,11 @@ void coop_players_tick(Cpu *c, int numpad3) {
         for (int k = 0; my_eq && k < 3; k++)
             if (coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, my_eq, hand_of[k], 0, 0) & 1) st.flags |= 1u << (8 + k);
         shield_send(me, my_eq, &st);
+        {   // proxy attacks: its life, so the proxies' match (the Master Sword's beam comes at full life only)
+            int coop_life_of(uint64_t a), coop_life_max_of(uint64_t a);
+            int l = coop_life_of(me), lm = coop_life_max_of(me);
+            st.life = (uint16_t)(l > 0 && l < 65535 ? l : 0), st.life_max = (uint16_t)(lm > 0 && lm < 65535 ? lm : 0);
+        }
         // TOTK_COOP_FAKE_AT=<s>: the fakes below apply only from that world time (a change during the session)
         const char *fat = cfg_get("TOTK_COOP_FAKE_AT");
         int fakes = !fat || frame_step_world_us() / 1e6 >= atof(fat);
@@ -3893,6 +3873,16 @@ void coop_players_tick(Cpu *c, int numpad3) {
         memcpy(s->want_pos, st.pos, 12), memcpy(s->want_rot, st.rot, 36), s->have_want = 1;
         s->ride_owner = st.ride_owner, s->ride_id = st.ride_id, memcpy(s->ride_off, st.ride_off, 12);
         s->shield_placed = (st.flags >> 11) & 1;
+        if (proxied(s) && st.life > 0 && st.life_max > 0) {   // proxy attacks: its life and most life as its owner's
+            int coop_life_of(uint64_t a), coop_life_max_of(uint64_t a);
+            void coop_set_life(uint64_t a, int v), coop_set_life_max(uint64_t a, int v);
+            if (coop_life_max_of(s->actor) != st.life_max) coop_set_life_max(s->actor, st.life_max);
+            if (coop_life_of(s->actor) != st.life) {
+                static int said;
+                if (said++ < 6) rt_log("coop: proxy: slot %d life %d -> %d of %d, as its owner's", (int)(s - slots), coop_life_of(s->actor), st.life, st.life_max);
+                coop_set_life(s->actor, st.life);
+            }
+        }
         if (s->shield_placed) memcpy(s->shield_local, st.shield_pos, 12), quat_mat(st.shield_q, s->shield_rot);
         for (int k = 0; k < COOP_GEAR_SLOTS; k++) {
             memcpy(s->gear_want[k], st.gear[k], 32);
@@ -3911,14 +3901,15 @@ void coop_players_tick(Cpu *c, int numpad3) {
             sticks[k] = (int32_t)(lx * 32767.0f), sticks[k + 1] = (int32_t)(ly * 32767.0f);
         }
         set_input(s, st.buttons, sticks);
-        {   // the owner presses attack (Y): its proxy runs its own update for 40 frames with Y let through
+        {   // the owner presses attack (Y): its proxy runs its own update with Y let through, while the owner holds it
+            // and for 40 frames after (the Earthwake Technique charges while it is held and bursts on the release)
             static uint64_t was[COOP_MAX_PLAYERS];
             int k = (int)(s - slots);
             int ride_on(void);
-            if (proxied(s) && (st.buttons >> 3 & 1) && !(was[k] >> 3 & 1) && attack_thaw_on()) {
+            if (proxied(s) && (st.buttons >> 3 & 1) && attack_thaw_on()) {
                 if (s->thaw < 40) s->thaw = 40;
                 s->atk_thaw = 40;
-                rt_log("coop: proxy: slot %d swings (its own update for 40 frames, Y through)", k);
+                if (!(was[k] >> 3 & 1)) rt_log("coop: proxy: slot %d swings (its own update while Y is held and 40 frames after, Y through)", k);
             }
             was[k] = st.buttons;
         }

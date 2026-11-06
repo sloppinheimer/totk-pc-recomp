@@ -89,6 +89,15 @@ static void set_life(uint64_t a, int v) {
 }
 int coop_life_of(uint64_t a) { return life_of(a); }          // -1: no life component
 void coop_set_life(uint64_t a, int v) { set_life(a, v); }
+int coop_life_max_of(uint64_t a) {   // most life, -1 none
+    uint32_t v = 0;
+    uint64_t p = life_word(a, 1);
+    return p && coop_rd(p, &v, 4) ? (int)v : -1;
+}
+void coop_set_life_max(uint64_t a, int v) {
+    uint64_t p = life_word(a, 1);
+    if (p && v > 0) ST32(p, (uint32_t)v);
+}
 
 static uint32_t enemy_key(const char *name, const float home[3]) {
     uint32_t h = 2166136261u;

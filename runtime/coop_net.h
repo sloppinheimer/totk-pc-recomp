@@ -45,7 +45,7 @@ typedef struct {
     uint32_t ride_id;                 // riding: that object's id as its owner sends it (CoopObj.id)
     float ride_off[3];                // riding: where this Link is in the object's frame
     float shield_pos[3], shield_q[4]; // with flags bit 11: the shield in this Link's frame (rotation as x y z w)
-    uint32_t pad2;
+    uint16_t life, life_max;          // this Link's life and most life, quarter hearts (0: unknown)
 } NetState;
 _Static_assert(sizeof(NetState) == 448, "NetState wire size");
 #define COOP_GEAR_SLOTS 6
