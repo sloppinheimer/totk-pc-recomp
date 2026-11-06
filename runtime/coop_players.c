@@ -1336,13 +1336,20 @@ static void arrow_track_fn(uint64_t a, void *arg) {
 }
 static void mat_quat(const float *r, float q[4]);
 static void quat_mat(const float q[4], float *r);
-static int report_arrows(uint64_t me, CoopObj *out) {
+static int report_arrows(Cpu *c, uint64_t me, CoopObj *out) {
     void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
     arrow_tick++;
     if (local_buttons >> 9 & 1) zr_tick = arrow_tick;
     coop_actors_live(arrow_track_fn, &me);
     int n = 0;
     memset(out, 0, sizeof(CoopObj) * COOP_OBJS);
+    // Whether the bow is in hand: an arrow near this Link is sent only while it is. After the bow was put away the
+    // nocked arrow's copy stayed at the proxy's hand for a while (a play session, 2026-11-05): the arrow is still
+    // there in this game for a moment.
+    uint64_t eq = eq_of_actor(me);
+    int bow_out = eq && (coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, eq, 3, 0, 0) & 1);
+    float mp[3] = {0};
+    coop_rd(me + COOP_ACTOR_POS, mp, 12);
     for (int i = 0; i < 32; i++) {
         if (!my_arrows[i].actor) continue;
         if (arrow_tick - my_arrows[i].seen > 30) { my_arrows[i].actor = 0; continue; }   // gone (not updated for 1 s)
@@ -1351,6 +1358,8 @@ static int report_arrows(uint64_t me, CoopObj *out) {
         CoopObj *o = &out[n];
         float r[9];
         if (!coop_rd(my_arrows[i].actor + COOP_ACTOR_POS, o->pos, 12) || !coop_rd(my_arrows[i].actor + COOP_ACTOR_ROT, r, 36)) continue;
+        if (!bow_out && (o->pos[0] - mp[0]) * (o->pos[0] - mp[0]) + (o->pos[1] - mp[1]) * (o->pos[1] - mp[1]) +
+                            (o->pos[2] - mp[2]) * (o->pos[2] - mp[2]) < 2.5f * 2.5f) continue;   // put away
         o->id = my_arrows[i].id;
         coop_actor_name(my_arrows[i].actor, o->name, sizeof o->name);
         // Within 2.5 m of this Link (nocked): sent in the frame of its bow's model, so the other games put it on the
@@ -3334,7 +3343,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         memcpy(st.gear, my_gear, sizeof st.gear);
         memcpy(st.dye, my_dye, sizeof st.dye);
         static CoopObj cur[COOP_OBJS];
-        int n_objs = report_arrows(me, cur);
+        int n_objs = report_arrows(c, me, cur);
         n_objs += report_props(me, cur + n_objs, COOP_OBJS - n_objs);
         objs_send(cur, n_objs);
         objs_receive(c);
