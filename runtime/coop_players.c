@@ -1517,6 +1517,26 @@ static void place_copy(Cpu *c, Slot *s, int k) {
     // body: [[[actor+0x228] +0x50] +0x20] +0x150 (as COOP_FORCE_MATRIX finds it). A moving body can push Links;
     // TOTK_COOP_RIDE=0 leaves copies bodiless as before.
     int ride_on(void);
+    if (strstr(s->mir[k].name, "Arrow")) {
+        // An arrow's copy could be taken once where it was first made, and left a "Take" prompt on the floor there
+        // (a play session, 2026-11-05): its model is moved, but its body stayed. The body is kept 300 m under it,
+        // out of any Link's reach, set on the body itself (main+0x25a450 (body, m), which the physics takes; the
+        // actor's own ForceSetMatrix is applied in its update, which a frozen copy does not run); the frozen copy
+        // does not take its place from the body.
+        _Alignas(16) float mb[12];
+        memcpy(mb, m, sizeof mb);
+        mb[7] -= 300.0f;
+        uint64_t phys = coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x50), ctl = phys ? coop_rd_ptr(phys + 0x20) : 0;
+        uint64_t body = ctl ? coop_rd_ptr(ctl + 0x150) : 0;
+        if (body) coop_guest_call(c, MOD_MAIN_BASE + 0x25a450, body, (uint64_t)(uintptr_t)mb, 0, 0);
+        static int said;
+        float bt[12] = {0};
+        if (body) coop_rd(body + 0x98, bt, sizeof bt);   // its last transform (3x4 rows)
+        if (said++ % 200 == 0 && said < 1000)
+            rt_log("coop: arrow copy %u: its body %llx is kept 300 m under it (body at y %.2f, the copy at %.2f)", s->mir[k].id,
+                   (unsigned long long)body, bt[7], m[7]);
+        return;
+    }
     if (pickable(s->mir[k].name)) {   // an item runs its own physics: its body is put with it each tick, not driven
         coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, actor, (uint64_t)(uintptr_t)m, 0, 0);
         return;

@@ -128,6 +128,11 @@ right in the tester's own two-pad session.
   key as well as one it made (a play session: the owner had kept its dropped sword). TOTK_COOP_TEST_PICKUP=sword:
   B's hand takes the copy of A's sword, A deletes its own. Not checked: the apple in B's pouch (no log of the pouch),
   a dropped weapon sent by key in a scripted test (dropping needs the menu), two players picking up one item.
+- **Open (the tester's list, 2026-11-05):** the proxy shows no paraglider (Parasail is left out of world objects: a copy
+  of it took the other game down with the Ultrahand crash, since fixed); the Ultrahand beam and Recall effects;
+  a bomb arrow's blast on the other screen; hair and clothes still blown after a fan (re-notes); the autobuild
+  green tint (re-notes); arrow copies cannot be picked up (frozen, their body kept away: a copy was taken from
+  the bow).
 - Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
 
 ## Plan
