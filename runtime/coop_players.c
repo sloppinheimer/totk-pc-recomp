@@ -1390,8 +1390,17 @@ static void arrow_copies(Cpu *c, Slot *s) {
                 int gone = !coop_rd(s->mir[k].actor + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 ||
                            strcmp(coop_actor_name(s->mir[k].actor, nm, sizeof nm), s->mir[k].name);
                 if (gone && d2 > 9) { s->mir[k].state = 0, s->mir[k].actor = 0; continue; }   // gone, not by this Link (3 m)
-                if (gone) {
-                    rt_log("coop: slot %d: the copy of object %u (%s) was picked up here (state %d); the owner is told",
+                // A weapon picked up with the hand empty is not deleted: the copy becomes this Link's own (the tester's
+                // session, 2026-11-05: the owner kept its sword and picked it up again). It is this Link's now.
+                int held = 0;
+                uint64_t my_eq = me ? eq_of_actor(me) : 0;
+                for (int row = 0; my_eq && row < 24 && !held; row++) {
+                    uint64_t ref = coop_rd_ptr(my_eq + GEAR_TABLE + 0x18 * (uint64_t)row);
+                    held = ref && coop_rd_ptr(ref + 0x40) == s->mir[k].actor;
+                }
+                if (held) st = -1;
+                if (gone || held) {
+                    rt_log("coop: slot %d: the copy of object %u (%s) was picked up here (state %d, -1: now this Link's gear); the owner is told",
                            (int)(s - slots), s->mir[k].id, s->mir[k].name, st);
                     take_note(s->net_id, s->mir[k].id);
                     s->mir[k].state = 0, s->mir[k].actor = 0;
@@ -1866,7 +1875,7 @@ static void props_test(Cpu *c, uint64_t me) {
         coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, obj, (uint64_t)(uintptr_t)m, 0, 0);
     }
 }
-// Test (TOTK_COOP_TEST_PICKUP=1, both games on the 100% save; pickup_b_3rd.txt in game B): at 21 s both Links are
+// Test (TOTK_COOP_TEST_PICKUP=1, or =sword for a Weapon_Sword_001, both games on the 100% save; pickup_b_3rd.txt in game B): at 21 s both Links are
 // put on the flat ground the fan test uses, 1.2 m apart and facing each other (player 1 at z 1510.2 facing +z, the
 // other at z 1511.4 facing -z); at 22 s player 1 makes an apple (Item_Fruit_A) between them, 0.5 m from the other;
 // from 22 s to 40 s every 15 ticks both games log each Item_ actor within 3 m: the original, its copy, and whether
@@ -1887,8 +1896,9 @@ static void pickup_test(Cpu *c, uint64_t me) {
     }
     if (coop_net_id() == 1 && !made && now > 22) {
         float at[3] = {31.5f, 1515.0f, 1510.9f}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-        made = coop_request_create(c, "Item_Fruit_A", at, rot, handle) ? 1 : 0;
-        rt_log("coop: test: pickup: apple asked for at %.2f %.2f %.2f (%d)", at[0], at[1], at[2], made);
+        const char *what = !strcmp(cfg_get("TOTK_COOP_TEST_PICKUP"), "sword") ? "Weapon_Sword_001" : "Item_Fruit_A";
+        made = coop_request_create(c, what, at, rot, handle) ? 1 : 0;
+        rt_log("coop: test: pickup: %s asked for at %.2f %.2f %.2f (%d)", what, at[0], at[1], at[2], made);
     }
     if (made == 1 && coop_handle_status(handle) == 3) {
         uint64_t ref, a = coop_claim(c, handle, link, &ref);
@@ -1898,7 +1908,7 @@ static void pickup_test(Cpu *c, uint64_t me) {
     static int near_put;   // the other game: at 28.5 s (the apple rolls 9 m down to rest) its Link 0.5 m from the copy, facing it
     if (coop_net_id() != 1 && !near_put && now > 28.5)
         for (int k = 0; k < COOP_OBJS && !near_put; k++)
-            if (slots[0].mir[k].state == 3 && !strncmp(slots[0].mir[k].name, "Item_", 5)) {
+            if (slots[0].mir[k].state == 3 && pickable(slots[0].mir[k].name)) {
                 float q[3];
                 if (!coop_rd(slots[0].mir[k].actor + COOP_ACTOR_POS, q, 12)) continue;
                 float m[12] = {0, 0, 1, q[0] - 0.5f, 0, 1, 0, q[1] + 0.1f, -1, 0, 0, q[2]};   // facing +x
@@ -1910,7 +1920,7 @@ static void pickup_test(Cpu *c, uint64_t me) {
     if (now < 22 || now > 40 || ++t % 15) return;
     for (int i = 0; i < COOP_MAX_PLAYERS; i++)
         for (int k = 0; k < COOP_OBJS; k++)
-            if (slots[i].mir[k].state && !strncmp(slots[i].mir[k].name, "Item_", 5)) {
+            if (slots[i].mir[k].state && pickable(slots[i].mir[k].name)) {
                 char nm[48] = "";
                 float q[3] = {0};
                 uint64_t a = slots[i].mir[k].actor;
@@ -1919,7 +1929,7 @@ static void pickup_test(Cpu *c, uint64_t me) {
                        slots[i].mir[k].state, (unsigned long long)a, nm, q[0], q[1], q[2]);
             }
     for (int e = 0; e < PROPS_N; e++)
-        if (props[e].actor && props[e].made && !strncmp(props[e].name, "Item_", 5)) {
+        if (props[e].actor && props[e].made && pickable(props[e].name)) {
             char nm[48] = "";
             float q[3] = {0};
             coop_actor_name(props[e].actor, nm, sizeof nm), coop_rd(props[e].actor + COOP_ACTOR_POS, q, 12);
@@ -2078,9 +2088,10 @@ static void objs_receive(Cpu *c) {
                 CoopObj o;
                 memcpy(&o, pk + 4 + e * sizeof(CoopObj), sizeof o);
                 if (o.flags != coop_net_id()) continue;
-                for (int i = 0; i < PROPS_N; i++)
-                    if (props[i].actor && props[i].made && props[i].id == o.id) {
-                        rt_log("coop: player %d picked up my %s (number %u); mine is deleted", from, props[i].name, o.id);
+                for (int i = 0; i < PROPS_N; i++)   // one it made (by number) or a placed one it moved (by key)
+                    if (props[i].actor && ((props[i].made && props[i].id == o.id) ||
+                                           (!props[i].made && (o.id & COOP_OBJ_KEYED) && (COOP_OBJ_KEYED | (props[i].key & ~COOP_OBJ_KEYED)) == o.id))) {
+                        rt_log("coop: player %d picked up my %s (%08x); mine is deleted", from, props[i].name, o.id);
                         coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, props[i].actor, COOP_DELETE_REASON, 0, 0);
                         set_driven(props[i].actor);   // not taken for a new object of this game's while it goes away
                         props[i].actor = 0;

@@ -123,8 +123,11 @@ right in the tester's own two-pad session.
 - **Picking up another player's item**: an item's copy (Item_, Weapon_) runs its own update, so it can be picked
   up; when it goes away near this Link, the owner is told (an OBJS packet, header word 1) and deletes its own, and
   the copy is not made again. pickup_b_3rd.txt with TOTK_COOP_TEST_PICKUP=1: B picks up the copy of A's apple at
-  the first A press, A deletes its apple. Not checked: that the apple is in B's pouch (no log of the pouch), a
-  weapon (an equipped one goes to the hand, not the pouch), two players picking up the same item at once.
+  the first A press, A deletes its apple. A weapon picked up with the hand empty is not deleted (the copy becomes
+  the Link's own), so a copy now in this Link's gear counts too, and the owner deletes a dropped weapon it sends by
+  key as well as one it made (a play session: the owner had kept its dropped sword). TOTK_COOP_TEST_PICKUP=sword:
+  B's hand takes the copy of A's sword, A deletes its own. Not checked: the apple in B's pouch (no log of the pouch),
+  a dropped weapon sent by key in a scripted test (dropping needs the menu), two players picking up one item.
 - Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
 
 ## Plan
