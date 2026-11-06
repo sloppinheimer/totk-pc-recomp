@@ -2827,6 +2827,22 @@ static void link_hit_test(uint64_t me) {
         uint32_t w[0x60 / 4];
         if (!dc || !coop_rd(dc + 0x1a0, w, sizeof w)) continue;
         uint32_t stt = w[1];
+        if (i == COOP_MAX_PLAYERS) {   // this Link: its whole damage component frame to frame, what a real hit changes
+            static uint32_t prev[0x2000 / 4], cur[0x2000 / 4];
+            static int have, shown;
+            if (coop_rd(dc, cur, sizeof cur)) {
+                if (have && stt && stt != last[i] && shown++ < 4) {
+                    char line[1600];
+                    int m = 0;
+                    for (int k = 0; k < 0x2000 / 4 && m < 1500; k++)
+                        if (cur[k] != prev[k] && (k * 4 < 0x1a0 || k * 4 >= 0x300))
+                            m += snprintf(line + m, sizeof line - m, " +%#x:%x>%x", k * 4, prev[k], cur[k]);
+                    line[m] = 0;
+                    rt_log("coop: test: linkhit this Link's damage component outside the record:%s", m ? line : " nothing");
+                }
+                memcpy(prev, cur, sizeof cur), have = 1;
+            }
+        }
         if (stt && stt != last[i]) {
             float pw, hp[3];
             memcpy(&pw, &w[0x3c / 4], 4), memcpy(hp, &w[0x5c / 4], 12);
