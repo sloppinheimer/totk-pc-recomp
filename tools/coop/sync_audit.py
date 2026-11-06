@@ -4,7 +4,8 @@
 
 Each game writes one snapshot a second, at the turn of a second of the PC's performance counter, so the two games'
 lines pair by time (both games on one PC). For each pair, both ways (the owner's game against the other's):
-  link        the owner's Link shown in the other game: there at all, its place, life, gear, hands, fused
+  link        the owner's Link shown in the other game: there at all, its place (not when the owner is over 200 m
+              from that game's own Link, where that game has not loaded the world), life, gear, hands, fused
               materials, dyes
   object      each object the owner sends: shown in the other game (a copy, or its own placed one held at the
               report), and at its place
@@ -77,7 +78,8 @@ def check_way(own, own_prev, view, view_prev, report):
     v = speed(own_prev, own, lambda s: s['me']['p'])
     tol = 0.75 + v * 0.25
     d = dist(link['p'], me['p'])
-    if d > tol:
+    far = dist(view['me']['p'], me['p']) > 200   # the viewer's world is not loaded about the owner: its Link stands
+    if d > tol and not far:
         report('link-place', f'{oid}', t, f"player {oid}'s Link is {d:.2f} m off in player {view['id']}'s game (allowed {tol:.2f}, moving {v:.1f} m/s)")
     if me['life'] > 0 and link['life'] >= 0 and link['life'] != me['life']:
         report('link-life', f'{oid}', t, f"player {oid}'s life {me['life']}, its Link there {link['life']}")

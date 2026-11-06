@@ -4121,6 +4121,31 @@ static void fuse_log(uint64_t me, uint64_t my_eq) {
         if (eq && eq_points_to(eq, slots[i].actor)) fuse_log_one("the proxy's", eq_item(eq, 2));
     }
 }
+static uint64_t my_shield_fused;
+// The actor on a proxy's shield (found as on this Link's, every 10 reports) given its owner's scale each report.
+void proxy_fuse_scale(Slot *s, const float sc[3]) {
+    static uint64_t found[COOP_MAX_PLAYERS];
+    static int t[COOP_MAX_PLAYERS], said;
+    int i = (int)(s - slots);
+    uint64_t eq = s->actor ? eq_of_actor(s->actor) : 0;
+    if (!eq || !eq_points_to(eq, s->actor)) return;
+    uint64_t shield = eq_item(eq, 2);
+    if (!shield) return;
+    if (!found[i] || ++t[i] % 10 == 0) {
+        ShieldScan ss = {.best_d2 = 2.25f, .shield = shield};   // (1.5 m: the full-size device's centre is farther out)
+        if (!coop_rd(shield + COOP_ACTOR_POS, ss.at, 12)) return;
+        void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
+        coop_actors_live(shield_fuse_fn, &ss);
+        if (ss.best != found[i] && said++ < 20) {
+            char nm[48] = "";
+            coop_actor_name(ss.best, nm, sizeof nm);
+            rt_log("coop: proxy: slot %d: its shield's fused %s (%llx) at its owner's scale %.3f", i, nm[0] ? nm : "none",
+                   (unsigned long long)ss.best, sc[0]);
+        }
+        found[i] = ss.best;
+    }
+    if (found[i]) memcpy((void *)(uintptr_t)(found[i] + 0x2e4), sc, 12);
+}   // the actor fused to this Link's shield (shield_fuse_tick), 0 none
 static void shield_fuse_tick(uint64_t me, uint64_t my_eq) {
     static int t, same, none;
     static uint64_t last;
@@ -4137,6 +4162,7 @@ static void shield_fuse_tick(uint64_t me, uint64_t my_eq) {
     char nm[48] = "";
     if (same >= 5) coop_actor_name(ss.best, nm, sizeof nm);
     else if (none < 3) return;   // not sure yet either way
+    my_shield_fused = nm[0] ? ss.best : 0;
     if (strcmp(nm, my_fuse[2])) {
         rt_log("coop: my shield (%s) is fused with %s", my_gear[2], nm[0] ? nm : "nothing");
         snprintf(my_fuse[2], sizeof my_fuse[2], "%s", nm);
@@ -4290,10 +4316,12 @@ void coop_players_tick(Cpu *c, int numpad3) {
         // (none when unequipped; copied as a string: 32 bytes copied from "" sent what followed it as the name, code
         // review, 2026-11-06)
         for (int k = 0; k < 3; k++) snprintf(st.fuse[k], sizeof st.fuse[k], "%s", strcmp(my_gear[k], GEAR_NONE) ? my_fuse[k] : "");
-        // A Zonai device fused to the shield is not sent: the proxy's shield made with it as its material showed the
-        // device at its full size, far larger than on the owner's shield (a play session, 2026-11-06; how the game
-        // sizes it is not known). Left out of world objects all the same (prop_skip), so no loose copy either.
-        if (!strncmp(st.fuse[2], "SpObj_", 6) && !cfg_get("TOTK_COOP_TEST_FUSELOG")) st.fuse[2][0] = 0;
+        // The scale of what is fused to the shield, for the proxy's: the proxy's shield made with a Zonai device as its
+        // material showed the device at its full size, far larger than on the owner's shield (a play session,
+        // 2026-11-06). The owner's is made smaller by the fuse as it runs (the material's DrawnScale / SheathedScale
+        // params; a scaling step, AI query QueryAttachmentIsScaling), which a frozen proxy does not run; its scale is
+        // the owner's here (proxy_fuse_scale).
+        if (my_shield_fused && st.fuse[2][0]) coop_rd(my_shield_fused + 0x2e4, st.shield_fuse_scale, 12);
         match_my_eq(me);
         uint64_t my_eq = eq_of_actor(me);   // weapon, bow, shield in hand (only on its own EquipmentUser: see report_arrows)
         if (my_eq && !eq_points_to(my_eq, me)) my_eq = 0;
@@ -4502,6 +4530,10 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 }
                 if (want_l && s->thaw < 10) s->thaw = 10;
             }
+        }
+        if (proxied(s) && st.shield_fuse_scale[0] > 0) {   // its shield's fused actor at its owner's scale (see shield_fuse_scale)
+            void proxy_fuse_scale(Slot *s, const float sc[3]);
+            proxy_fuse_scale(s, st.shield_fuse_scale);
         }
         if (proxied(s) && st.life > 0 && st.life_max > 0) {   // proxy attacks: its life and most life as its owner's
             int coop_life_of(uint64_t a), coop_life_max_of(uint64_t a);

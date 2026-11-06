@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define COOP_MAX_PLAYERS 8
-#define COOP_NET_VERSION 13   // packet header version: games and relays of another version ignore each other
+#define COOP_NET_VERSION 14   // packet header version: games and relays of another version ignore each other
 
 // One player's state, sent about 30 times a second. Positions and directions are world space; the sticks are as the
 // player's own camera saw them, with the camera's horizontal forward and right so a receiver can turn them into its
@@ -47,8 +47,9 @@ typedef struct {
     float ride_off[3];                // riding: where this Link is in the object's frame
     float shield_pos[3], shield_q[4]; // with flags bit 11: the shield in this Link's frame (rotation as x y z w)
     uint16_t life, life_max;          // this Link's life and most life, quarter hearts (0: unknown)
+    float shield_fuse_scale[3];       // the scale (actor +0x2e4) of the actor fused to the shield (0: none or unknown)
 } NetState;
-_Static_assert(sizeof(NetState) == 448, "NetState wire size");
+_Static_assert(sizeof(NetState) == 464, "NetState wire size");
 #define COOP_GEAR_SLOTS 6
 extern const int coop_gear_slot[COOP_GEAR_SLOTS];   // the EquipmentUser slots they are (coop_players.c)
 
