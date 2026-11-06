@@ -1998,6 +1998,39 @@ static void chest_test(Cpu *c, uint64_t me) {
     if (now < 24 || now > 42 || ++t % 30 || !coop_rd(me + COOP_ACTOR_POS, p, 12)) return;
     rt_log("coop: test: chest %.2f s: this Link at %.2f %.2f %.2f", now, p[0], p[1], p[2]);
 }
+// Test (TOTK_COOP_TEST_ARROWDUMP=1, both games on bow_shoot_3rd.txt): once after 24 s, when this game has an arrow of
+// its own Link's and a copy of the other player's at the same time, both are written to logs/arrowdump.bin: the actor
+// (0x800 bytes), its model ([[[actor+0x228]+8]+0x28], 0x800) and 0x200 bytes of each of its first 64 components;
+// own first, then the copy. Copies of arrows did not show in a play session (2026-11-05); diffed offline.
+static void arrow_dump(void) {
+    static int on = -1, done;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_ARROWDUMP") != NULL;
+    if (!on || done || frame_step_world_us() < 24000000) return;
+    uint64_t own = 0, copy = 0;
+    for (int i = 0; i < 32 && !own; i++) if (my_arrows[i].actor && my_arrows[i].mine && arrow_tick - my_arrows[i].seen < 2) own = my_arrows[i].actor;
+    for (int i = 0; i < COOP_MAX_PLAYERS && !copy; i++)
+        for (int k = 0; k < COOP_OBJS && !copy; k++)
+            if (slots[i].mir[k].state == 3 && slots[i].mir[k].ticks > COPY_WARMUP + 10 && strstr(slots[i].mir[k].name, "Arrow")) copy = slots[i].mir[k].actor;
+    if (!own || !copy) return;
+    done = 1;
+    FILE *f = fopen("logs/arrowdump.bin", "wb");
+    static uint8_t buf[0x800 + 0x800 + 64 * 0x200];
+    for (int w = 0; w < 2 && f; w++) {
+        uint64_t a = w ? copy : own, tbl = coop_rd_ptr(a + 0x228), m1 = tbl ? coop_rd_ptr(tbl + 8) : 0, md = m1 ? coop_rd_ptr(m1 + 0x28) : 0;
+        memset(buf, 0, sizeof buf);
+        coop_rd(a, buf, 0x800);
+        if (md) coop_rd(md, buf + 0x800, 0x800);
+        for (int k = 0; k < 64 && tbl; k++) {
+            uint64_t cp = coop_rd_ptr(tbl + 8 * (uint64_t)k);
+            if (cp && !(cp & 7)) coop_rd(cp, buf + 0x1000 + k * 0x200, 0x200);
+        }
+        fwrite(buf, sizeof buf, 1, f);
+    }
+    if (f) fclose(f);
+    char n1[48], n2[48];
+    rt_log("coop: test: arrow dump: own %s %llx, copy %s %llx", coop_actor_name(own, n1, sizeof n1), (unsigned long long)own,
+           coop_actor_name(copy, n2, sizeof n2), (unsigned long long)copy);
+}
 // Both games: where the object a co-op player moved last is here (for the test above).
 static void props_test_where(void) {
     static int on = -1, t;
@@ -3160,7 +3193,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         if (fw && *fw) st.weather = atoi(fw);
         coop_net_publish(&st);
         if (coop_proxy_mode()) props_receive(c), ride_carry(c, me);   // placed objects co-op players move; riding them
-        props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me);
+        props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump();
     }
     armor_probe(me);
     arrow_log(me);

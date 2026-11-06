@@ -807,3 +807,16 @@ What was looked at, none of it holding the wind:
   Link's cloth does not use it.
 Next: find what moves the hair on screen (a bone set after the pose write, or a shader wind), then what sets its
 wind; a write watch (coop_watch_arm with coop_watch_writes) on it would name the setter.
+
+## Arrow copies are not drawn (open)
+the tester (2026-11-05): the other player's arrows do not show. The copies are made ("a copy of object N (NormalArrow)
+is here") and placed, but sleep. TOTK_COOP_TEST_ARROWDUMP=1 with bow_shoot_3rd.txt in both games dumps this
+game's own nocked arrow and a copy side by side; in both games the copy is at actor state 6 (+0x24) where the own
+arrow is at 4, its model's +0x244 at 6 (own 5), and +0x28 had bit 0 set (own 0). The actor state machine is
+main+0x54cb00 (2..6; 6 sleeps; from 6 it goes back to 4 only with +0x28 bit 0x80000 and low bits 0x10, through
+vtable +0xf8 with a pointer to the state, which with 11 deletes).
+Tried, all left the copy at 6: running the copy's own calc and phases (not frozen); vtable +0xf8 with 4 each tick;
+clearing +0x28 bit 0 as well; setting +0x28 to 0x80010 (it stayed so: the state machine does not run on the copy).
+Likely an arrow made on its own, not by a bow, is put to sleep by the arrow's own logic, and only a bow's shot or
+nock keeps one awake. Next: find what the bow does to its arrow when it nocks it (the EquipmentUser's arrow, or
+the shot call), and do the same to the copy; or show the copy by another actor that does not sleep.
