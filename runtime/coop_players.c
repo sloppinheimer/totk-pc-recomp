@@ -1756,8 +1756,11 @@ static void set_driven(uint64_t a) {
 static int prop_skip(const char *nm) {
     // (Parasail, the Link's paraglider, was left out here: a copy of it seemed to take the other game down with the
     // Ultrahand crash, which was the beam's race (beam_hook). It is sent in its Link's frame: COOP_OBJ_ONLINK.)
+    // Sage_: the sages' companion spirits, and Weapon_Bow_128, Tulin's bow, which follow the Link: sent as moved
+    // objects, their copies came and went over and over and the bow showed on the other Link (glide.txt on the Rito
+    // save, the tester watching, 2026-11-05).
     static const char *pre[] = {"Player", "Armor_", "Accessory_", "PlayerRaul", "Npc", "Animal_", "Enemy_",
-                                "Weapon_Sheath", "Weapon_Quiver", "TBox_"};   // chests: each player's own
+                                "Weapon_Sheath", "Weapon_Quiver", "TBox_", "Sage_", "Weapon_Bow_128"};   // chests: each player's own
     for (size_t i = 0; i < sizeof pre / sizeof *pre; i++) if (!strncmp(nm, pre[i], strlen(pre[i]))) return 1;
     if (strstr(nm, "Arrow")) return 1;
     // Helpers that go with this Link and are not things in the world: EventCamera and CameraXLinkControl were sent
