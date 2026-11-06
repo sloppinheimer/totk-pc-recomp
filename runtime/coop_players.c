@@ -960,6 +960,7 @@ int coop_players_calc(Cpu *c, uint64_t addr) {
     uint64_t mgr = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + COOP_INPUT_MGR_SLOT));
     if (!mgr) return 0;
     uint64_t real = LD64(mgr + 0xa0), own = (uint64_t)(uintptr_t)s->ctl;
+    if (!real) return 0;   // no controller yet (early in a load): copying from it read address 0 (code review, 2026-11-06)
     memcpy(s->ctl, (void *)(uintptr_t)real, sizeof s->ctl);
     plat_mutex_lock(&lock);
     uint64_t buttons = s->buttons;
@@ -3954,7 +3955,9 @@ void coop_players_tick(Cpu *c, int numpad3) {
         n_objs += report_props(me, cur + n_objs, COOP_OBJS - n_objs);
         objs_send(cur, n_objs);
         objs_receive(c);
-        for (int k = 0; k < 3; k++) memcpy(st.fuse[k], strcmp(my_gear[k], GEAR_NONE) ? my_fuse[k] : "", 32);   // none when unequipped
+        // (none when unequipped; copied as a string: 32 bytes copied from "" sent what followed it as the name, code
+        // review, 2026-11-06)
+        for (int k = 0; k < 3; k++) snprintf(st.fuse[k], sizeof st.fuse[k], "%s", strcmp(my_gear[k], GEAR_NONE) ? my_fuse[k] : "");
         match_my_eq(me);
         uint64_t my_eq = eq_of_actor(me);   // weapon, bow, shield in hand (only on its own EquipmentUser: see report_arrows)
         if (my_eq && !eq_points_to(my_eq, me)) my_eq = 0;

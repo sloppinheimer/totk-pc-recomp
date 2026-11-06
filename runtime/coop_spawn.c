@@ -849,7 +849,9 @@ int coop_hook(Cpu *c, uint64_t addr) {
         return coop_players_phase(c, addr);
     // main+0x2e9c80 (animation binding): Havok's pose into a g3d model. For the co-op Link's model the copied pose
     // (TOTK_COOP_TEST_SKELCOPY) goes over its own right after, so its own animation does not undo it (2026-11-05).
-    if (addr == MOD_MAIN_BASE + 0x2e9c80 && cfg_get("TOTK_COOP_TEST_SKELCOPY") && coop_pose_wanted()) {
+    static int skelcopy = -1;   // (looked up once: it was on every call, code review 2026-11-06)
+    if (skelcopy < 0 && addr == MOD_MAIN_BASE + 0x2e9c80) skelcopy = cfg_get("TOTK_COOP_TEST_SKELCOPY") != NULL;
+    if (addr == MOD_MAIN_BASE + 0x2e9c80 && skelcopy > 0 && coop_pose_wanted()) {
         // the distinct models it poses once the co-op Link is there (up to 24), for the target check
         static _Atomic uint64_t seen[24];
         coop_pose_saw(c->x[0]);
@@ -1159,7 +1161,10 @@ int coop_hook(Cpu *c, uint64_t addr) {
         // Track which Player's calc this thread runs, for the create trace.
         char nm[16];
         uint64_t a = c->x[0];
-        if (getenv("TOTK_COOP_TRACE") && !calc_actor && a && !strcmp(actor_name(a, nm, sizeof nm), "Player")) {
+        // (getenv once: it ran for every actor's update every frame, on every thread, code review 2026-11-06)
+        static int trace_on = -1;
+        if (trace_on < 0) trace_on = getenv("TOTK_COOP_TRACE") != NULL;
+        if (trace_on && !calc_actor && a && !strcmp(actor_name(a, nm, sizeof nm), "Player")) {
             calc_actor = a;
             int r = calc_wrap(c, addr);
             if (!r) { c->pc = addr; static __thread int deep; if (!deep) { deep = 1; rt_dispatch(c); deep = 0; r = 1; } }
@@ -1277,12 +1282,14 @@ int coop_p2_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32
 }
 
 void coop_tick(struct Cpu *c) {
-    if (getenv("TOTK_COOP_TRACE")) log_callers(c);
+    static int trace_on = -1;   // (getenv once)
+    if (trace_on < 0) trace_on = getenv("TOTK_COOP_TRACE") != NULL;
+    if (trace_on) log_callers(c);
     player_actor_cached = player_actor();
     coop_trace_tick(player_actor_cached);   // coop_trace.c: TOTK_COOP_TRACE_AT
     if (prof4) resident_named("Player", &prof4_ref);
     static int report_ticks;
-    if (getenv("TOTK_COOP_TRACE") && ++report_ticks % 300 == 0) report_callers();   // input tracing only
+    if (trace_on && ++report_ticks % 300 == 0) report_callers();   // input tracing only
     static int prev;
     int keys = input_coop_keys(), pressed = keys & ~prev;
     prev = keys;

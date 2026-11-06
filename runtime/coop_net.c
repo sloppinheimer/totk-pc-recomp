@@ -95,7 +95,7 @@ static void net_thread(void *arg) {
 #endif
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tmo, sizeof tmo);
     rt_log("coop net: relay %s:%s, name \"%s\"", host, port, name ? name : "Player");
-    uint64_t last_hello = 0, last_state = 0, seq = 0, started_ns = plat_now_ns(), heard_ns = 0;
+    uint64_t last_hello = 0, last_state = 0, seq = 0, beat = 0, started_ns = plat_now_ns(), heard_ns = 0;
     int joined = 0;   // a WELCOME came: say bye on leaving
     uint8_t buf[8192];
     while (net_gen == gen) {
@@ -120,12 +120,13 @@ static void net_thread(void *arg) {
                 memcpy(buf + HEADER, &st, sizeof st);
                 sendto(s, (const char *)buf, HEADER + (int)sizeof st, 0, res->ai_addr, (int)res->ai_addrlen);
             }
-            if (seq % 30 == 0) {   // once a second: keep the relay's seat when there is no state to send
+            // Once a second (every 30th pass), state or none: keep the relay's seat. (Counted by the states sent, it
+            // went once and never again while there was no state, and the relay let the seat go, code review.)
+            if (++beat % 30 == 0) {
                 header(buf, HELLO);
                 memset(buf + HEADER, 0, 16);
                 snprintf((char *)buf + HEADER, 16, "%s", name ? name : "Player");
                 sendto(s, (const char *)buf, HEADER + 16, 0, res->ai_addr, (int)res->ai_addrlen);
-                if (!have) seq++;
             }
         }
         if (my_id) {   // the world packet (host, about 10 a second) and queued hits, as they come

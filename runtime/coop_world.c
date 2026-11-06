@@ -39,7 +39,16 @@ static struct {
 void coop_actor_seen(uint64_t actor) {
     if (!actor) return;
     int64_t now = frame_step_world_us();
-    uint32_t h = (uint32_t)((actor >> 4) * 2654435761u) & (SEEN_N - 1);
+    uint32_t h0 = (uint32_t)((actor >> 4) * 2654435761u) & (SEEN_N - 1), h = h0;
+    // Its own cell first, over the whole run: taking the first free one before looking further moved an actor whose
+    // cell was later in the run to an earlier one freed by a gone actor, and its key changed (the first position is
+    // the cell's), so the other game no longer matched it (code review, 2026-11-06).
+    for (int k = 0; k < 32; k++, h = (h + 1) & (SEEN_N - 1))
+        if (atomic_load_explicit(&seen[h].actor, memory_order_relaxed) == actor) {
+            atomic_store_explicit(&seen[h].at_us, now, memory_order_relaxed);
+            return;
+        }
+    h = h0;
     for (int k = 0; k < 32; k++, h = (h + 1) & (SEEN_N - 1)) {
         uint64_t a = atomic_load_explicit(&seen[h].actor, memory_order_relaxed);
         if (a == actor) { atomic_store_explicit(&seen[h].at_us, now, memory_order_relaxed); return; }
@@ -191,12 +200,12 @@ typedef struct { uint32_t key; int32_t damage; } HitPacket;
 static struct { uint32_t key; int64_t died_us; } dead[64];   // enemies seen to die, reported a while
 static struct { uint32_t key; uint64_t actor; int life; int64_t at_us; } host_known[256];   // as last seen
 
-typedef struct { WorldPacket pk; float players[COOP_MAX_PLAYERS + 1][3]; int np; } HostScan;
+typedef struct { WorldPacket pk; float players[COOP_MAX_PLAYERS + 1][3]; int np, live_max; } HostScan;
 static void host_one(int cell, uint64_t a, void *arg) {
     HostScan *h = arg;
     char nm[64];
     uint32_t key = enemy_of(cell, a, nm, sizeof nm);
-    if (!key || h->pk.count >= MAX_SENT) return;
+    if (!key || h->pk.count >= h->live_max) return;
     NetEnemy e = {.key = key};
     if (!coop_rd(a + COOP_ACTOR_POS, e.pos, 12) || !coop_rd(a + COOP_ACTOR_ROT, e.rot, 36)) return;
     int near = 0;
@@ -246,6 +255,12 @@ static void host_tick(Cpu *c, uint64_t me) {
     memset(&h.pk, 0, sizeof h.pk);
     h.np = coop_player_positions(h.players, COOP_MAX_PLAYERS);
     if (coop_rd(me + COOP_ACTOR_POS, h.players[h.np], 12)) h.np++;
+    // Room kept for the dead (up to 10): the living filled all 30 places with 30 or more enemies near, and no death
+    // was reported (code review, 2026-11-06).
+    int64_t now0 = frame_step_world_us();
+    int n_dead = 0;
+    for (int d = 0; d < 64; d++) n_dead += dead[d].key && now0 - dead[d].died_us < DEAD_KEEP_US;
+    h.live_max = MAX_SENT - (n_dead < 10 ? n_dead : 10);
     each_live(host_one, &h);
     // Known enemies no longer seen: gone. Those whose life was 0 when last seen died: reported dead a while.
     int64_t now = frame_step_world_us();
