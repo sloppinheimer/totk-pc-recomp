@@ -1969,6 +1969,94 @@ static int my_report(uint64_t a) {   // this game sends a as moved
     for (int e = 0; e < PROPS_N; e++) if (props[e].actor == a) return props[e].touched && !props[e].made;
     return 0;
 }
+// ---- destroyed placed objects. A bomb arrow broke a wall in one game and not in the other (a play session,
+// 2026-11-05): a placed object going away was not synced. Every 10 ticks this game notes the placed objects (by key)
+// within 20 m of its Link; one that goes away (state 7..11, same name) is told to the other games (an OBJS packet with
+// header word 3: each entry's id is COOP_OBJ_KEYED | key, with its name), which set theirs off the same way: its life
+// taken when it has one (it breaks with its own effect), else deleted. More than 4 going in one scan is an area
+// going away (a fast travel, a save load): not told. Objects this game set off for another's notice are not told
+// back. Links, people, animals, enemies, arrows, chests and the like are left out (prop_skip), and copies.
+static struct { uint64_t actor; uint32_t key; char name[48]; int seen; } dwatch[512];
+static uint64_t dkilled[64];   // set off here for another game's notice
+static int dkilled_n, dtick;
+static void dwatch_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
+    const float *me = arg;
+    float p[3];
+    Slot *cs;
+    int ck;
+    if (prop_skip(nm) || copy_of(a, &cs, &ck) || !coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+    if ((p[0] - me[0]) * (p[0] - me[0]) + (p[1] - me[1]) * (p[1] - me[1]) + (p[2] - me[2]) * (p[2] - me[2]) > 400) return;
+    for (int i = 0; i < 32; i++) if (my_arrows[i].actor == a) return;
+    int free = -1;
+    for (int i = 0; i < 512; i++) {
+        if (dwatch[i].actor == a) { dwatch[i].seen = dtick; return; }
+        if (free < 0 && !dwatch[i].actor) free = i;
+    }
+    if (free < 0) return;
+    dwatch[free].actor = a, dwatch[free].key = key & ~COOP_OBJ_KEYED, dwatch[free].seen = dtick;
+    snprintf(dwatch[free].name, sizeof dwatch[free].name, "%s", nm);
+}
+static void destroy_watch(uint64_t me) {
+    if (++dtick % 10) return;
+    float p[3];
+    if (!coop_rd(me + COOP_ACTOR_POS, p, 12)) return;
+    void coop_actors_all(void (*fn)(uint64_t, const char *, uint32_t, void *), void *arg);   // coop_world.c
+    CoopObj gone[COOP_OBJS_PER_PACKET];
+    int ng = 0, going = 0;
+    for (int i = 0; i < 512; i++) {   // the ones noted before: still there?
+        if (!dwatch[i].actor) continue;
+        int32_t st = 0;
+        char nm[48];
+        int read = coop_rd(dwatch[i].actor + COOP_ACTOR_STATE, &st, 4);
+        int same = read && !strcmp(coop_actor_name(dwatch[i].actor, nm, sizeof nm), dwatch[i].name);
+        if (same && st >= 2 && st <= 6) continue;
+        if (same && st >= 7 && st <= 11) {
+            going++;
+            int ours = 0;
+            static struct { uint32_t key; int at; } dsent[32];   // told already (an actor going away was seen twice)
+            static int dsent_n;
+            for (int k = 0; k < 64; k++) ours |= dkilled[k] == dwatch[i].actor;
+            for (int k = 0; k < 32; k++) ours |= dsent[k].key == dwatch[i].key && dtick - dsent[k].at < 120;
+            if (!ours) dsent[dsent_n % 32].key = dwatch[i].key, dsent[dsent_n % 32].at = dtick, dsent_n++;
+            if (!ours && ng < COOP_OBJS_PER_PACKET) {
+                CoopObj *o = &gone[ng++];
+                memset(o, 0, sizeof *o);
+                o->id = COOP_OBJ_KEYED | dwatch[i].key;
+                snprintf(o->name, sizeof o->name, "%s", dwatch[i].name);
+                coop_rd(dwatch[i].actor + COOP_ACTOR_POS, o->pos, 12);
+            }
+        }
+        dwatch[i].actor = 0;
+    }
+    coop_actors_all(dwatch_fn, p);
+    for (int i = 0; i < 512; i++) if (dwatch[i].actor && dtick - dwatch[i].seen > 60) dwatch[i].actor = 0;   // out of reach
+    if (!ng || going > 4) return;   // more at once: an area going away, not a blast
+    uint8_t pk[4 + COOP_OBJS_PER_PACKET * sizeof(CoopObj)];
+    uint16_t h[2] = {(uint16_t)ng, 3};
+    memcpy(pk, h, 4), memcpy(pk + 4, gone, ng * sizeof(CoopObj));
+    coop_net_objs_send(pk, 4 + ng * (int)sizeof(CoopObj));
+    for (int i = 0; i < ng; i++) rt_log("coop: %s (key %08x) was destroyed here; the others are told", gone[i].name, gone[i].id & ~COOP_OBJ_KEYED);
+}
+// Another game's notice: its placed objects destroyed there go here too.
+static void destroy_apply(Cpu *c, const CoopObj *o, int from) {
+    KeyFind kf = {0};
+    kf.key[0] = o->id & ~COOP_OBJ_KEYED, kf.n = 1;
+    void coop_actors_all(void (*fn)(uint64_t, const char *, uint32_t, void *), void *arg);   // coop_world.c
+    coop_actors_all(keyfind_fn, &kf);
+    uint64_t a = kf.actor[0];
+    char nm[48];
+    if (!a || strcmp(coop_actor_name(a, nm, sizeof nm), o->name)) {
+        rt_log("coop: player %d destroyed %s (key %08x): not here", from, o->name, o->id & ~COOP_OBJ_KEYED);
+        return;
+    }
+    int coop_life_of(uint64_t a);
+    void coop_set_life(uint64_t a, int v);
+    int life = coop_life_of(a);
+    if (life > 0) coop_set_life(a, 0);
+    else coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, a, COOP_DELETE_REASON, 0, 0);
+    dkilled[dkilled_n++ % 64] = a;
+    rt_log("coop: player %d destroyed %s (key %08x): set off here too (%s)", from, o->name, o->id & ~COOP_OBJ_KEYED, life > 0 ? "life taken" : "deleted");
+}
 static void props_receive(Cpu *c) {
     static KeyFind kf;
     kf.n = 0;
@@ -2086,6 +2174,14 @@ static void props_test(Cpu *c, uint64_t me) {
     if (obj && now > 28 && now < 30) {
         float m[12] = {1, 0, 0, base[0], 0, 1, 0, base[1] + (float)(now - 28) * 0.75f, 0, 0, 1, base[2]};
         coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, obj, (uint64_t)(uintptr_t)m, 0, 0);
+    }
+    // TOTK_COOP_TEST_PROPS=destroy: at 32 s the first game deletes the rock it lifted (as a blast would break it); the
+    // other game should destroy its own (destroy_watch).
+    static int destroyed;
+    if (!destroyed && obj && now > 32 && coop_net_id() == 1 && !strcmp(cfg_get("TOTK_COOP_TEST_PROPS"), "destroy")) {
+        coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, obj, COOP_DELETE_REASON, 0, 0);
+        destroyed = 1;
+        rt_log("coop: test: props: the lifted rock (key %08x) is deleted here", obj_key);
     }
     // TOTK_COOP_TEST_PROPS=blast: at 32 s the other game takes its copy's life (and lets it run its own update): does
     // a BombFruit's copy go off? This Link's life (it stands by it) is logged before and after.
@@ -2518,6 +2614,15 @@ static void objs_receive(Cpu *c) {
         uint16_t h[2];
         memcpy(h, pk, 4);
         if (h[0] > COOP_OBJS_PER_PACKET || 4 + h[0] * (int)sizeof(CoopObj) > n) continue;
+        if (h[1] == 3) {   // another player's placed objects destroyed there (destroy_watch)
+            for (int e = 0; e < h[0]; e++) {
+                CoopObj o;
+                memcpy(&o, pk + 4 + e * sizeof(CoopObj), sizeof o);
+                o.name[sizeof o.name - 1] = 0;
+                destroy_apply(c, &o, from);
+            }
+            continue;
+        }
         if (h[1] == 1) {   // another player picked up objects: this game's own ones are deleted (take_note)
             for (int e = 0; e < h[0]; e++) {
                 CoopObj o;
@@ -3539,7 +3644,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         const char *fw = cfg_get("TOTK_COOP_FAKEWEATHER");   // test: report this weather type instead
         if (fw && *fw) st.weather = atoi(fw);
         coop_net_publish(&st);
-        if (coop_proxy_mode()) props_receive(c), ride_carry(c, me);   // placed objects co-op players move; riding them
+        if (coop_proxy_mode()) props_receive(c), ride_carry(c, me), destroy_watch(me);   // placed objects co-op players move; riding them; destroyed
         props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test(), bone_arrow_test(me), impact_test();
     }
     armor_probe(me);
