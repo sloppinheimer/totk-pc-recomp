@@ -926,6 +926,17 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // The later writers of a body skeleton's world matrices (write watch, re-notes): main+0x283c750, 0x289620,
     // 0x2925e0, 0x43e450. When one is called for the co-op Link's skeleton or model (an argument names it), the
     // copied pose goes on after it (TOTK_COOP_TEST_SKELCOPY) (2026-11-05).
+    // An enemy puppet's skeleton (coop_world.c): its local matrices are the owner's pose, written by its drive; built
+    // here from its own frozen animation as well, the two took turns and the copy jiggled (a play session; held on
+    // one pose, a Chuchu's copy moved 2 mm a frame where the Chuchu moved 0.1 mm, 2026-11-06).
+    if (addr == MOD_MAIN_BASE + 0x283c750) {
+        int coop_enemy_puppet_skel(uint64_t skel, uint64_t lr);   // coop_world.c
+        if (coop_enemy_puppet_skel(c->x[1], c->x[30])) return 1;
+    }
+    if (addr == MOD_MAIN_BASE + 0x289620 || addr == MOD_MAIN_BASE + 0x2925e0 || addr == MOD_MAIN_BASE + 0x43e450 || addr == MOD_MAIN_BASE + 0x2e9c80) {
+        int coop_enemy_puppet_writer(uint64_t addr, const uint64_t *x, uint64_t lr);   // coop_world.c: test
+        if (coop_enemy_puppet_writer(addr, c->x, c->x[30])) return 1;
+    }
     // Puppet mode: main+0x283c750 (x0 the input pose, x1 the SkeletonObj) builds a body's local matrices. This
     // Link's input goes out; a co-op Link's is replaced by its player's before it runs (2026-11-05).
     if (addr == MOD_MAIN_BASE + 0x283c750 && coop_puppet_mode()) {

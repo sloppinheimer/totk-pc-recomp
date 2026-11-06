@@ -195,8 +195,15 @@ right in the tester's own two-pad session.
     nearest that place and put it there after the enemy's model push, its body 300 m under it. Pair test on the tester's
     save: a Dark Bokoblin's sword and shield and a Bokoblin's bow found and held. Not seen on screen; the camp stood
     still. A weapon lying within 2.5 m of a frozen enemy is held too and cannot be picked up while it is there.
-  - **Not done:** arrows and bombs from a following game (their copies in the owner's game hit nothing); an enemy
-    with no skeleton found (a bee swarm) is only put at the owner's place; not seen on screen.
+  - **Arrows and bombs** from a following game: their hit's record on the frozen copy (its damage component, as on a
+    proxy) goes to the owner as a hit, when this Link made it and it lacks the melee flag 0x100000 (a sword's has
+    it; the proxy's swing lands those). Pair test: one arrow, 90, the owner's Bokoblin 25 -> 0, the copy died after.
+  - **The jiggle** (a play session): the poses were read in the tick while the enemy's update ran on a worker
+    thread. Now each is packed at the start of the enemy's own calc and stamped with the owner's clock. Per-bone jerk
+    on a chasing Bokoblin's copy: 100 to 175 mm a frame before, 4 to 10 mm now (the enemy itself 1.4 to 3 mm).
+    TOTK_COOP_EPOSE_TICKPACK=1 brings the old read back (control).
+  - **Not done:** an enemy with no skeleton found (a bee swarm) is only put at the owner's place; the copy still
+    jerks a few times more than the enemy; not seen on screen.
 - Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
 
 ## Plan

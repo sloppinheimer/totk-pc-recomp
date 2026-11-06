@@ -1736,7 +1736,9 @@ static void peer_one(int cell, uint64_t a, void *arg) {
 
 static void epose_send_tick(void);
 static void epose_take_tick(Cpu *c);
+static uint64_t pup_me;
 static void enemy_weapon_test(void);
+static void enemy_hit_test(void);
 
 // The Weapon_ actors this game updates that are no Link's (an enemy's weapon), refreshed with the enemy scan.
 static uint64_t weaps[128];
@@ -1808,6 +1810,7 @@ static void link_hit_take(const LinkHitPacket *lh, int from, uint64_t me) {
     rt_log("coop: enemy %08x hit this Link in player %d's game for %d (life %d -> %d)", lh->key, from, lh->damage, life, now);
 }
 static void peer_tick(Cpu *c, uint64_t me) {
+    pup_me = me;
     int my_id = coop_net_id();
     // Hits from the others on the enemies this game runs: the damage taken from this game's one.
     HitPacket hp;
@@ -1843,6 +1846,7 @@ static void peer_tick(Cpu *c, uint64_t me) {
     epose_send_tick();
     link_hits_send();
     enemy_weapon_test();
+    enemy_hit_test();
     static int t;
     if (++t % 3) return;   // the rest about 10 times a second
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++) {
@@ -1917,11 +1921,14 @@ static void peer_tick(Cpu *c, uint64_t me) {
 #define EPOSE_ITEMS 3
 #define EPOSE_ITEM_M 2.5f
 // then nitems EItem, then the pose (n | 0x8000, scaled count, bones)
-typedef struct { uint32_t key; float pos[3], rot[9]; uint8_t nitems, pad[3]; } EPoseHead;
+// t_ns: when the owner took it (its plat_now_ns), so the poses are blended at the owner's own pace (stamped when they
+// came, a few ms unevenly, the blend shook: 2 mm a frame on a Chuchu's copy that moved 0.1 mm, and none with one pose
+// held; 2026-11-06).
+typedef struct { uint32_t key; float pos[3], rot[9]; uint8_t nitems, pad[3]; uint64_t t_ns; } EPoseHead;
 typedef struct { uint32_t hash; float pos[3], rot[9]; } EItem;   // hash: its name's (name_hash_of)
-_Static_assert(sizeof(EPoseHead) == 56 && sizeof(EItem) == 52 && 56 + EPOSE_ITEMS * 52 == 212, "EPOSE header size (COOP_EPOSE_MAX)");
+_Static_assert(sizeof(EPoseHead) == 64 && sizeof(EItem) == 52 && 64 + EPOSE_ITEMS * 52 == 220, "EPOSE header size (COOP_EPOSE_MAX)");
 typedef struct {
-    uint64_t ns;
+    uint64_t ns, src_ns;   // ns: here (src_ns, the owner's, moved onto this clock); src_ns: the owner's
     float pos[3], q[4];
     int n, ni;
     uint32_t ih[EPOSE_ITEMS];
@@ -2035,6 +2042,35 @@ static void weap_one(uint64_t a, void *arg) {
     rt_log("coop: test: enemy weapon: %s %llx, %.2f m from %s %llx:%s", nm, (unsigned long long)a, sqrtf(dx * dx + dy * dy + dz * dz),
            coop_actor_name(ws->enemy, en, sizeof en), (unsigned long long)ws->enemy, m ? line : " (no pointer to it)");
 }
+// Test (TOTK_COOP_TEST_ENEMYHIT=1): the hit record on each enemy this game runs (as pup_hits logs it on a frozen
+// one), with its life then and 0.3 s later: what the record's numbers are in life.
+static void enemy_hit_test(void) {
+    static int on = -1;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_ENEMYHIT") != NULL;
+    if (!on) return;
+    static struct { uint64_t a; uint32_t st; int life, wait, said; } eh[16];
+    for (int i = 0; i < KNOWN_N; i++) {
+        uint64_t a = mine_known[i].actor;
+        if (!mine_known[i].key || !a) continue;
+        int s = (int)(mine_known[i].key % 16);
+        if (eh[s].a != a) memset(&eh[s], 0, sizeof eh[s]), eh[s].a = a;
+        uint64_t dc = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x2f8);
+        uint32_t w[0x40 / 4];
+        if (!dc || !coop_rd(dc + 0x1a0, w, sizeof w)) continue;
+        if (eh[s].wait && --eh[s].wait == 0)
+            rt_log("coop: test: enemy %08x life %d -> %d 0.3 s after the hit", mine_known[i].key, eh[s].life, life_of(a));
+        if (w[1] && w[1] != eh[s].st && eh[s].said++ < 20) {
+            uint64_t ref;
+            memcpy(&ref, &w[0x20 / 4], 8);
+            uint64_t att = ref ? coop_rd_ptr(ref + 0x40) : 0;
+            char nm[48] = "";
+            if (att) coop_actor_name(att, nm, sizeof nm);
+            eh[s].life = life_of(a), eh[s].wait = 9;
+            rt_log("coop: test: enemy %08x (run here) was hit by %s: word %d, flags %#x, life %d", mine_known[i].key, nm, (int)w[2], w[0x30 / 4], eh[s].life);
+        }
+        eh[s].st = w[1];
+    }
+}
 static void enemy_weapon_test(void) {
     static int on = -1, t, said;
     if (on < 0) on = cfg_get("TOTK_COOP_TEST_ENEMYWEAPON") != NULL;
@@ -2084,20 +2120,83 @@ static void enemy_skel_probe(uint64_t a) {
     enemy_skel_walk(nm, a, 0, "actor", &found);
     rt_log("coop: test: enemy %s: %d skeletons found (model %llx)", nm, found, (unsigned long long)model);
 }
+// Each enemy kind's bone parents (as find_parents finds a Link's): for each bone, the earlier bone whose final matrix
+// times this bone's record gives this bone's final matrix most closely. Kept by name and bone count once 3/4 of the
+// bones match within 2 mm; tried again every 30 calls until then.
+#define EPAR_N 24
+static struct { uint32_t name; int n, tries, ok; int16_t par[PUP_BONES]; } epar[EPAR_N];
+static PlatMutex epar_lock = PLAT_MUTEX_INIT;
+static const int16_t *enemy_parents(uint64_t a, int n, const float (*w)[16], const float (*rec)[24]) {
+    uint32_t nh = name_hash_of(a);
+    plat_mutex_lock(&epar_lock);
+    int s = -1;
+    for (int i = 0; i < EPAR_N && s < 0; i++) if (epar[i].name == nh && epar[i].n == n) s = i;
+    for (int i = 0; i < EPAR_N && s < 0; i++) if (!epar[i].name) s = i, epar[i].name = nh, epar[i].n = n;
+    const int16_t *out = NULL;
+    if (s >= 0 && !epar[s].ok && epar[s].tries++ % 30 == 0) {
+        int good = 0;
+        for (int i = 1; i < n; i++) {
+            int best = 0;
+            float be = 1e9f;
+            for (int p = 0; p < i; p++) {
+                float e = fk_error(w, rec, i, p);
+                if (e < be) be = e, best = p;
+            }
+            epar[s].par[i] = (int16_t)best, good += be < 2e-3f;
+        }
+        epar[s].par[0] = -1;
+        epar[s].ok = good >= (n - 1) * 3 / 4;
+        char nm[48];
+        if (epar[s].ok || epar[s].tries % 300 == 1)
+            rt_log("coop: enemy %s: bone parents %s: %d of %d bones match their parent within 2 mm", coop_actor_name(a, nm, sizeof nm),
+                   epar[s].ok ? "found" : "not yet", good, n - 1);
+    }
+    if (s >= 0 && epar[s].ok) out = epar[s].par;
+    plat_mutex_unlock(&epar_lock);
+    return out;
+}
 // The owner: an enemy's place and its skeleton's records packed into out; its length, 0 when it has no skeleton found.
 static int epose_pack(uint64_t a, uint32_t key, uint8_t *out, int max) {
-    EPoseHead h = {.key = key};
+    EPoseHead h = {.key = key, .t_ns = plat_now_ns()};
     uint64_t sk = enemy_skeleton(a), recs = sk ? coop_rd_ptr(sk + 0x18) : 0;
     uint16_t n = 0;
-    static float rec[PUP_BONES][24];
-    if (!recs || !coop_rd(sk + 0x48, &n, 2) || n == 0 || n > PUP_BONES || (int)sizeof h + 4 + n * POSE_BONE > max ||
-        !coop_rd(recs, rec, (size_t)n * 0x60) || !coop_rd(a + COOP_ACTOR_POS, h.pos, 12) || !coop_rd(a + COOP_ACTOR_ROT, h.rot, 36)) {
+    static __thread float rec[PUP_BONES][24];
+    static __thread float fin[PUP_BONES][16];
+    uint64_t wmx = sk ? coop_rd_ptr(sk + 0x20) : 0;
+    if (!recs || !wmx || !coop_rd(sk + 0x48, &n, 2) || n == 0 || n > PUP_BONES || (int)sizeof h + 4 + n * POSE_BONE > max ||
+        !coop_rd(recs, rec, (size_t)n * 0x60) || !coop_rd(wmx, fin, (size_t)n * 0x40) || !coop_rd(a + COOP_ACTOR_POS, h.pos, 12) ||
+        !coop_rd(a + COOP_ACTOR_ROT, h.rot, 36)) {
         static int said;
         char nm[64];
         if (said++ < 6) rt_log("coop: enemy %s %08x: no body skeleton found (skeleton %llx, %u bones)", coop_actor_name(a, nm, sizeof nm), key,
                                (unsigned long long)sk, n);
         if (!sk) enemy_skel_probe(a);
         return 0;
+    }
+    // Each record from the final matrices (R = Ap^-1 Ai S^-1, t = Ap^-1 (ti - tp)), as coop_proxy_pack_mine does for
+    // a Link: the records alone miss what later steps put on the final matrices (feet on the ground), and may be in
+    // the middle of being rebuilt when read (sent as they were, the copy jerked 4 to 9 mm a frame where the enemy's
+    // own body moved 1.5 to 2.5 mm; 2026-11-06). Off unless TOTK_COOP_EPOSE_FINAL=1: it did not lower that, and a
+    // Chuchu's bones matched no parents (8 of 24), so its copy's shape went 0.1 m off.
+    static int finals = -1;
+    if (finals < 0) { const char *e = cfg_get("TOTK_COOP_EPOSE_FINAL"); finals = e && *e == '1'; }
+    const int16_t *par = finals ? enemy_parents(a, n, (const float (*)[16])fin, (const float (*)[24])rec) : NULL;
+    for (int i = 1; par && i < n; i++) {
+        float Ap[3][3], tp[3], Ai[3][3], ti[3], Ip[3][3];
+        w_of(fin[par[i]], Ap, tp), w_of(fin[i], Ai, ti);
+        if (!inv3(Ap, Ip)) continue;
+        for (int r = 0; r < 3; r++)
+            for (int cl = 0; cl < 3; cl++) {
+                float v = 0;
+                for (int k = 0; k < 3; k++) v += Ip[r][k] * Ai[k][cl];
+                float sc = rec[i][4 + cl];
+                rec[i][8 + cl * 4 + r] = fabsf(sc) > 1e-6f ? v / sc : v;
+            }
+        for (int r = 0; r < 3; r++) {
+            float v = 0;
+            for (int k = 0; k < 3; k++) v += Ip[r][k] * (ti[k] - tp[k]);
+            rec[i][20 + r] = v;
+        }
     }
     // its weapons: the Weapon_ actors near it that are no Link's
     EItem items[EPOSE_ITEMS];
@@ -2140,6 +2239,83 @@ static int epose_pack(uint64_t a, uint32_t key, uint8_t *out, int max) {
     memcpy(o, &hdr, 2), memcpy(o + 2, &ns, 2);
     return hl + at;
 }
+// The enemies whose pose goes out (epose_send_tick picks them), and their latest pose packed at their calc's start.
+static struct {
+    _Atomic uint64_t actor;
+    uint32_t key;
+    PlatMutex lock;
+    uint8_t buf[COOP_EPOSE_MAX];
+    int len, fresh;
+} ewant[EPOSE_MAX] = {[0 ... EPOSE_MAX - 1] = {.lock = PLAT_MUTEX_INIT}};
+static void jit_note(uint32_t key, int side, uint64_t sk);
+static void epose_calc_start(uint64_t a) {
+    static int tickpack = -1;
+    if (tickpack < 0) tickpack = cfg_get("TOTK_COOP_EPOSE_TICKPACK") != NULL;
+    for (int k = 0; k < EPOSE_MAX && !tickpack; k++) {
+        if (atomic_load_explicit(&ewant[k].actor, memory_order_relaxed) != a) continue;
+        static __thread uint8_t tmp[COOP_EPOSE_MAX];
+        int len = epose_pack(a, ewant[k].key, tmp, sizeof tmp);
+        jit_note(ewant[k].key, 0, enemy_skeleton(a));
+        plat_mutex_lock(&ewant[k].lock);
+        if (len && atomic_load(&ewant[k].actor) == a) memcpy(ewant[k].buf, tmp, len), ewant[k].len = len, ewant[k].fresh = 1;
+        plat_mutex_unlock(&ewant[k].lock);
+        return;
+    }
+}
+// Jitter watch: an enemy's body top (its highest bone above the root, final matrices) frame to frame, in the game
+// that runs it (side 0, at its calc's start) and on its frozen copy (side 1, at its drive's start: the last frame's
+// result). The mean of the change's change (jerk) per frame, logged every 300 frames: smooth motion keeps it small.
+static void jit_note(uint32_t key, int side, uint64_t sk) {
+    static struct { uint32_t key; float a, b, pa[3], pb[3]; int have; double sum, psum, bsum; float max, pmax, bmax; int n;
+                    float ba[PUP_BONES][3], bb[PUP_BONES][3]; int nb; } jt[2][8];
+    static PlatMutex jl = PLAT_MUTEX_INIT;
+    uint64_t wm = sk ? coop_rd_ptr(sk + 0x20) : 0;
+    uint16_t nb = 0;
+    static __thread float w[PUP_BONES][16];
+    if (!wm || !coop_rd(sk + 0x48, &nb, 2) || !nb || nb > PUP_BONES || !coop_rd(wm, w, (size_t)nb * 0x40)) return;
+    float top = -1e9f, p[3] = {0};
+    for (int b = 1; b < nb; b++) if (w[b][13] - w[0][13] > top) top = w[b][13] - w[0][13];
+    for (int k = 0; k < 3; k++) p[k] = w[0][12 + k];   // the root bone's place (the actor's, as the model has it)
+    plat_mutex_lock(&jl);
+    int i = (int)(key % 8);
+    if (jt[side][i].key != key) memset(&jt[side][i], 0, sizeof jt[side][i]), jt[side][i].key = key;
+    if (jt[side][i].have >= 2) {
+        float j = fabsf(top - 2 * jt[side][i].b + jt[side][i].a);
+        jt[side][i].sum += j, jt[side][i].n++;
+        if (j > jt[side][i].max) jt[side][i].max = j;
+        float pj = 0;
+        for (int k = 0; k < 3; k++) { float d = p[k] - 2 * jt[side][i].pb[k] + jt[side][i].pa[k]; pj += d * d; }
+        pj = sqrtf(pj), jt[side][i].psum += pj;
+        if (pj > jt[side][i].pmax) jt[side][i].pmax = pj;
+        if (jt[side][i].nb == nb) {   // every bone's place from the root, its change's change: the mean over the bones
+            double s = 0;
+            for (int b = 1; b < nb; b++) {
+                float e = 0;
+                for (int k = 0; k < 3; k++) {
+                    float v = w[b][12 + k] - w[0][12 + k], d = v - 2 * jt[side][i].bb[b][k] + jt[side][i].ba[b][k];
+                    e += d * d;
+                }
+                s += sqrtf(e);
+            }
+            float m = (float)(s / (nb - 1));
+            jt[side][i].bsum += m;
+            if (m > jt[side][i].bmax) jt[side][i].bmax = m;
+        }
+        if (jt[side][i].n == 300) {
+            rt_log("coop: enemy %08x jitter %s: bones' jerk per frame mean %.1f mm (worst frame %.1f); body top %.1f mm (max %.1f)", key,
+                   side ? "on its frozen copy" : "where it runs", jt[side][i].bsum / 300 * 1000, jt[side][i].bmax * 1000,
+                   jt[side][i].sum / 300 * 1000, jt[side][i].max * 1000);
+            jt[side][i].sum = 0, jt[side][i].psum = 0, jt[side][i].bsum = 0, jt[side][i].n = 0, jt[side][i].max = 0, jt[side][i].pmax = 0,
+            jt[side][i].bmax = 0;
+        }
+    }
+    jt[side][i].a = jt[side][i].b, jt[side][i].b = top, jt[side][i].have++;
+    memcpy(jt[side][i].pa, jt[side][i].pb, 12), memcpy(jt[side][i].pb, p, 12);
+    memcpy(jt[side][i].ba, jt[side][i].bb, sizeof jt[side][i].ba);
+    for (int b = 0; b < nb; b++) for (int k = 0; k < 3; k++) jt[side][i].bb[b][k] = w[b][12 + k] - w[0][12 + k];
+    jt[side][i].nb = nb;
+    plat_mutex_unlock(&jl);
+}
 static void epose_send_tick(void) {
     if (!enemy_puppets_on()) return;
     static unsigned frame;
@@ -2149,14 +2325,34 @@ static void epose_send_tick(void) {
         if (mine_known[i].key && mine_known[i].actor && mine_known[i].life > 0 && mine_known[i].d2 < SYNC_M * SYNC_M) idx[n++] = i;
     for (int i = 1; i < n; i++)   // nearest another Link first
         for (int j = i; j > 0 && mine_known[idx[j]].d2 < mine_known[idx[j - 1]].d2; j--) { int t = idx[j]; idx[j] = idx[j - 1], idx[j - 1] = t; }
+    // The ones to send are packed at the start of their own calc (coop_enemy_puppet_calc, epose_calc_start), from the
+    // last frame's records as its update left them: packed here, in this tick, they were read while the enemy's update
+    // ran on a worker thread, some bones of this frame and some of the last, and its copy jiggled (a play session,
+    // 2026-11-06).
+    for (int k = 0; k < EPOSE_MAX; k++) {
+        uint64_t a = k < n ? mine_known[idx[k]].actor : 0;
+        if (atomic_load(&ewant[k].actor) != a) {
+            plat_mutex_lock(&ewant[k].lock);
+            atomic_store(&ewant[k].actor, a), ewant[k].key = a ? mine_known[idx[k]].key : 0, ewant[k].len = 0, ewant[k].fresh = 0;
+            plat_mutex_unlock(&ewant[k].lock);
+        }
+    }
     static uint8_t buf[COOP_EPOSE_MAX];
     int sent = 0;
     for (int k = 0; k < n && k < EPOSE_MAX; k++) {
         int i = idx[k];
         if (mine_known[i].d2 > EPOSE_NEAR_M * EPOSE_NEAR_M && (frame + (unsigned)k) % 3) continue;
-        int32_t st = 0;
-        if (!coop_rd(mine_known[i].actor + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6) continue;
-        int len = epose_pack(mine_known[i].actor, mine_known[i].key, buf, sizeof buf);
+        int len = 0;
+        static int tickpack = -1;   // TOTK_COOP_EPOSE_TICKPACK=1: packed here in the tick, as before (control)
+        if (tickpack < 0) tickpack = cfg_get("TOTK_COOP_EPOSE_TICKPACK") != NULL;
+        if (tickpack) {
+            len = epose_pack(mine_known[i].actor, mine_known[i].key, buf, sizeof buf);
+            jit_note(mine_known[i].key, 0, enemy_skeleton(mine_known[i].actor));
+        } else {
+            plat_mutex_lock(&ewant[k].lock);
+            if (ewant[k].fresh && ewant[k].len) memcpy(buf, ewant[k].buf, ewant[k].len), len = ewant[k].len, ewant[k].fresh = 0;
+            plat_mutex_unlock(&ewant[k].lock);
+        }
         if (len) coop_net_epose_send(buf, len), sent++;
     }
     static int said;
@@ -2179,7 +2375,7 @@ static int pup_decode(const uint8_t *in, int len, PupRec *r) {
     memcpy(&n, in, 2), memcpy(&nsc, in + 2, 2);
     n &= 0x7fff;
     if (n == 0 || n > PUP_BONES || 4 + n * POSE_BONE > len) return 0;
-    memcpy(r->pos, h.pos, 12), mat_quat(h.rot, r->q);
+    memcpy(r->pos, h.pos, 12), mat_quat(h.rot, r->q), r->src_ns = h.t_ns;
     for (int b = 0; b < n; b++) {
         int16_t v[6];
         memcpy(v, in + 4 + b * POSE_BONE, POSE_BONE);
@@ -2258,6 +2454,38 @@ static void pup_weapons(Cpu *c, int k) {
                coop_actor_name(best, nm, sizeof nm), (unsigned long long)best, sqrtf(bd));
     }
 }
+// A hit on a frozen enemy here (it runs no update, so it takes none): the record the game leaves in its damage
+// component (as on a proxy, link_hits_send). This Link's arrows and bombs (a hit by it without the melee flag
+// 0x100000: a sword's had 0x180001, an arrow's 0x80000; 2026-11-06) go to its owner as a hit of the record's damage
+// (+0x1a8: on a Link the quarter hearts lost; 90 for a normal arrow, 45 for the Master Sword here). A sword's is not
+// sent: the proxy's swing in the owner's game lands it there already.
+static uint64_t pup_me;   // this Link (peer_tick)
+static void pup_hits(int k) {
+    static uint32_t last[PUP_N];
+    static uint64_t last_a[PUP_N];
+    uint64_t a = atomic_load(&pups[k].actor);
+    uint64_t dc = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x2f8) : 0;
+    uint32_t w[0x40 / 4];
+    if (!dc || !coop_rd(dc + 0x1a0, w, sizeof w)) return;
+    uint32_t st = w[1], was = last_a[k] == a ? last[k] : st;
+    last[k] = st, last_a[k] = a;
+    if (!st || st == was) return;
+    uint64_t ref;
+    memcpy(&ref, &w[0x20 / 4], 8);
+    uint64_t att = ref ? coop_rd_ptr(ref + 0x40) : 0;
+    char nm[64] = "";
+    if (att) coop_actor_name(att, nm, sizeof nm);
+    int dmg = (int)w[2], melee = (w[0x30 / 4] & 0x100000) != 0, mine = att && att == pup_me;
+    int send = mine && !melee && dmg > 0 && dmg <= 65535;
+    static int said;
+    if (said++ < 40)
+        rt_log("coop: enemy %08x (frozen here) was hit by %s for %d (flags %#x)%s", pups[k].key, mine ? "this Link" : nm[0] ? nm : "?", dmg,
+               w[0x30 / 4], send ? ", sent to its owner" : melee && mine ? " (a sword: its owner's game has it from the proxy)" : "");
+    if (send) {
+        HitPacket hp = {pups[k].key, dmg, (uint32_t)pups[k].owner};
+        coop_net_hit_send(&hp, sizeof hp);
+    }
+}
 static void epose_take_tick(Cpu *c) {
     for (int i = 0; i < weap_free_n; i++) if (!weap_bound(weap_free[i])) weap_let_go(c, weap_free[i]);
     weap_free_n = 0;
@@ -2287,7 +2515,19 @@ static void epose_take_tick(Cpu *c) {
         if (pups[i].owner != from) continue;
         plat_mutex_lock(&pup_lock);
         PupRec *r = &pups[i].r[pups[i].count % PUP_HIST];
-        if (pup_decode(in, len, r)) r->ns = now - age, pups[i].count++, pups[i].last_ns = now;
+        if (pup_decode(in, len, r)) {
+            // The owner's clock onto this one: the smallest (arrival - owner's time) seen, the packet that came
+            // quickest, rising slowly so a drift between the clocks is followed.
+            static int64_t off[COOP_MAX_PLAYERS + 1];
+            static int off_ok[COOP_MAX_PLAYERS + 1];
+            int64_t d = (int64_t)(now - age) - (int64_t)r->src_ns;
+            if (from >= 1 && from <= COOP_MAX_PLAYERS) {
+                if (!off_ok[from] || d < off[from]) off[from] = d, off_ok[from] = 1;
+                else off[from] += (d - off[from]) / 1024;
+                r->ns = (uint64_t)((int64_t)r->src_ns + off[from]);
+            } else r->ns = now - age;
+            pups[i].count++, pups[i].last_ns = now;
+        }
         plat_mutex_unlock(&pup_lock);
     }
     // Ready: bound to this game's one, with two poses, the last one fresh.
@@ -2303,7 +2543,7 @@ static void epose_take_tick(Cpu *c) {
                    ok ? "is posed from its owner's (its own update stops here)" : "no longer gets poses (its own update runs again)");
             atomic_store(&pups[k].ready, ok);
         }
-        if (ok) pup_weapons(c, k);
+        if (ok) pup_weapons(c, k), pup_hits(k);
         else
             for (int j = 0; j < EPOSE_ITEMS; j++) {
                 uint64_t w = atomic_exchange(&pups[k].weap[j], 0);
@@ -2323,6 +2563,47 @@ static int epose_delay_ms(void) {
     if (d < 0) { const char *e = cfg_get("TOTK_COOP_ENEMY_DELAY_MS"); d = e ? atoi(e) : 100; }
     return d;
 }
+// The writer hook (main+0x283c750, x1 the skeleton): 1 when it is a frozen enemy's (the call is skipped).
+static _Atomic uint64_t pup_skel[PUP_N];
+int coop_enemy_puppet_skel(uint64_t skel, uint64_t lr) {
+    if (!skel) return 0;
+    for (int i = 0; i < PUP_N; i++)
+        if (atomic_load_explicit(&pup_skel[i], memory_order_relaxed) == skel && atomic_load_explicit(&pups[i].ready, memory_order_relaxed)) {
+            static _Atomic int said;
+            if (atomic_fetch_add(&said, 1) == 0)
+                rt_log("coop: an enemy puppet's own pose build skipped (main+0x283c750, from main+%#llx)", (unsigned long long)(lr - MOD_MAIN_BASE));
+            return 1;
+        }
+    return 0;
+}
+static _Atomic uint64_t pup_model[PUP_N];
+// Test: the other writers of a body skeleton's matrices (re-notes, write watch: main+0x289620, 0x2925e0, 0x43e450;
+// and the animation binding main+0x2e9c80) called with an argument naming a frozen enemy's skeleton or model (or
+// pointing into them): logged once each; TOTK_COOP_TEST_PUPSKIP=1 skips them.
+int coop_enemy_puppet_writer(uint64_t addr, const uint64_t *x, uint64_t lr) {
+    static int skip = -1;
+    if (skip < 0) skip = cfg_get("TOTK_COOP_TEST_PUPSKIP") != NULL;
+    for (int i = 0; i < PUP_N; i++) {
+        if (!atomic_load_explicit(&pups[i].ready, memory_order_relaxed)) continue;
+        uint64_t sk = atomic_load_explicit(&pup_skel[i], memory_order_relaxed), md = atomic_load_explicit(&pup_model[i], memory_order_relaxed);
+        for (int k = 0; k < 4; k++) {
+            uint64_t v = x[k];
+            int hit = v && (v == sk || v == md);
+            if (!hit && addr == MOD_MAIN_BASE + 0x2e9c80 && v) {   // a binding: [+8] +8 its model (coop_spawn.c's log)
+                uint64_t a = coop_rd_ptr(v + 8), b = a ? coop_rd_ptr(a + 8) : 0;
+                hit = b && (b == md || b == sk);
+            }
+            if (!hit) continue;
+            static _Atomic uint32_t said[4];
+            int w = addr == MOD_MAIN_BASE + 0x289620 ? 0 : addr == MOD_MAIN_BASE + 0x2925e0 ? 1 : addr == MOD_MAIN_BASE + 0x43e450 ? 2 : 3;
+            if (atomic_fetch_add(&said[w], 1) == 0)
+                rt_log("coop: test: main+%#llx is called on an enemy puppet (x%d its %s; from main+%#llx)%s", (unsigned long long)(addr - MOD_MAIN_BASE), k,
+                       v == sk ? "skeleton" : v == md ? "model" : "model's binding", (unsigned long long)(lr - MOD_MAIN_BASE), skip ? ", skipped" : "");
+            return skip;
+        }
+    }
+    return 0;
+}
 static int pup_weapon_of(uint64_t a) {
     if (!a) return 0;
     for (int i = 0; i < PUP_N; i++)
@@ -2331,7 +2612,11 @@ static int pup_weapon_of(uint64_t a) {
     return 0;
 }
 // The calc hook: 1 when the actor is a frozen enemy puppet or one of its weapons (its calc is skipped).
-int coop_enemy_puppet_calc(uint64_t actor) { return pup_of_actor(actor) >= 0 || pup_weapon_of(actor); }
+int coop_enemy_puppet_calc(uint64_t actor) {
+    if (pup_of_actor(actor) >= 0 || pup_weapon_of(actor)) return 1;
+    epose_calc_start(actor);
+    return 0;
+}
 // An update phase of an enemy puppet (1: taken; main+0x245030 is replaced by the drive, the others skipped).
 int coop_enemy_puppet_phase(Cpu *c, uint64_t addr) {
     uint64_t a = c->x[0];
@@ -2343,6 +2628,8 @@ int coop_enemy_puppet_phase(Cpu *c, uint64_t addr) {
     uint64_t sk = enemy_skeleton(a), recs = sk ? coop_rd_ptr(sk + 0x18) : 0;
     uint16_t have = 0;
     if (sk) coop_rd(sk + 0x48, &have, 2);
+    jit_note(pups[i].key, 1, sk);
+    atomic_store(&pup_skel[i], sk), atomic_store(&pup_model[i], enemy_model(a));
     int ok = 0;
     plat_mutex_lock(&pup_lock);
     unsigned cnt = pups[i].count, n = cnt < PUP_HIST ? cnt : PUP_HIST;
@@ -2355,6 +2642,14 @@ int coop_enemy_puppet_phase(Cpu *c, uint64_t addr) {
                 if (pa->ns <= t) A = pa, B = pb;
             }
         if (!A) A = B = &pups[i].r[(cnt - n) % PUP_HIST];
+        static int hold = -1;   // TOTK_COOP_TEST_EPOSE_HOLD=1: the first pose kept, unblended (is the jitter ours?)
+        if (hold < 0) hold = cfg_get("TOTK_COOP_TEST_EPOSE_HOLD") != NULL;
+        if (hold) {   // (a copy: the history's slots are written over by the next poses)
+            static PupRec held[PUP_N];
+            static uint32_t held_key[PUP_N];
+            if (held_key[i] != pups[i].key) held[i] = *newest, held_key[i] = pups[i].key;
+            A = B = &held[i];
+        }
         float f = A != B && B->ns > A->ns && t > A->ns ? (float)((double)(t - A->ns) / (double)(B->ns - A->ns)) : 0;
         if (f > 1) f = 1;
         for (int k = 0; k < 3; k++) out.pos[k] = A->pos[k] + (B->pos[k] - A->pos[k]) * f;

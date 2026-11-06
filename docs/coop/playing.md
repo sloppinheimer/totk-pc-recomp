@@ -22,8 +22,8 @@ What works (2026-11-04): each player's Link appears in the others' games and mov
 run, jump, glide, attack); it is put back at its owner's position when it drifts, and goes away when its player
 leaves. It carries its owner's weapon, bow and shield and wears their head, body and leg armor. Guests follow the
 host's time of day and weather. An enemy near more than one player is run by the game that has had it longest (a
-player who was fighting alone keeps the fight); the others show its moves, weapons, life and death; their sword hits
-count on it, and its hits on them count (without the knock-back). The host's HUD prompts stay on the host's screen. Not yet: arrows and bombs on an enemy from the players whose game does not run it, fused weapon parts and armor dyes, menus for remote players. Chests stay each player's own.
+player who was fighting alone keeps the fight); the others show its moves, weapons, life and death; their sword hits,
+arrows and bombs count on it, and its hits on them count (without the knock-back). The host's HUD prompts stay on the host's screen. Not yet: fused weapon parts and armor dyes, menus for remote players. Chests stay each player's own.
 ## One PC, two games, two gamepads (online co-op without a second PC)
 Double-click `Play co-op (two pads).vbs` in the repo folder (or run `tools\coop\play_two.ps1`): it starts the relay and two game windows with no console windows; window 1
 reads the first connected gamepad, window 2 the second (the log lists the gamepads it sees: "input: gamepad 0 of 2").

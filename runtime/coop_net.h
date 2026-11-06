@@ -65,7 +65,7 @@ int coop_net_world(int id, void *out, int max, uint64_t *age_ns);  // the latest
 #define COOP_POSE_MAX 4000
 void coop_net_pose_send(const void *data, int len);
 // Enemy poses (EPOSE packets, coop_world.c's enemy puppets): queued both ways, at most COOP_EPOSE_MAX bytes each.
-#define COOP_EPOSE_MAX (212 + COOP_POSE_MAX)
+#define COOP_EPOSE_MAX (220 + COOP_POSE_MAX)
 void coop_net_epose_send(const void *data, int len);
 int coop_net_epose_take(void *out, int max, int *from, uint64_t *age_ns);   // the oldest; its length, -1 too big, 0 none
 int coop_net_pose(int id, void *out, int max, uint64_t *age_ns);   // the latest from player id; its length (0 none)
