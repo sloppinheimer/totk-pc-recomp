@@ -779,3 +779,15 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   and tests it by name (main+0x9e6af0 and main+0x1b37958 compare it; the AI query
   QuerySpecialPowerIsImaginaryAutoBuildedActor exists for it). coop_players.c is_imaginary skips such actors, so a
   preview is no longer sent; the built devices still are. Checked by build only, not yet in play.
+- Correction: the label stays on a built device (a play session: the fans and stick of a build carried it from
+  the moment they appeared, and none was sent). A memory diff over a build found what confirming does to every
+  device at once: actor +0x440 gains bit 0x10, +0x5d0 (NaN during the preview) gets a position, +0x454 goes 0 to 1.
+  coop_players.c is_preview uses the first two; built devices are sent again (CoopObj.flags says autobuilt).
+- (2), the green tint, not solved. Tried on the copies and checked on screen: the label and +0x668 flag (no tint);
+  then also component 80's +0xb4 bit 0x80000 and +0x78 = 1.0 (set on every original and no copy in a dump of four
+  devices against their copies) with main+0x9d48dc run on it (no tint; that function marks model materials whose
+  flags have bit 3, and the devices' one material has 0x80043 on originals and copies alike). Left to try: the
+  originals are made with an autobuild creation record (the create argument's +0x78, whose type main+0x6898dc
+  checks before setting the label; actor +0x3e8 holds main+0x3a4e008 on originals only). Making the copy through
+  that same path, or finding what that record changes in the model at load, is the next step: hook main+0x6898dc
+  to log the record during a build.
