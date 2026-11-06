@@ -1,8 +1,10 @@
 # Co-op on one PC, one game per gamepad: starts the relay and two games side by side; game 1 reads the first connected
-# gamepad, game 2 the second. Both play copies of the 1.4.3 save (build\prof-play-1 and -2, made fresh each start), so
-# nothing is saved back to the real profile. Close either window (or this console) to end the session.
-#   powershell -ExecutionPolicy Bypass -File tools\coop\play_two.ps1   (or double-click "Play co-op (two pads).vbs")
-param([string]$Name1 = "Player 1", [string]$Name2 = "Player 2", [string]$Size = "1904x1071")
+# gamepad, game 2 the second. Both play copies of the 1.4.3 save (build\prof-play-1 and -2), so nothing is saved back
+# to the real profile. The copies are kept from one start to the next, with what was saved in them; -Fresh makes them
+# again from the real profile. (Made fresh each start, a session's saves were lost at the next one, a play session,
+# 2026-11-06.) Close either window (or this console) to end the session.
+#   powershell -ExecutionPolicy Bypass -File tools\coop\play_two.ps1 [-Fresh]   (or double-click "Play co-op (two pads).vbs")
+param([string]$Name1 = "Player 1", [string]$Name2 = "Player 2", [string]$Size = "1904x1071", [switch]$Fresh)
 $ErrorActionPreference = 'Stop'
 # Programs started with no console window at all (CREATE_NO_WINDOW): hiding one after the fact does not work when
 # Windows Terminal hosts the consoles. Their environment is this script's (set below for each game).
@@ -31,8 +33,8 @@ $relay = Start-NoConsole (Join-Path $root '.venv\Scripts\python.exe') 'server\co
 $games = @()
 foreach ($g in @(@{dir = $a; n = 1; name = $Name1; pad = '0'}, @{dir = $b; n = 2; name = $Name2; pad = '1'})) {
     $p = Join-Path $root "build\prof-play-$($g.n)"
-    if (Test-Path $p) { Remove-Item -Recurse -Force $p }
-    Copy-Item -Recurse (Join-Path $root 'build\profile-v143') $p
+    if ($Fresh -and (Test-Path $p)) { Remove-Item -Recurse -Force $p }
+    if (-not (Test-Path $p)) { Copy-Item -Recurse (Join-Path $root 'build\profile-v143') $p }
     $env:TOTK_PROFILE_DIR = $p
     $env:TOTK_PAD_INDEX = $g.pad
     $env:TOTK_ASSUME_FOCUS = '1'        # both games keep running and reading their pad without the focus
