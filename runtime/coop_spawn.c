@@ -404,6 +404,11 @@ static int prof3;
 // object, with their call site: where enemy AI uses the player it fetched.
 static int prof4;
 static int prof7;   // TOTK_COOP_PROF=7, below coop_fn_hit
+// TOTK_COOP_PROF=L: every function entered inside a co-op Link's life update (the life hook, main+0x4400b0), all of
+// them reported: for finding what shows its life on this game's hearts (they filled and emptied at each of its
+// updates, the tester's capture, 2026-11-06).
+static int profL;
+static __thread int in_coop_life;
 static __thread uint64_t enemy_calc;
 static uint64_t prof4_ref;
 static struct { _Atomic uint64_t fn; _Atomic uint32_t hits; uint64_t x0, lr; } p3[8192];
@@ -468,7 +473,10 @@ static void p3_report(void) {
         if (guide)
             rt_log("coop: prof3 guide %6u x %s, x0 %llx, from %s", atomic_load(&p3[i].hits), ldr_describe(fn, d, sizeof d),
                    (unsigned long long)p3[i].x0, ldr_describe(p3[i].lr, e, sizeof e));
-        if (global) {
+        if (profL) {
+            rt_log("coop: profL %6u x %s, x0 %llx%s%s, from %s", atomic_load(&p3[i].hits), ldr_describe(fn, d, sizeof d),
+                   (unsigned long long)p3[i].x0, global ? " held by a global " : "", where, ldr_describe(p3[i].lr, e, sizeof e));
+        } else if (global) {
             g++;
             rt_log("coop: prof3 %6u x %s, x0 %llx (held by a global %s), from %s", atomic_load(&p3[i].hits),
                    ldr_describe(fn, d, sizeof d), (unsigned long long)p3[i].x0, where, ldr_describe(p3[i].lr, e, sizeof e));
@@ -682,6 +690,7 @@ static void p8_report(void) {
     }
 }
 void coop_fn_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
+    if (profL) { if (in_coop_life) p3_hit(addr, lr, x0); return; }
     if (prof6) { p6_hit(addr, lr); return; }
     if (prof7) {
         if (coop_in_remote_calc() || !x0) return;
@@ -1004,11 +1013,22 @@ int coop_hook(Cpu *c, uint64_t addr) {
         uint64_t p = rd_ptr(c->x[0] + 0x1830);
         uint32_t before = 0;
         if (in || keep || !p || !rd(p + 8, &before, 4)) return 0;
-        ST32(p + 8, 0x3fffffffu);
-        in = 1;
+        // Its life update does not run at all (TOTK_COOP_LIFT=lift or none: as before, below). Any change it made to
+        // the life, the lift's clamp to most life or a quarter heart, showed on this game's hearts as a fill (the tester's
+        // capture and session, 2026-11-06); its life is its owner's, set from the owner's reports.
+        static int run_it = -1;
+        if (run_it < 0) { const char *e = cfg_get("TOTK_COOP_LIFT"); run_it = e && (!strcmp(e, "lift") || !strcmp(e, "none")); }
+        if (!run_it) return 1;
+        // TOTK_COOP_LIFT=none: the update runs on the life as it is, and a drop is put back after (a lethal hit inside
+        // one update can then kill it here). Lifted (the default), this game's hearts filled and emptied at each of
+        // its updates (each of its owner's swings; the tester's capture, 2026-11-06): tried to tell which.
+        static int nolift = -1;
+        if (nolift < 0) { const char *e = cfg_get("TOTK_COOP_LIFT"); nolift = e && !strcmp(e, "none"); }
+        if (!nolift) ST32(p + 8, 0x3fffffffu);
+        in = 1, in_coop_life = 1;
         c->pc = addr;
         rt_dispatch(c);
-        in = 0;
+        in = 0, in_coop_life = 0;
         uint32_t after = LD32(p + 8);
         if (after < 0x3fffffffu && after > 0x3fff0000u) {   // damage taken off the lifted value (not the clamp to max)
             static _Atomic int said;
@@ -1018,7 +1038,8 @@ int coop_hook(Cpu *c, uint64_t addr) {
         // other value (the clamp of the lifted value to most life, every update) is the lift's, not the game's, and is
         // put back. (Keeping a value set outright, unless it was the most life, kept the clamp: the most life could not
         // be read in here, and the proxy went to full life in each update it ran; the sync audit, 2026-11-06.)
-        ST32(p + 8, after > 0x3fffffffu ? before + (after - 0x3fffffffu) : before);
+        if (nolift) ST32(p + 8, after < before ? before : after);
+        else ST32(p + 8, after > 0x3fffffffu ? before + (after - 0x3fffffffu) : before);
         static int lifelog = -1;   // TOTK_COOP_TEST_LIFELOG: each co-op Link life update that changed the lifted value
         if (lifelog < 0) lifelog = cfg_get("TOTK_COOP_TEST_LIFELOG") != NULL;
         static _Atomic int said_lu;
@@ -1408,6 +1429,7 @@ void coop_tick(struct Cpu *c) {
         prof_phase = e && (*e == '1' || *e == '2') ? 1 : -1;
         prof_kind = e && *e == '2';
         if (e && *e == '3') prof3 = 1, g_fnprof = 1;
+        if (e && *e == 'L') prof3 = profL = 1, g_fnprof = 1;
     if (e && *e == '4') prof3 = prof4 = 1;   // the profiler from the world on (loading is too slow under it)
         if (e && *e == '7') prof7 = prof3 = 1, g_fnprof = 1;
         if (e && *e == '8') prof8 = 1;
