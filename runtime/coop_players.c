@@ -1341,7 +1341,30 @@ static int report_arrows(uint64_t me, CoopObj *out) {
     return n;
 }
 static int key_missing(uint32_t id);
+// Test (TOTK_COOP_TEST_ARROWWATCH=1): the first arrow copy made here: its actor state (+0x24) and +0x28 every tick for
+// 30 ticks, and a write watch on those 8 bytes for the same time (which game functions write them: what puts the copy
+// to sleep, state 6, where this game's own arrows stay at 4).
+static uint64_t aw_actor;
+static int aw_ticks = -1;
+static void arrow_watch_start(uint64_t a, const char *nm) {
+    static int on = -1;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_ARROWWATCH") != NULL;
+    if (!on || aw_ticks >= 0 || !a || !strstr(nm, "Arrow")) return;
+    int coop_watch_arm(uint64_t addr, uint64_t len);   // coop_watch_win.c
+    extern int coop_watch_writes;
+    coop_watch_writes = 1;
+    aw_actor = a, aw_ticks = 0;
+    coop_watch_arm(a + 0x24, 8);
+}
+static void arrow_watch_tick(void) {
+    if (aw_ticks < 0 || aw_ticks > 30) return;
+    int32_t st = (int32_t)LD32(aw_actor + COOP_ACTOR_STATE);   // read through the watch (coop_rd does not)
+    uint32_t w = LD32(aw_actor + 0x28);
+    rt_log("coop: test: arrow watch tick %d: state %d, +0x28 %08x", aw_ticks, st, w);
+    if (++aw_ticks > 30) { void coop_watch_disarm(void); coop_watch_disarm(); }
+}
 static void arrow_copies(Cpu *c, Slot *s) {
+    if (s == &slots[0]) arrow_watch_tick();
     for (int k = 0; k < COOP_OBJS; k++) {   // copies whose arrow is gone
         if (!s->mir[k].state) continue;
         int still = 0;
@@ -1378,6 +1401,7 @@ static void arrow_copies(Cpu *c, Slot *s) {
                 s->mir[k].state = s->mir[k].actor ? 3 : 0;
                 static int said;
                 if (s->mir[k].actor && said++ < 20) rt_log("coop: slot %d: a copy of object %u (%s) is here", (int)(s - slots), s->mir[k].id, s->mir[k].name);
+                arrow_watch_start(s->mir[k].actor, s->mir[k].name);
             }
         } else if (s->mir[k].state == 3 && ++s->mir[k].ticks >= COPY_WARMUP) {
             if (pickable(s->mir[k].name)) {   // picked up here?
@@ -1436,7 +1460,8 @@ static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc) {
     // A Zonai device's copy runs its own update, so a hit here (the proxy's sword) turns it on, with its effects;
     // so does an item's, so this game's Link can pick it up (pickable). Both are still put at the owner's place every
     // tick (place_copy).
-    return copy_of(actor, &s, &k) && s->mir[k].ticks >= COPY_WARMUP && strncmp(s->mir[k].name, "SpObj_", 6) && !pickable(s->mir[k].name);
+    return copy_of(actor, &s, &k) && s->mir[k].ticks >= COPY_WARMUP && strncmp(s->mir[k].name, "SpObj_", 6) && !pickable(s->mir[k].name) &&
+           !strstr(s->mir[k].name, "Arrow");   // an arrow's: woken (place_copy), its update shows its model again
 }
 // Each tick, a copy is put where its arrow is: actor position and rotation, model matrix and the push to the model
 // units, as the proxy. Done from the tick, not in one of its own updates: the game stopped calling a frozen arrow's
@@ -1444,6 +1469,21 @@ static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc) {
 // 2026-11-05).
 static void place_copy(Cpu *c, Slot *s, int k) {
     uint64_t actor = s->mir[k].actor;
+    // An arrow's copy asks to sleep in its first tick (reason 0, through main+0x55251c: TOTK_COOP_TEST_ARROWWATCH)
+    // and sleeps from the third (actor state 6, its model's +0x244 6), where this game's own arrows stay awake (4); a
+    // sleeping arrow is not drawn (a play session, 2026-11-05). It is woken as the actor state machine
+    // (main+0x54cb00) wakes one: +0x28's reason bits at 0x10, then bit 19 set and the actor queued for the machine
+    // (main+0x2ae413c). Frozen after its warmup, it does not ask again.
+    if (strstr(s->mir[k].name, "Arrow")) {
+        int32_t st = 0;
+        if (coop_rd(actor + COOP_ACTOR_STATE, &st, 4) && st == 6) {
+            uint32_t w = LD32(actor + 0x28);
+            ST32(actor + 0x28, (w & ~0x7ffu & ~0x80000u) | 0x10u);
+            coop_guest_call(c, MOD_MAIN_BASE + 0x2ae413c, actor, 19, 0, 0);
+            static int said;
+            if (said++ < 6) rt_log("coop: the copy of arrow %u was asleep: woken", s->mir[k].id);
+        }
+    }
     float m[12];
     for (int r = 0; r < 3; r++) {
         for (int j = 0; j < 3; j++) m[r * 4 + j] = s->mir[k].rot[r * 3 + j];
