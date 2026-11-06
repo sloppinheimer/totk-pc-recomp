@@ -133,6 +133,12 @@ right in the tester's own two-pad session.
   a bomb arrow's blast on the other screen; hair and clothes still blown after a fan (re-notes); the autobuild
   green tint (re-notes); arrow copies cannot be picked up (frozen, their body kept away: a copy was taken from
   the bow).
+- **The Master Sword's beam** (2026-11-06): the proxy makes none, so the owner's beam (PlayerBeam, a pooled actor,
+  awake while it flies) is sent as a made object while it is within 6 m of its Link. Its copy is given the beam's
+  scale (0.3, the owner's actor +0x2e4) and its flight (50 m/s along the way it first moved), and runs its own update
+  (beam_copy). Checked by the tester: size, flight and spin look right. Open: no burst where it hits on the other
+  screen. The copy finds no wall of its own (flown on, it went through), and what makes the owner's burst is not
+  found (TOTK_COOP_TEST_BEAMLOG, beam_end_watch). Left there for now (the tester's call).
 - Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
 
 ## Plan
