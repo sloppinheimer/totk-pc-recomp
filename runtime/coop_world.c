@@ -4910,6 +4910,9 @@ void coop_world_tick(Cpu *c, uint64_t me) {
     if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "enemy"); }
     if (on && ++t % 300 == 0) { probe_me = me; each_live(probe_one, NULL); }
     if (coop_world_role()) peer_tick(c, me);
+    // Alone, the horse tests still run (coop_mounts_tick: the put, the fake ride and the position log), so a mount can
+    // be tried in one game with no co-op peer: TOTK_COOP_MOUNTS=1 and TOTK_COOP_TEST_MOUNT_PUT=<s> without a player id.
+    else coop_mounts_tick(c, me);
     void coop_anim_slots_test(uint64_t me);   // (below)
     coop_anim_slots_test(me);
     void coop_anim_copy_test(Cpu *c, uint64_t me);   // (below)

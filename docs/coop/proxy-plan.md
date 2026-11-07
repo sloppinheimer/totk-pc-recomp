@@ -217,7 +217,12 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     run's move was most likely the Link picking up the mane's copy, not a mount.) Not known why: whether a horse made
     by the test spawn can be mounted at all, or the prompt's range and facing; no mount call of the game is known. So
     suite case `mount_fake` (`TOTK_COOP_TEST_MOUNT_FAKE=30:1`) counts A's Link as riding the nearest horse from 30 s
-    and tests the rest (who runs it, the rider heard of, the stand-in put on the copy) without a mount; not run yet;
+    and tests the rest (who runs it, the rider heard of, the stand-in put on the copy) without a mount (it passes).
+    Frames of 29.8-31.2 s showed no Mount prompt; the presses make Link crouch by the horse's front. A's own game ran
+    the horse through every press (its test lines say "run here" to 41 s, when it was handed to B's game with A's
+    Link 8 m off after the ride-forward walk), so a copy refusing the ride is ruled out. `tools\coop\mount_solo.ps1`
+    runs the same spawn, puts and presses in one game with no peer (coop_mounts_tick runs alone too), to settle
+    whether a test-spawned horse can be mounted at all; not run yet;
   - shared world progress: arrays and strings (the pouch and the other per-player lists), and catching a player up on
     what the others did before this session (only the session's own changes are sent);
   - Ultrahand glue: the scripted test passes, a played glue is not tried yet (runtime/coop_glue.c; `TOTK_COOP_GLUE=0` off). The 1.4.3 functions, found
