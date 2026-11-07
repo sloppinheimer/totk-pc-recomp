@@ -7,7 +7,8 @@ in-hand calls; nothing in the actor fights them (docs/coop/proxy-plan.md, "Parit
 
 This pack is made here from the player's own Player.pack.zs: every member kept, plus
 Actor/PlayerPuppet.engine__actor__ActorParam.bgyml, the Player's actor parameters with the category Enemy (as the
-mod's) and without the components that make a Player act or that only one Link may have (PLAYER_ONLY below).
+mod's) and without the components that make a Player act or that only one Link may have (PLAYER_ONLY below), and
+Component/PerceptionEmitterParam/PlayerPuppet...bgyml, the Player's perception emitter made not resident (EMITTER below).
 
     .venv\\Scripts\\python tools\\coop\\make_puppet_pack.py [--version v143]
 
@@ -44,6 +45,10 @@ ap.add_argument('--version', choices=('v121', 'v143'), default='v143')
 ap.add_argument('--out', type=Path, help='default build/<version>/romfs-patches')
 ap.add_argument('--fields', default='InstanceHeapSize', help='(a test) the fields of the Player ActorInfo row put on the stand-in')
 ap.add_argument('--drop', default='', help='(a test) more components of the actor parameters left out, comma separated')
+ap.add_argument('--resident-emitter', action='store_true',
+                help="(a test, the old pack) keep the Player's perception emitter as it is: resident, which enemies ignore")
+ap.add_argument('--emitter-sublayer', default='',
+                help="(a test) the stand-in emitter's SubLayerSensor instead of the Player's PerceptionPlayer, e.g. PerceptionEnemy")
 args = ap.parse_args()
 src = root / 'build' / 'extracted' / args.version / 'romfs'
 out_dir = args.out or root / 'build' / args.version / 'romfs-patches'
@@ -71,6 +76,24 @@ gone = [k for k in PLAYER_ONLY + tuple(x for x in args.drop.split(',') if x) if 
 w = oead.SarcWriter(endian=oead.Endianness.Little)
 for f in pack.get_files():
     w.files[f.name] = bytes(f.data)
+# The perception emitter. The Player's (and a Sage's) is resident (IsResidentEmitter): the perception manager keeps
+# the one player emitter in a field of its own ([main+0x3a6ea80] +0x58, docs/coop/re-notes.md "Enemy targets: not
+# found") that enemies check instead of sensing it, so a second actor with that emitter is never noticed (a second
+# Player, a pigeon with the Player's or a Sage's emitter: proxy-plan.md). Enemies and horses have resident false (the
+# enemies' EnemyCommon) and are sensed through their emitter's sensor sublayer. The stand-in gets the Player's
+# emitter with resident false, so enemies sense it as they do any other actor and pick it by its affiliation (the
+# Player's "Player", which a Bokoblin's TargetAffiliations hold).
+EMITTER = f'Component/PerceptionEmitterParam/{NAME}.game__component__PerceptionEmitterParam.bgyml'
+if not args.resident_emitter:
+    ref = param['Components']['PerceptionEmitterRef']
+    em = byml.read(bytes(pack.get_file(ref.lstrip('?')).data))
+    assert em.get('IsResidentEmitter') is True, em
+    em['IsResidentEmitter'] = False
+    if args.emitter_sublayer: em['SubLayerSensor'] = args.emitter_sublayer
+    new = byml.write(em)
+    assert byml.same(byml.read(new), em)
+    w.files[EMITTER] = new
+    param['Components']['PerceptionEmitterRef'] = '?' + EMITTER
 new = byml.write(param)
 assert byml.same(byml.read(new), param)
 w.files[f'Actor/{NAME}.engine__actor__ActorParam.bgyml'] = new
@@ -126,4 +149,5 @@ for path, (z, orig) in outputs.items():
     target.write_bytes(z)
     lines.append(f'{path}\t{len(z)}\t{hashlib.sha256(z).hexdigest()}\t{orig}')
 man.write_text('\n'.join(lines) + '\n', encoding='utf-8')
-print(json.dumps(dict(status='pass', files=list(outputs), members=len(w.files), left_out=gone)))
+print(json.dumps(dict(status='pass', files=list(outputs), members=len(w.files), left_out=gone,
+                      emitter='resident (Player)' if args.resident_emitter else EMITTER)))

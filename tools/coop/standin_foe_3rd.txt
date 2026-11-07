@@ -1,0 +1,9 @@
+# The 100% save (third in the Continue list), for game B while game A plays walk_far_3rd.txt (A walks about 20 m
+# away from 24 s to 33 s): B stands still; with -SpawnB "Enemy_Bokoblin_Junior@40" and TOTK_COOP_TEST_SPAWN_AT=standin
+# a Bokoblin is made at 40 s 3 m in front of A's stand-in, facing it, about 20 m from B's own Link
+# (TOTK_COOP_TEST_FOELOG=1 logs whom it noticed; docs/coop/proxy-plan.md "Enemies and the stand-in").
+300 A 4
+520 DOWN 4
+580 DOWN 4
+640 A 4
+800 A 4

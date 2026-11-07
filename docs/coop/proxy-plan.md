@@ -137,11 +137,7 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     TotK Online has the stand-in shoot because it syncs no arrows; here the owner's arrows (nocked and flying) are
     sent as objects and their copies follow them (the `fuse` suite case), placed on the PlayerPuppet's bow after its
     model phase as on the old co-op Link, and an arrow's damage on a copy goes to its owner as lost life;
-  - enemies taking the stand-in for a player: the "is a player" check (1.2.1 main+0x1736dec, 1.4.3 main+0x1d1fc70 by
-    tools/coop/xver_match.py, a guess 6/7) is hooked and answers 1 for a PlayerPuppet (coop_spawn.c), but in a sword
-    fight beside the stand-in it was never called (TOTK_COOP_TEST_ISPLAYER logs its calls): the match may be wrong or
-    the check is for something else. TotK Online's four patches in the same family (1.4.3 near main+0x1d1f960,
-    0x1d1f9e4, 0x1d1fa54, 0x1d1ffd0) are not made (mid-function; no crash seen without them);
+  - enemies taking the stand-in for a player: see "Enemies and the stand-in" below (written, not run);
   - the stand-in's paraglider and Ultrahand arm as actors of their own tied to it (Parasail, PlayerRaulHand, by
     requestRegisterRelation), with the glider's colour and open state; the glider goes as a moved object's copy now,
     only while open, and is placed on the PlayerPuppet after its model phase (2026-11-07: the copy was made in the
@@ -232,6 +228,47 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   - a thrown weapon or a shield bash on a copy is taken out of its contacts as a sword hit is, but the stand-in does
     not throw or bash in the owner's game, so that hit is lost (code review, a guess);
   - the Gloom Hands: left out, as TotK Online leaves them out.
+
+## Enemies and the stand-in (2026-11-07, branch `claude/coop-standin-target`; not run)
+- **The "is a player" hook is not the target check.** 1.4.3 main+0x1d1fc70 is the right match for TotK Online's
+  1.2.1 main+0x1736dec (the same code, side by side: the actor from a link, its component +0x120, its name looked up
+  in a table [main+0x39601e8] through main+0xd62b58). Its one caller, main+0x1d1f9e8, is in the function that loads
+  "IsAdditionalArrowBow": bow code. That is why a sword fight never called it. The hook stays (coop_spawn.c) for
+  the stand-in's bow; its comment says what it is.
+- **The likely cause: the stand-in's perception emitter is resident.** The stand-in had the Player's
+  PerceptionEmitterParam, `IsResidentEmitter: true` (SubLayerSensor PerceptionPlayer). So did everything tried before
+  (a second Player; a pigeon with the Player's or a Sage's emitter: SageCommon is resident too). The perception manager
+  keeps one player emitter in a field of its own (+0x58, re-notes "Enemy targets: not found"), which enemies check
+  instead of sensing it. Enemies' and horses' emitters (EnemyCommon) are not resident and are sensed through their
+  sensor sublayer. A Bokoblin's TargetAffiliations hold "Player", and the stand-in has the Player's
+  AffiliationParam (DefaultAffiliation Player). Evidence: the files and the param reader main+0x1abe6e0
+  (IsResidentEmitter, SubLayerSensor). Where the game reads the flag is not found. Likely, not proven.
+- **Fix:** tools/coop/make_puppet_pack.py gives the stand-in its own emitter param (the Player's with
+  IsResidentEmitter false, `Component/PerceptionEmitterParam/PlayerPuppet...`). `--resident-emitter` builds the old
+  pack (a control); `--emitter-sublayer PerceptionEnemy` tries the enemies' sublayer if PerceptionPlayer is not
+  sensed. No runtime change is needed for the fix itself.
+- **Test** (rebuild the pack first: `.venv\Scripts\python tools\coop\make_puppet_pack.py` after
+  tools/make_romfs_patches.py):
+  `$env:TOTK_COOP_STANDIN='puppet'; $env:TOTK_COOP_PUPPET=1; $env:TOTK_COOP_TEST_SPAWN_AT='standin';
+  $env:TOTK_COOP_TEST_FOELOG=1; $env:TOTK_COOP_ENEMY_HANDOVER=0; tools\coopun_pair.ps1 -Seconds 80 -ScriptA
+  tools\coop\walk_far_3rd.txt -ScriptB tools\coop\standin_foe_3rd.txt -SpawnB "Enemy_Bokoblin_Junior@40" -ShotsB
+  w40-70:2 -ShotsDir build\standin-foe`.
+  A walks about 20 m away. B stands, and at 40 s a Bokoblin is made 3 m in front of A's stand-in in B's game, facing it.
+  Expected in B's log:
+  - `coop: spawn Enemy_Bokoblin_Junior 3 m in front of player <id>'s stand-in at ...`
+  - `coop: Enemy_Bokoblin_Junior claimed: ok`
+  - every second, `coop: test: foe Enemy_Bokoblin_Junior at ...: awareness <w0> ...; <d> m from this Link, <s> m
+    from player <id>'s stand-in`.
+  Passing: w0 goes from c182 (unaware) to c082 (aware) within a few seconds, and the stand-in distance stays
+  under about 3 m while the distance to this Link stays near 20 m. B's frames show it swinging at the stand-in.
+  Hits on the stand-in are dropped in B (contacts_filter) and A's game has no Bokoblin, so nobody loses life;
+  that is expected.
+  Control: the same with the pack built `--resident-emitter`. The Bokoblin should stay c182, or walk to B's own
+  Link.
+  Unverified: that 20 m keeps B's own Link out of the Bokoblin's notice; the earlier note saw one stay unaware
+  with the Link 44 m off.
+- Not done: TotK Online's four crash-guard patches in the bow function family (1.4.3 near main+0x1d1f960, 0x1d1f9e4,
+  0x1d1fa54, 0x1d1ffd0). They belong to the bow path, not to targeting.
 
 ## To remove once the TotK Online way is the default (2026-11-07)
 Nothing here goes before what replaces it is the default, the tester has played with it, and the full suite passes

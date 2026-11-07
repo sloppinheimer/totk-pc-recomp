@@ -32,7 +32,8 @@
 static const char *names[3] = {"Item_Fruit_A", "Npc_Kokiri007", "Player"};   // [1]: TOTK_COOP_TEST_SPAWN can change it
 // The handle the manager fills when the actor exists; it keeps the address, so it outlives the call.
 static _Alignas(16) uint8_t handles[3][0x40];
-static _Alignas(16) uint8_t links[3][0x40];   // the actor link the claim fills (the node keeps it at node+0x28)
+static _Alignas(16) uint8_t links[3][0x40];
+static uint64_t foe;   // the actor TOTK_COOP_TEST_SPAWN made (slot 1), for foe_log   // the actor link the claim fills (the node keeps it at node+0x28)
 static int last_status[3] = {-1, -1, -1};
 int coop_watch_arm(uint64_t addr, uint64_t len);   // coop_watch_win.c
 void coop_watch_disarm(void);
@@ -303,6 +304,34 @@ static void find_controller(const char *who, uint64_t actor) {
            (unsigned long long)rd_ptr(mgr + 0xa8));
 }
 
+int coop_player_actors(uint64_t *actors, int *net_ids, int max);   // coop_players.c
+// Test (TOTK_COOP_TEST_FOELOG=1): every second, the enemy TOTK_COOP_TEST_SPAWN made: its awareness words (component
+// +0x158, the words coop_world.c AWARE_OFF sends: 0xc182 unaware, 0xc082 aware in the first), its distance to this
+// PC's Link and to the first other player's stand-in, and the life of both (a stand-in fought by it loses life
+// only in its owner's game: contacts_filter), so a test can tell whom it noticed and went for.
+static void foe_log(void) {
+    static int on = -1;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_FOELOG") != NULL;
+    static uint64_t last_us;
+    int64_t us = frame_step_world_us();
+    if (!on || !foe || us < 0 || (uint64_t)us < last_us + 1000000) return;
+    last_us = (uint64_t)us;
+    static const uint16_t off[6] = {0x24, 0x58, 0x60, 0x64, 0x70, 0x84};
+    uint32_t w[6] = {0};
+    uint64_t aw = rd_ptr(rd_ptr(foe + 0x228) + 0x158);
+    for (int i = 0; aw && i < 6; i++) rd(aw + off[i], &w[i], 4);
+    float fp[3], mp[3], sp[3];
+    uint64_t me = player_actor(), acts[COOP_MAX_PLAYERS];
+    int ids[COOP_MAX_PLAYERS], n = coop_player_actors(acts, ids, COOP_MAX_PLAYERS);
+    if (!rd(foe + ACTOR_POS, fp, 12)) { rt_log("coop: test: foe gone"); foe = 0; return; }
+    float dme = -1, dst = -1;
+    if (me && rd(me + ACTOR_POS, mp, 12)) dme = sqrtf((fp[0] - mp[0]) * (fp[0] - mp[0]) + (fp[1] - mp[1]) * (fp[1] - mp[1]) + (fp[2] - mp[2]) * (fp[2] - mp[2]));
+    if (n > 0 && rd(acts[0] + ACTOR_POS, sp, 12)) dst = sqrtf((fp[0] - sp[0]) * (fp[0] - sp[0]) + (fp[1] - sp[1]) * (fp[1] - sp[1]) + (fp[2] - sp[2]) * (fp[2] - sp[2]));
+    char nm[48];
+    rt_log("coop: test: foe %s at %.1f %.1f %.1f (world %.0f s): awareness %x %x %x %x %x %x; %.1f m from this Link, "
+           "%.1f m from player %d's stand-in", actor_name(foe, nm, sizeof nm), fp[0], fp[1], fp[2], us / 1e6,
+           w[0], w[1], w[2], w[3], w[4], w[5], dme, dst, n > 0 ? ids[0] : 0);
+}
 static void spawn(Cpu *c, int k) {
     if (k == 2) dump_resident("before the Player request");
     uint64_t actor = player_actor();
@@ -320,11 +349,25 @@ static void spawn(Cpu *c, int k) {
     // Guess: the rotation is row-major (MacNativeGames force_at) and Link faces his local +Z, column 2.
     float at[3] = {pos[0] + 2 * rot[2], pos[1] + 0.5f, pos[2] + 2 * rot[8]};
     {   // TOTK_COOP_TEST_SPAWN_AT=x,y,z: at that world place instead (the same enemy in two games: its key is its place);
-        // x,y,z,1: and facing the other way from the Link (towards it, when placed in front of it)
+        // x,y,z,1: and facing the other way from the Link (towards it, when placed in front of it).
+        // =standin: 3 m in front of the first other player's stand-in instead, facing it (an enemy next to that
+        // player only, in the game that does not own them; tools/coop/standin_foe_3rd.txt)
         const char *e = k == 1 ? cfg_get("TOTK_COOP_TEST_SPAWN_AT") : NULL;
         float q[3];
         int back = 0;
-        if (e && sscanf(e, "%f,%f,%f,%d", &q[0], &q[1], &q[2], &back) >= 3) memcpy(at, q, sizeof at);
+        if (e && !strcmp(e, "standin")) {
+            uint64_t acts[COOP_MAX_PLAYERS];
+            int ids[COOP_MAX_PLAYERS];
+            float sp[3], sr[9];
+            if (coop_player_actors(acts, ids, COOP_MAX_PLAYERS) < 1 || !rd(acts[0] + ACTOR_POS, sp, 12) || !rd(acts[0] + ACTOR_ROT, sr, 36)) {
+                rt_log("coop: spawn %s: no stand-in to put it beside", names[k]);
+                return;
+            }
+            memcpy(rot, sr, sizeof rot);
+            at[0] = sp[0] + 3 * sr[2], at[1] = sp[1] + 0.5f, at[2] = sp[2] + 3 * sr[8];
+            back = 1;
+            rt_log("coop: spawn %s 3 m in front of player %d's stand-in at %.1f %.1f %.1f", names[k], ids[0], sp[0], sp[1], sp[2]);
+        } else if (e && sscanf(e, "%f,%f,%f,%d", &q[0], &q[1], &q[2], &back) >= 3) memcpy(at, q, sizeof at);
         if (back == 1)
             for (int r = 0; r < 3; r++) rot[r * 3 + 0] = -rot[r * 3 + 0], rot[r * 3 + 2] = -rot[r * 3 + 2];
     }
@@ -902,9 +945,11 @@ int coop_hook(Cpu *c, uint64_t addr) {
     if (addr == MOD_MAIN_BASE + 0x300a30) { void coop_hit_update(Cpu *c); coop_hit_update(c); return 0; }        // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x50ad74) { void coop_enemy_action(Cpu *c); coop_enemy_action(c); return 0; }    // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x96c1ac) { void coop_markers_screen(uint64_t); coop_markers_screen(c->x[0]); return 0; }   // coop_markers.c: the AppMap screen's set-up
-    // main+0x1d1fc70 (x0 an actor link, x1 its query): TotK Online's "is this a player" check (1.2.1 main+0x1736dec by
-    // tools/coop/xver_match.py; read for behaviour only), made 1 for a PlayerPuppet stand-in, so the game's systems
-    // that ask it (enemies' targets among them) take the stand-in for a player.
+    // main+0x1d1fc70 (x0 an actor link): the 1.4.3 copy of the function TotK Online makes return 1 for PlayerPuppet
+    // (1.2.1 main+0x1736dec; the same code, matched by hand 2026-11-07; read for behaviour only). It is bow code, not
+    // a target check: its one caller is main+0x1d1f9e8, in the function that loads "IsAdditionalArrowBow", and it
+    // looks the actor's name up in a table ([main+0x39601e8], main+0xd62b58). So a sword fight never calls it;
+    // enemies find the stand-in through its perception emitter (tools/coop/make_puppet_pack.py EMITTER).
     if (addr == MOD_MAIN_BASE + 0x1d1fc70) {
         int coop_standin_puppet(void);   // coop_players.c
         if (!coop_standin_puppet()) return 0;
@@ -1744,6 +1789,7 @@ void coop_tick(struct Cpu *c) {
     coop_players_tick(c, (pressed & 4) || auto3);
     auto3 = 0;
     second_player = coop_players_first();   // the tracing below looks at the first co-op Player
+    foe_log();
     for (int k = 0; k < 3; k++) {
         // Test: TOTK_COOP_TEST_SPAWN=<actor>@<s> spawns that actor in slot 1 (Numpad 2's) that many seconds into the world.
         static int test_spawned;
@@ -1771,6 +1817,7 @@ void coop_tick(struct Cpu *c) {
             if (l[0] && (name = rd_ptr(l[0] + ACTOR_NAME))) rd(name, text, sizeof text - 1);
             rt_log("coop: %s claimed: %s; link %016llx %016llx (name at link[0] '%s')", names[k],
                    got & 1 ? "ok" : "failed", (unsigned long long)l[0], (unsigned long long)l[1], text);
+            if (k == 1 && (got & 1) && l[1]) foe = rd_ptr(l[1] + 0x40);
             if (k == 2) {
                 dump_resident("right after the Player claim");
                 uint64_t second = l[1] ? rd_ptr(l[1] + 0x40) : 0;   // the link's reference object: +0x40 actor
