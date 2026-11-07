@@ -251,7 +251,8 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
 - **Test** (rebuild the pack first: `.venv\Scripts\python tools\coop\make_puppet_pack.py` after
   tools/make_romfs_patches.py):
   `$env:TOTK_COOP_STANDIN='puppet'; $env:TOTK_COOP_PUPPET=1; $env:TOTK_COOP_TEST_SPAWN_AT='standin';
-  $env:TOTK_COOP_TEST_FOELOG=1; $env:TOTK_COOP_ENEMY_HANDOVER=0; tools\coopun_pair.ps1 -Seconds 80 -ScriptA
+  $env:TOTK_COOP_TEST_FOELOG=1; $env:TOTK_COOP_ENEMY_HANDOVER=0; tools\coop
+un_pair.ps1 -Seconds 80 -ScriptA
   tools\coop\walk_far_3rd.txt -ScriptB tools\coop\standin_foe_3rd.txt -SpawnB "Enemy_Bokoblin_Junior@40" -ShotsB
   w40-70:2 -ShotsDir build\standin-foe`.
   A walks about 20 m away. B stands, and at 40 s a Bokoblin is made 3 m in front of A's stand-in in B's game, facing it.
@@ -266,6 +267,11 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   that is expected.
   Control: the same with the pack built `--resident-emitter`. The Bokoblin should stay c182, or walk to B's own
   Link.
+  First run (merge 57f83f1): the spawn and the foe log read the stand-in's actor position (+0x2b4), which was
+  -20.0 -6.4 72.0 while its body and its owner were at 43.3 1510.4 1504.8; the Bokoblin was made 2 km away and
+  said nothing. Both now take the owner's reported place (coop_players.c coop_player_places). The foe log also
+  prints the stand-in's actor position each second. If it stays off the owner's place, enemies may sense the stand-in
+  there, and its actor position must be kept at the owner's too.
   Unverified: that 20 m keeps B's own Link out of the Bokoblin's notice; the earlier note saw one stay unaware
   with the Link 44 m off.
 - Not done: TotK Online's four crash-guard patches in the bow function family (1.4.3 near main+0x1d1f960, 0x1d1f9e4,

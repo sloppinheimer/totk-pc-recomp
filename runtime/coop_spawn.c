@@ -305,6 +305,7 @@ static void find_controller(const char *who, uint64_t actor) {
 }
 
 int coop_player_actors(uint64_t *actors, int *net_ids, int max);   // coop_players.c
+int coop_player_places(float (*pos)[3], float (*rot)[9], int *ids, uint64_t *actors, int max);   // coop_players.c
 // Test (TOTK_COOP_TEST_FOELOG=1): every second, the enemy TOTK_COOP_TEST_SPAWN made: its awareness words (component
 // +0x158, the words coop_world.c AWARE_OFF sends: 0xc182 unaware, 0xc082 aware in the first), its distance to this
 // PC's Link and to the first other player's stand-in, and the life of both (a stand-in fought by it loses life
@@ -320,17 +321,20 @@ static void foe_log(void) {
     uint32_t w[6] = {0};
     uint64_t aw = rd_ptr(rd_ptr(foe + 0x228) + 0x158);
     for (int i = 0; aw && i < 6; i++) rd(aw + off[i], &w[i], 4);
-    float fp[3], mp[3], sp[3];
+    float fp[3], mp[3], ps[COOP_MAX_PLAYERS][3], rs[COOP_MAX_PLAYERS][9];
     uint64_t me = player_actor(), acts[COOP_MAX_PLAYERS];
-    int ids[COOP_MAX_PLAYERS], n = coop_player_actors(acts, ids, COOP_MAX_PLAYERS);
+    int ids[COOP_MAX_PLAYERS], n = coop_player_places(ps, rs, ids, acts, COOP_MAX_PLAYERS);
+    const float *sp = ps[0];   // the owner's reported place (the stand-in's actor position stays where it was made)
     if (!rd(foe + ACTOR_POS, fp, 12)) { rt_log("coop: test: foe gone"); foe = 0; return; }
     float dme = -1, dst = -1;
     if (me && rd(me + ACTOR_POS, mp, 12)) dme = sqrtf((fp[0] - mp[0]) * (fp[0] - mp[0]) + (fp[1] - mp[1]) * (fp[1] - mp[1]) + (fp[2] - mp[2]) * (fp[2] - mp[2]));
-    if (n > 0 && rd(acts[0] + ACTOR_POS, sp, 12)) dst = sqrtf((fp[0] - sp[0]) * (fp[0] - sp[0]) + (fp[1] - sp[1]) * (fp[1] - sp[1]) + (fp[2] - sp[2]) * (fp[2] - sp[2]));
+    if (n > 0) dst = sqrtf((fp[0] - sp[0]) * (fp[0] - sp[0]) + (fp[1] - sp[1]) * (fp[1] - sp[1]) + (fp[2] - sp[2]) * (fp[2] - sp[2]));
     char nm[48];
+    float ap[3] = {0};   // the stand-in's own actor position: not its owner's place in the first test (enemies may sense it there)
+    if (n > 0 && acts[0]) rd(acts[0] + ACTOR_POS, ap, 12);
     rt_log("coop: test: foe %s at %.1f %.1f %.1f (world %.0f s): awareness %x %x %x %x %x %x; %.1f m from this Link, "
-           "%.1f m from player %d's stand-in", actor_name(foe, nm, sizeof nm), fp[0], fp[1], fp[2], us / 1e6,
-           w[0], w[1], w[2], w[3], w[4], w[5], dme, dst, n > 0 ? ids[0] : 0);
+           "%.1f m from player %d's stand-in (its actor position %.1f %.1f %.1f)", actor_name(foe, nm, sizeof nm), fp[0], fp[1],
+           fp[2], us / 1e6, w[0], w[1], w[2], w[3], w[4], w[5], dme, dst, n > 0 ? ids[0] : 0, ap[0], ap[1], ap[2]);
 }
 static void spawn(Cpu *c, int k) {
     if (k == 2) dump_resident("before the Player request");
@@ -358,11 +362,14 @@ static void spawn(Cpu *c, int k) {
         if (e && !strcmp(e, "standin")) {
             uint64_t acts[COOP_MAX_PLAYERS];
             int ids[COOP_MAX_PLAYERS];
-            float sp[3], sr[9];
-            if (coop_player_actors(acts, ids, COOP_MAX_PLAYERS) < 1 || !rd(acts[0] + ACTOR_POS, sp, 12) || !rd(acts[0] + ACTOR_ROT, sr, 36)) {
+            float ps[COOP_MAX_PLAYERS][3], rs[COOP_MAX_PLAYERS][9], ap[3] = {0};
+            if (coop_player_places(ps, rs, ids, acts, COOP_MAX_PLAYERS) < 1) {
                 rt_log("coop: spawn %s: no stand-in to put it beside", names[k]);
                 return;
             }
+            const float *sp = ps[0], *sr = rs[0];   // the owner's place: the stand-in's actor position is not it
+            if (acts[0]) rd(acts[0] + ACTOR_POS, ap, 12);
+            rt_log("coop: spawn: the stand-in's actor position reads %.1f %.1f %.1f", ap[0], ap[1], ap[2]);
             memcpy(rot, sr, sizeof rot);
             at[0] = sp[0] + 3 * sr[2], at[1] = sp[1] + 0.5f, at[2] = sp[2] + 3 * sr[8];
             back = 1;

@@ -586,6 +586,18 @@ int coop_player_positions_ids(float (*out)[3], int *ids, int max) {
         }
     return n;
 }
+// The remote players' places as their owners last reported them (position and rotation), their ids and actors. A
+// PlayerPuppet stand-in's own actor position (+0x2b4) is not where it is drawn: its body is moved, the actor field
+// stays at the place it was made (the stand-in foe test, 2026-11-07), so tests take the place from here.
+int coop_player_places(float (*pos)[3], float (*rot)[9], int *ids, uint64_t *actors, int max) {
+    int n = 0;
+    for (int i = 0; i < COOP_MAX_PLAYERS && n < max; i++)
+        if (slots[i].state == LIVE && slots[i].source == SRC_NET && slots[i].have_want) {
+            memcpy(pos[n], slots[i].want_pos, 12), memcpy(rot[n], slots[i].want_rot, 36);
+            ids[n] = slots[i].net_id, actors[n] = slots[i].actor, n++;
+        }
+    return n;
+}
 int coop_player_positions(float (*out)[3], int max) { return coop_player_positions_ids(out, NULL, max); }
 static __thread int inside;
 // ---- TOTK_COOP_TRACE=diff (a test): which qwords of main's writable data (.data to .bss) a co-op Link's calc changes;
