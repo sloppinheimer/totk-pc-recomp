@@ -338,6 +338,10 @@ un_pair.ps1 -Seconds 80 -ScriptA
   world and keeps targets by affiliation. make_puppet_pack.py now copies the Player's DefaultAffiliation into the
   stand-in's row (`--game-fields`, default DefaultAffiliation; '' for the old row). `--category Player` tries the
   Player's category instead of TotK Online's Enemy, if the affiliation alone is not enough. Not run.
+  Third run (a8e6f03): with DefaultAffiliation Player, still unaware (c182, the same flicks); with `--category
+  Player`, no flicks at all. Next try: `make_puppet_pack.py --keep AttentionReceiverRef` puts the Player's
+  AttentionReceiver back (left out as one-Link-only). Unlikely to be the cause: attention is the Link's lock-on side
+  (the Bokoblin has AttentionSender and LockOn client params), not the enemy's perception. Not run.
   Unverified: that 20 m keeps B's own Link out of the Bokoblin's notice; the earlier note saw one stay unaware
   with the Link 44 m off.
 - Not done: TotK Online's four crash-guard patches in the bow function family (1.4.3 near main+0x1d1f960, 0x1d1f9e4,
