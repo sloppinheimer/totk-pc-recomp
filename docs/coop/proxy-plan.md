@@ -144,7 +144,8 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     other game, glide.txt; not seen on a frame, the owner glided out of view);
   - riding and shield surf on the PlayerPuppet (2026-11-07): it is put on its owner's ridden object (ride_place, in
     coop_puppet_place) and its shield placed in a surf (shield_place after its model phase), as the co-op Link is;
-    in surf.txt the stand-in jumped with its shield as its owner did (small frames); riding an object not tried.
+    in surf.txt the stand-in surfs on its shield under its feet (full-size frame, 2026-11-07, after the fix that
+    read the stand-in from x0 after its phase had run, when x0 is the call's result); riding an object not tried.
     Hits it takes are all taken out where it is shown (contacts_filter): its owner's game has them on the real Link;
   - contacts: here a Link's Weapon_ on an enemy copy is taken out and sent to the owner (CE), and every hit on a
     PlayerPuppet is taken out. Not ported: TotK Online also takes out an enemy copy's body contacts on this Link and

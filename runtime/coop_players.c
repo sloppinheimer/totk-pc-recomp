@@ -803,6 +803,7 @@ int coop_players_phase(Cpu *c, uint64_t addr) {
     if (frozen() && !keep_phases) return 1;
     static _Atomic int said;
     if (atomic_fetch_add(&said, 1) < 4) rt_log("coop: a co-op Link's update phase main+%#llx counts as its calc", (unsigned long long)(addr - MOD_MAIN_BASE));
+    uint64_t phase_actor = c->x[0];   // (x0 is the call's result after it)
     inside = 1;
     c->pc = addr;
     rt_dispatch(c);
@@ -810,9 +811,14 @@ int coop_players_phase(Cpu *c, uint64_t addr) {
     // A PlayerPuppet stand-in, after its model phase (the push that puts items on their bones): its shield where its
     // owner's is in a shield surf, and the copies that ride on it (a nocked arrow on its bow, its paraglider), as
     // proxy_drive does for the old co-op Link.
-    Slot *ps = slot_of_actor(c->x[0]);
+    Slot *ps = slot_of_actor(phase_actor);
     if (ps && coop_standin_puppet() && addr == MOD_MAIN_BASE + 0x245030 && ps->state == LIVE && ps->source == SRC_NET) {
         shield_place(c, ps);
+        static int said_sh, said_in;
+        if (!said_in++) rt_log("coop: stand-in: slot %d: placed after its model phase (shield placed %d)", (int)(ps - slots), ps->shield_placed);
+        if (ps->shield_placed && said_sh++ < 5)
+            rt_log("coop: stand-in: slot %d: its shield %llx put where its owner's is (%.2f %.2f %.2f in its frame)", (int)(ps - slots),
+                   (unsigned long long)ps->shield_actor, ps->shield_local[0], ps->shield_local[1], ps->shield_local[2]);
         for (int k = 0; k < COOP_OBJS; k++)
             if (ps->mir[k].state == 3 && ps->mir[k].ticks >= COPY_WARMUP && (ps->mir[k].flags & (COOP_OBJ_LOCAL | COOP_OBJ_ONLINK))) place_copy(c, ps, k);
     }
@@ -3926,6 +3932,8 @@ static void shield_send(uint64_t me, uint64_t eq, NetState *st) {
     for (int i = 0; i < 3; i++)   // the shield's rotation in the Link's frame: R^T S
         for (int j = 0; j < 3; j++) m[i * 3 + j] = r[0 * 3 + i] * sr[0 * 3 + j] + r[1 * 3 + i] * sr[1 * 3 + j] + r[2 * 3 + i] * sr[2 * 3 + j];
     st->flags |= 1u << 11;
+    static int said_ss;
+    if (said_ss++ < 3) rt_log("coop: this Link's shield is out of hand under it (%.2f %.2f %.2f in its frame): sent as placed", l[0], l[1], l[2]);
     memcpy(st->shield_pos, l, 12);
     mat_quat(m, st->shield_q);
 }
