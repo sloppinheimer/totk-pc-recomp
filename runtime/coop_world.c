@@ -3042,6 +3042,8 @@ static void peer_tick(Cpu *c, uint64_t me) {
     int from = 0, n;
     static LinkHitPacket lhp;
     while ((n = coop_net_hit_take(&lhp, sizeof lhp, &from)) != 0) {
+        int coop_gamedata_take(const void *data, int n, int from);   // coop_gamedata.c: shared world progress
+        if (coop_gamedata_take(&lhp, n, from)) continue;
         {   // contact replay (a test)
             const ContactPacket *cp = (const ContactPacket *)&lhp;
             if (n >= (int)offsetof(GroundPacket, g) && ((const GroundPacket *)&lhp)->kind == GROUND_KIND) {

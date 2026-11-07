@@ -89,6 +89,30 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   Link from its copy of the enemy).
   Not done: its arrows, the other
   co-op features on it (riding, shield surf, glider, hits it takes), and it is not seen moving in a frame yet.
+- **Written, opt-in, not run yet: shared world progress** (`TOTK_COOP_SHARE_WORLD=1`, runtime/coop_gamedata.c;
+  2026-11-07). Each player keeps their own save; with it on, the world flags one game changes reach the others while
+  they play together. As TotK Online does (read for behaviour only), at the entry of GameDataMgr::calc
+  (1.4.3 main+0xa72b00 = 1.2.1 main+0xee9704: the same code and offsets, its one caller main+0xa72abc as 1.2.1's
+  0xee96cc) this game's pending set requests are read: the bool queue (manager +0x30 capacity, +0x38 entries
+  {u8 value, u32 hash}, +0x40 a word whose low 20 bits count them) and the Bool64bitKey queue (+0xc68, +0xc70
+  {u8 value, i32 index}, +0xc78; the keys at +0xc60, 0x10 bytes: u64 key, u32 reset type, u8 value at +0xc). Those
+  that change a shared value are sent ("GMDT" packets on the HIT channel, again 1, 3 and 7 s later). The other games'
+  changes are pushed into the same queues right after (as the game's pushes main+0x9240d4 and main+0x2abcf5c do), so
+  calc writes them and they are not sent back. setEventBool (1.4.3 main+0xc6a9f0 = 1.2.1 main+0x11616bc: its caller's
+  caller looks up the same constant hash 0x2b05cbb9 in both) writes its table directly, so its writes are sent from
+  its hook. What is personal (coop_gamedata.c, header): a key whose reset type has none of the bits 0x1af (0x50: 3537
+  of 130375), as TotK Online's server; its key list is the game's own GameDataList Bool64bitKey ResetTypeValue, key for
+  key, so the rule reads the game's attribute. Bools: the reset type does not tell them apart (the player's have 16,
+  like 18366 of the 21414), so the player's status (PlayerStatus.*), where they are or ride (InLargeDungeon*,
+  Horse_IsRide, PumpkinFieldPlayerIsNearby...) and the broken Master Sword's flags are named and hashed at start (42
+  names, all in GameDataList); every other bool is shared; `TOTK_COOP_SHARE_SKIP` adds hashes or keys. Numbers are not
+  shared: the player's (life, rupees, the pouch, horses) have the same reset type and save file as world counters.
+  Checked offline: the hashes, and capture, packet, apply and no echo on two fake managers (a harness, not in the
+  repo). Not run in the game: `tools\coop\gamedata_test.ps1` (game A sets a shared key and the apple's "seen" bool
+  through its queue and puts them back; the lines a passing run shows are in the script). Unverified: that the key's
+  +8 is its reset type (the start line logs this game's histogram next to GameDataList's), that calc runs every frame,
+  and what a shared quest flag does in a game whose quest is elsewhere. Known gaps: a change pushed by another thread
+  between the read and calc is applied but not sent; the same flag changed in two games in one frame can end swapped.
 - **Not done:**
   - the stand-in's arrows shot by it with its owner's camera (patched unproject);
   - enemies taking the stand-in for a player: the "is a player" check (1.2.1 main+0x1736dec, 1.4.3 main+0x1d1fc70 by
@@ -128,9 +152,9 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     replayed, later handed to B's), but the Link never got on: walking up, it reached the horse's side only after the
     A presses, and the horse wandered off. So `TOTK_COOP_TEST_MOUNT_PUT=30:1` now puts player 1's Link beside the
     horse, facing it, at 30, 32 and 34 s, and the script presses A just after each; not run yet;
-  - shared world progress, a design choice (drop-in saves here): TotK Online's server shares the game flags, the
-    per-object flags (opened chests, Koroks found, broken objects), event flags at once, and shrine clears with each
-    player's blessings worked out; life, the pouch and horses stay each player's. Here each game keeps its own;
+  - shared world progress beyond the bools and per-object flags (below): numbers (Ints, Enums: shrine states, quest
+    counters), arrays and strings, shrine clears with each player's blessings worked out, and catching a player up on
+    what the others did before they joined;
   - Ultrahand glue made again in the other games, and breaks refused there: 1.2.1's doScotch / createScotch /
     removeScotch matched no single function in 1.4.3 (two to three candidates each), and no test script glues;
   - rotating ground: written, not proven (coop_world.c, ground_tick; `TOTK_COOP_GROUND=0` off): the host sends each
