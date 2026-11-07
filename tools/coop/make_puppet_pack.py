@@ -45,6 +45,8 @@ ap.add_argument('--version', choices=('v121', 'v143'), default='v143')
 ap.add_argument('--out', type=Path, help='default build/<version>/romfs-patches')
 ap.add_argument('--fields', default='InstanceHeapSize,DisplayRadius,LoadRadius',
                 help='(a test) the fields of the Player ActorInfo row put on the stand-in')
+ap.add_argument('--keep', default='',
+                help="(a test) components of PLAYER_ONLY kept on the stand-in after all, comma separated, e.g. AttentionReceiverRef")
 ap.add_argument('--drop', default='', help='(a test) more components of the actor parameters left out, comma separated')
 ap.add_argument('--game-fields', default='DefaultAffiliation',
                 help="the fields of the Player's GameActorInfo row put on the stand-in's (comma separated; '' none)")
@@ -76,7 +78,9 @@ pack = oead.Sarc(zstandard.ZstdDecompressor(dict_data=dic).decompress(raw, max_o
 
 param = byml.read(bytes(pack.get_file('Actor/Player.engine__actor__ActorParam.bgyml').data))
 param['Category'] = args.category
-gone = [k for k in PLAYER_ONLY + tuple(x for x in args.drop.split(',') if x) if param['Components'].pop(k, None) is not None]
+keep = [x for x in args.keep.split(',') if x]
+assert all(k in PLAYER_ONLY for k in keep), f'--keep takes names from PLAYER_ONLY: {PLAYER_ONLY}'
+gone = [k for k in tuple(x for x in PLAYER_ONLY if x not in keep) + tuple(x for x in args.drop.split(',') if x) if param['Components'].pop(k, None) is not None]
 w = oead.SarcWriter(endian=oead.Endianness.Little)
 for f in pack.get_files():
     w.files[f.name] = bytes(f.data)
