@@ -155,8 +155,31 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   - shared world progress beyond the bools and per-object flags (below): numbers (Ints, Enums: shrine states, quest
     counters), arrays and strings, shrine clears with each player's blessings worked out, and catching a player up on
     what the others did before they joined;
-  - Ultrahand glue made again in the other games, and breaks refused there: 1.2.1's doScotch / createScotch /
-    removeScotch matched no single function in 1.4.3 (two to three candidates each), and no test script glues;
+  - Ultrahand glue: written, not run yet (runtime/coop_glue.c; `TOTK_COOP_GLUE=0` off). The 1.4.3 functions, found
+    by code (2026-11-07): the capture site is the tail call at main+0x1d61b04 in main+0x1d61a6c (1.2.1 0x16575dc in
+    0x1657544: the same 39 instructions); doScotch main+0x1d66e34 (its only caller is that tail call); createScotch
+    main+0x1c0b94c (the same 55 instructions as 1.2.1's 0x165710c; the matcher's two candidates were wrong);
+    removeScotch main+0x1c042bc (called from the component's message handler main+0x1c0bf20 on message 0x2051000b
+    with the same arguments as 1.2.1's 0x1650c30 from 0x12e59e0); TotK Online's destruction hook 1.2.1 0x13bf5dc is
+    1.4.3 main+0x2999fe8, a generic message forward, reached for glue from the break step main+0x1c0bb54 (1.2.1
+    0x16575e0, 25 instructions both), which is hooked instead. The request's argument (base class, constructor
+    main+0x1c0c4ec, vtable main+0x367d5c8): +0x20 and +0x78 ActorLinks to the two actors, +0x38 and +0x90 their
+    bodies' handles, +0x3c and +0x94 two 3x4 matrices. What it does: doScotch's entry captures a bond made here; its
+    maker sends it ("GA") with both objects' numbers across the games (coop_players.c coop_obj_ident), where each
+    glued body sits in its actor's physics controller, both matrices and the flag, again every 3 s, and its list of
+    bonds every second ("GL"). Another game finds its own two objects (coop_obj_find), builds a request with its own
+    body handles, calls createScotch and doScotch, and retries once a second until the entry is glued; a bond gone
+    from two of its maker's lists is parted there with removeScotch; a break of a bond made again from another game is
+    refused there (except 2 s after it parts one itself). Not known: what the two matrices are (each body's frame or
+    the world's: the capture logs them against the actors' places); whether a parted bond leaves its maker's entry
+    list or only changes its state (the maker drops a bond once its entry is gone or not in state 2); whether the
+    copies' forced placement fights the glue (TotK Online stops its position correction for 1 s on each remake). Test:
+    `$env:TOTK_COOP_TEST_GLUE='SpObj_Cart_A_01,SpObj_FastWheel_A_01'` then run_pair.ps1 -Seconds 80 -ScriptA
+    tools\coop\glue_pair_3rd.txt -ScriptB tools\coop\glue_pair_3rd.txt: A makes the two, glues them at 40 s with the
+    game's calls (its matrices a guess) and parts them at 60 s. A pass shows in A "coop: glue: made here: bond 1, ..."
+    and in B "coop: glue: bond 1 from player N made again here: ..." and, after 60 s, "... is gone there: parted
+    here". A real glue needs a player: in game A hold an object with Ultrahand, glue it to another, and look for the
+    same lines; then shake it apart. The packets need no protocol version change (old builds drop them);
   - rotating ground: written, not proven (coop_world.c, ground_tick; `TOTK_COOP_GROUND=0` off): the host sends each
     GroundControlActor_Rotate*'s phase ([[actor+0x228]+0x2b0]+0x20 float +0x3c, 1.2.1's place, unchecked in 1.4.3)
     ten times a second ("GR" packets), the others write it. Pair test with one spawned in both games: the packet

@@ -896,6 +896,8 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // manager) and setEventBool (main+0xc6a9f0).
     if (addr == MOD_MAIN_BASE + 0xa72b00) { void coop_gamedata_calc(uint64_t gmd, uint64_t me); coop_gamedata_calc(c->x[0], player_actor_cached); return 0; }
     if (addr == MOD_MAIN_BASE + 0xc6a9f0) { int coop_gamedata_event_bool(Cpu *c, uint64_t addr); return coop_gamedata_event_bool(c, addr); }
+    // Ultrahand glue (coop_glue.c): doScotch main+0x1d66e34 (a bond made: captured), a bond's break main+0x1c0bb54
+    if (addr == MOD_MAIN_BASE + 0x1d66e34 || addr == MOD_MAIN_BASE + 0x1c0bb54) { int coop_glue_hook(Cpu *c, uint64_t addr); return coop_glue_hook(c, addr); }
     if (addr == MOD_MAIN_BASE + 0x31dbc0) { void coop_hit_delivered(Cpu *c); coop_hit_delivered(c); return 0; }   // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x300a30) { void coop_hit_update(Cpu *c); coop_hit_update(c); return 0; }        // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x50ad74) { void coop_enemy_action(Cpu *c); coop_enemy_action(c); return 0; }    // coop_world.c
