@@ -3456,6 +3456,62 @@ static int ride_place(const Slot *s, float out[3]) {
     for (int i = 0; i < 3; i++) out[i] = p[i] + r[i * 3 + 0] * s->ride_off[0] + r[i * 3 + 1] * s->ride_off[1] + r[i * 3 + 2] * s->ride_off[2];
     return 1;
 }
+// ---- an object's number across the games, for the glue sync (coop_glue.c). An object this game sends (made here, or
+// a placed one it moves): this player and its number (made) or COOP_OBJ_KEYED | its key. A copy of another player's:
+// that player and the number it sends. A placed one another player moves: that player and its key. Any other actor
+// with a name: COOP_OBJ_KEYED | its key from where it is (coop_world.c coop_actor_world_key: the key every game gives a
+// resting placed object), owner this player. 0 for none.
+// Run on the co-op tick only (the tables are the tick's).
+int coop_obj_ident(uint64_t a, int *owner, uint32_t *id) {
+    if (!a) return 0;
+    for (int e = 0; e < PROPS_N; e++)
+        if (props[e].actor == a && (props[e].made || props[e].touched)) {
+            *owner = coop_net_id();
+            *id = props[e].made ? props[e].id : COOP_OBJ_KEYED | (props[e].key & ~COOP_OBJ_KEYED);
+            return 1;
+        }
+    Slot *cs;
+    int ck;
+    if (copy_of(a, &cs, &ck)) { *owner = cs->net_id, *id = cs->mir[ck].id; return 1; }
+    for (int k = 0; k < 128; k++)
+        if (key_found[k].actor == a && key_found[k].last) { *owner = key_found[k].from, *id = COOP_OBJ_KEYED | key_found[k].key; return 1; }
+    uint32_t coop_actor_world_key(uint64_t a);   // coop_world.c
+    uint32_t key = coop_actor_world_key(a);
+    if (!key) return 0;
+    *owner = coop_net_id(), *id = COOP_OBJ_KEYED | (key & ~COOP_OBJ_KEYED);
+    return 1;
+}
+// The actor here that coop_obj_ident's (owner, id) names in its owner's game, with that name; 0 if none (yet). A key
+// not found among the objects known here scans every actor (coop_actors_all) at most once a second.
+uint64_t coop_obj_find(int owner, uint32_t id, const char *name) {
+    if (!id) return 0;
+    if (!(id & COOP_OBJ_KEYED) && owner == coop_net_id()) {
+        for (int e = 0; e < PROPS_N; e++)
+            if (props[e].actor && props[e].made && props[e].id == id && actor_is(props[e].actor, name)) return props[e].actor;
+        return 0;
+    }
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++) {   // a copy here of that player's object (a keyed one too, where this game lacks it)
+        if (slots[i].state == FREE || slots[i].source != SRC_NET) continue;
+        if (!(id & COOP_OBJ_KEYED) && slots[i].net_id != owner) continue;
+        for (int k = 0; k < COOP_OBJS; k++)
+            if (slots[i].mir[k].state == 3 && slots[i].mir[k].id == id && copy_alive(&slots[i], k)) return slots[i].mir[k].actor;
+    }
+    if (!(id & COOP_OBJ_KEYED)) return 0;
+    uint32_t key = id & ~COOP_OBJ_KEYED;
+    for (int e = 0; e < PROPS_N; e++)
+        if (props[e].actor && (props[e].key & ~COOP_OBJ_KEYED) == key && actor_is(props[e].actor, name)) return props[e].actor;
+    uint64_t a = key_cached(key, name);
+    if (a) return a;
+    static int64_t last_scan = -1000000000;
+    int64_t now = frame_step_world_us();
+    if (now - last_scan < 1000000) return 0;
+    last_scan = now;
+    static KeyFind kf;
+    kf.n = 1, kf.key[0] = key, kf.actor[0] = 0, kf.name[0] = name;
+    void coop_actors_all(void (*fn)(uint64_t, const char *, uint32_t, void *), void *arg);   // coop_world.c
+    coop_actors_all(keyfind_fn, &kf);
+    return kf.actor[0];
+}
 int ride_on(void) {   // riding a co-op player's object: on unless TOTK_COOP_RIDE=0
     static int on = -1;
     if (on < 0) {

@@ -238,6 +238,15 @@ void coop_actors_all(void (*fn)(uint64_t actor, const char *name, uint32_t key, 
         fn(a, nm, enemy_key(nm, home), arg);
     }
 }
+// One actor's key as coop_actors_all gives it (0: no name); for the glue sync's objects (coop_glue.c).
+uint32_t coop_actor_world_key(uint64_t a) {
+    char nm[48] = {0};
+    uint64_t np = 0;
+    float home[3];
+    if (!a || !coop_rd(a + COOP_ACTOR_NAME, &np, 8) || !np || !coop_rd(np, nm, 40) || !name_ok(nm)) return 0;
+    if (!seen_home(a, home) && !coop_rd(a + COOP_ACTOR_POS, home, 12)) return 0;
+    return enemy_key(nm, home);
+}
 
 // Enemies made at run time (no place in the map: a night's Stalkoblins, a spawner's) are made in the other games
 // too (spawn_*, below); each such actor's key is the one its maker gave it, kept here.
@@ -2984,6 +2993,8 @@ static void peer_tick(Cpu *c, uint64_t me) {
     guard_scan_test(me);
     hit_watch_test(me);
     link_hit_check(me);
+    void coop_glue_tick(Cpu *c, uint64_t me);   // coop_glue.c: Ultrahand glue made here sent, the others' made again
+    coop_glue_tick(c, me);
     int my_id = coop_net_id();
     // Hits from the others on the enemies this game runs: the damage taken from this game's one.
     HitPacket hp;
@@ -2996,6 +3007,8 @@ static void peer_tick(Cpu *c, uint64_t me) {
                 ground_take((const GroundPacket *)&lhp, n);
                 continue;
             }
+            int coop_glue_take(const void *p, int n, int from);   // coop_glue.c: "GA" and "GL" packets (Ultrahand glue)
+            if (coop_glue_take(&lhp, n, from)) continue;
             if (n >= (int)offsetof(ContactPacket, e) && cp->kind == ECONTACT_KIND && (int)cp->to == my_id && cp->n <= CONTACT_MAX &&
                 n == (int)(offsetof(ContactPacket, e) + cp->n * CONTACT_SZ)) {
                 ce_take(cp, from);

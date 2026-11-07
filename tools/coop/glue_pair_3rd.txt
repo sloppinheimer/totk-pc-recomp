@@ -1,0 +1,9 @@
+# The 100% save (third in the Continue list), then nothing: with TOTK_COOP_TEST_GLUE=<name1>,<name2> in both games
+# (run_pair.ps1 passes the environment on), game A makes the two 1.5 m in front of its Link at 30 s, glues them at
+# 40 s with the game's own calls, and parts them with removeScotch at 60 s (coop_glue.c glue_test). For the
+# Ultrahand glue sync: game B should make the bond again on its copies and part it after A does.
+300 A 4
+520 DOWN 4
+580 DOWN 4
+640 A 4
+800 A 4
