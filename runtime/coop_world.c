@@ -17,6 +17,7 @@
 
 #include "cfg.h"
 #include "coop_game.h"
+#include "coop_mounts.h"
 #include "coop_net.h"
 #include "host.h"
 #include "layout.h"
@@ -272,10 +273,8 @@ static void keyed_prune(void) {
             atomic_store(&keyed[i].actor, 0);
     }
 }
-// An enemy this game updates, with its key (0 if not an enemy).
-static uint32_t enemy_of(int cell, uint64_t a, char *nm, size_t n) {
-    coop_actor_name(a, nm, n);
-    if (strncmp(nm, "Enemy_", 6)) return 0;
+// The key of the actor of a cell (its name in nm).
+static uint32_t cell_key(int cell, uint64_t a, const char *nm) {
     uint32_t kk = keyed_of(a);
     if (kk) return kk;
     if (!home_is(cell, a)) {
@@ -284,6 +283,19 @@ static uint32_t enemy_of(int cell, uint64_t a, char *nm, size_t n) {
         atomic_store_explicit(&seen[cell].home_ok, 1, memory_order_release);
     }
     return actor_key(a, nm, seen[cell].home);
+}
+// An enemy this game updates, with its key (0 if not an enemy).
+static uint32_t enemy_of(int cell, uint64_t a, char *nm, size_t n) {
+    coop_actor_name(a, nm, n);
+    return strncmp(nm, "Enemy_", 6) ? 0 : cell_key(cell, a, nm);
+}
+// An actor the sync takes, enemy or (TOTK_COOP_MOUNTS=1) horse or animal (coop_world_kind, coop_mounts.c), with its
+// key; 0 none. The enemy model below runs them all: whose each is, the hand-over, the copies' easing and life.
+static uint32_t synced_of(int cell, uint64_t a, char *nm, size_t n, int *kind) {
+    coop_actor_name(a, nm, n);
+    int k = coop_world_kind(nm);
+    if (kind) *kind = k;
+    return k ? cell_key(cell, a, nm) : 0;
 }
 
 // Two enemies of one name made in the same half metre have one key: one game put both on the other's one enemy, which
@@ -298,9 +310,10 @@ static int n_all_enemies;
 static void dup_one(int cell, uint64_t a, void *arg) {
     (void)arg;
     char nm[64];
-    uint32_t key = enemy_of(cell, a, nm, sizeof nm);
+    int kind = 0;
+    uint32_t key = synced_of(cell, a, nm, sizeof nm, &kind);
     if (!key) return;
-    if (n_all_enemies < 512) all_enemies[n_all_enemies++] = a;
+    if (kind == COOP_KIND_ENEMY && n_all_enemies < 512) all_enemies[n_all_enemies++] = a;
     for (int i = 0; i < dup_n; i++) if (dup_keys[i].key == key) { dup_keys[i].n++; return; }
     if (dup_n < 512) dup_keys[dup_n].key = key, dup_keys[dup_n++].n = 1;
 }
@@ -1719,9 +1732,12 @@ static int pup_ready_key(uint32_t key);
 
 typedef struct {
     Cpu *c; WorldPacket pk; float others[COOP_MAX_PLAYERS][3], me[3];
-    int ids[COOP_MAX_PLAYERS], no, me_id, have_me, live_max, snaps, puppets;
+    int ids[COOP_MAX_PLAYERS], no, me_id, have_me, live_max, snaps, puppets, mounts_sent;
     uint64_t now_ns;
 } PeerScan;
+// Horses and animals take at most this many of a world packet's MAX_SENT entries (a ridden horse always goes), so
+// the enemies keep their room.
+#define MOUNTS_SENT_MAX 8
 // The hand-over (TOTK_COOP_ENEMY_HANDOVER, on unless 0): an enemy this game runs goes to the game of another player
 // whose Link is HANDOVER_GAIN_M nearer to it than this game's, within HANDOVER_M of it, and at most once in
 // HANDOVER_HOLD_US. An enemy fights the one player of the game that runs it: a second Player actor there (the other
@@ -1769,7 +1785,9 @@ static int near_other(const PeerScan *s, const float p[3], float *d2_out) {
 static void peer_one(int cell, uint64_t a, void *arg) {
     PeerScan *s = arg;
     char nm[64];
-    uint32_t key = enemy_of(cell, a, nm, sizeof nm);
+    int kind = 0;
+    uint32_t key = synced_of(cell, a, nm, sizeof nm, &kind);
+    const char *kw = coop_world_kind_word(kind);
     if (!key || dup_key(key)) return;
     // Listed for a second after its last update, it may be gone (and its memory another's): written to only while
     // alive (code review, 2026-11-06).
@@ -1795,7 +1813,7 @@ static void peer_one(int cell, uint64_t a, void *arg) {
     if (dead_from) {   // dead there: life 0 here, and the game's own death follows (it runs its own update again)
         if (life > 0 && st <= 6) {
             set_life(a, 0);
-            rt_log("coop: enemy %s %08x died in player %d's game", nm, key, dead_from);
+            rt_log("coop: %s %s %08x died in player %d's game", kw, nm, key, dead_from);
         }
         f->owner = 0, f->last = 0;
         pup_release(key);
@@ -1806,11 +1824,22 @@ static void peer_one(int cell, uint64_t a, void *arg) {
     int keep = 0;
     for (int i = 0; i < n_claims && f->owner; i++) keep |= claim_id[i] == f->owner;
     int64_t wnow = frame_step_world_us();
+    // A ridden horse is its rider's game's (coop_mounts.c), whoever had it, and not handed over while ridden nor in the
+    // HANDOVER_HOLD_US after.
+    int rider = kind == COOP_KIND_HORSE ? coop_mount_rider(key, s->me_id) : 0;
+    if (rider) {
+        int want = rider == s->me_id ? 0 : rider;
+        if (f->owner != want || f->handed)
+            rt_log("coop: %s %s %08x is ridden by player %d: run %s", kw, nm, key, rider, want ? "by their game" : "here");
+        if (f->owner != want && want) f->last = -1;
+        f->owner = want, f->handed = 0, f->moved_us = wnow;
+        keep = 1;
+    }
     if (keep && f->handed == f->owner) f->handed = 0;   // they run it now
     // Handed to another game a moment ago: theirs while that game takes it up.
     if (!keep && f->handed && f->owner == f->handed && wnow - f->handed_us < HANDOVER_WAIT_US) keep = 1;
     if (!keep && f->handed) {
-        rt_log("coop: enemy %s %08x: player %d did not take it up", nm, key, f->handed);
+        rt_log("coop: %s %s %08x: player %d did not take it up", kw, nm, key, f->handed);
         f->handed = 0;
         f->moved_us = wnow + 25000000;   // (their game may not have it: not offered again for 30 s)
     }
@@ -1845,16 +1874,16 @@ static void peer_one(int cell, uint64_t a, void *arg) {
         f->owner = best == s->me_id ? 0 : best;
         if (f->owner != was && f->moved_us < wnow) f->moved_us = wnow;
         if (f->owner != was)
-            rt_log("coop: enemy %s %08x is %s (held here %.1f s%s)", nm, key, f->owner ? "run by another game" : "run here",
+            rt_log("coop: %s %s %08x is %s (held here %.1f s%s)", kw, nm, key, f->owner ? "run by another game" : "run here",
                    my_age / 1e3, f->owner ? "" : was ? "; its owner let it go" : "");
         if (f->owner) f->last = -1;
     }
-    if (!f->owner && life > 0 && wnow - f->moved_us > HANDOVER_HOLD_US) {   // this game's: to a nearer player's?
+    if (!rider && !f->owner && life > 0 && wnow - f->moved_us > HANDOVER_HOLD_US) {   // this game's: to a nearer player's?
         float p[3], dm = 0, dt = 0;
         int to = coop_rd(a + COOP_ACTOR_POS, p, 12) ? handover_to(s, p, &dm, &dt) : 0;
         if (to) {
             f->owner = f->handed = to, f->handed_us = f->moved_us = wnow, f->last = -1;
-            rt_log("coop: enemy %s %08x handed to player %d (their Link %.1f m from it, mine %.1f m)", nm, key, to, dt, dm);
+            rt_log("coop: %s %s %08x handed to player %d (their Link %.1f m from it, mine %.1f m)", kw, nm, key, to, dt, dm);
         }
     }
     if (!f->owner) {   // this game's: reported while another Link is near
@@ -1863,7 +1892,9 @@ static void peer_one(int cell, uint64_t a, void *arg) {
         // others when they come.
         float p[3], d2 = 1e30f;
         if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
-        if (near_other(s, p, &d2) && s->pk.count < s->live_max) {
+        if (near_other(s, p, &d2) && s->pk.count < s->live_max &&
+            (kind == COOP_KIND_ENEMY || rider || s->mounts_sent < MOUNTS_SENT_MAX)) {
+            if (kind != COOP_KIND_ENEMY) s->mounts_sent++;
             NetEnemy e = {.key = key, .age_ms = my_age};
             memcpy(e.pos, p, 12);
             coop_rd(a + COOP_ACTOR_ROT, e.rot, 36);
@@ -1904,7 +1935,7 @@ static void peer_one(int cell, uint64_t a, void *arg) {
     if (f->last >= 0 && life < f->last) {
         HitPacket hp = {key, f->last - life, (uint32_t)f->owner};
         coop_net_hit_send(&hp, sizeof hp);
-        rt_log("coop: hit enemy %s %08x for %d, sent to player %d", nm, key, hp.damage, f->owner);
+        rt_log("coop: hit %s %s %08x for %d, sent to player %d", kw, nm, key, hp.damage, f->owner);
     }
     if (life != (int)e->life && (f->last < 0 || life >= f->last)) set_life(a, e->life), life = e->life;
     f->last = life;
@@ -1952,7 +1983,7 @@ static uint32_t key_of_actor(uint64_t actor) {
     for (int k = 0; k < 32; k++, h = (h + 1) & (SEEN_N - 1))
         if (atomic_load_explicit(&seen[h].actor, memory_order_relaxed) == actor) {
             char nm[64];
-            return enemy_of((int)h, actor, nm, sizeof nm);
+            return synced_of((int)h, actor, nm, sizeof nm, NULL);
         }
     return 0;
 }
@@ -2839,8 +2870,8 @@ static struct { _Atomic uint64_t actor; _Atomic uint64_t at_ns; } born[BORN_N]; 
 static _Atomic unsigned born_n;
 void coop_actor_created(uint64_t a) {   // coop_spawn.c, from the getActor hook (any thread)
     if (!a || !coop_net_on()) return;
-    char nm[8];
-    if (strncmp(coop_actor_name(a, nm, sizeof nm), "Enemy_", 6)) return;
+    char nm[48];
+    if (!coop_world_spawn_kind(coop_actor_name(a, nm, sizeof nm))) return;
     unsigned i = atomic_fetch_add(&born_n, 1) % BORN_N;
     atomic_store_explicit(&born[i].actor, 0, memory_order_release);
     atomic_store_explicit(&born[i].at_ns, plat_now_ns(), memory_order_relaxed);
@@ -2895,7 +2926,7 @@ static void spawn_tick(Cpu *c) {
         char nm[48];
         int32_t st = 0;
         coop_actor_name(a, nm, sizeof nm);
-        int ready = !strncmp(nm, "Enemy_", 6) && coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6;
+        int ready = coop_world_spawn_kind(nm) && coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6;
         if (!ready && now - at < 3000000000ull) continue;
         uint64_t want = a;   // taken (unless another was handed over into the slot meanwhile)
         if (!atomic_compare_exchange_strong(&born[i].actor, &want, 0) || !ready) continue;
@@ -2940,7 +2971,7 @@ static void spawn_tick(Cpu *c) {
         uint64_t a = spawned_mine[k].actor;
         int32_t st = 0;
         char nm[48];
-        int alive = coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6 && !strncmp(coop_actor_name(a, nm, sizeof nm), "Enemy_", 6);
+        int alive = coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6 && coop_world_spawn_kind(coop_actor_name(a, nm, sizeof nm));
         if (alive && keyed_of(a) == spawned_mine[k].key) continue;
         if (!alive || life_of(a) != 0) {
             SpawnPacket sp = {.key = spawned_mine[k].key, .kind = SPAWN_GONE};
@@ -2964,7 +2995,7 @@ static void spawn_take(Cpu *c, const SpawnPacket *sp, int from) {
             }
             return;   // (have it)
         }
-    if (sp->kind != SPAWN_KIND || strncmp(sp->name, "Enemy_", 6) || memchr(sp->name, 0, sizeof sp->name) == NULL) return;
+    if (sp->kind != SPAWN_KIND || memchr(sp->name, 0, sizeof sp->name) == NULL || !coop_world_spawn_kind(sp->name)) return;
     for (int k = 0; k < 32; k++) if (made[k].state && made[k].key == sp->key) return;
     for (int k = 0; k < 32; k++) {
         if (made[k].state) continue;
@@ -2977,8 +3008,29 @@ static void spawn_take(Cpu *c, const SpawnPacket *sp, int from) {
         return;
     }
 }
+// For coop_mounts.c: each synced actor that is not an enemy, and who runs a key.
+typedef struct { void (*fn)(uint64_t, const char *, uint32_t, int, void *); void *arg; } MountScan;
+static void mount_one(int cell, uint64_t a, void *arg) {
+    MountScan *m = arg;
+    char nm[48];
+    int kind = 0;
+    int32_t st = 0;
+    uint32_t key = synced_of(cell, a, nm, sizeof nm, &kind);
+    if (key && kind != COOP_KIND_ENEMY && !dup_key(key) && coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6)
+        m->fn(a, nm, key, kind, m->arg);
+}
+void coop_world_each_mount(void (*fn)(uint64_t actor, const char *name, uint32_t key, int kind, void *arg), void *arg) {
+    if (!coop_mounts_on()) return;
+    MountScan m = {fn, arg};
+    each_live(mount_one, &m);
+}
+int coop_world_owner_of(uint32_t key) {
+    for (int i = 0; i < FOLLOW_N; i++) if (follow[i].key == key) return follow[i].owner;
+    return -1;
+}
 static void peer_tick(Cpu *c, uint64_t me) {
     pup_me = me;
+    coop_mounts_tick(c, me);
     enemy_poke_test();
     link_dump_test(me);
     guard_scan_test(me);
@@ -3034,7 +3086,7 @@ static void peer_tick(Cpu *c, uint64_t me) {
                 int32_t est = 0;
                 char enm[64];
                 if (!coop_rd(mine_known[i].actor + COOP_ACTOR_STATE, &est, 4) || est < 2 || est > 6 ||
-                    strncmp(coop_actor_name(mine_known[i].actor, enm, sizeof enm), "Enemy_", 6))
+                    !coop_world_kind(coop_actor_name(mine_known[i].actor, enm, sizeof enm)))
                     break;
                 int life = life_of(mine_known[i].actor);
                 if (life > 0) {
@@ -3060,7 +3112,7 @@ static void peer_tick(Cpu *c, uint64_t me) {
     }
     static PeerScan s;
     memset(&s.pk, 0, sizeof s.pk);
-    s.c = c, s.me_id = my_id, s.snaps = 0, s.puppets = 0, s.now_ns = plat_now_ns();
+    s.c = c, s.me_id = my_id, s.snaps = 0, s.puppets = 0, s.mounts_sent = 0, s.now_ns = plat_now_ns();
     s.no = coop_player_positions_ids(s.others, s.ids, COOP_MAX_PLAYERS);
     s.have_me = me && coop_rd(me + COOP_ACTOR_POS, s.me, 12);
     // The dead to report: the last 5 s, and older ones of this session near another Link (up to MAX_DEAD_SENT).
@@ -3909,7 +3961,7 @@ void coop_enemy_action(Cpu *c) {
     uint64_t obj = c->x[0], req = c->x[1], a = obj ? coop_rd_ptr(obj + 0x18) : 0;
     if (!a || !req) return;
     char nm[48];
-    if (strncmp(coop_actor_name(a, nm, sizeof nm), "Enemy_", 6) || life_of(a) == 0) return;
+    if (!coop_world_action_kind(coop_actor_name(a, nm, sizeof nm)) || life_of(a) == 0) return;
     static _Atomic int said_seen;
     if (atomic_fetch_add(&said_seen, 1) < 3) rt_log("coop: native enemies: %s makes an action request (mode %u)", nm, (unsigned)c->x[2]);
     // a copy: the owner's

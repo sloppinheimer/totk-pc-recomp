@@ -99,7 +99,25 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     a PlayerPuppet stand-in), and the contacts other than this Link's sword on a copy (an enemy's body slam on this
     Link) sent and put in on the other games;
   - the actors TotK Online syncs by name (Animal, Korok, GameRomHorse, Barrel, BombFruit, TBox and more): here enemies
-    and moved objects; horses and animals are not synced, chests are left out on purpose; actors past 1000 m deleted;
+    and moved objects, and horses and animals (next item); chests are left out on purpose; actors past 1000 m deleted;
+  - **horses and animals: written, not run in a game yet** (2026-11-07; runtime/coop_mounts.c, `TOTK_COOP_MOUNTS=1`
+    turns it on, off by default; the native enemy model only). They go through the enemies' sync as more kinds
+    (coop_world_kind): GameRomHorse* and Animal_Horse* as horses (not GameRomHorseSaddle_/Reins_), the other Animal_
+    that walk as animals; fish, insects, birds and swarms are left out (TotK Online syncs them), and horses and
+    animals take at most 8 of a world packet's 28 entries. Same keys, owner choice, hand-over, easing of the copies,
+    the owner's life and hits sent to the owner; horses' action requests are replayed on their copies as enemies'
+    are (TotK Online's BSA list has GameRomHorse, not Animal); a horse made at run time (a stable's, a whistle's) is
+    made in the other games by the spawn sync, animals only with `TOTK_COOP_MOUNTS_SPAWN=all` (an area makes its own
+    in each game). A horse is no moved object then (prop_skip). Riding: this Link rides a horse when it stays 10 ticks
+    in a box above the horse's origin in its frame (|x| < 0.45, 0.6 < y < 2.2, |z| < 0.9 m; a guess,
+    `TOTK_COOP_MOUNT_BOX=x,ylo,yhi,z`; no riding flag of 1.4.3 is known). It is sent in NetState as ride_owner
+    COOP_RIDE_MOUNT (0xfe; an older game rides nothing), ride_id the horse's key, ride_off the offset; the ridden
+    horse is its rider's game's and is not handed over (peer_one), and the other games put the stand-in (co-op Link
+    or PlayerPuppet, through owner_matrix) at that offset on their copy of the horse. Not known: whether a horse
+    passes main+0x50ad74, whether horses and animals keep a placement hash at +0x370 as enemies do, the box, how the
+    copy and a stand-in on it push each other, and a called horse's look (its copy is made by name: mane, saddle and
+    reins are the default). Test: suite case `mount` (tools/coop/mount_horse_3rd.txt; the lines it wants are in
+    run_suite.ps1, `TOTK_COOP_TEST_MOUNT=1` logs the Link's place in the nearest horse's frame each second);
   - shared world progress, a design choice (drop-in saves here): TotK Online's server shares the game flags, the
     per-object flags (opened chests, Koroks found, broken objects), event flags at once, and shrine clears with each
     player's blessings worked out; life, the pouch and horses stay each player's. Here each game keeps its own;
