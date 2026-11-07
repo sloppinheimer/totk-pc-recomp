@@ -160,7 +160,12 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     rearing horse, or a fall: not told apart), and the next put took it away. Now a Link that has moved over 0.35 m
     since a put is not put again, and the test log goes ten times a second around the puts, with both world
     heights; not run yet. A horse's mane (Horse_Link_Mane*), saddle and reins are no moved objects any more, with or
-    without TOTK_COOP_MOUNTS: a mane's copy hung in the air beside B's Link;
+    without TOTK_COOP_MOUNTS: a mane's copy hung in the air beside B's Link. Fourth run: the Link stayed put by the
+    saddle, facing it, and the A presses reached the game, and still no mount; no frames of that run. (The third
+    run's move was most likely the Link picking up the mane's copy, not a mount.) Not known why: whether a horse made
+    by the test spawn can be mounted at all, or the prompt's range and facing; no mount call of the game is known. So
+    suite case `mount_fake` (`TOTK_COOP_TEST_MOUNT_FAKE=30:1`) counts A's Link as riding the nearest horse from 30 s
+    and tests the rest (who runs it, the rider heard of, the stand-in put on the copy) without a mount; not run yet;
   - shared world progress beyond the bools and per-object flags (below): numbers (Ints, Enums: shrine states, quest
     counters), arrays and strings, shrine clears with each player's blessings worked out, and catching a player up on
     what the others did before they joined;

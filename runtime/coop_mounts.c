@@ -201,6 +201,36 @@ void coop_mounts_tick(Cpu *c, uint64_t me) {
         if (fabsf(o[0]) < box[0] && o[1] > box[1] && o[1] < box[2] && o[2] > box[3] && o[2] < box[4] && d < best_d)
             best_d = d, on = i, memcpy(on_off, o, 12);
     }
+    // Test (TOTK_COOP_TEST_MOUNT_FAKE=<s>[:<player id>], that player's game only when given): from <s> into the world
+    // this Link counts as riding the horse nearest it then, at its place in that horse's frame each tick, whatever the
+    // box says. It is for the half that needs no mount: the rider's game runs the horse, the other games hear of the
+    // rider and put its stand-in on their copy. (A put beside the saddle and A pressed showed no Mount prompt in four
+    // runs, 2026-11-07, and no mount call of the game is known.)
+    {
+        static float fake_at = -2;
+        static int fake_id;
+        static uint32_t fake_key;
+        if (fake_at == -2) {
+            const char *e = cfg_get("TOTK_COOP_TEST_MOUNT_FAKE"), *col = e ? strchr(e, ':') : NULL;
+            fake_at = e ? (float)atof(e) : -1, fake_id = col ? atoi(col + 1) : 0;
+        }
+        if (fake_at >= 0 && (!fake_id || (coop_net_id() && coop_net_id() == fake_id)) && frame_step_world_us() / 1e6f >= fake_at) {
+            if (!fake_key && near_i >= 0) {
+                fake_key = atomic_load_explicit(&horses[near_i].key, memory_order_relaxed);
+                rt_log("coop: test: mount: this Link counts as riding %s %08x from %.1f s (%.2f %.2f %.2f in its frame)",
+                       horses[near_i].name, fake_key, frame_step_world_us() / 1e6, near_off[0], near_off[1], near_off[2]);
+            }
+            for (int i = 0; fake_key && i < cnt; i++) {
+                uint64_t a = atomic_load_explicit(&horses[i].actor, memory_order_relaxed);
+                float hp[3], hr[9];
+                if (atomic_load_explicit(&horses[i].key, memory_order_relaxed) != fake_key || !live(a) ||
+                    !coop_rd(a + COOP_ACTOR_POS, hp, 12) || !coop_rd(a + COOP_ACTOR_ROT, hr, 36))
+                    continue;
+                on = i, in_frame(hp, hr, lp, on_off);
+                break;
+            }
+        }
+    }
     static int held;
     static uint32_t held_key;
     uint32_t k = on >= 0 ? atomic_load_explicit(&horses[on].key, memory_order_relaxed) : 0;

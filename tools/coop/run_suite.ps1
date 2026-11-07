@@ -39,7 +39,13 @@ $cases = @(
       env = @{TOTK_COOP_MOUNTS = '1'; TOTK_COOP_TEST_MOUNT = '1'; TOTK_COOP_TEST_MOUNT_PUT = '30:1'; TOTK_COOP_TEST_SPAWN = 'GameRomHorse01@26'; TOTK_COOP_TEST_SPAWN_AT = '41.6,1511.0,1504.9'};
       want = @('A:coop: mounts: on', 'A:coop: test: mount: nearest GameRomHorse01', 'B:coop: test: mount: nearest GameRomHorse01',
                'A:coop: mounts: this Link rides GameRomHorse01', 'B:coop: mounts: player 1 rides GameRomHorse01',
-               "B:coop: mounts: a rider's stand-in is put on this game's GameRomHorse01")}
+               "B:coop: mounts: a rider's stand-in is put on this game's GameRomHorse01")},
+    # the riding half without a mount (TOTK_COOP_TEST_MOUNT_FAKE: A's Link counts as riding the horse nearest it from
+    # 30 s, where it stands): A's game runs the horse, B hears of the rider and puts A's stand-in on its copy
+    @{n = 'mount_fake'; s = 60; a = 'idle_3rd.txt'; b = 'idle_3rd.txt';
+      env = @{TOTK_COOP_MOUNTS = '1'; TOTK_COOP_TEST_MOUNT = '1'; TOTK_COOP_TEST_MOUNT_FAKE = '30:1'; TOTK_COOP_TEST_SPAWN = 'GameRomHorse01@26'; TOTK_COOP_TEST_SPAWN_AT = '41.6,1511.0,1504.9'};
+      want = @('A:coop: test: mount: this Link counts as riding GameRomHorse01', 'A:coop: mounts: this Link rides GameRomHorse01',
+               'B:coop: mounts: player 1 rides GameRomHorse01', "B:coop: mounts: a rider's stand-in is put on this game's GameRomHorse01")}
 )
 $pass = 0; $fail = 0
 foreach ($c in $cases) {
