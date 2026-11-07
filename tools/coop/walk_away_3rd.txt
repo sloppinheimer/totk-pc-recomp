@@ -1,7 +1,8 @@
-# The 100% save (third in the Continue list): at 14 s into the world walk back down the stairs for 6 s, then stand.
+# The 100% save (third in the Continue list): at 12 s walk forward (up the stairs) for 6 s, about 30 m, then stand:
+# this Link away from the other one, for an enemy that is then near the other player's proxy only.
 300 A 4
 520 DOWN 4
 580 DOWN 4
 640 A 4
 800 A 4
-@14000 LSTICK 0 -32767 6000
+@12000 LSTICK 0 32767 6000

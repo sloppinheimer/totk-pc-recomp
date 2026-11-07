@@ -4678,6 +4678,11 @@ void coop_players_tick(Cpu *c, int numpad3) {
             plat_mutex_lock(&lock);
             int y_late = y_delayed(s);
             plat_mutex_unlock(&lock);
+            // Test (TOTK_COOP_TEST_PROXY_LIVE=1): the proxy's own update always runs (no input but the attack and guard
+            // buttons, its pose still driven): is a frozen proxy what enemies do not notice?
+            static int live = -1;
+            if (live < 0) { const char *e = cfg_get("TOTK_COOP_TEST_PROXY_LIVE"); live = e && *e == '1'; }
+            if (live && proxied(s) && s->thaw < 4) s->thaw = 4;
             if (proxied(s) && y_late && attack_thaw_on()) {
                 if (s->thaw < 40) s->thaw = 40;
                 s->atk_thaw = 40;

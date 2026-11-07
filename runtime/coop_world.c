@@ -2388,6 +2388,23 @@ static void link_dump_test(uint64_t me) {
         uint64_t en = want ? pup_ready_actor(want) : 0;
         for (int i = 0; !en && want && i < KNOWN_N; i++) if (mine_known[i].key == want) en = mine_known[i].actor;
         if (en) actor_dump(en, "enemy", done);
+        if (en) {   // where the enemy holds this Link: its actor or its reference, in its first 0x3000 bytes and its components
+            uint64_t ref = actor_ref(me), tab = coop_rd_ptr(en + 0x228);
+            char line[900];
+            int m = snprintf(line, sizeof line, "coop: test: enemy %08x holds this Link (actor %llx, ref %llx) at:", want, (unsigned long long)me, (unsigned long long)ref);
+            static uint64_t w[0x3000 / 8];
+            for (int k = -1; k < 128 && m < 860; k++) {
+                uint64_t base = k < 0 ? en : (tab ? coop_rd_ptr(tab + 8 * k) : 0);
+                size_t len = k < 0 ? 0x3000 : 0x800;
+                if (!base || !coop_rd(base, w, len)) continue;
+                for (size_t i = 0; i < len / 8 && m < 860; i++)
+                    if (w[i] == me || (ref && w[i] == ref))
+                        m += snprintf(line + m, sizeof line - m, " %s+%#x%s(%s)", k < 0 ? "actor" : "comp", k < 0 ? (unsigned)(i * 8) : (unsigned)(k * 8),
+                                      k < 0 ? "" : "", w[i] == me ? "actor" : "ref"),
+                        m += k < 0 ? 0 : snprintf(line + m, sizeof line - m, "@%#x", (unsigned)(i * 8));
+            }
+            rt_log("%s", line);
+        }
     }
     enum { AS = 0x3000, CN = 128, CS = 0x800 };
     static uint8_t buf[AS + CN * CS];
