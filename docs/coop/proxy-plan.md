@@ -89,30 +89,55 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   Link from its copy of the enemy).
   Not done: its arrows, the other
   co-op features on it (riding, shield surf, glider, hits it takes), and it is not seen moving in a frame yet.
-- **Written, opt-in, not run yet: shared world progress** (`TOTK_COOP_SHARE_WORLD=1`, runtime/coop_gamedata.c;
-  2026-11-07). Each player keeps their own save; with it on, the world flags one game changes reach the others while
-  they play together. As TotK Online does (read for behaviour only), at the entry of GameDataMgr::calc
-  (1.4.3 main+0xa72b00 = 1.2.1 main+0xee9704: the same code and offsets, its one caller main+0xa72abc as 1.2.1's
-  0xee96cc) this game's pending set requests are read: the bool queue (manager +0x30 capacity, +0x38 entries
-  {u8 value, u32 hash}, +0x40 a word whose low 20 bits count them) and the Bool64bitKey queue (+0xc68, +0xc70
-  {u8 value, i32 index}, +0xc78; the keys at +0xc60, 0x10 bytes: u64 key, u32 reset type, u8 value at +0xc). Those
-  that change a shared value are sent ("GMDT" packets on the HIT channel, again 1, 3 and 7 s later). The other games'
-  changes are pushed into the same queues right after (as the game's pushes main+0x9240d4 and main+0x2abcf5c do), so
-  calc writes them and they are not sent back. setEventBool (1.4.3 main+0xc6a9f0 = 1.2.1 main+0x11616bc: its caller's
-  caller looks up the same constant hash 0x2b05cbb9 in both) writes its table directly, so its writes are sent from
-  its hook. What is personal (coop_gamedata.c, header): a key whose reset type has none of the bits 0x1af (0x50: 3537
-  of 130375), as TotK Online's server; its key list is the game's own GameDataList Bool64bitKey ResetTypeValue, key for
-  key, so the rule reads the game's attribute. Bools: the reset type does not tell them apart (the player's have 16,
-  like 18366 of the 21414), so the player's status (PlayerStatus.*), where they are or ride (InLargeDungeon*,
-  Horse_IsRide, PumpkinFieldPlayerIsNearby...) and the broken Master Sword's flags are named and hashed at start (42
-  names, all in GameDataList); every other bool is shared; `TOTK_COOP_SHARE_SKIP` adds hashes or keys. Numbers are not
-  shared: the player's (life, rupees, the pouch, horses) have the same reset type and save file as world counters.
-  Checked offline: the hashes, and capture, packet, apply and no echo on two fake managers (a harness, not in the
-  repo). Not run in the game: `tools\coop\gamedata_test.ps1` (game A sets a shared key and the apple's "seen" bool
-  through its queue and puts them back; the lines a passing run shows are in the script). Unverified: that the key's
-  +8 is its reset type (the start line logs this game's histogram next to GameDataList's), that calc runs every frame,
-  and what a shared quest flag does in a game whose quest is elsewhere. Known gaps: a change pushed by another thread
-  between the read and calc is applied but not sent; the same flag changed in two games in one frame can end swapped.
+- **Shared world progress, opt-in** (`TOTK_COOP_SHARE_WORLD=1`, runtime/coop_gamedata.c). Each player keeps their
+  own save; with it on, the world's game data one game changes reaches the others while they play together. As TotK
+  Online does (read for behaviour only), at the entry of GameDataMgr::calc (1.4.3 main+0xa72b00 = 1.2.1 main+0xee9704:
+  the same code and offsets, its one caller main+0xa72abc as 1.2.1's 0xee96cc) this game's changes are taken and the
+  others' pushed into the game's own pending set queues, so calc writes them and they are not sent back. The bools
+  (manager +0x30 capacity, +0x38 entries {u8 value, u32 hash}, +0x40 a word whose low 20 bits count them) and the
+  Bool64bitKey flags (+0xc68, +0xc70 {u8 value, i32 index}, +0xc78; the keys at +0xc60, 0x10 bytes: u64 key, u32 reset
+  type, u8 value at +0xc) are read off their queues; setEventBool (1.4.3 main+0xc6a9f0 = 1.2.1 main+0x11616bc: its
+  caller's caller looks up the same constant hash 0x2b05cbb9 in both) writes its table directly, so its writes are
+  sent from its hook. Changes go out in "GMDT" packets on the HIT channel, again 1, 3 and 7 s later.
+  - Bools and per-object flags: passed the pair test (2026-11-07, `tools\coop\gamedata_test.ps1`, on main).
+  - Written 2026-11-07, not run in the game yet:
+    - **numbers and states**: Int, Enum and four Floats. Value type t's block is at manager + t * 0x60 (2 Int,
+      4 Float, 6 Enum; read in calc): entries 0x28 / 0x28 / 0x38 bytes with the value at +0x1c, queues of
+      {value, hash, op} (op 1 adds) / {value, hash}. A copy of every shared value is compared each frame (the queue
+      also carries "add" requests, and a compare sees direct writes too), so a change is sent as its result.
+    - **what is shared**: only what GameDataList.Product.140 (read from the RomFS at start) puts in the progress save
+      (SaveFileIndex 0; -1 is never saved, 1 is the options save). Of that, the player's are left out by name
+      (PlayerStatus.*, the last wild horse, the statues' heart and stamina trades, the clock, which coop_players.c
+      syncs, sort orders, the map layer, Mineru's construct...) and by family, names made from every RomFS actor name
+      and the cooked dishes' names: EquipTime.*, EquipmentPouchTime.*, EquipmentDeathCount.*, RecipeCard.*,
+      PictureBookData.* (the compendium: its photos are the player's), OwnedParasailPattern.*. Checked offline
+      against TotK Online's name list: the families are found (all the gear ones, 508 of 509 compendium, 699 of 738
+      recipe entries) and no other entry of the same type has one of their hashes. Floats: only
+      SageOfGerudo_SliderBlockPos1..4. Arrays and strings: not shared (the pouch, horses, album, recipe log; an
+      element has no name of its own). The reset type does not split the numbers either (EnemyBattleData and the
+      compendium share 0x50).
+    - **shrines and Lights of Blessing**: shrine states (DungeonState.DungeonNNN) are shared Enums. When one changes
+      to Clear because of another player, this game works out its player's blessings as TotK Online's server does:
+      shrines cleared here - (MaxLife - 12) - (MaxStamina - 1000) / 200 * 4, at least 0, and raises the pouch's
+      Obj_DungeonClearSeal (Pouch.KeyItem.Content.Name / .StockNum, through the String64Array queue, 0x58-byte entries
+      with their own text buffer, and the IntArray queue, {value, index, hash, op}) to that, in an empty key item
+      slot when the player has none. It never lowers it.
+    - **catch-up**: every shared change of the session is kept (latest value per entry). A game that starts sharing
+      says hello; the others send it their session log twice, 2 s apart, addressed to it. So a player who joins late
+      gets what the others changed while playing together, not their whole saves.
+    - also fixed: coop_world.c peer_tick takes HIT packets into a 616-byte buffer and drops longer ones; a GMDT packet
+      held up to 60 entries (968 bytes), so a burst of more than 38 changes was lost. It now holds 36.
+    - test: `tools\coop\gamedata_test.ps1` (game A changes a key, a bool, an Int, a shrine and a Float and puts them
+      back; game B joins the sharing late, `TOTK_COOP_TEST_LATE=B:50`); the lines a passing run shows are in the
+      script. Checked offline on two fake managers in one process (a harness, not in the repo), with the real
+      GameDataList and actor list: numbers both ways with no echo, the personal ones kept, an "add" shared as its
+      result, the late join caught up, the blessing slot filled, packets lost for 10 s made up by the resends.
+    - unverified: that the game reads the pouch's key items from game data each time (a pouch kept elsewhere would
+      overwrite the blessings), what a shared quest step does in a game whose quest is elsewhere, and that the Enum,
+      Int and Float entries' value is at +0x1c in every one of them (read in calc's compare, the start lines' counts
+      check the tables). Known gaps: a change pushed by another thread between the read and calc is applied but not
+      sent; the same value changed in two games in one frame can end swapped; bool families
+      whose names cannot be made from the RomFS (ReadyMadeAutoBuilderDraft.*) are shared.
 - **Not done:**
   - the stand-in's arrows shot by it with its owner's camera (patched unproject);
   - enemies taking the stand-in for a player: the "is a player" check (1.2.1 main+0x1736dec, 1.4.3 main+0x1d1fc70 by
@@ -161,9 +186,8 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     since a put is not put again, and the test log goes ten times a second around the puts, with both world
     heights; not run yet. A horse's mane (Horse_Link_Mane*), saddle and reins are no moved objects any more, with or
     without TOTK_COOP_MOUNTS: a mane's copy hung in the air beside B's Link;
-  - shared world progress beyond the bools and per-object flags (below): numbers (Ints, Enums: shrine states, quest
-    counters), arrays and strings, shrine clears with each player's blessings worked out, and catching a player up on
-    what the others did before they joined;
+  - shared world progress: arrays and strings (the pouch and the other per-player lists), and catching a player up on
+    what the others did before this session (only the session's own changes are sent);
   - Ultrahand glue: written, not run yet (runtime/coop_glue.c; `TOTK_COOP_GLUE=0` off). The 1.4.3 functions, found
     by code (2026-11-07): the capture site is the tail call at main+0x1d61b04 in main+0x1d61a6c (1.2.1 0x16575dc in
     0x1657544: the same 39 instructions); doScotch main+0x1d66e34 (its only caller is that tail call); createScotch
