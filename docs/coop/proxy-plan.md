@@ -224,8 +224,9 @@ right in the tester's own two-pad session.
     attack meets the raised shield. With this Link's shield up (component +0x3b8 word +0x160 bit 28; action 0x41 at
     component +0x158 +0x84) and the attacker within 60 degrees of its facing, the bit is set: 26 hits and 3 hits, life
     kept at 14 (without it 14 -> 10 -> 6). Off by default: the hit is cancelled with no reaction (frames at a
-    block), and the shield-up bit may be ZL held alone (the shield on the back in those frames), so it would block for
-    a Link that is not guarding. Not checked either: the shield's wear, a perfect guard.
+    block show the Link standing as before). The shield-up test was ZL held alone at first; it is now ZL held, the
+    sword drawn and the actor's +0x328 bit 1 (shield_raised: game B's Link with ZL and the sword on the back,
+    drawn, and both): guarding, a hit blocked; ZL with the sword on the back, hits landed (14 -> 13 -> 10). Not checked either: the shield's wear, a perfect guard.
   - **The copy's awareness** (TOTK_COOP_ENEMY_AWARE, on): a frozen copy never noticed the follower's Link, so its game
     showed the Sneakstrike prompt beside an enemy fighting its player and its Link kept its sword sheathed and could
     not raise the shield. The owner sends six words of the enemy's component +0x158 with each pose (+0x24, +0x58,

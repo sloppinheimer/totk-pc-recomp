@@ -2030,9 +2030,16 @@ static _Alignas(16) uint8_t ct_in[CONTACT_MAX][CONTACT_SZ];
 static _Atomic int ct_n;                  // contacts waiting for this Link's hit update
 static uint32_t ct_brel[CONTACT_MAX], ct_key;
 static _Atomic uint64_t ct_dc;            // this Link's damage component they wait for
-// This Link's guard: the word +0x160 of its component +0x3b8 has bit 28 with the shield up (0x400401 -> 0x10400401),
-// and +0x84 of its component +0x158 is 0x41 (0x28 without), game B's own Link beside an enemy fighting it, ZL held
-// and not (TOTK_COOP_TEST_LINKDUMP, 2026-11-06). Logged with each contact delivered here.
+// This Link's guard. Its component +0x3b8's word +0x160 has bit 28 while ZL is held and bit 22 with the sword
+// drawn (0x10000401 ZL with the sword on the back and no enemy, 0x400401 drawn, 0x10400401 both), +0x84 of its
+// component +0x158 is 0x41 while ZL is held, and the actor's +0x328 has bit 1 only with both, the shield raised
+// (0x32e00000 -> 0x32e00002): game B's own Link in the three states (TOTK_COOP_TEST_LINKDUMP, 2026-11-07).
+static int shield_raised(uint64_t actor) {
+    uint64_t tab = coop_rd_ptr(actor + 0x228), c1 = tab ? coop_rd_ptr(tab + 0x3b8) : 0;
+    uint32_t f = 0, a = 0;
+    if (!c1 || !coop_rd(c1 + 0x160, &f, 4) || !coop_rd(actor + 0x328, &a, 4)) return 0;
+    return (f >> 28 & 1) && (f >> 22 & 1) && (a >> 1 & 1);
+}
 static const char *guard_state(uint64_t actor, char *buf, size_t n) {
     uint64_t tab = coop_rd_ptr(actor + 0x228), c1 = tab ? coop_rd_ptr(tab + 0x3b8) : 0, c2 = tab ? coop_rd_ptr(tab + 0x158) : 0;
     uint64_t eq = tab ? coop_rd_ptr(tab + 0x230) : 0;
@@ -2040,7 +2047,10 @@ static const char *guard_state(uint64_t actor, char *buf, size_t n) {
     if (c1) coop_rd(c1 + 0x160, &f, 4);
     if (c2) coop_rd(c2 + 0x84, &act, 4);
     if (eq) coop_rd(eq + 0x4600, &ef, 4);
-    snprintf(buf, n, "shield %s (%#x, action %#x, equipment +0x4600 %#x)", f >> 28 & 1 ? "up" : "down", f, act, ef);
+    uint32_t a328 = 0;
+    coop_rd(actor + 0x328, &a328, 4);
+    snprintf(buf, n, "shield %s (%#x, actor +0x328 %#x, action %#x, equipment +0x4600 %#x)", shield_raised(actor) ? "raised" : "not raised",
+             f, a328, act, ef);
     return buf;
 }
 static void contact_add(uint64_t dc) {
@@ -2098,11 +2108,12 @@ static void contact_add(uint64_t dc) {
                 float dx = ap[0] - lp[0], dz = ap[2] - lp[2], d = sqrtf(dx * dx + dz * dz);
                 front = d < 1e-3f || (lr[2] * dx + lr[8] * dz) / d > 0.5f;
             }
-            if (c1) coop_rd(c1 + 0x160, &f, 4);
-            if (eq && front && f >> 28 & 1 && coop_rd(eq + 0x4600, &ef, 4)) ef |= 1u << 17, memcpy((void *)(uintptr_t)(eq + 0x4600), &ef, 4);
+            (void)c1, (void)f;
+            int up = shield_raised(me_actor);
+            if (eq && front && up && coop_rd(eq + 0x4600, &ef, 4)) ef |= 1u << 17, memcpy((void *)(uintptr_t)(eq + 0x4600), &ef, 4);
             static int said;
-            if (said++ < 20) rt_log("coop: contact guard at %.2f s: shield %s, attacker %s: %s", frame_step_world_us() / 1e6, f >> 28 & 1 ? "up" : "down",
-                                    !att ? "not here" : front ? "in front" : "not in front", eq && front && f >> 28 & 1 ? "blocked" : "not blocked");
+            if (said++ < 20) rt_log("coop: contact guard at %.2f s: shield %s, attacker %s: %s", frame_step_world_us() / 1e6, up ? "raised" : "not raised",
+                                    !att ? "not here" : front ? "in front" : "not in front", eq && front && up ? "blocked" : "not blocked");
         }
         memcpy((void *)(uintptr_t)(base + (uint64_t)cnt * CONTACT_SZ), e, CONTACT_SZ);
     }
@@ -2341,7 +2352,7 @@ static void guard_scan_test(uint64_t me) {
         if (any) rt_log("%s", line);
     }
 }
-// Test (TOTK_COOP_TEST_LINKDUMP=<s>[,<s2>[,<s3>]]): at those world seconds, this Link's actor (0x3000 bytes) and the
+// Test (TOTK_COOP_TEST_LINKDUMP=<s>[,<s2>[,<s3>[,<s4>]]]): at those world seconds, this Link's actor (0x3000 bytes) and the
 // first 0x800 bytes of each object its +0x228 table points to (128 of them, in table order, zeros for none) to
 // <TOTK_COOP_TEST_LINKDUMP_DIR or .>/linkdump_<player id>_<n>.bin: two games' Links side by side, for a state one
 // has and the other not (an enemy aware of it).
@@ -2363,11 +2374,11 @@ static void actor_dump(uint64_t a, const char *what, int n) {
 static uint64_t pup_ready_actor(uint32_t key);
 static void link_dump_test(uint64_t me) {
     static int on = -1, done;
-    static double at[3];
+    static double at[4];
     static int nat;
     if (on < 0) {
         const char *e = cfg_get("TOTK_COOP_TEST_LINKDUMP");
-        nat = e ? sscanf(e, "%lf,%lf,%lf", &at[0], &at[1], &at[2]) : 0;
+        nat = e ? sscanf(e, "%lf,%lf,%lf,%lf", &at[0], &at[1], &at[2], &at[3]) : 0;
         on = nat > 0;
     }
     if (!on || done >= nat || frame_step_world_us() / 1e6 < at[done]) return;

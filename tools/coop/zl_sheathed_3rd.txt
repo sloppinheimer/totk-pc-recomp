@@ -1,0 +1,16 @@
+# The 100% save (third in the Continue list), nothing equipped: at 14 s equip the first weapon, then (L) the first
+# shield from the inventory, then hold ZL from 25 s to 130 s without drawing the sword: locked on, the shield on the
+# back (not raised). A control for the replayed block: hits must land.
+300 A 4
+520 DOWN 4
+580 DOWN 4
+640 A 4
+800 A 4
+@14000 PLUS 150
+@15500 A 150
+@16300 A 150
+@17200 L 150
+@18000 A 150
+@18800 A 150
+@19700 PLUS 150
+@25000 ZL 105000
