@@ -1,0 +1,8 @@
+# The 100% save (third in the Continue list): at 24 s walk forward for 9 s, about 20 m (12 s went off the island's edge) from the start:
+# this Link away from the other one, for an enemy that is then near the other player's proxy only.
+300 A 4
+520 DOWN 4
+580 DOWN 4
+640 A 4
+800 A 4
+@24000 LSTICK 0 32767 9000

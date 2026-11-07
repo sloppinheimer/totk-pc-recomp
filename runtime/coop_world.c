@@ -1582,6 +1582,18 @@ static struct { uint32_t key; uint64_t actor; int life; int64_t at_us; float hom
 // enemy alive again: a blood moon brought it back).
 #define KILLED_N 512
 static struct { uint32_t key; float home[3]; int64_t died_us; } killed[KILLED_N];
+// Whether p is within m of a live enemy this game runs that another Link may see (mine_known): an arrow made there is
+// that enemy's shot (coop_players.c, arrow_track_fn).
+int coop_near_my_enemy(const float p[3], float m) {
+    for (int i = 0; i < KNOWN_N; i++) {
+        if (!mine_known[i].key || !mine_known[i].actor || mine_known[i].life <= 0) continue;
+        float q[3];
+        if (!coop_rd(mine_known[i].actor + COOP_ACTOR_POS, q, 12)) continue;
+        float d2 = (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]);
+        if (d2 < m * m) return 1;
+    }
+    return 0;
+}
 static void killed_add(uint32_t key, const float home[3]) {
     int f = 0;
     for (int i = 0; i < KILLED_N; i++) {
@@ -1591,7 +1603,9 @@ static void killed_add(uint32_t key, const float home[3]) {
     killed[f].key = key, memcpy(killed[f].home, home, 12), killed[f].died_us = frame_step_world_us();
 }
 // Per enemy this game does not run: whose it is (player id; 0 this game's), and the life last set or seen here.
-typedef struct { uint32_t key; int owner, last; int64_t at_us; } Follow;
+// handed: the player this game handed it to (handover_to), until their game says it runs it (or HANDOVER_WAIT_US
+// passes); moved_us: when its owner last changed here.
+typedef struct { uint32_t key; int owner, last, handed; int64_t at_us, handed_us, moved_us; } Follow;
 #define FOLLOW_N 512
 static Follow follow[FOLLOW_N];
 static Follow *follow_of(uint32_t key) {
@@ -1603,6 +1617,7 @@ static Follow *follow_of(uint32_t key) {
     }
     if (free_i < 0) free_i = (int)(key % FOLLOW_N);
     follow[free_i].key = key, follow[free_i].owner = 0, follow[free_i].last = -1, follow[free_i].at_us = now;
+    follow[free_i].handed = 0, follow[free_i].handed_us = 0, follow[free_i].moved_us = now;
     return &follow[free_i];
 }
 // Each other player's latest world packet.
@@ -1618,7 +1633,42 @@ static void pup_bind(uint32_t key, int owner, uint64_t actor);
 static void pup_release(uint32_t key);
 static int pup_ready_key(uint32_t key);
 
-typedef struct { Cpu *c; WorldPacket pk; float others[COOP_MAX_PLAYERS][3]; int no, me_id, live_max, snaps, puppets; uint64_t now_ns; } PeerScan;
+typedef struct {
+    Cpu *c; WorldPacket pk; float others[COOP_MAX_PLAYERS][3], me[3];
+    int ids[COOP_MAX_PLAYERS], no, me_id, have_me, live_max, snaps, puppets;
+    uint64_t now_ns;
+} PeerScan;
+// The hand-over (TOTK_COOP_ENEMY_HANDOVER, on unless 0): an enemy this game runs goes to the game of another player
+// whose Link is HANDOVER_GAIN_M nearer to it than this game's, within HANDOVER_M of it, and at most once in
+// HANDOVER_HOLD_US. An enemy fights the one player of the game that runs it: a second Player actor there (the other
+// player's co-op Link) is never noticed, nor an actor of our own made from the Player's parameters, or from a pigeon's
+// with the Player's or a Sage's perception emitter and affiliation, put on the co-op Link each tick (a Bokoblin next to
+// one stayed unaware; docs/coop/proxy-plan.md, 2026-11-07). So the enemy is run
+// where the player it should fight is, as TotK Online does (its server gives each actor to the nearest player's game;
+// read for behaviour only). The player who was there keeps the fight while their Link is about as near as the other.
+#define HANDOVER_M 30.0f
+#define HANDOVER_GAIN_M 5.0f
+#define HANDOVER_HOLD_US 5000000
+#define HANDOVER_WAIT_US 3000000
+static int handover_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_ENEMY_HANDOVER"); on = !(e && *e == '0'); }
+    return on;
+}
+// The player id of the other Link this enemy at p should go to, 0 when it stays here.
+static int handover_to(const PeerScan *s, const float p[3], float *mine_m, float *theirs_m) {
+    if (!s->have_me || !handover_on()) return 0;
+    float dm = sqrtf((p[0] - s->me[0]) * (p[0] - s->me[0]) + (p[1] - s->me[1]) * (p[1] - s->me[1]) + (p[2] - s->me[2]) * (p[2] - s->me[2]));
+    int best = 0;
+    float bd = 1e30f;
+    for (int i = 0; i < s->no; i++) {
+        const float *o = s->others[i];
+        float d = sqrtf((p[0] - o[0]) * (p[0] - o[0]) + (p[1] - o[1]) * (p[1] - o[1]) + (p[2] - o[2]) * (p[2] - o[2]));
+        if (d < bd) bd = d, best = s->ids[i];
+    }
+    *mine_m = dm, *theirs_m = bd;
+    return best && bd < HANDOVER_M && bd + HANDOVER_GAIN_M < dm ? best : 0;
+}
 static int near_other(const PeerScan *s, const float p[3], float *d2_out) {
     float best = 1e30f;
     for (int i = 0; i < s->no; i++) {
@@ -1667,6 +1717,15 @@ static void peer_one(int cell, uint64_t a, void *arg) {
     // Whose it is: kept with the owner it has while that one still reports it; else the longest-held claim.
     int keep = 0;
     for (int i = 0; i < n_claims && f->owner; i++) keep |= claim_id[i] == f->owner;
+    int64_t wnow = frame_step_world_us();
+    if (keep && f->handed == f->owner) f->handed = 0;   // they run it now
+    // Handed to another game a moment ago: theirs while that game takes it up.
+    if (!keep && f->handed && f->owner == f->handed && wnow - f->handed_us < HANDOVER_WAIT_US) keep = 1;
+    if (!keep && f->handed) {
+        rt_log("coop: enemy %s %08x: player %d did not take it up", nm, key, f->handed);
+        f->handed = 0;
+        f->moved_us = wnow + 25000000;   // (their game may not have it: not offered again for 30 s)
+    }
     if (!keep) {
         int best = s->me_id;
         uint32_t best_age = my_age;
@@ -1677,10 +1736,19 @@ static void peer_one(int cell, uint64_t a, void *arg) {
         }
         int was = f->owner;
         f->owner = best == s->me_id ? 0 : best;
+        if (f->owner != was && f->moved_us < wnow) f->moved_us = wnow;
         if (f->owner != was)
             rt_log("coop: enemy %s %08x is %s (held here %.1f s%s)", nm, key, f->owner ? "run by another game" : "run here",
                    my_age / 1e3, f->owner ? "" : was ? "; its owner let it go" : "");
         if (f->owner) f->last = -1;
+    }
+    if (!f->owner && life > 0 && wnow - f->moved_us > HANDOVER_HOLD_US) {   // this game's: to a nearer player's?
+        float p[3], dm = 0, dt = 0;
+        int to = coop_rd(a + COOP_ACTOR_POS, p, 12) ? handover_to(s, p, &dm, &dt) : 0;
+        if (to) {
+            f->owner = f->handed = to, f->handed_us = f->moved_us = wnow, f->last = -1;
+            rt_log("coop: enemy %s %08x handed to player %d (their Link %.1f m from it, mine %.1f m)", nm, key, to, dt, dm);
+        }
     }
     if (!f->owner) {   // this game's: reported while another Link is near
         pup_release(key);
@@ -2492,7 +2560,8 @@ static void peer_tick(Cpu *c, uint64_t me) {
     static PeerScan s;
     memset(&s.pk, 0, sizeof s.pk);
     s.c = c, s.me_id = my_id, s.snaps = 0, s.puppets = 0, s.now_ns = plat_now_ns();
-    s.no = coop_player_positions(s.others, COOP_MAX_PLAYERS);
+    s.no = coop_player_positions_ids(s.others, s.ids, COOP_MAX_PLAYERS);
+    s.have_me = me && coop_rd(me + COOP_ACTOR_POS, s.me, 12);
     // The dead to report: the last 5 s, and older ones of this session near another Link (up to MAX_DEAD_SENT).
     int64_t now = frame_step_world_us();
     uint32_t dead_keys[MAX_DEAD_SENT];
@@ -2844,6 +2913,27 @@ static int epose_pack(uint64_t a, uint32_t key, uint8_t *out, int max) {
         int ok = aw != 0;
         for (int k = 0; ok && k < AWARE_N; k++) ok = coop_rd(aw + AWARE_OFF[k], &h.aware[k], 4);
         h.has_aware = (uint8_t)ok;
+        // Test (TOTK_COOP_TEST_AWARELOG=1): each change of an enemy's awareness words where it runs, so a test can
+        // tell when it noticed someone (0xc082 aware, 0xc182 not; pup_aware_apply).
+        static int on = -1;
+        if (on < 0) { const char *e = cfg_get("TOTK_COOP_TEST_AWARELOG"); on = e && *e == '1'; }
+        if (on && ok) {
+            static PlatMutex lk = PLAT_MUTEX_INIT;
+            static struct { uint32_t key, w0, w5; } seen[32];
+            static int said;
+            plat_mutex_lock(&lk);
+            int s = -1;
+            for (int i = 0; i < 32 && s < 0; i++) if (seen[i].key == key || !seen[i].key) s = i;
+            if (s >= 0 && (seen[s].key != key || seen[s].w0 != h.aware[0] || seen[s].w5 != h.aware[AWARE_N - 1]) && said++ < 200) {
+                char nm[48];
+                float p[3] = {0};
+                coop_rd(a + COOP_ACTOR_POS, p, 12);
+                rt_log("coop: test: my enemy %s %08x at %.1f %.1f %.1f: awareness %x %x %x %x %x %x", coop_actor_name(a, nm, sizeof nm), key,
+                       p[0], p[1], p[2], h.aware[0], h.aware[1], h.aware[2], h.aware[3], h.aware[4], h.aware[5]);
+                seen[s].key = key, seen[s].w0 = h.aware[0], seen[s].w5 = h.aware[AWARE_N - 1];
+            }
+            plat_mutex_unlock(&lk);
+        }
     }
     uint64_t sk = enemy_skeleton(a), recs = sk ? coop_rd_ptr(sk + 0x18) : 0;
     uint16_t n = 0;
@@ -2896,6 +2986,32 @@ static int epose_pack(uint64_t a, uint32_t key, uint8_t *out, int max) {
         float dx = it.pos[0] - h.pos[0], dy = it.pos[1] - h.pos[1], dz = it.pos[2] - h.pos[2];
         if (dx * dx + dy * dy + dz * dz > EPOSE_ITEM_M * EPOSE_ITEM_M) continue;
         it.hash = name_hash_of(weaps[i]);
+        {   // Test (TOTK_COOP_TEST_WEAPLAG=1): how far the weapon's actor place is from where its model is drawn
+            // (model +0x1f8, rows | place), and how far the model moved since the last frame: every 120 samples.
+            static int on = -1;
+            if (on < 0) { const char *e = cfg_get("TOTK_COOP_TEST_WEAPLAG"); on = e && *e == '1'; }
+            uint64_t wmod = on ? enemy_model(weaps[i]) : 0;
+            float mm[12];
+            if (wmod && coop_rd(wmod + 0x1f8, mm, sizeof mm)) {
+                static PlatMutex lk = PLAT_MUTEX_INIT;
+                static float last[3], sum_d, max_d, sum_v, max_v;
+                static int n;
+                static uint64_t last_w;
+                plat_mutex_lock(&lk);
+                float mp[3] = {mm[3], mm[7], mm[11]};
+                float d = sqrtf((mp[0] - it.pos[0]) * (mp[0] - it.pos[0]) + (mp[1] - it.pos[1]) * (mp[1] - it.pos[1]) + (mp[2] - it.pos[2]) * (mp[2] - it.pos[2]));
+                float v = last_w == weaps[i] ? sqrtf((mp[0] - last[0]) * (mp[0] - last[0]) + (mp[1] - last[1]) * (mp[1] - last[1]) + (mp[2] - last[2]) * (mp[2] - last[2])) : 0;
+                memcpy(last, mp, 12), last_w = weaps[i];
+                sum_d += d, sum_v += v, max_d = fmaxf(max_d, d), max_v = fmaxf(max_v, v);
+                if (++n == 120) {
+                    char wn[48];
+                    rt_log("coop: test: weapon %s: actor place from its drawn place mean %.1f cm (max %.1f); drawn place moved %.1f cm a frame (max %.1f)",
+                           coop_actor_name(weaps[i], wn, sizeof wn), sum_d / n * 100, max_d * 100, sum_v / n * 100, max_v * 100);
+                    n = 0, sum_d = max_d = sum_v = max_v = 0;
+                }
+                plat_mutex_unlock(&lk);
+            }
+        }
         items[h.nitems++] = it;
     }
     int hl = (int)sizeof h + h.nitems * (int)sizeof(EItem);
@@ -3428,6 +3544,29 @@ int coop_enemy_puppet_phase(Cpu *c, uint64_t addr) {
         memcpy((void *)(uintptr_t)(w + COOP_ACTOR_POS), out.ip[q], 12);
         memcpy((void *)(uintptr_t)(w + COOP_ACTOR_ROT), wr, 36);
         uint64_t wmod = enemy_model(w);
+        {   // Test (TOTK_COOP_TEST_WEAPLAG=1): whether the weapon's drawn place (model +0x1f8) is still the one put
+            // there a frame before when it is placed again (something else writing it: its own update), every 120.
+            static int on = -1;
+            if (on < 0) { const char *e = cfg_get("TOTK_COOP_TEST_WEAPLAG"); on = e && *e == '1'; }
+            static float put[3];
+            static uint64_t put_w;
+            static float sum, mx, sum_step;
+            static int n;
+            float now[12];
+            if (on && wmod && coop_rd(wmod + 0x1f8, now, sizeof now)) {
+                if (put_w == w) {
+                    float d = sqrtf((now[3] - put[0]) * (now[3] - put[0]) + (now[7] - put[1]) * (now[7] - put[1]) + (now[11] - put[2]) * (now[11] - put[2]));
+                    float st = sqrtf((wm[3] - put[0]) * (wm[3] - put[0]) + (wm[7] - put[1]) * (wm[7] - put[1]) + (wm[11] - put[2]) * (wm[11] - put[2]));
+                    sum += d, mx = fmaxf(mx, d), sum_step += st;
+                    if (++n == 120) {
+                        rt_log("coop: test: copy weapon: drawn place moved from where it was put %.1f cm on average (max %.1f) before it was put again; "
+                               "put %.1f cm a frame from the last", sum / n * 100, mx * 100, sum_step / n * 100);
+                        n = 0, sum = mx = sum_step = 0;
+                    }
+                }
+                put[0] = wm[3], put[1] = wm[7], put[2] = wm[11], put_w = w;
+            }
+        }
         if (wmod) {
             memcpy((void *)(uintptr_t)(wmod + 0x1f8), wm, sizeof wm);
             ST8(wmod + 0x240, LD8(wmod + 0x240) | 1);

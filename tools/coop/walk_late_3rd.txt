@@ -1,0 +1,8 @@
+# The 100% save (third in the Continue list): at 45 s walk forward for 2.5 s, toward an enemy spawned ahead at 40 s
+# (TOTK_COOP_TEST_SPAWN_AT with the turn flag, facing this Link), so it sees this Link come: the enemy arrows test.
+300 A 4
+520 DOWN 4
+580 DOWN 4
+640 A 4
+800 A 4
+@45000 LSTICK 0 32767 2500

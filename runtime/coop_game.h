@@ -47,5 +47,6 @@ void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);
 void coop_world_tick(Cpu *c, uint64_t me);
 int coop_world_role(void);                              // coop_players.c: 0 alone, 1 host, 2 guest
 int coop_player_positions(float (*out)[3], int max);   // the remote Links' positions
+int coop_player_positions_ids(float (*out)[3], int *ids, int max);   // ... and their players' ids
 
 void coop_fill_controller(uint64_t ctl, uint64_t buttons, const float stick[4], uint32_t *prev, float held[32]);

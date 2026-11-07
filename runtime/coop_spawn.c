@@ -319,10 +319,14 @@ static void spawn(Cpu *c, int k) {
     }
     // Guess: the rotation is row-major (MacNativeGames force_at) and Link faces his local +Z, column 2.
     float at[3] = {pos[0] + 2 * rot[2], pos[1] + 0.5f, pos[2] + 2 * rot[8]};
-    {   // TOTK_COOP_TEST_SPAWN_AT=x,y,z: at that world place instead (the same enemy in two games: its key is its place)
+    {   // TOTK_COOP_TEST_SPAWN_AT=x,y,z: at that world place instead (the same enemy in two games: its key is its place);
+        // x,y,z,1: and facing the other way from the Link (towards it, when placed in front of it)
         const char *e = k == 1 ? cfg_get("TOTK_COOP_TEST_SPAWN_AT") : NULL;
         float q[3];
-        if (e && sscanf(e, "%f,%f,%f", &q[0], &q[1], &q[2]) == 3) memcpy(at, q, sizeof at);
+        int back = 0;
+        if (e && sscanf(e, "%f,%f,%f,%d", &q[0], &q[1], &q[2], &back) >= 3) memcpy(at, q, sizeof at);
+        if (back == 1)
+            for (int r = 0; r < 3; r++) rot[r * 3 + 0] = -rot[r * 3 + 0], rot[r * 3 + 2] = -rot[r * 3 + 2];
     }
 
     // The frame the AI node builds (main+0x231fa58): stack args at sp, the name pointer at sp+0x20, the create

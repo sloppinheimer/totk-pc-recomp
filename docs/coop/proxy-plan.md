@@ -239,6 +239,32 @@ right in the tester's own two-pad session.
     nearest that place and put it there after the enemy's model push, its body 300 m under it. Pair test on the tester's
     save: a Dark Bokoblin's sword and shield and a Bokoblin's bow found and held. Not seen on screen; the camp stood
     still. A weapon lying within 2.5 m of a frozen enemy is held too and cannot be picked up while it is there.
+    a play session (2026-11-07) still saw the weapons lag. Measured on a Bokoblin's sword (TOTK_COOP_TEST_WEAPLAG=1):
+    in the owner's game its actor place is where its model is drawn (0.0 cm apart, the model moving up to 1.4 m a
+    frame in a swing); in the follower's, the place put on the copy's model was still there a frame later (nothing
+    else writes it) and moved as much a frame as the owner's. So the weapon follows the owner's weapon; what is left
+    is where it is against the copy's hand: the pose is packed at the start of the enemy's calc (the jiggle, below),
+    which may be a frame from where the weapon was put. Not checked on screen. The enemy's final matrices (skeleton
+    +0x20) hold no world places in either layout for an enemy (the nearest "bone" 1.5 to 8 m from the hand), so the
+    weapon is not yet put in the copy's hand bone's frame.
+  - **Enemies fight only their own game's player.** A second Player actor (a co-op Link) is never noticed by an
+    enemy: a Bokoblin spawned beside one stayed unaware (0xc182) with the game's own Link 44 m away, and so with an
+    actor of our own beside it made from the Player's parameters under the category Enemy (TotK Online's
+    PlayerPuppet is one such; read for behaviour only), or from a pigeon's with the Player's or a Sage's perception
+    emitter and affiliation put on the co-op Link each tick (a Bokoblin targets players and Sages). So the enemy goes
+    to the game of the player it should fight: **the hand-over** (TOTK_COOP_ENEMY_HANDOVER, on; coop_world.c,
+    handover_to). The game running it gives it to another player's game when that player's Link is 5 m nearer to it
+    than its own and within 30 m, at most once in 5 s; it stops running and reporting it, the other game finds its
+    owner gone and runs its own one from where it stands (with the owner's awareness words already on it). If that
+    game does not take it up within 3 s, the first takes it back and does not offer it again for 30 s. TotK Online's
+    server gives every actor to the nearest player's game. Pair test (the same Bokoblin spawned in both games, A's
+    Link 36 m from it, B's 15 m): A handed it to B, it hit B's Link (14 -> 11) and A's proxy of B lost the same.
+    Without the hand-over B was not hit. An enemy fighting between two players may change games as they move
+    (seen once: back to A at 12.5 m against 17.6 m, then to B again). A spawned enemy is in one game only (its key is
+    its name and first place: the same in both only when spawned at one place, TOTK_COOP_TEST_SPAWN_AT).
+  - **Enemy arrows** (an arrow made within 3 m of an enemy this game runs, 1 m from every Link, is sent as this
+    game's, in the world): untested. Enemy_Bokoblin_Sniper_Junior spawned with no bow (it threw Rock_Weapon, which
+    the prop sync shows) and Enemy_Assassin_Junior_Rider_Bow did nothing without its horse: a map's archer is needed.
   - **Arrows and bombs** from a following game: their hit's record on the frozen copy (its damage component, as on a
     proxy) goes to the owner as a hit, when this Link made it and it lacks the melee flag 0x100000 (a sword's has
     it; the proxy's swing lands those). Pair test: one arrow, 90, the owner's Bokoblin 25 -> 0, the copy died after.

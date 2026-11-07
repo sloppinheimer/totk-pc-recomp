@@ -572,12 +572,16 @@ int coop_player_actors(uint64_t *actors, int *net_ids, int max) {
             actors[n] = slots[i].actor, net_ids[n] = slots[i].net_id, n++;
     return n;
 }
-int coop_player_positions(float (*out)[3], int max) {
+int coop_player_positions_ids(float (*out)[3], int *ids, int max) {
     int n = 0;
     for (int i = 0; i < COOP_MAX_PLAYERS && n < max; i++)
-        if (slots[i].state == LIVE && slots[i].source == SRC_NET && slots[i].have_want) memcpy(out[n++], slots[i].want_pos, 12);
+        if (slots[i].state == LIVE && slots[i].source == SRC_NET && slots[i].have_want) {
+            if (ids) ids[n] = slots[i].net_id;
+            memcpy(out[n++], slots[i].want_pos, 12);
+        }
     return n;
 }
+int coop_player_positions(float (*out)[3], int max) { return coop_player_positions_ids(out, NULL, max); }
 static __thread int inside;
 // ---- TOTK_COOP_TRACE=diff (a test): which qwords of main's writable data (.data to .bss) a co-op Link's calc changes;
 // counted over calcs and reported every 600 calcs, the most often changed first.
@@ -1330,7 +1334,8 @@ static void arrow_log(uint64_t me) {
 // copy of each: made with the same name, then after COPY_WARMUP ticks its own update is off and it is put where the
 // owner's is every tick (place_copy), so it does not fly, hit or get picked up here. A copy goes when its arrow is no
 // longer reported.
-static struct { uint64_t actor; uint32_t id; int mine, seen, fused_to, shot, gone; char name[48]; } my_arrows[32];   // shot: has left the bow
+// shot: has left the bow; enemy: shot by an enemy this game runs (sent as it flies, in the world)
+static struct { uint64_t actor; uint32_t id; int mine, seen, fused_to, shot, gone, enemy; char name[48]; } my_arrows[32];
 static struct { uint64_t actor; int seen; } near_actors[64];   // other actors within 3 m of this Link, last tick seen
 static uint32_t next_arrow_id = 1;
 static int arrow_tick;
@@ -1415,7 +1420,13 @@ static void arrow_track_fn(uint64_t a, void *arg) {
     for (int i = 0; i < 32; i++)
         if (!my_arrows[i].actor) {
             my_arrows[i].actor = a, my_arrows[i].mine = arrow_tick - zr_tick <= 90 && d2 < 9 && d2 < dco, my_arrows[i].seen = arrow_tick;
-            my_arrows[i].fused_to = 0, my_arrows[i].shot = 0, my_arrows[i].gone = 0;
+            my_arrows[i].fused_to = 0, my_arrows[i].shot = 0, my_arrows[i].gone = 0, my_arrows[i].enemy = 0;
+            // An arrow made within 3 m of an enemy this game runs, at least 1 m from every Link (a Link's quiver
+            // arrows are made 0.45 m from it at load): that enemy's, sent so the other games see it (they saw none:
+            // a play session, 2026-11-07).
+            int coop_near_my_enemy(const float p[3], float m);   // coop_world.c
+            if (!my_arrows[i].mine && arrow_tick >= 30 && d2 >= 1 && dco >= 1 && coop_near_my_enemy(p, 3))
+                my_arrows[i].mine = 1, my_arrows[i].enemy = 1, my_arrows[i].shot = 1;
             my_arrows[i].id = my_arrows[i].mine ? next_arrow_id++ : 0;
             snprintf(my_arrows[i].name, sizeof my_arrows[i].name, "%s", nm);
             if (my_arrows[i].mine) rt_log("coop: my arrow %u is %s (%llx)", my_arrows[i].id, nm, (unsigned long long)a);
@@ -1465,6 +1476,13 @@ static int report_arrows(Cpu *c, uint64_t me, CoopObj *out) {
         CoopObj *o = &out[n];
         float r[9];
         if (!coop_rd(my_arrows[i].actor + COOP_ACTOR_POS, o->pos, 12) || !coop_rd(my_arrows[i].actor + COOP_ACTOR_ROT, r, 36)) continue;
+        if (my_arrows[i].enemy) {   // an enemy's: in the world, whatever this Link's bow does
+            o->id = my_arrows[i].id;
+            coop_actor_name(my_arrows[i].actor, o->name, sizeof o->name);
+            mat_quat(r, o->q);
+            n++;
+            continue;
+        }
         // Nocked: within 1.5 m of the bow and never farther since it was made. Once farther it is shot for good: a
         // shot arrow lying near its owner was taken for a nocked one, sent on the bow, and followed the owner about
         // on the other screen (a play session, 2026-11-05).

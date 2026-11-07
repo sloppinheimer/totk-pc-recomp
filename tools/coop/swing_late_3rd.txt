@@ -1,0 +1,17 @@
+# The 100% save (third in the Continue list), nothing equipped: at 14 s equip the first weapon and shield, then stand;
+# at 46 s and 48 s swing (Y) at an enemy spawned beside this Link at 40 s, so the fight begins with it. For the enemy
+# hand-over test: the other game runs that enemy first and hands it to this one (coop_world.c, handover_to).
+300 A 4
+520 DOWN 4
+580 DOWN 4
+640 A 4
+800 A 4
+@14000 PLUS 150
+@15500 A 150
+@16300 A 150
+@17200 L 150
+@18000 A 150
+@18800 A 150
+@19700 PLUS 150
+@46000 Y 150
+@48000 Y 150
