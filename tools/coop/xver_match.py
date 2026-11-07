@@ -253,7 +253,7 @@ def guess(A, B, i, pair, used, ca, cb, cra, crb):
                    reverse=True)
     if not cands:
         return None, f' (no candidate; {n} matched neighbours)'
-    if len(cands) > 1 and cands[1][0] > cands[0][0] - 2:
+    if cands[0][0] < 2 or (len(cands) > 1 and cands[1][0] > cands[0][0] - 2):
         return None, (f' (ambiguous: {cands[0][0]} vs {cands[1][0]} of {n}: '
                       f'{B.starts[cands[0][1]]:#x} / {B.starts[cands[1][1]]:#x})')
     return cands[0][1], f'guess {cands[0][0]}/{n}'
@@ -308,7 +308,8 @@ def main():
             if j is None:
                 rows.append(f'{off:#x}\t-\t{A.starts[i]:#x}\t-\tfunction not matched{why}\t\t\t{label}')
                 continue
-            how[i] = why
+            how[i], pair[i] = why, j
+            used.add(j)   # (not guessed again for another target)
         b, ratio, kind = place(A, B, i, j, off)
         rows.append(f'{off:#x}\t{b:#x}\t{A.starts[i]:#x}\t{B.starts[j]:#x}\t{how[i]}\t{ratio:.2f}\t{kind}\t{label}')
     Path(args.out).write_text('\n'.join(rows) + '\n')

@@ -213,9 +213,13 @@ void coop_actors_all(void (*fn)(uint64_t actor, const char *name, uint32_t key, 
 // Enemies made at run time (no place in the map: a night's Stalkoblins, a spawner's) are made in the other games
 // too (spawn_*, below); each such actor's key is the one its maker gave it, kept here.
 #define KEYED_N 128
-static struct { _Atomic uint64_t actor; uint32_t key; } keyed[KEYED_N];
+// nh: the actor's name hash when it was given its key: one with another name at that address is another actor.
+static uint32_t name_hash_of(uint64_t a);
+static struct { _Atomic uint64_t actor; _Atomic uint32_t key; uint32_t nh; } keyed[KEYED_N];
 static uint32_t keyed_of(uint64_t a) {
-    for (int i = 0; i < KEYED_N; i++) if (atomic_load_explicit(&keyed[i].actor, memory_order_acquire) == a) return keyed[i].key;
+    for (int i = 0; i < KEYED_N; i++)
+        if (atomic_load_explicit(&keyed[i].actor, memory_order_acquire) == a)
+            return keyed[i].nh == name_hash_of(a) ? atomic_load_explicit(&keyed[i].key, memory_order_relaxed) : 0;
     return 0;
 }
 static void keyed_set(uint64_t a, uint32_t key) {
@@ -225,8 +229,19 @@ static void keyed_set(uint64_t a, uint32_t key) {
         if (x == a) { f = i; break; }
         if (f < 0 && !x) f = i;
     }
-    if (f < 0) f = (int)(key % KEYED_N);
-    keyed[f].key = key, atomic_store_explicit(&keyed[f].actor, a, memory_order_release);
+    if (f < 0) { rt_log("coop: spawn sync: no room to key %08x", key); return; }
+    atomic_store_explicit(&keyed[f].actor, 0, memory_order_release);
+    keyed[f].nh = name_hash_of(a), atomic_store_explicit(&keyed[f].key, key, memory_order_relaxed);
+    atomic_store_explicit(&keyed[f].actor, a, memory_order_release);
+}
+// Entries of actors gone (or another actor at the address) let go of, once a second (spawn_tick).
+static void keyed_prune(void) {
+    for (int i = 0; i < KEYED_N; i++) {
+        uint64_t a = atomic_load(&keyed[i].actor);
+        int32_t st = 0;
+        if (a && (!coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || keyed[i].nh != name_hash_of(a)))
+            atomic_store(&keyed[i].actor, 0);
+    }
 }
 // An enemy this game updates, with its key (0 if not an enemy).
 static uint32_t enemy_of(int cell, uint64_t a, char *nm, size_t n) {
@@ -1670,6 +1685,7 @@ static int enemy_puppets_on(void) {
 }
 static void pup_bind(uint32_t key, int owner, uint64_t actor);
 static void pup_release(uint32_t key);
+static int enemy_native(void);
 static int pup_ready_key(uint32_t key);
 
 typedef struct {
@@ -1871,6 +1887,7 @@ static void peer_one(int cell, uint64_t a, void *arg) {
     int coop_runs_for_ms(void);   // coop_players.c
     if (pup_bound_to(key, a) || (coop_runs_for_ms() >= 2000 && my_age >= 3000)) pup_bind(key, f->owner, a);
     if (enemy_puppets_on() && pup_ready_key(key)) { s->puppets++; return; }   // posed from the owner's (enemy puppets)
+    if (enemy_native() && pup_bound_to(key, a)) { s->puppets++; return; }    // eased to the owner's place (native_follow)
     float p[3];
     if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
     float dx = p[0] - e->pos[0], dy = p[1] - e->pos[1], dz = p[2] - e->pos[2];
@@ -1961,6 +1978,10 @@ static int enemy_native(void);
 #define CONTACT_COVER_NS 400000000ull
 static _Atomic uint64_t contact_sent_ns[COOP_MAX_PLAYERS + 1];
 static void link_hits_send(void) {
+    if (enemy_native()) {   // none: the copy in the hit player's game hits that player itself (review, 2026-11-07)
+        for (int i = 0; i < RCV_N; i++) atomic_store(&proxy_rcv[i], 0);
+        return;
+    }
     uint64_t acts[COOP_MAX_PLAYERS];
     int ids[COOP_MAX_PLAYERS], n = coop_player_actors(acts, ids, COOP_MAX_PLAYERS);
     static uint32_t rcv_seen[RCV_N];
@@ -2379,6 +2400,7 @@ static int link_hit_deliver(Cpu *c, const LinkHitPacket *lh, uint64_t me, uint64
     return 1;
 }
 static void link_hit_take(Cpu *c, const LinkHitPacket *lh, int from, uint64_t me) {
+    if (enemy_native()) return;   // (a sender with the old model: its copy here hits this Link itself)
     const Follow *f = NULL;
     for (int k = 0; k < FOLLOW_N; k++) if (follow[k].key == lh->key) f = &follow[k];
     if (!me || !f || f->owner != from) {
@@ -2574,13 +2596,17 @@ static void enemy_poke_test(void);   // (after pups)
 #define PLACE_HASH 0x88   // the same in 1.4.3: the same Chuchu's value in both games, another's different (TOTK_COOP_TEST_ACTORDUMP)
 typedef struct { uint32_t key, to, kind, pad; char name[48]; float pos[3], rot[9]; } SpawnPacket;
 _Static_assert(sizeof(SpawnPacket) <= COOP_HIT_MAX, "SpawnPacket fits a HIT packet");
-static struct { _Atomic uint64_t actor; uint64_t at_ns; } born[64];   // handed over here, to look at (spawn_tick)
+#define BORN_N 256   // (a load hands over hundreds; only enemies are kept)
+static struct { _Atomic uint64_t actor; _Atomic uint64_t at_ns; } born[BORN_N];   // handed over here (spawn_tick)
 static _Atomic unsigned born_n;
-void coop_actor_created(uint64_t a) {   // coop_spawn.c, from the getActor hook
+void coop_actor_created(uint64_t a) {   // coop_spawn.c, from the getActor hook (any thread)
     if (!a || !coop_net_on()) return;
-    unsigned i = atomic_fetch_add(&born_n, 1) % 64;
-    born[i].at_ns = plat_now_ns();
-    atomic_store(&born[i].actor, a);
+    char nm[8];
+    if (strncmp(coop_actor_name(a, nm, sizeof nm), "Enemy_", 6)) return;
+    unsigned i = atomic_fetch_add(&born_n, 1) % BORN_N;
+    atomic_store_explicit(&born[i].actor, 0, memory_order_release);
+    atomic_store_explicit(&born[i].at_ns, plat_now_ns(), memory_order_relaxed);
+    atomic_store_explicit(&born[i].actor, a, memory_order_release);
 }
 static struct { uint32_t key; char name[48]; float pos[3]; int state; uint64_t actor, ref, ns; int from;
                 _Alignas(16) uint8_t handle[0x40], link[0x40]; } made[32];   // the copies being made here (state 1, 2 made)
@@ -2622,14 +2648,19 @@ static void spawn_tick(Cpu *c) {
     actor_dump_test();
     if (!spawn_on()) return;
     uint64_t now = plat_now_ns();
-    for (int i = 0; i < 64; i++) {   // new actors 0.3 s on (its place settled)
-        uint64_t a = atomic_load(&born[i].actor);
-        if (!a || now - born[i].at_ns < 300000000ull) continue;
-        atomic_store(&born[i].actor, 0);
+    static uint64_t pruned;
+    if (now - pruned > 1000000000ull) pruned = now, keyed_prune();
+    for (int i = 0; i < BORN_N; i++) {   // new enemies 0.3 s on (its place settled); not ready by 3 s: let go of
+        uint64_t a = atomic_load_explicit(&born[i].actor, memory_order_acquire);
+        uint64_t at = atomic_load_explicit(&born[i].at_ns, memory_order_relaxed);
+        if (!a || now - at < 300000000ull) continue;
         char nm[48];
         int32_t st = 0;
         coop_actor_name(a, nm, sizeof nm);
-        if (strncmp(nm, "Enemy_", 6) || !coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6) continue;
+        int ready = !strncmp(nm, "Enemy_", 6) && coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6;
+        if (!ready && now - at < 3000000000ull) continue;
+        uint64_t want = a;   // taken (unless another was handed over into the slot meanwhile)
+        if (!atomic_compare_exchange_strong(&born[i].actor, &want, 0) || !ready) continue;
         uint64_t ph = 0, pp = coop_rd_ptr(a + PLACE_HASH_PTR);
         if (pp) coop_rd(pp + PLACE_HASH, &ph, 8);
         static int said;
@@ -2645,18 +2676,19 @@ static void spawn_tick(Cpu *c) {
         SpawnPacket sp = {.key = enemy_key(nm, p), .kind = SPAWN_KIND};
         snprintf(sp.name, sizeof sp.name, "%s", nm), memcpy(sp.pos, p, 12), memcpy(sp.rot, r, 36);
         keyed_set(a, sp.key);
-        int f = 0;
-        for (int k = 0; k < 64; k++) if (!spawned_mine[k].key) { f = k; break; }
-        spawned_mine[f].key = sp.key, spawned_mine[f].actor = a;
+        int f = -1;
+        for (int k = 0; k < 64 && f < 0; k++) if (!spawned_mine[k].key) f = k;
+        if (f >= 0) spawned_mine[f].key = sp.key, spawned_mine[f].actor = a;   // (full: its going away is not told)
         coop_net_hit_send(&sp, sizeof sp);
         rt_log("coop: spawn sync: %s %08x made here at %.1f %.1f %.1f: sent to the others", nm, sp.key, p[0], p[1], p[2]);
     }
-    for (int k = 0; k < 32; k++) {   // the copies being made
+    for (int k = 0; k < 32; k++) {   // the copies being made; made ones let go of 10 s on (handed over by then)
+        if (made[k].state == 2 && now - made[k].ns > 10000000000ull) made[k].state = 0, made[k].actor = 0;
         if (made[k].state != 1) continue;
         int st = coop_handle_status(made[k].handle);
         if (st == 3) {
             uint64_t a = coop_claim(c, made[k].handle, made[k].link, &made[k].ref);
-            if (a) made[k].actor = a, made[k].state = 2, keyed_set(a, made[k].key);
+            if (a) made[k].actor = a, made[k].state = 2, made[k].ns = now, keyed_set(a, made[k].key);
             else made[k].state = 0;
             rt_log("coop: spawn sync: %s %08x for player %d %s", made[k].name, made[k].key, made[k].from, a ? "made here" : "not made");
         } else if (st > 3 || now - made[k].ns > 10000000000ull) {
@@ -2685,24 +2717,25 @@ static void spawn_take(Cpu *c, const SpawnPacket *sp, int from) {
     for (int i = 0; i < KEYED_N; i++)
         if (keyed[i].key == sp->key && atomic_load(&keyed[i].actor)) {
             uint64_t a = atomic_load(&keyed[i].actor);
-            if (sp->kind == SPAWN_GONE) {
+            if (sp->kind == SPAWN_GONE && keyed_of(a) == sp->key) {   // (still that enemy: alive, its name, that key)
+                int32_t st = 0;
+                if (!coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6) return;
                 coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, a, COOP_DELETE_REASON, 0, 0);
                 atomic_store(&keyed[i].actor, 0);
                 rt_log("coop: spawn sync: %08x gone in player %d game: deleted here", sp->key, from);
             }
             return;   // (have it)
         }
-    if (sp->kind != SPAWN_KIND) return;
+    if (sp->kind != SPAWN_KIND || strncmp(sp->name, "Enemy_", 6) || memchr(sp->name, 0, sizeof sp->name) == NULL) return;
     for (int k = 0; k < 32; k++) if (made[k].state && made[k].key == sp->key) return;
     for (int k = 0; k < 32; k++) {
         if (made[k].state) continue;
         memset(made[k].handle, 0, sizeof made[k].handle);
-        char nm[48];
-        snprintf(nm, sizeof nm, "%.47s", sp->name);
-        if (!coop_request_create(c, nm, sp->pos, sp->rot, made[k].handle)) return;
+        snprintf(made[k].name, sizeof made[k].name, "%s", sp->name);   // (kept: the create may read it later)
+        if (!coop_request_create(c, made[k].name, sp->pos, sp->rot, made[k].handle)) return;
         made[k].key = sp->key, made[k].state = 1, made[k].actor = 0, made[k].ns = plat_now_ns(), made[k].from = from;
-        memcpy(made[k].name, nm, sizeof nm), memcpy(made[k].pos, sp->pos, 12);
-        rt_log("coop: spawn sync: %s %08x made in player %d game: requested here", nm, sp->key, from);
+        memcpy(made[k].pos, sp->pos, 12);
+        rt_log("coop: spawn sync: %s %08x made in player %d game: requested here", made[k].name, sp->key, from);
         return;
     }
 }
@@ -2904,6 +2937,7 @@ static struct {
     int has_act;
     float esc_s;
     uint64_t esc_ns;
+    int esc_bit;   // the bit as the last request found it
     char act_name[32];
     PupRec r[PUP_HIST];
 } pups[PUP_N];
@@ -3596,7 +3630,7 @@ static void native_follow(Cpu *c, int k) {
                         sqrtf((t[0] - p[0]) * (t[0] - p[0]) + (t[1] - p[1]) * (t[1] - p[1]) + (t[2] - p[2]) * (t[2] - p[2])));
 }
 // The owner's side: each enemy's last action request, by actor (the hook runs on the enemies' threads).
-static struct { uint64_t actor; EAction a; uint64_t ns; } act_mine[64];
+static struct { uint64_t actor; uint32_t nh; EAction a; uint64_t ns; } act_mine[64];   // nh: its name's hash
 static PlatMutex act_lock = PLAT_MUTEX_INIT;
 static int epose_pack_native(uint64_t a, uint32_t key, uint8_t *out, int max) {
     EPoseHead h = {.key = key, .t_ns = plat_now_ns()};
@@ -3604,8 +3638,10 @@ static int epose_pack_native(uint64_t a, uint32_t key, uint8_t *out, int max) {
     h.pad[0] = EPOSE_NATIVE;
     int len = (int)sizeof h;
     plat_mutex_lock(&act_lock);
-    for (int i = 0; i < 64; i++)
-        if (act_mine[i].actor == a && len + (int)sizeof(EAction) <= max) {
+    uint32_t nh = name_hash_of(a);
+    for (int i = 0; i < 64; i++)   // (the same actor, not another at its address: its name, and an action of the last 2 s)
+        if (act_mine[i].actor == a && act_mine[i].nh == nh && h.t_ns - act_mine[i].ns < 2000000000ull &&
+            len + (int)sizeof(EAction) <= max) {
             memcpy(out + sizeof h, &act_mine[i].a, sizeof(EAction)), len += (int)sizeof(EAction), h.pad[0] |= EPOSE_ACTION;
             break;
         }
@@ -3635,10 +3671,10 @@ void coop_enemy_action(Cpu *c) {
         uint64_t s = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 8 * 8) + 0x18) + 0x18);
         uint8_t b = 0;
         uint64_t now = plat_now_ns();
-        if (s && coop_rd(s + 0x124, &b, 1) && (b & 0x20)) {
-            pups[k].esc_s += pups[k].esc_ns ? (float)((now - pups[k].esc_ns) / 1e9) : 0;
-        } else pups[k].esc_s = 0;
-        pups[k].esc_ns = now;
+        int bit = s && coop_rd(s + 0x124, &b, 1) && (b & 0x20);
+        if (bit && pups[k].esc_bit && pups[k].esc_ns) pups[k].esc_s += (float)((now - pups[k].esc_ns) / 1e9);
+        else if (!bit) pups[k].esc_s = 0;
+        pups[k].esc_bit = bit, pups[k].esc_ns = now;
         if (have && pups[k].esc_s <= 0.25f) {
             memcpy((void *)(uintptr_t)req, pups[k].act.req, EACT_REQ);
             if (pups[k].act.has_name) {
@@ -3678,7 +3714,7 @@ void coop_enemy_action(Cpu *c) {
         if (act_mine[i].actor == a) { f = i; break; }
         if (act_mine[i].ns < oldest) oldest = act_mine[i].ns, f = i;
     }
-    act_mine[f].actor = a, act_mine[f].a = e, act_mine[f].ns = plat_now_ns();
+    act_mine[f].actor = a, act_mine[f].nh = name_hash_of(a), act_mine[f].a = e, act_mine[f].ns = plat_now_ns();
     plat_mutex_unlock(&act_lock);
 }
 static void epose_take_tick(Cpu *c) {
@@ -3706,6 +3742,7 @@ static void epose_take_tick(Cpu *c) {
             if (pups[i].key) pup_release(pups[i].key);
             plat_mutex_lock(&pup_lock);
             pups[i].key = key, pups[i].owner = from, pups[i].count = 0, atomic_store(&pups[i].actor, 0);
+            pups[i].has_act = 0, pups[i].esc_s = 0, pups[i].esc_ns = 0, pups[i].esc_bit = 0;
             plat_mutex_unlock(&pup_lock);
         }
         if (pups[i].owner != from) continue;
@@ -3718,6 +3755,7 @@ static void epose_take_tick(Cpu *c) {
             if (hh.has_aware) memcpy(pups[i].aware, hh.aware, sizeof pups[i].aware);
             if ((hh.pad[0] & EPOSE_ACTION) && len >= (int)(sizeof hh + sizeof(EAction)))
                 memcpy(&pups[i].act, in + sizeof hh, sizeof(EAction)), pups[i].has_act = 1;
+            else if (hh.pad[0] & EPOSE_NATIVE) pups[i].has_act = 0;   // (none from the owner: the copy plays its own)
             // The owner's clock onto this one: the smallest (arrival - owner's time) seen, the packet that came
             // quickest, rising slowly so a drift between the clocks is followed.
             static int64_t off[COOP_MAX_PLAYERS + 1];

@@ -25,6 +25,10 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   life, and its action requests (main+0x50ad74, 1.2.1 0xa29340) are replaced by the owner's last one. Pair test:
   game B's copy of a Bokoblin took player A's hits with its own reaction, died with its own effect and dropped its
   horn and weapon; Chuchus' copies played the owner's actions (id 105). Hit replays onto proxies are off with it.
+  Open (review, 2026-11-07): a follower's sword hit on its copy now hurts the copy, so its life loss goes to the
+  owner as a hit, and the follower's co-op Link swinging in the owner's game may land the same hit there: counted
+  twice if both happen (not tested). TotK Online deletes contacts with actors another game owns, except the stand-in's
+  sword, so only the owner's game counts it; that is the fix ("Not done" below).
 - **Done, not seen end to end: enemies made at run time** (a night's Stalkoblins) are made in the other games: the
   create queues' getActor (main+0x50d364, 0x61a8b4, 0x6609b4, 0x89841c), an Enemy_ with no placement hash
   ([actor+0x370]+0x88, the same in 1.4.3), sent with its key; the others make one and give it that key. The test

@@ -2078,14 +2078,16 @@ static int copy_pending_near(const float *p) {
 // remade: one only watched after its item was made again (deleted once out of the gear, kept while held).
 static struct { uint64_t actor, eq; int k, until, since, remade; char name[48]; } old_items[16];
 static void watch_old_item(uint64_t eq, int k, uint64_t old, int remade) {
-    int f = 0;
+    int f = -1;
     for (int i = 0; i < 16; i++) {
         if (old_items[i].actor == old) {   // (since stays: the first time)
             old_items[i].until = prop_tick + 900, old_items[i].remade &= remade;
             return;
         }
-        if (old_items[i].until < old_items[f].until) f = i;
+        if (f < 0 && (!old_items[i].actor || old_items[i].until < prop_tick)) f = i;   // a free entry first (review)
     }
+    if (f < 0)
+        for (int i = f = 0; i < 16; i++) if (old_items[i].until < old_items[f].until) f = i;
     old_items[f].actor = old, old_items[f].eq = eq, old_items[f].k = k, old_items[f].until = prop_tick + 900, old_items[f].since = prop_tick;
     old_items[f].remade = remade;
     coop_actor_name(old, old_items[f].name, sizeof old_items[f].name);
@@ -2126,9 +2128,17 @@ static int old_item(uint64_t a) {
 }
 static void old_items_tick(Cpu *c) {
     for (int i = 0; i < 16; i++) {
-        if (!old_items[i].actor || old_items[i].until < prop_tick) continue;
+        if (!old_items[i].actor) continue;
         // (gone, or another actor in its memory: forgotten, not deleted; code review, 2026-11-06)
         if (!actor_is(old_items[i].actor, old_items[i].name)) { old_items[i].actor = 0; continue; }
+        if (old_items[i].until < prop_tick) {   // watched 30 s: deleted unless still held (sent as a world object else)
+            if (eq_item(old_items[i].eq, old_items[i].k) != old_items[i].actor) {
+                rt_log("coop: proxy: its old %s, unheld 30 s on, is deleted", old_items[i].name);
+                coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, old_items[i].actor, COOP_DELETE_REASON, 0, 0);
+            }
+            old_items[i].actor = 0;
+            continue;
+        }
         // Still the proxy's: making its gear again with no item does not take it (load_3rd.txt: four tries, the
         // shield stayed in hand). After 2 s it is deleted all the same, as a broken weapon is, and the gear lets go.
         uint64_t cur = eq_item(old_items[i].eq, old_items[i].k);
