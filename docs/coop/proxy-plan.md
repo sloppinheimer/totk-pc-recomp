@@ -222,8 +222,14 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
    here or in re-notes.md and that no suite case uses.
 
 ## Wanted (the tester, 2026-11-07)
-- **Map and minimap markers** for the other players. Written (2026-11-07, branch `claude/coop-markers-e22868`),
-  never run: compiles (clang -fsyntax-only), nothing else checked.
+- **Map and minimap markers** for the other players (2026-11-07). Full map: works (pair test, merge 9f4178d: B's map
+  showed A's dot named "A" about where A walked, and "(you)" by B's arrow). Minimap: wrong in that test, every marker
+  held at the corner of its square, because the ground pane's matrix puts this Link at (0, 0) there, not at the
+  minimap (765, -360): the minimap is the map drawn centred and shown in the corner as a picture. Fixed on branch
+  `claude/coop-markers-fix` (not run yet): on the minimap a marker goes through N_IconArea_00's matrix, as the
+  game's own icons do (moved to (765, -360), scale 0.9), and is held on the minimap's circle. Expect "off" near 0
+  and the "(you)" dot on B's arrow in the minimap frames; whether 0.9 is the right scale shows as A's dot matching
+  where the minimap's terrain puts A.
   - What it does: runtime/coop_markers.c finds the game's map screen (AppMap_00, which is also the HUD minimap) and
     reads the global matrix of its ground pane, then ui/coop_markers.cpp draws a coloured dot and the player's name
     for each other player with the overlay, clipped to the map's area; a player off the view is a ring on its edge
