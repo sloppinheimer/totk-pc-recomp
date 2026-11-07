@@ -518,16 +518,19 @@ void coop_glue_tick(Cpu *c, uint64_t me) {
 }
 
 // ---- Test (TOTK_COOP_TEST_GLUE=<name1>,<name2>, both games; tools/coop/glue_pair_3rd.txt): the game named A
-// (TOTK_COOP_NAME) makes the two 1.5 m in front of its Link at 30 s, 0.8 m apart side by side, and at 40 s glues them
-// with the game's own calls (make_bond: createScotch and doScotch on their main bodies, each matrix that body's frame
-// at the point between them, a guess at what the game passes); doScotch's entry then captures it as any glue made
-// here. At 60 s it parts the first with removeScotch, as a shake of Ultrahand would. Each step is logged.
+// (TOTK_COOP_NAME) makes the two 1.5 m in front of its Link at 30 s, 0.8 m apart side by side, and 1 s after both
+// exist glues them with the game's own calls (make_bond: createScotch and doScotch on their main bodies, each matrix
+// that body's frame at the point between them, a guess at what the game passes); doScotch's entry then captures it as
+// any glue made here. 20 s later it parts the first with removeScotch, as a shake of Ultrahand would. Each step is
+// logged; it stops if either goes away. Objects that rest: AsbObj_WoodSquare_A_M_01,AsbObj_WoodRectangle_A_M_01
+// (building planks); a Zonai cart or wheel rolls off the In-isa stairs.
 static void glue_test(Cpu *c, uint64_t me) {
     static const char *spec;
     static int stage;
     static char names[2][48];
     static _Alignas(16) uint8_t handle[2][0x40], link[2][0x40];
     static uint64_t obj[2];
+    static double glued_at;   // stage 2: when both were there; stage 3 on: when they were glued
     if (!spec) {
         spec = cfg_get("TOTK_COOP_TEST_GLUE") ? cfg_get("TOTK_COOP_TEST_GLUE") : "";
         const char *who = cfg_get("TOTK_COOP_NAME");
@@ -562,10 +565,20 @@ static void glue_test(Cpu *c, uint64_t me) {
                 obj[k] = coop_claim(c, handle[k], link[k], &ref);
                 rt_log("coop: test: glue: %s is %llx", names[k], (unsigned long long)obj[k]);
             }
-        if (obj[0] && obj[1]) stage = 2;
+        if (obj[0] && obj[1]) stage = 2, glued_at = now;
+        if (now > 45) { rt_log("coop: test: glue: the two were not made in 15 s"); stage = 9; return; }
     }
-    if (stage == 2 && now > 40) {
-        stage = 3;
+    // Both still there (state 2..6, the name theirs): a Zonai cart made on the In-isa stairs rolled off and went away
+    // 1.5 s after it was made, and the glue at 40 s read a gone actor (2026-11-07).
+    if (stage >= 2 && stage <= 4)
+        for (int k = 0; k < 2; k++)
+            if (!alive_named(obj[k], names[k])) {
+                rt_log("coop: test: glue: %s went away (%.1f s into the world); the test stops", names[k], now);
+                stage = 9;
+                return;
+            }
+    if (stage == 2 && now > glued_at + 1) {   // 1 s after both exist: before anything moves them far
+        stage = 3, glued_at = now;
         uint64_t ba = coop_rd_ptr(phys_ctl(obj[0]) + 0x150), bb = coop_rd_ptr(phys_ctl(obj[1]) + 0x150);
         uint32_t ha = body_handle(ba), hb = body_handle(bb);
         float pa[3], pb[3], ra[9], rb[9];
@@ -592,7 +605,7 @@ static void glue_test(Cpu *c, uint64_t me) {
         rt_log("coop: test: glue: %s to %s: entry %llx, %s", names[0], names[1], (unsigned long long)e, ok ? "glued" : "not glued");
         if (!ok) stage = 9;
     }
-    if (stage == 3 && now > 60) {
+    if (stage == 3 && now > glued_at + 20) {
         stage = 4;
         uint64_t comp = scotch_comp(obj[0]);
         uint32_t id = 0;
@@ -605,7 +618,7 @@ static void glue_test(Cpu *c, uint64_t me) {
         rt_log("coop: test: glue: removeScotch on %s: its entry %s (state %u right after; the break is a message, later)", names[0],
                e ? "still listed" : "gone", st);
     }
-    if (stage == 4 && now > 62) {
+    if (stage == 4 && now > glued_at + 22) {
         stage = 9;
         uint32_t ha = body_handle(coop_rd_ptr(phys_ctl(obj[0]) + 0x150)), hb = body_handle(coop_rd_ptr(phys_ctl(obj[1]) + 0x150));
         uint64_t e = find_entry(scotch_comp(obj[0]), ha, hb);

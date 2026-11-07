@@ -174,11 +174,14 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     the world's: the capture logs them against the actors' places); whether a parted bond leaves its maker's entry
     list or only changes its state (the maker drops a bond once its entry is gone or not in state 2); whether the
     copies' forced placement fights the glue (TotK Online stops its position correction for 1 s on each remake). Test:
-    `$env:TOTK_COOP_TEST_GLUE='SpObj_Cart_A_01,SpObj_FastWheel_A_01'` then run_pair.ps1 -Seconds 80 -ScriptA
-    tools\coop\glue_pair_3rd.txt -ScriptB tools\coop\glue_pair_3rd.txt: A makes the two, glues them at 40 s with the
-    game's calls (its matrices a guess) and parts them at 60 s. A pass shows in A "coop: glue: made here: bond 1, ..."
-    and in B "coop: glue: bond 1 from player N made again here: ..." and, after 60 s, "... is gone there: parted
-    here". A real glue needs a player: in game A hold an object with Ultrahand, glue it to another, and look for the
+    `$env:TOTK_COOP_TEST_GLUE='AsbObj_WoodSquare_A_M_01,AsbObj_WoodRectangle_A_M_01'` then run_pair.ps1 -Seconds
+    80 -ScriptA tools\coop\glue_pair_3rd.txt -ScriptB tools\coop\glue_pair_3rd.txt: A makes the two at 30 s, glues
+    them 1 s after both exist with the game's calls (its matrices a guess) and parts them 20 s later. A pass shows in
+    A "coop: glue: made here: bond 1, ..." and in B "coop: glue: bond 1 from player N made again here: ..." and,
+    after A's removeScotch, "... is gone there: parted here". First run (2026-11-07, a Zonai cart and wheel): the cart
+    rolled off the In-isa stairs and went away 1.5 s after it was made, and the glue at 40 s read the gone actor
+    (component 0, body 0); the wheel had its scotch component and a body handle (0x61). Planks should rest (not tried yet); the test now
+    glues at once and stops with "went away" if either goes. A real glue needs a player: in game A hold an object with Ultrahand, glue it to another, and look for the
     same lines; then shake it apart. The packets need no protocol version change (old builds drop them);
   - rotating ground: written, not proven (coop_world.c, ground_tick; `TOTK_COOP_GROUND=0` off): the host sends each
     GroundControlActor_Rotate*'s phase ([[actor+0x228]+0x2b0]+0x20 float +0x3c, 1.2.1's place, unchecked in 1.4.3)
