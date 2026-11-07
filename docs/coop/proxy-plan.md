@@ -292,7 +292,10 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     v' switch 1 0". The guest logs once "coop: ground <key> turns as the host's (angle ..., speed ..., on 1 0)". A
     pass: in the host switch 1 0, the speed reaches 0.105 (6 degrees a second) and the angle rises; turn set about
     60 a second in both games; in the guest the angle within about 0.02 of "host's now" each second. Without SPIN
-    both stand still at the same angle;
+    both stand still at the same angle. Pair test (c0bd158, 2026-11-07): the same key in both; the host turned (speed
+    0.105, turn set 60 a second, index 8952) and the guest's angle followed it within 0.002, but its speed stayed 0
+    and it set no turn: the host sent switch 0 0, the blackboard's own bytes from before SPIN's answer. The bytes
+    sent are now the ones the node gets; not run again yet;
   - a thrown weapon or a shield bash on a copy is taken out of its contacts as a sword hit is, but the stand-in does
     not throw or bash in the owner's game, so that hit is lost (code review, a guess);
   - the Gloom Hands: left out, as TotK Online leaves them out.

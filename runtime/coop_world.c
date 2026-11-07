@@ -2597,10 +2597,12 @@ int coop_ground_hook(Cpu *c, uint64_t off) {   // coop_spawn.c coop_hook, with t
         c->pc = MOD_MAIN_BASE + off;
         rt_dispatch(c);
         inside = 0;
+        // (the byte the node gets, after the answer: kept as the blackboard's own, the host sent 0 0 while
+        // TOTK_COOP_TEST_GROUND_SPIN turned it, and the guest's speed fell to 0 and set no turn; pair test 2026-11-07)
+        if (bb_force) c->x[0] = (c->x[0] & ~1ull) | bb_want[k];
         uint8_t v = (uint8_t)(c->x[0] & 1);
         if (k == 0) atomic_store_explicit(&gnodes[f].on, v, memory_order_relaxed);
         else atomic_store_explicit(&gnodes[f].inv, v, memory_order_relaxed);
-        if (bb_force) c->x[0] = (c->x[0] & ~1ull) | bb_want[k];
         return 1;
     }
     return 0;
