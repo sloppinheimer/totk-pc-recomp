@@ -222,7 +222,10 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     the horse through every press (its test lines say "run here" to 41 s, when it was handed to B's game with A's
     Link 8 m off after the ride-forward walk), so a copy refusing the ride is ruled out. `tools\coop\mount_solo.ps1`
     runs the same spawn, puts and presses in one game with no peer (coop_mounts_tick runs alone too), to settle
-    whether a test-spawned horse can be mounted at all; not run yet;
+    whether a test-spawned horse can be mounted at all. Run (2026-11-07): no mount alone either, with GameRomHorse01,
+    Animal_Horse_A or GameRomHorse00L, all nine presses beside the saddle; so not the sync. **Parked (the tester's call,
+    2026-11-07)**: the way the test spawns the horse may be the cause; next is a save beside a wild or stable horse
+    that the tester finds, then the same puts and presses on it;
   - shared world progress: arrays and strings (the pouch and the other per-player lists), and catching a player up on
     what the others did before this session (only the session's own changes are sent);
   - Ultrahand glue: the scripted test passes, a played glue is not tried yet (runtime/coop_glue.c; `TOTK_COOP_GLUE=0` off). The 1.4.3 functions, found
