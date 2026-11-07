@@ -2102,6 +2102,24 @@ static void regive_gear(Cpu *c, uint64_t eq, int k, const char *name, int dye, i
     // it is held; an emptied slot's is let go of after 2 s even if still held, as before)
     if (old) watch_old_item(eq, k, old, name[0] != 0);
 }
+// An item of a co-op Link taken out or put away the game's way (TotK Online's, read for behaviour only): its
+// EquipmentUser's setEquipmentInHand (eq, row) and removeEquipmentInHand (eq, row, 0), rows 0 weapon, 3 bow, 4 shield
+// (1.4.3 main+0x4f5700 and main+0x4f5194: tools/coop/xver_match.py from 1.2.1 0x68370c and 0x65aaf8; both work on
+// the in-hand bytes at eq+0x4620). Off unless TOTK_COOP_GEAR_INHAND=1: on our co-op Link, a Player whose own update
+// runs in bursts (a swing), the sword then sat on its back in 3 of 5 frames of a swing test against 1 of 5 made again
+// (2026-11-07); TotK Online's stand-in has no AI and replays its owner's animation clips, which this needs as well.
+#define GEAR_SET_IN_HAND 0x4f5700
+#define GEAR_REMOVE_IN_HAND 0x4f5194
+static int gear_inhand_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_GEAR_INHAND"); on = e && *e == '1'; }
+    return on;
+}
+static void gear_hand(Cpu *c, uint64_t eq, int k, int in) {
+    static const uint64_t row[3] = {0, 3, 4};
+    if (in) coop_guest_call(c, MOD_MAIN_BASE + GEAR_SET_IN_HAND, eq, row[k], 0, 0);
+    else coop_guest_call(c, MOD_MAIN_BASE + GEAR_REMOVE_IN_HAND, eq, row[k], 0, 0);
+}
 static int old_item(uint64_t a) {
     for (int i = 0; i < 16; i++) if (old_items[i].actor == a && old_items[i].until >= prop_tick) return 1;
     return 0;
@@ -4846,6 +4864,11 @@ void coop_players_tick(Cpu *c, int numpad3) {
                     if (no_remake < 0) no_remake = cfg_get("TOTK_COOP_TEST_NODRAWREMAKE") != NULL;
                     for (int k = 0; k < 3 && !no_remake; k++)
                         if ((s->out_want & ~s->out_have) >> k & 1 && s->gear_want[k][0] && strcmp(s->gear_want[k], GEAR_NONE)) {
+                            if (gear_inhand_on()) {
+                                gear_hand(c, eq, k, 1);
+                                rt_log("coop: proxy: slot %d: %s taken out", i, s->gear_want[k]);
+                                continue;
+                            }
                             regive_gear(c, eq, k, s->gear_want[k], -1, 1, s->gear_str[k], s->fuse_want[k], s->att_str[k]);
                             rt_log("coop: proxy: slot %d: %s made again in hand", i, s->gear_want[k]);
                         }
@@ -4854,6 +4877,11 @@ void coop_players_tick(Cpu *c, int numpad3) {
                     // with it, a play session, 2026-11-05).
                     for (int k = 0; k < 3 && !no_remake; k++)
                         if ((s->out_have & ~s->out_want) >> k & 1 && s->gear_want[k][0] && strcmp(s->gear_want[k], GEAR_NONE)) {
+                            if (gear_inhand_on()) {
+                                gear_hand(c, eq, k, 0);
+                                rt_log("coop: proxy: slot %d: %s put away", i, s->gear_want[k]);
+                                continue;
+                            }
                             regive_gear(c, eq, k, s->gear_want[k], -1, 0, s->gear_str[k], s->fuse_want[k], s->att_str[k]);
                             rt_log("coop: proxy: slot %d: %s made again put away", i, s->gear_want[k]);
                         }
@@ -4905,6 +4933,11 @@ void coop_players_tick(Cpu *c, int numpad3) {
                     // link-hands, every session of 2026-11-06).
                     for (int k = 0; k < 3; k++)
                         if (((now ^ s->out_want) >> k & 1) && s->gear_want[k][0] && strcmp(s->gear_want[k], GEAR_NONE)) {
+                            if (gear_inhand_on()) {
+                                gear_hand(c, eq, k, s->out_want >> k & 1);
+                                rt_log("coop: proxy: slot %d: %s %s again", i, s->gear_want[k], s->out_want >> k & 1 ? "taken out" : "put away");
+                                continue;
+                            }
                             regive_gear(c, eq, k, s->gear_want[k], -1, s->out_want >> k & 1, s->gear_str[k], s->fuse_want[k], s->att_str[k]);
                             rt_log("coop: proxy: slot %d: %s made again %s", i, s->gear_want[k], s->out_want >> k & 1 ? "in hand" : "put away");
                         }

@@ -15,6 +15,34 @@ network and pin it to its owner. Its own systems keep running and fight those ov
 Each fix overrode one system, then the next problem showed up. A day of this did not end with a puppet that looks
 right in the tester's own two-pad session.
 
+## Parity with TotK Online (2026-11-07)
+the tester asked for its methods everywhere, peer to peer and with each player's own save. What it does is written up
+outside the repo (the session notes, "totk-online-how-it-works"; read for behaviour only, the mod has no licence).
+Its addresses are for 1.2.1; `tools/coop/xver_match.py` finds them in 1.4.3 (1.2.1's main from the v393216 update;
+its addWeapon and isEquipmentInHand came out where we had found them ourselves).
+- **Done: enemies run in every game** (coop_world.c, the native enemy model, on; `TOTK_COOP_ENEMY_MODEL=puppet` the
+  old frozen copies). The copy's AI runs, it is eased to the owner's place (min(10 dt, 1)) and given its rotation and
+  life, and its action requests (main+0x50ad74, 1.2.1 0xa29340) are replaced by the owner's last one. Pair test:
+  game B's copy of a Bokoblin took player A's hits with its own reaction, died with its own effect and dropped its
+  horn and weapon; Chuchus' copies played the owner's actions (id 105). Hit replays onto proxies are off with it.
+- **Done, not seen end to end: enemies made at run time** (a night's Stalkoblins) are made in the other games: the
+  create queues' getActor (main+0x50d364, 0x61a8b4, 0x6609b4, 0x89841c), an Enemy_ with no placement hash
+  ([actor+0x370]+0x88, the same in 1.4.3), sent with its key; the others make one and give it that key. The test
+  spawn claims its own actor and never passes the queues, so only the hand-over and the hash were checked.
+- **Tried, off: in hand by the game's calls** (setEquipmentInHand 0x4f5700 / removeEquipmentInHand 0x4f5194,
+  `TOTK_COOP_GEAR_INHAND=1`). On our co-op Link, whose own update runs in bursts, the sword sat on its back in more
+  frames than when made again. TotK Online's stand-in has no AI and replays its owner's animation clips; that is
+  what makes its gear stay in hand.
+- **Not done:**
+  - the stand-in as TotK Online's: an actor of its own with Link's model and animation set and no AI, its owner's 7
+    animation slots (clip, weight, frame, partial masks) replayed into its animation player (1.2.1: player
+    [[[actor+0x228]+8]+0x28]+0x40, slots 0xb0 bytes, play by vtable +0x30); gear made once and drawn with the in-hand
+    calls; arrows shot by the stand-in with its owner's camera (patched unproject);
+  - contacts with actors another game owns deleted, except the stand-in's sword, so its hits land in the owner's game;
+  - map actors keyed by their placement hash instead of name and first place;
+  - Ultrahand glue made again in the other games, and breaks refused there; rotating ground's time copied;
+  - the Gloom Hands (TotK Online leaves them out too).
+
 ## Still wrong in a play session (last build, 075576d)
 - **Shake:** the puppet jumps 3-13 cm on some frames, even standing still. Its physics body now matches its owner
   exactly (position and rotation), so physics drift is not the cause. Almost every jump is in the same tick as a

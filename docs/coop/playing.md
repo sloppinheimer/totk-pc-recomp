@@ -23,7 +23,7 @@ run, jump, glide, attack); it is put back at its owner's position when it drifts
 leaves. It carries its owner's weapon, bow and shield and wears their head, body and leg armor. Guests follow the
 host's time of day and weather. An enemy near more than one player is run by the game that has had it longest (a
 player who was fighting alone keeps the fight), and goes to another player's game when that player's Link is 5 m
-nearer to it (within 30 m): an enemy fights only the player of the game that runs it; the others show its moves, weapons, life and death; their sword hits,
+nearer to it (within 30 m): an enemy fights only the player of the game that runs it; in the other games its copy runs its own AI and plays the owner's actions (TotK Online's way), and enemies made at run time are made there too; the others show its moves, weapons, life and death; their sword hits,
 arrows and bombs count on it, and its hits on them count, knock-back included: the hit player's own game builds the hit from the contact (a raised shield does not block them yet). The host's HUD prompts stay on the host's screen. Not yet: fused weapon parts and armor dyes, menus for remote players. Chests stay each player's own.
 ## One PC, two games, two gamepads (online co-op without a second PC)
 Double-click `Play co-op (two pads).vbs` in the repo folder (or run `tools\coop\play_two.ps1`): it starts the relay and two game windows with no console windows; window 1
