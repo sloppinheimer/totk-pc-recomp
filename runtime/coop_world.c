@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "coop_far.h"
 #include "coop_game.h"
 #include "coop_mounts.h"
 #include "coop_net.h"
@@ -1737,6 +1738,7 @@ static int enemy_puppets_on(void) {
 }
 static void pup_bind(uint32_t key, int owner, uint64_t actor);
 static void pup_release(uint32_t key);
+static int pup_find(uint32_t key);
 static int enemy_native(void);
 static int pup_ready_key(uint32_t key);
 
@@ -1830,6 +1832,16 @@ static void peer_one(int cell, uint64_t a, void *arg) {
         return;
     }
     if (st > 6) return;
+    // Far from every player (coop_far.c): not followed for anyone and not sent; the game's own (TotK Online's server
+    // lets go of a map actor 1000 m from every player; a copy made here for another game is deleted by far_sweep).
+    float far_d = 0;
+    if (coop_far_actor(a, &far_d)) {
+        if (f->owner || pup_find(key) >= 0)
+            rt_log("coop: far: %s %s %08x is %.0f m from every player: not followed (was player %d's)", kw, nm, key, far_d, f->owner);
+        f->owner = 0, f->handed = 0, f->last = -1;
+        pup_release(key);
+        return;
+    }
     // Whose it is: kept with the owner it has while that one still reports it; else the longest-held claim.
     int keep = 0;
     for (int i = 0; i < n_claims && f->owner; i++) keep |= claim_id[i] == f->owner;
@@ -2890,6 +2902,47 @@ void coop_actor_created(uint64_t a) {   // coop_spawn.c, from the getActor hook 
 static struct { uint32_t key; char name[48]; float pos[3]; int state; uint64_t actor, ref, ns; int from;
                 _Alignas(16) uint8_t handle[0x40], link[0x40]; } made[32];   // the copies being made here (state 1, 2 made)
 static struct { uint32_t key; uint64_t actor; } spawned_mine[64];   // enemies this game made at run time and sent
+// The copies made here for another game, after made[] let go of them: deleted once far from every player (coop_far.c),
+// as TotK Online's server disposes of an actor 1000 m from every player and its client deletes a runtime-made one.
+static struct { uint32_t key; uint64_t actor; int from; char name[48]; } made_held[64];
+static void made_held_add(uint32_t key, uint64_t a, int from, const char *name) {
+    int f = -1;
+    for (int k = 0; k < 64; k++) {
+        if (made_held[k].actor == a) { f = k; break; }
+        if (f < 0 && !made_held[k].actor) f = k;
+    }
+    if (f < 0) return;   // (full: not swept)
+    made_held[f].key = key, made_held[f].actor = a, made_held[f].from = from;
+    snprintf(made_held[f].name, sizeof made_held[f].name, "%s", name);
+}
+// Once a second: each copy still that actor (alive, its name, its key) and far from every player is deleted with the
+// game's own delete request; one gone or another actor now is forgotten.
+static void far_sweep(Cpu *c) {
+    static uint64_t last;
+    uint64_t now = plat_now_ns();
+    if (now - last < 1000000000ull) return;
+    last = now;
+    for (int k = 0; k < 64; k++) {
+        uint64_t a = made_held[k].actor;
+        if (!a) continue;
+        int32_t st = 0;
+        char nm[48];
+        if (!coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || strcmp(coop_actor_name(a, nm, sizeof nm), made_held[k].name) ||
+            keyed_of(a) != made_held[k].key) {
+            made_held[k].actor = 0;
+            continue;
+        }
+        float d = 0;
+        if (!coop_far_actor(a, &d)) continue;
+        pup_release(made_held[k].key);   // (no longer frozen and driven: its own update runs to go away)
+        coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, a, COOP_DELETE_REASON, 0, 0);
+        for (int i = 0; i < KEYED_N; i++)
+            if (atomic_load(&keyed[i].actor) == a) atomic_store(&keyed[i].actor, 0);
+        rt_log("coop: far: %s %08x made here for player %d is %.0f m from every player: deleted", made_held[k].name,
+               made_held[k].key, made_held[k].from, d);
+        made_held[k].actor = 0;
+    }
+}
 static int spawn_on(void) {   // TOTK_COOP_SPAWN_SYNC=0: not done
     static int on = -1;
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_SPAWN_SYNC"); on = !(e && *e == '0'); }
@@ -2923,9 +2976,37 @@ static void actor_dump_test(void) {
         n++;
     }
 }
+static void spawn_take(Cpu *c, const SpawnPacket *sp, int from);
+// Test (TOTK_COOP_TEST_FAR_COPY=<s>[,name]): at that world time, a SPAWN as if the other player had sent one, of a
+// Bokoblin (or that actor) 4 m in front of this Link, goes through spawn_take: a copy made here for that player, as
+// the spawn sync makes them (the test spawn TOTK_COOP_TEST_SPAWN does not pass the create queues, so it is no spawn
+// sync). With TOTK_COOP_TEST_FAR in both games, far_sweep then deletes it (tools/coop/far_3rd.txt).
+static void far_copy_test(Cpu *c) {
+    static int done;
+    const char *v = cfg_get("TOTK_COOP_TEST_FAR_COPY");
+    uint64_t me = coop_player_actor();
+    if (done || !v || !me || frame_step_world_us() < (int64_t)(atof(v) * 1e6)) return;
+    int other = 0, ids[COOP_MAX_PLAYERS];
+    char names[COOP_MAX_PLAYERS][17];
+    if (coop_net_players(ids, names, COOP_MAX_PLAYERS) > 0) other = ids[0];
+    if (!other) return;   // (waits for the other player)
+    done = 1;
+    SpawnPacket sp = {.kind = SPAWN_KIND};
+    const char *nm = strchr(v, ',') ? strchr(v, ',') + 1 : "Enemy_Bokoblin_Junior";
+    snprintf(sp.name, sizeof sp.name, "%s", nm);
+    float p[3], r[9];
+    if (!coop_rd(me + COOP_ACTOR_POS, p, 12) || !coop_rd(me + COOP_ACTOR_ROT, r, 36)) return;
+    for (int i = 0; i < 3; i++) sp.pos[i] = p[i] + 4 * r[i * 3 + 2];   // 4 m along the Link's forward (rotation column z)
+    memcpy(sp.rot, r, 36);
+    sp.key = enemy_key(sp.name, sp.pos);
+    rt_log("coop: test: far copy: %s %08x as if from player %d, at %.1f %.1f %.1f", sp.name, sp.key, other, sp.pos[0], sp.pos[1], sp.pos[2]);
+    spawn_take(c, &sp, other);
+}
 static void spawn_tick(Cpu *c) {
     actor_dump_test();
     if (!spawn_on()) return;
+    far_copy_test(c);
+    far_sweep(c);
     uint64_t now = plat_now_ns();
     static uint64_t pruned;
     if (now - pruned > 1000000000ull) pruned = now, keyed_prune();
@@ -2967,7 +3048,7 @@ static void spawn_tick(Cpu *c) {
         int st = coop_handle_status(made[k].handle);
         if (st == 3) {
             uint64_t a = coop_claim(c, made[k].handle, made[k].link, &made[k].ref);
-            if (a) made[k].actor = a, made[k].state = 2, made[k].ns = now, keyed_set(a, made[k].key);
+            if (a) made[k].actor = a, made[k].state = 2, made[k].ns = now, keyed_set(a, made[k].key), made_held_add(made[k].key, a, made[k].from, made[k].name);
             else made[k].state = 0;
             rt_log("coop: spawn sync: %s %08x for player %d %s", made[k].name, made[k].key, made[k].from, a ? "made here" : "not made");
         } else if (st > 3 || now - made[k].ns > 10000000000ull) {

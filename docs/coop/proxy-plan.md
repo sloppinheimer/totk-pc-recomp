@@ -35,6 +35,25 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   create queues' getActor (main+0x50d364, 0x61a8b4, 0x6609b4, 0x89841c), an Enemy_ with no placement hash
   ([actor+0x370]+0x88, the same in 1.4.3), sent with its key; the others make one and give it that key. The test
   spawn claims its own actor and never passes the queues, so only the hand-over and the hash were checked.
+- **Written, not run in a game yet: what a game holds for the others is let go of 1000 m from every player**
+  (2026-11-07; runtime/coop_far.c; `TOTK_COOP_FAR=0` off, `TOTK_COOP_FAR_M` another distance). TotK Online's server
+  disposes of a synced actor 1000 m from every player (actorAutoDisposeDistance). Its client deletes a runtime-made
+  copy and only lets go of a map actor. Puppets are never disposed. Here each game checks against its own Link, each
+  remote Link here and each other player's last NetState place:
+  - copies made here by the spawn sync for another game (coop_world.c spawn_take): kept in `made_held` after made[]
+    lets go of them, and deleted with the game's request delete by `far_sweep` once a second (log `coop: far: <name>
+    <key> made here for player <n> is <d> m from every player: deleted`);
+  - copies of another player's objects (coop_players.c arrow_copies): a live one deleted, a wanted one not made while
+    far (`coop: far: slot <n>: the copy of ...`);
+  - map enemies, horses and animals followed for another game (coop_world.c peer_one): owner set to this game, frozen
+    puppet released, not sent; never deleted (`coop: far: ... not followed`);
+  - placed objects another player moves (coop_players.c force_to): not moved; never deleted;
+  - stand-ins (co-op Link, PlayerPuppet) and this game's own actors, runtime-made or placed: never.
+  Test: tools/coop/far_3rd.txt (command and log lines). `TOTK_COOP_TEST_FAR_COPY` makes a copy through spawn_take as
+  if the other game had sent a SPAWN. The test spawn passes no create queue, so it gives no spawn-sync copy.
+  `TOTK_COOP_TEST_FAR` puts the Link 1100 m away with ForceSetMatrix. Unverified: the whole of it in a game; whether
+  the request delete takes a copy that is far out and still loaded; that 1000 m is past where the game unloads
+  copies on its own (if it unloads them first, the sweep only forgets them).
 - **Done: map enemies keyed by their placement** (coop_world.c, actor_key; `TOTK_COOP_PLACE_KEY=0` the old way). An
   enemy placed in the map is keyed by its placement hash with its name, as TotK Online's (objects keep name and place); one made at run time keeps
   the name and the place this game first saw it. Suite: every case pairs its enemies and objects as before.
@@ -136,7 +155,7 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     replays them in the owner's game. Here the copy's own attack (its weapon or body) hurts this Link in this game,
     and the owner's enemy's hit on the stand-in there is taken out, so each hit still counts once;
   - the actors TotK Online syncs by name (Animal, Korok, GameRomHorse, Barrel, BombFruit, TBox and more): here enemies
-    and moved objects, and horses and animals (next item); chests are left out on purpose; actors past 1000 m deleted;
+    and moved objects, and horses and animals (next item); chests are left out on purpose; actors past 1000 m deleted (here coop_far.c, the "1000 m from every player" item above);
   - **horses and animals: written, not run in a game yet** (2026-11-07; runtime/coop_mounts.c, `TOTK_COOP_MOUNTS=1`
     turns it on, off by default; the native enemy model only). They go through the enemies' sync as more kinds
     (coop_world_kind): GameRomHorse* and Animal_Horse* as horses (not GameRomHorseSaddle_/Reins_), the other Animal_

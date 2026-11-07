@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "coop_far.h"
 #include "coop_game.h"
 #include "coop_mounts.h"
 #include "coop_net.h"
@@ -1678,6 +1679,16 @@ static void arrow_copies(Cpu *c, Slot *s) {
         }
     }
     for (int k = 0; k < COOP_OBJS; k++) {
+        // Far from every player (coop_far.c): a live copy is deleted and goes back to wanted; a wanted one is not made
+        // until it is nearer (TotK Online's server disposes of an actor 1000 m from every player).
+        if (s->mir[k].state == 3 && !s->mir[k].blowing && copy_alive(s, k) && coop_far_from_players(s->mir[k].pos)) {
+            rt_log("coop: far: slot %d: the copy of %s (%u) is %.0f m from every player: deleted", (int)(s - slots), s->mir[k].name,
+                   s->mir[k].id, coop_far_nearest(s->mir[k].pos));
+            coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0), set_driven(s->mir[k].actor);
+            s->mir[k].state = 1, s->mir[k].actor = 0, s->mir[k].ticks = 0;
+            continue;
+        }
+        if (s->mir[k].state == 1 && coop_far_from_players(s->mir[k].pos)) continue;
         if (s->mir[k].state == 1 && coop_request_create(c, s->mir[k].name, s->mir[k].pos, s->mir[k].rot, s->mir[k].handle))
             s->mir[k].state = 2;
         else if (s->mir[k].state == 2) {
@@ -2437,6 +2448,12 @@ static void force_to(Cpu *c, uint64_t a, const float pos[3], const float q[4]) {
     static struct { uint64_t actor; float pos[3], rot[9]; int64_t us; } last[128];
     float p[3], ar[9], r[9];
     if (!coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(a + COOP_ACTOR_ROT, ar, 36)) return;
+    // far from every player (coop_far.c): not moved, the game's own (a placed object is never deleted for it)
+    if (coop_far_from_players(p)) {
+        static int said;
+        if (said++ < 20) rt_log("coop: far: a placed object (%llx) is %.0f m from every player: not moved", (unsigned long long)a, coop_far_nearest(p));
+        return;
+    }
     quat_mat(q, r);
     int k = 0, free = -1;
     int64_t now = frame_step_world_us();
@@ -4597,6 +4614,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
     // This player's state out, when on a relay.
     if (coop_net_on()) {
         coop_notices_tick(c, me);   // a fast travel of this Link, told to the others (coop_notices.c)
+        coop_far_test(c, me);       // TOTK_COOP_TEST_FAR (coop_far.c)
         NetState st = {0};
         coop_rd(me + COOP_ACTOR_POS, st.pos, 12), coop_rd(me + COOP_ACTOR_ROT, st.rot, 36);
         camera_frame(st.cam_fwd, st.cam_right);

@@ -1,0 +1,23 @@
+# Far copies (runtime/coop_far.c): both games on the 100% save (third in the Continue list, "In-isa Shrine"), standing
+# still. At 25 s game B gets a SPAWN as if game A had sent one (TOTK_COOP_TEST_FAR_COPY), so the spawn sync's own path
+# (coop_world.c spawn_take) makes a Bokoblin copy for player 1, 4 m in front of B's Link. (The test spawn
+# TOTK_COOP_TEST_SPAWN does not pass the create queues, so it gives no spawn-sync copy.) At 35 s of each game's world
+# time, TOTK_COOP_TEST_FAR puts each Link 1100 m east (+x) of where it stands, off the Great Sky Island (it falls from
+# there). The copy in B is then more than 1000 m from every player, so B deletes it.
+#   powershell -ExecutionPolicy Bypass -File tools\coop\run_pair.ps1 -Seconds 110 -ScriptA tools\coop\far_3rd.txt
+#     -ScriptB tools\coop\far_3rd.txt -EnvA "TOTK_COOP_TEST_FAR=35" -EnvB "TOTK_COOP_TEST_FAR=35;TOTK_COOP_TEST_FAR_COPY=25"
+# Log lines to see (grep "coop: far|spawn sync|test: far" in each totk.log; run_pair.ps1 prints only some):
+#   B: coop: test: far copy: Enemy_Bokoblin_Junior <key> as if from player 1, at <x> <y> <z>
+#   B: coop: spawn sync: Enemy_Bokoblin_Junior <key> made in player 1 game: requested here
+#   B: coop: spawn sync: Enemy_Bokoblin_Junior <key> for player 1 made here
+#   A and B: coop: test: far: this Link put from <x> <y> <z> to <x+1100> <y> <z>
+#   B, within about 1 s once both have moved: coop: far: Enemy_Bokoblin_Junior <key> made here for player 1 is
+#     1100 m (or more) from every player: deleted
+# Not to see: any "coop: far: ... deleted" in A, or one in B for an actor the spawn sync did not make. "coop: far: ...
+# not followed" lines only for enemies another game ran for this one (none expected here; a placed map enemy
+# followed for the other player and now far is let go of, not deleted).
+300 A 4
+520 DOWN 4
+580 DOWN 4
+640 A 4
+800 A 4
