@@ -4819,6 +4819,13 @@ void coop_players_tick(Cpu *c, int numpad3) {
         if (coop_standin_puppet() && s->state == LIVE && s->actor && age < 2000000000ull && coop_rd(s->actor + COOP_ACTOR_STATE, &ast, 4) &&
             ast >= 2 && ast <= 6) {
             void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, uint64_t age_ns);   // coop_world.c
+            static uint64_t y_was[COOP_MAX_PLAYERS];   // its owner's attack button down: logged (the suite's tour case)
+            uint64_t y_now = st.buttons >> 3 & 1;
+            if (y_now && !y_was[s - slots]) {
+                static int said_y;
+                if (said_y++ < 20) rt_log("coop: stand-in: slot %d swings (its owner's attack button)", (int)(s - slots));
+            }
+            y_was[s - slots] = y_now;
             void coop_anim_masks_apply(uint64_t standin, const CoopMask *in);   // coop_world.c
             coop_anim_masks_apply(s->actor, st.mask);
             coop_anim_apply(c, s->actor, st.anim, age);
@@ -5036,6 +5043,16 @@ void coop_players_tick(Cpu *c, int numpad3) {
             if (eq && coop_standin_puppet() && s->live_ticks % 6 == 0) {
                 static const uint64_t row[3] = {0, 3, 4};
                 for (int k = 0; k < 3; k++) {
+                    // An item its owner does not have: a new PlayerPuppet's EquipmentUser starts with this game's
+                    // Link's weapon, bow or shield (the tour suite case: its owner had no shield, it had this game's
+                    // Weapon_Shield_030). Made empty, as an emptied slot is (regive_gear, then let go of).
+                    uint64_t has = eq_item(eq, k);
+                    if (has && !strcmp(s->gear_want[k], GEAR_NONE)) {
+                        char hn[48];
+                        rt_log("coop: stand-in: slot %d: gear slot %d holds %s, its owner none: emptied", i, coop_gear_slot[k], coop_actor_name(has, hn, sizeof hn));
+                        regive_gear(c, eq, k, "", -1, 0, s->gear_str[k], NULL, s->att_str[k]);
+                        continue;
+                    }
                     if (!s->gear_want[k][0] || !strcmp(s->gear_want[k], GEAR_NONE)) continue;
                     int want = s->out_want >> k & 1, now = (int)(coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, eq, row[k], 0, 0) & 1);
                     if (want == now) continue;
