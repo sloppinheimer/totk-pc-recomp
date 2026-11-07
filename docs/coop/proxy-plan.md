@@ -114,7 +114,8 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     are (TotK Online's BSA list has GameRomHorse, not Animal); a horse made at run time (a stable's, a whistle's) is
     made in the other games by the spawn sync, animals only with `TOTK_COOP_MOUNTS_SPAWN=all` (an area makes its own
     in each game). A horse is no moved object then (prop_skip). Riding: this Link rides a horse when it stays 10 ticks
-    in a box above the horse's origin in its frame (|x| < 0.45, 0.6 < y < 2.2, |z| < 0.9 m; a guess,
+    in a box in the horse's frame (|x| < 0.45, -0.3 < y < 2.0, |z| < 0.9 m: a GameRomHorse01's origin is about 0.5 m
+    above its ground, a Link beside it was at -0.83 -0.5 0; the riding numbers are a guess,
     `TOTK_COOP_MOUNT_BOX=x,ylo,yhi,z`; no riding flag of 1.4.3 is known). It is sent in NetState as ride_owner
     COOP_RIDE_MOUNT (0xfe; an older game rides nothing), ride_id the horse's key, ride_off the offset; the ridden
     horse is its rider's game's and is not handed over (peer_one), and the other games put the stand-in (co-op Link
@@ -122,7 +123,11 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     passes main+0x50ad74, whether horses and animals keep a placement hash at +0x370 as enemies do, the box, how the
     copy and a stand-in on it push each other, and a called horse's look (its copy is made by name: mane, saddle and
     reins are the default). Test: suite case `mount` (tools/coop/mount_horse_3rd.txt; the lines it wants are in
-    run_suite.ps1, `TOTK_COOP_TEST_MOUNT=1` logs the Link's place in the nearest horse's frame each second);
+    run_suite.ps1, `TOTK_COOP_TEST_MOUNT=1` logs the Link's place in the nearest horse's frame each second). First
+    run (2026-11-07): the horse synced (one key in both games, B's copy run by A's game, its action requests
+    replayed, later handed to B's), but the Link never got on: walking up, it reached the horse's side only after the
+    A presses, and the horse wandered off. So `TOTK_COOP_TEST_MOUNT_PUT=30:1` now puts player 1's Link beside the
+    horse, facing it, at 30, 32 and 34 s, and the script presses A just after each; not run yet;
   - shared world progress, a design choice (drop-in saves here): TotK Online's server shares the game flags, the
     per-object flags (opened chests, Koroks found, broken objects), event flags at once, and shrine clears with each
     player's blessings worked out; life, the pouch and horses stay each player's. Here each game keeps its own;
