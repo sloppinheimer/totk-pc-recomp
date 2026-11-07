@@ -1,8 +1,8 @@
 # Title screen to the first save slot (tools/input/load_save.txt), then once in the world: wait 8 s (the autospawn
 # comes at about 5 s), walk forward 6 s, turn right while walking 4 s.
-300 A 4
-520 A 4
+480 A 4
 700 A 4
-900 A 4
+880 A 4
+1080 A 4
 @8000 LSTICK 0 32767 6000
 @14000 LSTICK 32767 20000 4000

@@ -1,11 +1,11 @@
 # The 100% save (third in the Continue list), nothing equipped: at 14 s equip the first weapon, then (L) the first
 # shield from the inventory, then nothing, the sword on the back. Beside an enemy that has not noticed this Link, the
 # game shows the Sneakstrike prompt; beside one that has, it does not (an enemy copy's awareness, coop_world.c).
-300 A 4
-520 DOWN 4
-580 DOWN 4
-640 A 4
-800 A 4
+480 A 4
+700 DOWN 4
+760 DOWN 4
+820 A 4
+980 A 4
 @14000 PLUS 150
 @15500 A 150
 @16300 A 150

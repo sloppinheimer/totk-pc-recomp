@@ -18,8 +18,8 @@
 #   B: coop: notice: A travelled to Ukouh Shrine
 #   A, about 5 s after B is closed: coop: notice: B left
 #   each: coop: test: notice <n> (<text>) saved as ...\notice-<n>.png: the line near the top of the frame
-300 A 4
-520 DOWN 4
-580 DOWN 4
-640 A 4
-800 A 4
+480 A 4
+700 DOWN 4
+760 DOWN 4
+820 A 4
+980 A 4

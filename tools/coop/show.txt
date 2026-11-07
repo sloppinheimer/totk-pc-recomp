@@ -1,9 +1,9 @@
 # Rito Village Sage save (first in the Continue list), on the tower platform: walk forward 1.2 s (in front of the
 # other game's camera), then swing the sword twice, raise the shield 2 s, swing again, jump (puppet mode tests).
-300 A 4
-520 A 4
+480 A 4
 700 A 4
-900 A 4
+880 A 4
+1080 A 4
 @14000 LSTICK 0 32767 1200
 @16000 Y 150
 @17000 Y 150

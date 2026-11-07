@@ -2,10 +2,10 @@
 # 13 m from game B's Link, short of the island's edge, where walk_far_3rd.txt's 9 s once made A fall and reload),
 # then at 45 s walk forward 2.5 s more, into the Bokoblin game B made at 40 s 3 m in front of A's stand-in, facing it:
 # the stand-in comes into its view as the Link does in walk_late_3rd.txt (the control with TOTK_COOP_TEST_SPAWN_AT=self).
-300 A 4
-520 DOWN 4
-580 DOWN 4
-640 A 4
-800 A 4
+480 A 4
+700 DOWN 4
+760 DOWN 4
+820 A 4
+980 A 4
 @24000 LSTICK 0 32767 6000
 @45000 LSTICK 0 32767 2500

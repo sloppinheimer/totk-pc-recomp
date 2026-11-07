@@ -1,9 +1,9 @@
 # Rito Village Sage save (first in the Continue list): two shield surfs on the tower platform (hold ZL, jump X,
 # A in the air), at 15 s and 35 s into the world.
-300 A 4
-520 A 4
+480 A 4
 700 A 4
-900 A 4
+880 A 4
+1080 A 4
 @14000 ZL 3000
 @15000 X 150
 @15400 A 150

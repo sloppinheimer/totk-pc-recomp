@@ -5,11 +5,11 @@
 # A is pressed 0.4, 1.0 and 1.6 s after each (mount; walking up to it did not reach the side of a horse that
 # wanders, 2026-11-07). Then ride forward 5 s and stay on until the end (this Link's ride, and the other game's
 # stand-in on its copy of the horse).
-300 A 4
-520 DOWN 4
-580 DOWN 4
-640 A 4
-800 A 4
+480 A 4
+700 DOWN 4
+760 DOWN 4
+820 A 4
+980 A 4
 @30400 A 150
 @31000 A 150
 @31600 A 150

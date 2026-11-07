@@ -1,10 +1,10 @@
 # The 100% save (third in the Continue list): at 14 s into the world walk up the stairs for 1.2 s and stand on them
 # for 10 s, then walk on up past the shrine for 8 s (in front of the other game's camera when it plays idle_3rd.txt:
 # a co-op Link standing on stairs, then far away; proxy tests).
-300 A 4
-520 DOWN 4
-580 DOWN 4
-640 A 4
-800 A 4
+480 A 4
+700 DOWN 4
+760 DOWN 4
+820 A 4
+980 A 4
 @14000 LSTICK 0 32767 1200
 @26000 LSTICK 0 32767 8000

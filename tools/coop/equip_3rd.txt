@@ -1,11 +1,11 @@
 # The 100% save (third in the Continue list), nothing equipped: at 14 s open the inventory (weapons tab), equip the
 # first weapon (A, A), close; at 20 s walk up the stairs for 0.8 s, into the view of the other game (idle_3rd.txt).
 # A real menu equip for the gear sync test (proxy mode).
-300 A 4
-520 DOWN 4
-580 DOWN 4
-640 A 4
-800 A 4
+480 A 4
+700 DOWN 4
+760 DOWN 4
+820 A 4
+980 A 4
 @14000 PLUS 150
 @15500 A 150
 @16300 A 150

@@ -1,9 +1,9 @@
 # The second save (Paraglider + All Towers), Lookout Landing at night after the Blood Moon: talk to Purah (A, then A
 # through the lines), then run left and forward toward the moat with jumps (swimming if it gets there).
-300 A 4
-520 DOWN 4
-640 A 4
-800 A 4
+480 A 4
+700 DOWN 4
+820 A 4
+980 A 4
 @40000 A 150
 @42000 A 150
 @43500 A 150

@@ -1,7 +1,7 @@
 # Rito Village Sage save (first in the Continue list): from 14 s run forward off the tower platform's edge and fall
 # (no paraglider): a fall that kills this Link.
-300 A 4
-520 A 4
+480 A 4
 700 A 4
-900 A 4
+880 A 4
+1080 A 4
 @14000 LSTICK 0 32767 8000

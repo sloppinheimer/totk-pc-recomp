@@ -1,11 +1,11 @@
 # The 100% save (third in the Continue list), nothing equipped: at 14 s equip the first bow (inventory, L twice to
 # the bows tab, A, A), walk up the stairs into the other game's view (it plays idle_3rd.txt), turn back towards it,
 # then at 24 s, 28 s and 32 s draw the bow (hold ZR 2 s) and let go (the arrow flies). For syncing arrows.
-300 A 4
-520 DOWN 4
-580 DOWN 4
-640 A 4
-800 A 4
+480 A 4
+700 DOWN 4
+760 DOWN 4
+820 A 4
+980 A 4
 @14000 PLUS 150
 @15000 L 150
 @15800 L 150

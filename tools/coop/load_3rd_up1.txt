@@ -1,9 +1,9 @@
 # load_3rd.txt, then at 50 s into the world (after the load) walk up the stairs for 0.8 s: in front of the other
 # game's camera when it plays load_3rd_up2.txt (the second-save gear test).
-300 A 4
-520 A 4
+480 A 4
 700 A 4
-900 A 4
+880 A 4
+1080 A 4
 @14000 PLUS 150
 @15000 R 150
 @15800 R 150

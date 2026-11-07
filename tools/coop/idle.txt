@@ -1,5 +1,5 @@
 # Title screen to the first save slot (tools/input/load_save.txt); then nothing: player 1 stands still.
-300 A 4
-520 A 4
+480 A 4
 700 A 4
-900 A 4
+880 A 4
+1080 A 4

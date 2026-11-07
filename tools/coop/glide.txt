@@ -1,9 +1,9 @@
 # Rito Village Sage save (first in the Continue list): walk forward over the tower platform's rail, open the
 # paraglider in the air (X), keep gliding forward.
-300 A 4
-520 A 4
+480 A 4
 700 A 4
-900 A 4
+880 A 4
+1080 A 4
 @6000 LSTICK 0 32767 4000
 @9000 X 150
 @9600 X 150

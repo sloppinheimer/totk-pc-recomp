@@ -2,11 +2,11 @@
 # shield from the inventory, swing once at 23 s (the sword drawn: with it sheathed and no enemy aware of the Link,
 # ZL only locks on and the shield stays on the back, as in the game that follows the enemy), then at once hold the shield up
 # (ZL) from 23.4 s to 130 s, standing. For an enemy's hits on a guarding Link.
-300 A 4
-520 DOWN 4
-580 DOWN 4
-640 A 4
-800 A 4
+480 A 4
+700 DOWN 4
+760 DOWN 4
+820 A 4
+980 A 4
 @14000 PLUS 150
 @15500 A 150
 @16300 A 150

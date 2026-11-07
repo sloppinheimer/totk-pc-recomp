@@ -2,11 +2,11 @@
 # shield, then (L) the first bow from the inventory; walk up the stairs into the other game's view; raise the shield
 # (ZL), swing (Y), put both away (B), then aim the bow (ZR). For the proxy's items in hand (it held its shield with
 # the bow in a play session, 2026-11-05).
-300 A 4
-520 DOWN 4
-580 DOWN 4
-640 A 4
-800 A 4
+480 A 4
+700 DOWN 4
+760 DOWN 4
+820 A 4
+980 A 4
 @14000 PLUS 150
 @15500 A 150
 @16300 A 150

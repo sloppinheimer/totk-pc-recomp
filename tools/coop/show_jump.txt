@@ -1,10 +1,10 @@
 # Rito Village Sage save (first in the Continue list), on the tower platform: walk forward 1.2 s (in front of the
 # other game's camera), then jump four times on the spot, each about 0.4 s before a whole world second (screenshots
 # at w17-20:1 land near the top of each jump; puppet mode tests).
-300 A 4
-520 A 4
+480 A 4
 700 A 4
-900 A 4
+880 A 4
+1080 A 4
 @14000 LSTICK 0 32767 1200
 @16600 X 150
 @17600 X 150

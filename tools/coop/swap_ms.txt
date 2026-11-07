@@ -1,9 +1,9 @@
 # Title to the first save slot, then in the world: open the inventory (weapons tab, cursor on the equipped branch),
 # move left to the Decayed Master Sword, A twice (Equip), close.
-300 A 4
-520 A 4
+480 A 4
 700 A 4
-900 A 4
+880 A 4
+1080 A 4
 @6000 PLUS 150
 @7500 LEFT 150
 @8200 A 150
