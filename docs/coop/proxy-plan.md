@@ -31,6 +31,10 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   player's co-op Link in the owner's game lands the hit there. Pair test (suite case `hits`): B's sword on its copy of
   A's blue Bokoblin was taken out, and the Bokoblin died in A's game with no hit sent from B. Arrows and bombs are not
   taken out: their damage still goes to the owner as lost life, as the co-op Link does not shoot in the owner's game.
+- **Same as the mod: enemies do not fight the stand-in.** TotK Online does nothing to make enemies target its
+  PlayerPuppet (category Enemy, affiliation Enemy); each enemy runs in the nearest player's game. Here that is the
+  hand-over (coop_world.c handover_to). Making enemies fight the stand-in natively was tried and left off as a test
+  (`make_puppet_pack.py --target-fix`; "Enemies and the stand-in" below). the tester's call, 2026-11-07: hand-over.
 - **Done, not seen end to end: enemies made at run time** (a night's Stalkoblins) are made in the other games: the
   create queues' getActor (main+0x50d364, 0x61a8b4, 0x6609b4, 0x89841c), an Enemy_ with no placement hash
   ([actor+0x370]+0x88, the same in 1.4.3), sent with its key; the others make one and give it that key. The test
@@ -162,7 +166,6 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     TotK Online has the stand-in shoot because it syncs no arrows; here the owner's arrows (nocked and flying) are
     sent as objects and their copies follow them (the `fuse` suite case), placed on the PlayerPuppet's bow after its
     model phase as on the old co-op Link, and an arrow's damage on a copy goes to its owner as lost life;
-  - enemies taking the stand-in for a player: see "Enemies and the stand-in" below (written, not run);
   - the stand-in's paraglider and Ultrahand arm as actors of their own tied to it (Parasail, PlayerRaulHand, by
     requestRegisterRelation), with the glider's colour and open state; the glider goes as a moved object's copy now,
     only while open, and is placed on the PlayerPuppet after its model phase (2026-11-07: the copy was made in the
@@ -294,7 +297,14 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     not throw or bash in the owner's game, so that hit is lost (code review, a guess);
   - the Gloom Hands: left out, as TotK Online leaves them out.
 
-## Enemies and the stand-in (2026-11-07, branch `claude/coop-standin-target`; not run)
+## Enemies and the stand-in (2026-11-07; stopped, the hand-over does it)
+- **Outcome.** The default pack is as before and as the mod's: the Player's resident emitter, no DefaultAffiliation
+  in the GameActorInfo row, so enemies ignore the stand-in, and the hand-over gives each enemy to the nearest
+  player's game. `make_puppet_pack.py --target-fix` builds the test pack: the emitter not resident and the Player's
+  DefaultAffiliation. With it a Bokoblin notices the stand-in (c882) but fights this game's own Link, 30 m off,
+  instead. Where it takes "the player" from is not found. The redirect of the perception manager's player field
+  (TOTK_COOP_ENEMY_REDIRECT=1, main+0x45b930) reached one check in a whole run, so that hook is not on the target's
+  path. It stays off. The runs that led here follow.
 - **The "is a player" hook is not the target check.** 1.4.3 main+0x1d1fc70 is the right match for TotK Online's
   1.2.1 main+0x1736dec (the same code, side by side: the actor from a link, its component +0x120, its name looked up
   in a table [main+0x39601e8] through main+0xd62b58). Its one caller, main+0x1d1f9e8, is in the function that loads
@@ -308,7 +318,7 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   sensor sublayer. A Bokoblin's TargetAffiliations hold "Player", and the stand-in has the Player's
   AffiliationParam (DefaultAffiliation Player). Evidence: the files and the param reader main+0x1abe6e0
   (IsResidentEmitter, SubLayerSensor). Where the game reads the flag is not found. Likely, not proven.
-- **Fix:** tools/coop/make_puppet_pack.py gives the stand-in its own emitter param (the Player's with
+- **Tried** (now `--target-fix`): tools/coop/make_puppet_pack.py gives the stand-in its own emitter param (the Player's with
   IsResidentEmitter false, `Component/PerceptionEmitterParam/PlayerPuppet...`). `--resident-emitter` builds the old
   pack (a control); `--emitter-sublayer PerceptionEnemy` tries the enemies' sublayer if PerceptionPlayer is not
   sensed. No runtime change is needed for the fix itself.
@@ -374,6 +384,8 @@ un_pair.ps1 -Seconds 80 -ScriptA
   off by default since it changed nothing for a second Player, whose resident emitter was never noticed). Expect
   "coop: perception: N checks taken to a co-op Link so far" in B's log and the foe staying within a few m of the
   stand-in in c082.
+  Redirect run: the same with TOTK_COOP_ENEMY_REDIRECT=1. "1 checks taken to a co-op Link" once, no later count;
+  the same behaviour (c882 for 3 s, then fighting toward B's Link). Stopped here (see Outcome).
   Unverified: that 20 m keeps B's own Link out of the Bokoblin's notice; the earlier note saw one stay unaware
   with the Link 44 m off.
 - Not done: TotK Online's four crash-guard patches in the bow function family (1.4.3 near main+0x1d1f960, 0x1d1f9e4,

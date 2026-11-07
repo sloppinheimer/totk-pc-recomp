@@ -7,8 +7,9 @@ in-hand calls; nothing in the actor fights them (docs/coop/proxy-plan.md, "Parit
 
 This pack is made here from the player's own Player.pack.zs: every member kept, plus
 Actor/PlayerPuppet.engine__actor__ActorParam.bgyml, the Player's actor parameters with the category Enemy (as the
-mod's) and without the components that make a Player act or that only one Link may have (PLAYER_ONLY below), and
-Component/PerceptionEmitterParam/PlayerPuppet...bgyml, the Player's perception emitter made not resident (EMITTER below).
+mod's) and without the components that make a Player act or that only one Link may have (PLAYER_ONLY below).
+Enemies do not fight the stand-in, as in TotK Online: each enemy runs in the game of the player nearest it (the
+hand-over, coop_world.c). --target-fix (a test, off) makes enemies notice it: see EMITTER below.
 
     .venv\\Scripts\\python tools\\coop\\make_puppet_pack.py [--version v143]
 
@@ -48,14 +49,17 @@ ap.add_argument('--fields', default='InstanceHeapSize,DisplayRadius,LoadRadius',
 ap.add_argument('--keep', default='',
                 help="(a test) components of PLAYER_ONLY kept on the stand-in after all, comma separated, e.g. AttentionReceiverRef")
 ap.add_argument('--drop', default='', help='(a test) more components of the actor parameters left out, comma separated')
-ap.add_argument('--game-fields', default='DefaultAffiliation',
-                help="the fields of the Player's GameActorInfo row put on the stand-in's (comma separated; '' none)")
+ap.add_argument('--target-fix', action='store_true',
+                help="(a test) the stand-in's perception emitter not resident and the Player's DefaultAffiliation in its "
+                     "GameActorInfo row: enemies notice it, but then fight this game's own Link (EMITTER below)")
+ap.add_argument('--game-fields', default=None,
+                help="the fields of the Player's GameActorInfo row put on the stand-in's (comma separated; default "
+                     "DefaultAffiliation with --target-fix, else none)")
 ap.add_argument('--category', default='Enemy', help="(a test) the stand-in's actor category (TotK Online's: Enemy)")
-ap.add_argument('--resident-emitter', action='store_true',
-                help="(a test, the old pack) keep the Player's perception emitter as it is: resident, which enemies ignore")
 ap.add_argument('--emitter-sublayer', default='',
-                help="(a test) the stand-in emitter's SubLayerSensor instead of the Player's PerceptionPlayer, e.g. PerceptionEnemy")
+                help="(a test, with --target-fix) the stand-in emitter's SubLayerSensor instead of the Player's PerceptionPlayer")
 args = ap.parse_args()
+if args.game_fields is None: args.game_fields = 'DefaultAffiliation' if args.target_fix else ''
 src = root / 'build' / 'extracted' / args.version / 'romfs'
 out_dir = args.out or root / 'build' / args.version / 'romfs-patches'
 files = {f['path']: f for f in json.load(open(src / 'index.json'))['files']}
@@ -84,15 +88,15 @@ gone = [k for k in tuple(x for x in PLAYER_ONLY if x not in keep) + tuple(x for 
 w = oead.SarcWriter(endian=oead.Endianness.Little)
 for f in pack.get_files():
     w.files[f.name] = bytes(f.data)
-# The perception emitter. The Player's (and a Sage's) is resident (IsResidentEmitter): the perception manager keeps
-# the one player emitter in a field of its own ([main+0x3a6ea80] +0x58, docs/coop/re-notes.md "Enemy targets: not
-# found") that enemies check instead of sensing it, so a second actor with that emitter is never noticed (a second
-# Player, a pigeon with the Player's or a Sage's emitter: proxy-plan.md). Enemies and horses have resident false (the
-# enemies' EnemyCommon) and are sensed through their emitter's sensor sublayer. The stand-in gets the Player's
-# emitter with resident false, so enemies sense it as they do any other actor and pick it by its affiliation (the
-# Player's "Player", which a Bokoblin's TargetAffiliations hold).
+# The perception emitter (--target-fix only). The Player's (and a Sage's) is resident (IsResidentEmitter), and an
+# enemy never notices a second actor with that emitter (a second Player, a pigeon with the Player's or a Sage's
+# emitter: proxy-plan.md). Enemies and horses have resident false (EnemyCommon) and are sensed through their emitter's
+# sensor sublayer. With --target-fix the stand-in gets the Player's emitter with resident false, and its GameActorInfo
+# row the Player's DefaultAffiliation: a Bokoblin 3 m away then notices it (awareness c882), but fights this game's
+# own Link 30 m off, as if "the player" were always that one (docs/coop/proxy-plan.md "Enemies and the stand-in",
+# 2026-11-07). So it is off: an enemy that saw a stand-in would run at this game's Link.
 EMITTER = f'Component/PerceptionEmitterParam/{NAME}.game__component__PerceptionEmitterParam.bgyml'
-if not args.resident_emitter:
+if args.target_fix:
     ref = param['Components']['PerceptionEmitterRef']
     em = byml.read(bytes(pack.get_file(ref.lstrip('?')).data))
     assert em.get('IsResidentEmitter') is True, em
@@ -172,4 +176,4 @@ for path, (z, orig) in outputs.items():
     lines.append(f'{path}\t{len(z)}\t{hashlib.sha256(z).hexdigest()}\t{orig}')
 man.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 print(json.dumps(dict(status='pass', files=list(outputs), members=len(w.files), left_out=gone,
-                      emitter='resident (Player)' if args.resident_emitter else EMITTER)))
+                      emitter=EMITTER if args.target_fix else 'resident (Player)', game_fields=args.game_fields)))

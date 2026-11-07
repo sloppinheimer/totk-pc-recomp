@@ -867,4 +867,15 @@ the shot call), and do the same to the copy; or show the copy by another actor t
 - Reading: a resident emitter is the manager's one player (or Sage) emitter that receivers check directly
   (main+0x45b930 takes the manager +0x58), so a second resident one is never seen. A non-resident one is sensed.
   Confidence: likely; the reader of the flag in code is not found (a scan for loads of +0x80 next to +0x78 found
-  none). The pair test above decides it.
+  none).
+- Tested (proxy-plan "Enemies and the stand-in"): with the emitter not resident and DefaultAffiliation Player in the
+  stand-in's GameActorInfo row, a Bokoblin 3 m from it shows c882 c c 0 0 4 for about 3 s, a state it never shows for
+  this game's Link. Then it fights this game's Link 30 m off (c082 c c 1 1). Either alone: no notice. Controls: the
+  Link 3 m in front of a Bokoblin facing it: c082 within 2 s. So the perception half works and the target is
+  then taken as "the player", this game's Link. The source of that is not found. main+0x45b930 (the receiver's check
+  of the manager's player field) runs about once a run for it, so it is not that.
+- GameActorInfo (RSDB) holds DefaultAffiliation for 1356 actors (Player: "Player"; 9 rows have it). A Bokoblin's
+  PerceptionReceiverParam: DefaultFilter PerceptionFilterEnemy, IsReceiveFromSensorWorld true,
+  IsReceiveResidentEmitter false. Awareness words (component +0x158 +0x24, +0x58, +0x60, +0x64, +0x70, +0x84):
+  c182 12 12 0 0 28 unaware; "1 0 5c" / "1 0 f3" spells while it has not seen him; c0a2 c c; c082 c c 1 1 fighting
+  (+0x84 the action).
