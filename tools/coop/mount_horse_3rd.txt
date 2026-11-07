@@ -1,6 +1,7 @@
 # The 100% save (third in the Continue list), then a horse to ride: a horse spawned at 26 s in front of the Link
 # (TOTK_COOP_TEST_SPAWN=GameRomHorse01@26 at TOTK_COOP_TEST_SPAWN_AT, run_suite.ps1 case "mount"). The Link is put
-# beside it, facing it, at 30, 32 and 34 s while it rides nothing (TOTK_COOP_TEST_MOUNT_PUT=30:1, player 1 only, coop_mounts.c), and
+# on its right by its saddle, facing it, at 30, 32 and 34 s while it rides nothing (TOTK_COOP_TEST_MOUNT_PUT=30:1,
+# player 1 only, coop_mounts.c), and
 # A is pressed 0.4, 1.0 and 1.6 s after each (mount; walking up to it did not reach the side of a horse that
 # wanders, 2026-11-07). Then ride forward 5 s and stay on until the end (this Link's ride, and the other game's
 # stand-in on its copy of the horse).

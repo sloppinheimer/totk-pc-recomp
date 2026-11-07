@@ -138,9 +138,10 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     are (TotK Online's BSA list has GameRomHorse, not Animal); a horse made at run time (a stable's, a whistle's) is
     made in the other games by the spawn sync, animals only with `TOTK_COOP_MOUNTS_SPAWN=all` (an area makes its own
     in each game). A horse is no moved object then (prop_skip). Riding: this Link rides a horse when it stays 10 ticks
-    in a box in the horse's frame (|x| < 0.45, -0.3 < y < 2.0, |z| < 0.9 m: a GameRomHorse01's origin is about 0.5 m
-    above its ground, a Link beside it was at -0.83 -0.5 0; the riding numbers are a guess,
-    `TOTK_COOP_MOUNT_BOX=x,ylo,yhi,z`; no riding flag of 1.4.3 is known). It is sent in NetState as ride_owner
+    in a box in the horse's frame (|x| < 0.45, -0.3 < y < 2.0, -0.4 < z < 1.5 m; the horse faces its +z, rotation
+    column 2, and its origin is at its hindquarters about 0.5 m above its ground: a Link beside it was at -0.83 -0.5
+    0, by its rump in a frame; the riding numbers are a guess, `TOTK_COOP_MOUNT_BOX=x,ylo,yhi,zlo,zhi`; no riding flag
+    of 1.4.3 is known). It is sent in NetState as ride_owner
     COOP_RIDE_MOUNT (0xfe; an older game rides nothing), ride_id the horse's key, ride_off the offset; the ridden
     horse is its rider's game's and is not handed over (peer_one), and the other games put the stand-in (co-op Link
     or PlayerPuppet, through owner_matrix) at that offset on their copy of the horse. Not known: whether a horse
@@ -150,8 +151,10 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     run_suite.ps1, `TOTK_COOP_TEST_MOUNT=1` logs the Link's place in the nearest horse's frame each second). First
     run (2026-11-07): the horse synced (one key in both games, B's copy run by A's game, its action requests
     replayed, later handed to B's), but the Link never got on: walking up, it reached the horse's side only after the
-    A presses, and the horse wandered off. So `TOTK_COOP_TEST_MOUNT_PUT=30:1` now puts player 1's Link beside the
-    horse, facing it, at 30, 32 and 34 s, and the script presses A just after each; not run yet;
+    A presses. So `TOTK_COOP_TEST_MOUNT_PUT=30:1` puts player 1's Link 0.9 m to the horse's right, facing it, at 30,
+    32 and 34 s, and the script presses A just after each. Second run: put and facing the horse as meant, but at its
+    origin, which is by its rump, and no Mount prompt showed. The puts now go 0.7, 0.4 and 1.0 m forward of the
+    origin, by the saddle; not run yet;
   - shared world progress beyond the bools and per-object flags (below): numbers (Ints, Enums: shrine states, quest
     counters), arrays and strings, shrine clears with each player's blessings worked out, and catching a player up on
     what the others did before they joined;
