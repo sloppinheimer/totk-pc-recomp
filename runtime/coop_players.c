@@ -647,8 +647,9 @@ static uint64_t body_skeleton(uint64_t actor) {
     for (int k = 0; k < 8 && sk; k++) sk = coop_rd_ptr(sk + path[k]);
     return sk;
 }
-static int proxied(const Slot *s) {
-    return coop_proxy_mode() && s->source == SRC_NET && s->state == LIVE && s->have_want && s->live_ticks > PROXY_WARMUP_TICKS &&
+int coop_standin_puppet(void);
+static int proxied(const Slot *s) {   // (never a PlayerPuppet stand-in: its gear is made once, nothing thaws it)
+    return coop_proxy_mode() && !coop_standin_puppet() && s->source == SRC_NET && s->state == LIVE && s->have_want && s->live_ticks > PROXY_WARMUP_TICKS &&
            coop_puppet_pose_obj(body_skeleton(s->actor));
 }
 static int ride_place(const Slot *s, float out[3]);   // the owner rides an object: where, here
@@ -4672,7 +4673,9 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 host_weather = -1, host_far = 1;
         }
         if (!s && !(s = slot_new(SRC_NET, id))) continue;
-        if (coop_standin_puppet() && s->state == LIVE && s->actor && age < 2000000000ull) {
+        int32_t ast = 0;   // (a live actor: one going away, or another at its address, gets no call; code review)
+        if (coop_standin_puppet() && s->state == LIVE && s->actor && age < 2000000000ull && coop_rd(s->actor + COOP_ACTOR_STATE, &ast, 4) &&
+            ast >= 2 && ast <= 6) {
             void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, uint64_t age_ns);   // coop_world.c
             coop_anim_apply(c, s->actor, st.anim, age);
         }
@@ -4879,7 +4882,9 @@ void coop_players_tick(Cpu *c, int numpad3) {
             // Puppet mode: it gets no input, so it never draws an item itself. The EquipmentUser's per-slot byte
             // +0x4620 (0 weapon, 3 bow, 4 shield) bit 1 is what main+0x3e322c also reads as "in hand"; set while the
             // owner holds that item, the item goes to the puppet's hand (checked with the sword, 2026-11-05).
-            if (eq && coop_puppet_mode()) {
+            // (not on a PlayerPuppet stand-in: its in-hand calls above do it the game's way, and with the bit already
+            // set here they never ran; code review, 2026-11-07)
+            if (eq && coop_puppet_mode() && !coop_standin_puppet()) {
                 static const int slot_of[3] = {0, 3, 4};
                 for (int k = 0; k < 3; k++) {
                     uint8_t *f = (uint8_t *)(uintptr_t)(eq + 0x4620 + slot_of[k]);

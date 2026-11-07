@@ -149,7 +149,9 @@ static uint32_t enemy_key(const char *name, const float home[3]) {
 // An actor placed in the map has its placement's hash, [actor+0x370]+0x88 (the same in 1.2.1 and 1.4.3, and the
 // same actor's in both games; TOTK_COOP_TEST_ACTORDUMP); 0 or all ones for one made at run time. TotK Online keys map
 // actors by it (read for behaviour only): it holds when the actor has moved before a game first sees it, and two of
-// one name placed half a metre apart get two keys. Folded with the name to 32 bits; 0: none.
+// one name placed half a metre apart get two keys. Folded with the name to 32 bits; 0: none. Enemies only
+// (enemy_of): the objects of coop_actors_keyed and coop_actors_all keep the name and place, as the hash was checked
+// on enemies alone, and an actor whose +0x370 is something else would be keyed apart in each game (code review).
 #define PLACE_HASH_PTR 0x370
 #define PLACE_HASH 0x88
 static uint64_t place_hash(uint64_t a) {
@@ -191,7 +193,7 @@ void coop_actors_keyed(void (*fn)(uint64_t actor, const char *name, uint32_t key
             atomic_store_explicit(&seen[i].home_ok, 1, memory_order_release);
         }
         if (first_of[i] != a) first_of[i] = a, first = 1;
-        fn(a, nm, actor_key(a, nm, seen[i].home), first, arg);
+        fn(a, nm, enemy_key(nm, seen[i].home), first, arg);
     }
 }
 
@@ -233,7 +235,7 @@ void coop_actors_all(void (*fn)(uint64_t actor, const char *name, uint32_t key, 
         float home[3];
         if (!coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6) continue;
         if (!seen_home(a, home) && !coop_rd(a + COOP_ACTOR_POS, home, 12)) continue;
-        fn(a, nm, actor_key(a, nm, home), arg);
+        fn(a, nm, enemy_key(nm, home), arg);
     }
 }
 
@@ -2388,8 +2390,12 @@ static void contacts_filter(uint64_t dc) {
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_CONTACT_FILTER"); on = !(e && *e == '0'); }
     if (!on || !enemy_native() || !coop_net_on()) return;
     uint64_t a = coop_rd_ptr(dc + 0x198), l, base;
-    int32_t cnt = 0;
-    if (!ct_is_copy(a) || !(l = contact_list(dc)) || !coop_rd(l + 0x18, &cnt, 4) || cnt <= 0 || cnt > 64 || !(base = coop_rd_ptr(l + 0x10))) return;
+    int32_t cnt = 0, cap = 0;
+    // (the list first: it is empty in most hit updates, and the copy check reads more; the count clamped to the
+    // capacity as contact_send does; code review, 2026-11-07)
+    if (!(l = contact_list(dc)) || !coop_rd(l + 0x18, &cnt, 4) || cnt <= 0 || !coop_rd(l + 8, &cap, 4) || cap <= 0) return;
+    if (cnt > cap) cnt = cap;
+    if (cnt > 64 || !(base = coop_rd_ptr(l + 0x10)) || !ct_is_copy(a)) return;
     int out = 0, keep = 0;
     for (int k = 0; k < cnt; k++) {
         uint64_t e = base + (uint64_t)k * CONTACT_SZ, r1 = coop_rd_ptr(e + 0x68), r2 = coop_rd_ptr(e + 0x80);

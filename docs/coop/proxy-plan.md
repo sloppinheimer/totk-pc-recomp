@@ -35,10 +35,13 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   create queues' getActor (main+0x50d364, 0x61a8b4, 0x6609b4, 0x89841c), an Enemy_ with no placement hash
   ([actor+0x370]+0x88, the same in 1.4.3), sent with its key; the others make one and give it that key. The test
   spawn claims its own actor and never passes the queues, so only the hand-over and the hash were checked.
-- **Done: map actors keyed by their placement** (coop_world.c, actor_key; `TOTK_COOP_PLACE_KEY=0` the old way). An
-  actor placed in the map is keyed by its placement hash with its name, as TotK Online's; one made at run time keeps
-  the name and the place this game first saw it. Suite: every case pairs its enemies and objects as before (one run of
-  `handover` had its copy 2.9 m off its owner's for 14 s; it passed when run again).
+- **Done: map enemies keyed by their placement** (coop_world.c, actor_key; `TOTK_COOP_PLACE_KEY=0` the old way). An
+  enemy placed in the map is keyed by its placement hash with its name, as TotK Online's (objects keep name and place); one made at run time keeps
+  the name and the place this game first saw it. Suite: every case pairs its enemies and objects as before.
+- **Open: `handover` and `hits` fail their audit in some runs since these changes** (their wanted lines pass; last
+  run: 3 snapshots each of an enemy over 2 m from its owner. One earlier run: the copy in A, whose Link walked 40 m off,
+  stays 3 to 4 m from B's Bokoblin for 13 s). Likely the copy is beyond A's update range so it is not eased, which
+  would not be new; not checked against the commit before.
 - **Tried, off: in hand by the game's calls** (setEquipmentInHand 0x4f5700 / removeEquipmentInHand 0x4f5194,
   `TOTK_COOP_GEAR_INHAND=1`). On our co-op Link, whose own update runs in bursts, the sword sat on its back in more
   frames than when made again. TotK Online's stand-in has no AI and replays its owner's animation clips; that is
@@ -52,14 +55,20 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   them on the stand-in every tick with the play TotK Online calls (1.4.3: Q = [G+0x28], G =
   [[[actor+0x228]+0x40]+0x18]+0x18, Q's vtable +0x30 = main+0x1b569fc; the slots it writes are
   [[[actor+0x228]+8]+0x28]+0x40, count +0x38, 0xb0 a slot, clip u16 +2, weight +0x10, frame +0x28). Its gear is made
-  once by the usual gear code and taken out or put away with the in-hand calls. Pair test (equip_draw_3rd.txt): B's
-  stand-in of A stood in A's pose holding A's Master Sword in hand (full-size frames), and played A's swing clip 1397.
+  once by the usual gear code and taken out or put away with the in-hand calls (the in-hand bit of the old puppet
+  mode and the proxy's thaws are off for it). Pair test (equip_draw_3rd.txt): B's stand-in of A stood in A's pose
+  holding A's Master Sword in hand, drawn by setEquipmentInHand (full-size frames), and played A's swing clip 1397.
+  NetState grew for the slots: COOP_NET_VERSION 20 (relay too), so older builds do not meet this one.
   Not done: the owner's upper/lower body masks (a layered clip plays on the whole body), its arrows, the other
   co-op features on it (riding, shield surf, glider, hits it takes), and it is not seen moving in a frame yet.
 - **Not done:**
   - the stand-in's arrows shot by it with its owner's camera (patched unproject), and the body masks (above);
-  - Ultrahand glue made again in the other games, and breaks refused there; rotating ground's time copied;
-  - the Gloom Hands (TotK Online leaves them out too).
+  - Ultrahand glue made again in the other games, and breaks refused there: 1.2.1's doScotch / createScotch /
+    removeScotch matched no single function in 1.4.3 (two to three candidates each), and no test script glues;
+  - rotating ground's time copied ([[actor+0x228]+0x2b0]+0x20 float +0x3c in 1.2.1; no such actor near the test saves);
+  - a thrown weapon or a shield bash on a copy is taken out of its contacts as a sword hit is, but the stand-in does
+    not throw or bash in the owner's game, so that hit is lost (code review, a guess);
+  - the Gloom Hands: left out, as TotK Online leaves them out.
 
 ## Still wrong in a play session (last build, 075576d)
 - **Shake:** the puppet jumps 3-13 cm on some frames, even standing still. Its physics body now matches its owner
