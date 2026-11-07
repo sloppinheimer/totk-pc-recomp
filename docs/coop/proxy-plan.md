@@ -86,9 +86,11 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   co-op features on it (riding, shield surf, glider, hits it takes), and it is not seen moving in a frame yet.
 - **Not done:**
   - the stand-in's arrows shot by it with its owner's camera (patched unproject);
-  - enemies taking the stand-in for a player: TotK Online hooks the game's "is a player" check (1.2.1 main+0x1736dec,
-    1.4.3 main+0x1d1fc70 by tools/coop/xver_match.py; returns 1 for PlayerPuppet) and patches four places in the same
-    family (1.4.3 near main+0x1d1f960, 0x1d1f9e4, 0x1d1fa54, 0x1d1ffd0) that would read the Player component it lacks;
+  - enemies taking the stand-in for a player: the "is a player" check (1.2.1 main+0x1736dec, 1.4.3 main+0x1d1fc70 by
+    tools/coop/xver_match.py, a guess 6/7) is hooked and answers 1 for a PlayerPuppet (coop_spawn.c), but in a sword
+    fight beside the stand-in it was never called (TOTK_COOP_TEST_ISPLAYER logs its calls): the match may be wrong or
+    the check is for something else. TotK Online's four patches in the same family (1.4.3 near main+0x1d1f960,
+    0x1d1f9e4, 0x1d1fa54, 0x1d1ffd0) are not made (mid-function; no crash seen without them);
   - the stand-in's paraglider and Ultrahand arm as actors of their own tied to it (Parasail, PlayerRaulHand, by
     requestRegisterRelation), with the glider's colour and open state; the glider goes as a moved object's copy now,
     only while open;
@@ -103,7 +105,11 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     player's blessings worked out; life, the pouch and horses stay each player's. Here each game keeps its own;
   - Ultrahand glue made again in the other games, and breaks refused there: 1.2.1's doScotch / createScotch /
     removeScotch matched no single function in 1.4.3 (two to three candidates each), and no test script glues;
-  - rotating ground's time copied ([[actor+0x228]+0x2b0]+0x20 float +0x3c in 1.2.1; no such actor near the test saves);
+  - rotating ground: written, not proven (coop_world.c, ground_tick; `TOTK_COOP_GROUND=0` off): the host sends each
+    GroundControlActor_Rotate*'s phase ([[actor+0x228]+0x2b0]+0x20 float +0x3c, 1.2.1's place, unchecked in 1.4.3)
+    ten times a second ("GR" packets), the others write it. Pair test with one spawned in both games: the packet
+    arrived and the key matched, but the phase stayed 0 in both (a spawned one turns nothing), so the offset is not
+    proven; no rotating platform near the test saves;
   - a thrown weapon or a shield bash on a copy is taken out of its contacts as a sword hit is, but the stand-in does
     not throw or bash in the owner's game, so that hit is lost (code review, a guess);
   - the Gloom Hands: left out, as TotK Online leaves them out.

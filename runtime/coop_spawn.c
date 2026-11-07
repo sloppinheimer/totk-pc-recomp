@@ -895,6 +895,30 @@ int coop_hook(Cpu *c, uint64_t addr) {
     if (addr == MOD_MAIN_BASE + 0x31dbc0) { void coop_hit_delivered(Cpu *c); coop_hit_delivered(c); return 0; }   // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x300a30) { void coop_hit_update(Cpu *c); coop_hit_update(c); return 0; }        // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x50ad74) { void coop_enemy_action(Cpu *c); coop_enemy_action(c); return 0; }    // coop_world.c
+    // main+0x1d1fc70 (x0 an actor link, x1 its query): TotK Online's "is this a player" check (1.2.1 main+0x1736dec by
+    // tools/coop/xver_match.py; read for behaviour only), made 1 for a PlayerPuppet stand-in, so the game's systems
+    // that ask it (enemies' targets among them) take the stand-in for a player.
+    if (addr == MOD_MAIN_BASE + 0x1d1fc70) {
+        int coop_standin_puppet(void);   // coop_players.c
+        if (!coop_standin_puppet()) return 0;
+        uint64_t ref = rd_ptr(c->x[0] + 8), a = ref ? rd_ptr(ref + 0x40) : 0;
+        uint64_t q = c->x[1] ? rd_ptr(c->x[1] + 0x18) : 0, b = q ? rd_ptr(q + 0x18) : 0;
+        char n1[16] = "", n2[16] = "";
+        if (a) actor_name(a, n1, sizeof n1);
+        if (b) actor_name(b, n2, sizeof n2);
+        static int tst = -1;   // TOTK_COOP_TEST_ISPLAYER=1: the first 30 calls' two names
+        if (tst < 0) tst = cfg_get("TOTK_COOP_TEST_ISPLAYER") != NULL;
+        static _Atomic int said_t;
+        if (tst && atomic_fetch_add(&said_t, 1) < 30)
+            rt_log("coop: test: is-player check from main+%#llx: link's actor '%s', query's '%s'", (unsigned long long)(c->x[30] - MOD_MAIN_BASE), n1, n2);
+        if (strcmp(n1, "PlayerPuppet") && strcmp(n2, "PlayerPuppet")) return 0;
+        static _Atomic int said;
+        if (atomic_fetch_add(&said, 1) < 5)
+            rt_log("coop: stand-in: the game asks whether it is a player (from main+%#llx; %s): yes", (unsigned long long)(c->x[30] - MOD_MAIN_BASE),
+                   !strcmp(n1, "PlayerPuppet") ? "the link" : "the query");
+        c->x[0] = 1;
+        return 1;
+    }
     // ActorCreateInfo::getActor (main+0x50d6bc) from the create queue (returning to main+0x898420): an actor the game
     // hands over; run here, then its result goes to the spawn sync (coop_world.c coop_actor_created)
     if (addr == MOD_MAIN_BASE + 0x50d6bc) {   // Test (TOTK_COOP_TEST_GETACTOR=1): which call sites run, every 1000 calls

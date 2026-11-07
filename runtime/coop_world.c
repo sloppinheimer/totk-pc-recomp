@@ -2385,6 +2385,75 @@ static int ct_is_link(uint64_t a) {
     for (int i = 0; i < n; i++) if (co[i] == a) return 2;
     return 0;
 }
+// ---- rotating ground (TotK Online's ActorGroundControlSync, read for behaviour only): a GroundControlActor_Rotate*
+// actor turns the platforms tied to it by a phase, [[actor+0x228]+0x2b0]+0x20 float +0x3c in 1.2.1. The host (the
+// lowest player id among the games, world role 1) sends each one's phase ten times a second ("GR" packets: key and
+// phase, up to GR_MAX), and the others write it every tick, so the platforms stand the same in every game.
+// TOTK_COOP_GROUND=0: not. TOTK_COOP_TEST_GROUND=1: each one's phase logged every second.
+#define GROUND_KIND 0x5247   // "GR"
+#define GR_MAX 16
+typedef struct { uint32_t kind, n; struct { uint32_t key; float phase; } g[GR_MAX]; } GroundPacket;
+_Static_assert(sizeof(GroundPacket) <= COOP_HIT_MAX, "GroundPacket fits a HIT packet");
+static uint64_t ground_phase_at(uint64_t a) {
+    uint64_t c86 = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x2b0), o = c86 ? coop_rd_ptr(c86 + 0x20) : 0;
+    return o ? o + 0x3c : 0;
+}
+static struct { uint32_t key; float phase; uint64_t ns; } ground_in[GR_MAX];
+typedef struct { GroundPacket p; int test; } GroundScan;
+static void ground_one(int cell, uint64_t a, void *arg) {
+    GroundScan *gs = arg;
+    char nm[64];
+    coop_actor_name(a, nm, sizeof nm);
+    if (strncmp(nm, "GroundControlActor_Rotate", 25)) return;
+    uint64_t at = ground_phase_at(a);
+    float ph = 0;
+    if (!at || !coop_rd(at, &ph, 4)) return;
+    float home[3];
+    if (!home_is(cell, a)) {
+        if (!coop_rd(a + COOP_ACTOR_POS, seen[cell].home, 12)) return;
+        atomic_store_explicit(&seen[cell].home_of, a, memory_order_release);
+        atomic_store_explicit(&seen[cell].home_ok, 1, memory_order_release);
+    }
+    memcpy(home, seen[cell].home, 12);
+    uint32_t key = actor_key(a, nm, home);
+    if (gs->test) rt_log("coop: test: ground %s %08x phase %.3f", nm, key, ph);
+    if (coop_world_role() == 1) {
+        if (gs->p.n < GR_MAX) gs->p.g[gs->p.n].key = key, gs->p.g[gs->p.n].phase = ph, gs->p.n++;
+        return;
+    }
+    uint64_t now = plat_now_ns();
+    for (int i = 0; i < GR_MAX; i++)
+        if (ground_in[i].key == key && now - ground_in[i].ns < 1000000000ull) {
+            memcpy((void *)(uintptr_t)at, &ground_in[i].phase, 4);
+            static int said;
+            if (!said++) rt_log("coop: ground %s %08x turns as the host's (phase %.3f here, %.3f there)", nm, key, ph, ground_in[i].phase);
+        }
+}
+static void ground_tick(void) {
+    static int on = -1, test = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_GROUND"); on = !(e && *e == '0'); test = cfg_get("TOTK_COOP_TEST_GROUND") != NULL; }
+    if (!on || !coop_net_on()) return;
+    static uint64_t last_send, last_test;
+    uint64_t now = plat_now_ns();
+    GroundScan gs = {.p = {.kind = GROUND_KIND}, .test = test && now - last_test > 1000000000ull};
+    if (gs.test) last_test = now;
+    each_live(ground_one, &gs);
+    if (coop_world_role() == 1 && gs.p.n && now - last_send > 100000000ull) {
+        last_send = now;
+        coop_net_hit_send(&gs.p, (int)(offsetof(GroundPacket, g) + gs.p.n * sizeof gs.p.g[0]));
+    }
+}
+static void ground_take(const GroundPacket *p, int n) {
+    if (n != (int)(offsetof(GroundPacket, g) + p->n * sizeof p->g[0]) || p->n > GR_MAX) return;
+    uint64_t now = plat_now_ns();
+    for (uint32_t k = 0; k < p->n; k++) {
+        int f = -1;
+        for (int i = 0; i < GR_MAX && f < 0; i++) if (ground_in[i].key == p->g[k].key) f = i;
+        for (int i = 0; i < GR_MAX && f < 0; i++) if (now - ground_in[i].ns > 2000000000ull) f = i;
+        if (f >= 0) ground_in[f].key = p->g[k].key, ground_in[f].phase = p->g[k].phase, ground_in[f].ns = now;
+    }
+}
+
 // ---- contacts sent to the enemy's owner (TOTK_COOP_STANDIN=puppet). TotK Online records, in the game whose Link
 // made it, a contact with an actor another game owns, takes it out there and puts it into the owner's game, where the
 // game builds the hit from it (read for behaviour only). The PlayerPuppet's swing in the owner's game makes no hit
@@ -2923,6 +2992,10 @@ static void peer_tick(Cpu *c, uint64_t me) {
     while ((n = coop_net_hit_take(&lhp, sizeof lhp, &from)) != 0) {
         {   // contact replay (a test)
             const ContactPacket *cp = (const ContactPacket *)&lhp;
+            if (n >= (int)offsetof(GroundPacket, g) && ((const GroundPacket *)&lhp)->kind == GROUND_KIND) {
+                ground_take((const GroundPacket *)&lhp, n);
+                continue;
+            }
             if (n >= (int)offsetof(ContactPacket, e) && cp->kind == ECONTACT_KIND && (int)cp->to == my_id && cp->n <= CONTACT_MAX &&
                 n == (int)(offsetof(ContactPacket, e) + cp->n * CONTACT_SZ)) {
                 ce_take(cp, from);
@@ -4468,6 +4541,7 @@ void coop_world_tick(Cpu *c, uint64_t me) {
     coop_anim_copy_test(c, me);
     void coop_eqdiff_test(uint64_t me);   // (below)
     coop_eqdiff_test(me);
+    if (coop_world_role()) ground_tick();
 }
 
 // An enemy another game runs (contacts_filter): a copy following its owner, or one this game has seen run elsewhere
