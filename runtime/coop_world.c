@@ -2019,6 +2019,19 @@ static _Alignas(16) uint8_t ct_in[CONTACT_MAX][CONTACT_SZ];
 static _Atomic int ct_n;                  // contacts waiting for this Link's hit update
 static uint32_t ct_brel[CONTACT_MAX], ct_key;
 static _Atomic uint64_t ct_dc;            // this Link's damage component they wait for
+// This Link's guard: the word +0x160 of its component +0x3b8 has bit 28 with the shield up (0x400401 -> 0x10400401),
+// and +0x84 of its component +0x158 is 0x41 (0x28 without), game B's own Link beside an enemy fighting it, ZL held
+// and not (TOTK_COOP_TEST_LINKDUMP, 2026-11-06). Logged with each contact delivered here.
+static const char *guard_state(uint64_t actor, char *buf, size_t n) {
+    uint64_t tab = coop_rd_ptr(actor + 0x228), c1 = tab ? coop_rd_ptr(tab + 0x3b8) : 0, c2 = tab ? coop_rd_ptr(tab + 0x158) : 0;
+    uint64_t eq = tab ? coop_rd_ptr(tab + 0x230) : 0;
+    uint32_t f = 0, act = 0, ef = 0;
+    if (c1) coop_rd(c1 + 0x160, &f, 4);
+    if (c2) coop_rd(c2 + 0x84, &act, 4);
+    if (eq) coop_rd(eq + 0x4600, &ef, 4);
+    snprintf(buf, n, "shield %s (%#x, action %#x, equipment +0x4600 %#x)", f >> 28 & 1 ? "up" : "down", f, act, ef);
+    return buf;
+}
 static void contact_add(uint64_t dc) {
     uint64_t me_actor = coop_rd_ptr(dc + 0x198);
     int n = atomic_exchange(&ct_n, 0);
@@ -2054,10 +2067,35 @@ static void contact_add(uint64_t dc) {
         static int sh = -1;
         if (sh < 0) { const char *ev = cfg_get("TOTK_COOP_CONTACT_SHIELD"); sh = ev && *ev == '1'; }
         if (sh) e[0x0b] = 1;
+        // The block (TOTK_COOP_CONTACT_GUARDBIT=1, a test): the Player's hit filter cancels a hit when its equipment
+        // component's +0x4600 has bit 17 (main+0x319120 from main+0x1cca59c), which the game sets when an attack
+        // meets the raised shield; a replayed contact meets nothing here. So with this Link's shield up (guard_state)
+        // and the attacker in front of it (within 60 degrees of its facing), the bit is set: 26 hits, life kept at 14
+        // (with the shield up and without the bit: 14 -> 10 -> 6; 2026-11-06). Whether the block's reaction plays
+        // is not checked.
+        static int gb = -1;
+        if (gb < 0) { const char *ev = cfg_get("TOTK_COOP_CONTACT_GUARDBIT"); gb = ev && *ev == '1'; }
+        if (gb) {
+            uint64_t tab = coop_rd_ptr(me_actor + 0x228), c1 = tab ? coop_rd_ptr(tab + 0x3b8) : 0, eq = tab ? coop_rd_ptr(tab + 0x230) : 0;
+            uint64_t att = pup_ready_actor(ct_key);
+            uint32_t f = 0, ef = 0;
+            float lp[3], lr[9], ap[3];
+            int front = 0;
+            if (att && coop_rd(me_actor + COOP_ACTOR_POS, lp, 12) && coop_rd(me_actor + COOP_ACTOR_ROT, lr, 36) && coop_rd(att + COOP_ACTOR_POS, ap, 12)) {
+                float dx = ap[0] - lp[0], dz = ap[2] - lp[2], d = sqrtf(dx * dx + dz * dz);
+                front = d < 1e-3f || (lr[2] * dx + lr[8] * dz) / d > 0.5f;
+            }
+            if (c1) coop_rd(c1 + 0x160, &f, 4);
+            if (eq && front && f >> 28 & 1 && coop_rd(eq + 0x4600, &ef, 4)) ef |= 1u << 17, memcpy((void *)(uintptr_t)(eq + 0x4600), &ef, 4);
+            static int said;
+            if (said++ < 20) rt_log("coop: test: contact guard: shield %s, attacker %s: %s", f >> 28 & 1 ? "up" : "down",
+                                    !att ? "not here" : front ? "in front" : "not in front", eq && front && f >> 28 & 1 ? "blocked" : "not blocked");
+        }
         memcpy((void *)(uintptr_t)(base + (uint64_t)cnt * CONTACT_SZ), e, CONTACT_SZ);
     }
     memcpy((void *)(uintptr_t)(l + 0x18), &cnt, 4);
-    rt_log("coop: test: contact: %d added to this Link's list (now %d; body %s, attacker %s)", n, cnt,
+    char gs[80];
+    rt_log("coop: test: contact: %d added to this Link's list (now %d; %s; body %s, attacker %s)", n, cnt, guard_state(me_actor, gs, sizeof gs),
            ct_brel[0] ? "from its main body" : "none", actor_ref(pup_ready_actor(ct_key)) ? "this game's copy" : "none");
 }
 // Test (TOTK_COOP_TEST_CONTACTS=1): every damage component's hit update with contacts waiting: its actor (dc+0x198),
@@ -2480,9 +2518,22 @@ static void peer_tick(Cpu *c, uint64_t me) {
 // t_ns: when the owner took it (its plat_now_ns), so the poses are blended at the owner's own pace (stamped when they
 // came, a few ms unevenly, the blend shook: 2 mm a frame on a Chuchu's copy that moved 0.1 mm, and none with one pose
 // held; 2026-11-06).
-typedef struct { uint32_t key; float pos[3], rot[9]; uint8_t nitems, pad[3]; uint64_t t_ns; } EPoseHead;
+// aware: the enemy's awareness words (AWARE_OFF in its component AWARE_COMP), has_aware 1 when read.
+// An enemy's copy never notices the Link of the game that follows it (its AI is stopped), so that game showed the
+// Sneakstrike prompt beside an enemy fighting its player, and its Link put its sword away. When the enemy notices a
+// Link, its component at +0x228 table entry +0x158 changes: +0x24 0xc182 -> 0xc082, +0x58 and +0x60 0x12 -> 0xc,
+// +0x64 and +0x70 0 -> 1, +0x84 0x28 -> 0x83 (the owner's Bokoblin just spawned and fighting, the copy keeping the
+// first: TOTK_COOP_TEST_LINKDUMP, 2026-11-06). Those words, put on the copy each tick (TOTK_COOP_TEST_ENEMYPOKE),
+// took the prompt away, the game said "We are under threat" and its Link drew its sword. So the owner sends them
+// with each pose and the copy takes them (pup_aware_apply).
+#define AWARE_COMP 0x158
+#define AWARE_N 6
+static const uint16_t AWARE_OFF[AWARE_N] = {0x24, 0x58, 0x60, 0x64, 0x70, 0x84};
+typedef struct {
+    uint32_t key; float pos[3], rot[9]; uint8_t nitems, has_aware, pad[2]; uint64_t t_ns; uint32_t aware[AWARE_N];
+} EPoseHead;
 typedef struct { uint32_t hash; float pos[3], rot[9]; } EItem;   // hash: its name's (name_hash_of)
-_Static_assert(sizeof(EPoseHead) == 64 && sizeof(EItem) == 52 && 64 + EPOSE_ITEMS * 52 == 220, "EPOSE header size (COOP_EPOSE_MAX)");
+_Static_assert(sizeof(EPoseHead) == 88 && sizeof(EItem) == 52 && 88 + EPOSE_ITEMS * 52 == 244, "EPOSE header size (COOP_EPOSE_MAX)");
 typedef struct {
     uint64_t ns, src_ns;   // ns: here (src_ns, the owner's, moved onto this clock); src_ns: the owner's
     float pos[3], q[4];
@@ -2500,6 +2551,8 @@ static struct {
     uint64_t last_ns;
     _Atomic uint64_t weap[EPOSE_ITEMS];   // this game's weapons of it, frozen and put in its hand (0 none)
     uint32_t weap_hash[EPOSE_ITEMS];
+    uint32_t aware[AWARE_N];   // the owner's awareness words, latest (have_aware)
+    int have_aware;
     PupRec r[PUP_HIST];
 } pups[PUP_N];
 // Test (TOTK_COOP_TEST_ENEMYPOKE=<comp>:<off>=<value>[;...]): every tick, those 32-bit words written into each
@@ -2745,6 +2798,12 @@ static const int16_t *enemy_parents(uint64_t a, int n, const float (*w)[16], con
 // The owner: an enemy's place and its skeleton's records packed into out; its length, 0 when it has no skeleton found.
 static int epose_pack(uint64_t a, uint32_t key, uint8_t *out, int max) {
     EPoseHead h = {.key = key, .t_ns = plat_now_ns()};
+    {
+        uint64_t aw = coop_rd_ptr(coop_rd_ptr(a + 0x228) + AWARE_COMP);
+        int ok = aw != 0;
+        for (int k = 0; ok && k < AWARE_N; k++) ok = coop_rd(aw + AWARE_OFF[k], &h.aware[k], 4);
+        h.has_aware = (uint8_t)ok;
+    }
     uint64_t sk = enemy_skeleton(a), recs = sk ? coop_rd_ptr(sk + 0x18) : 0;
     uint16_t n = 0;
     static __thread float rec[PUP_BONES][24];
@@ -3073,7 +3132,19 @@ static void pup_hits(int k) {
         coop_net_hit_send(&hp, sizeof hp);
     }
 }
+// The owner's awareness words onto each frozen copy (EPoseHead's aware). TOTK_COOP_ENEMY_AWARE=0: not.
+static void pup_aware_apply(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_ENEMY_AWARE"); on = !(e && *e == '0'); }
+    for (int k = 0; on && k < PUP_N; k++) {
+        uint64_t a = atomic_load(&pups[k].ready) && pups[k].have_aware ? atomic_load(&pups[k].actor) : 0;
+        uint64_t aw = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + AWARE_COMP) : 0;
+        if (!aw) continue;
+        for (int j = 0; j < AWARE_N; j++) memcpy((void *)(uintptr_t)(aw + AWARE_OFF[j]), &pups[k].aware[j], 4);
+    }
+}
 static void epose_take_tick(Cpu *c) {
+    pup_aware_apply();
     for (int i = 0; i < weap_free_n; i++) if (!weap_bound(weap_free[i])) weap_let_go(c, weap_free[i]);
     weap_free_n = 0;
     static uint8_t in[COOP_EPOSE_MAX];
@@ -3103,6 +3174,10 @@ static void epose_take_tick(Cpu *c) {
         plat_mutex_lock(&pup_lock);
         PupRec *r = &pups[i].r[pups[i].count % PUP_HIST];
         if (pup_decode(in, len, r)) {
+            EPoseHead hh;
+            memcpy(&hh, in, sizeof hh);
+            pups[i].have_aware = hh.has_aware;
+            if (hh.has_aware) memcpy(pups[i].aware, hh.aware, sizeof pups[i].aware);
             // The owner's clock onto this one: the smallest (arrival - owner's time) seen, the packet that came
             // quickest, rising slowly so a drift between the clocks is followed.
             static int64_t off[COOP_MAX_PLAYERS + 1];

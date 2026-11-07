@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define COOP_MAX_PLAYERS 8
-#define COOP_NET_VERSION 18   // packet header version: games and relays of another version ignore each other
+#define COOP_NET_VERSION 19   // packet header version: games and relays of another version ignore each other
 
 // One player's state, sent about 30 times a second. Positions and directions are world space; the sticks are as the
 // player's own camera saw them, with the camera's horizontal forward and right so a receiver can turn them into its
@@ -65,7 +65,7 @@ int coop_net_world(int id, void *out, int max, uint64_t *age_ns);  // the latest
 #define COOP_POSE_MAX 4000
 void coop_net_pose_send(const void *data, int len);
 // Enemy poses (EPOSE packets, coop_world.c's enemy puppets): queued both ways, at most COOP_EPOSE_MAX bytes each.
-#define COOP_EPOSE_MAX (220 + COOP_POSE_MAX)
+#define COOP_EPOSE_MAX (244 + COOP_POSE_MAX)
 void coop_net_epose_send(const void *data, int len);
 int coop_net_epose_take(void *out, int max, int *from, uint64_t *age_ns);   // the oldest; its length, -1 too big, 0 none
 int coop_net_pose(int id, void *out, int max, uint64_t *age_ns);   // the latest from player id; its length (0 none)
