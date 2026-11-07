@@ -53,6 +53,9 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     puppet released, not sent; never deleted (`coop: far: ... not followed`);
   - placed objects another player moves (coop_players.c force_to): not moved; never deleted;
   - stand-ins (co-op Link, PlayerPuppet) and this game's own actors, runtime-made or placed: never.
+  Nothing is far while a player's place is not known: a state more than 3 s old, world packets from a player with
+  no state yet, and for 10 s after a player comes or goes (log `coop: far: the players changed`). Without that, a
+  game that had just joined was not counted and what was held for it was let go of (code review, 2026-11-07).
   Test: tools/coop/far_3rd.txt (command and log lines). `TOTK_COOP_TEST_FAR_COPY` makes a copy through spawn_take as
   if the other game had sent a SPAWN. The test spawn passes no create queue, so it gives no spawn-sync copy.
   `TOTK_COOP_TEST_FAR` puts the Link 1100 m away with ForceSetMatrix. Unverified: the whole of it in a game; whether
