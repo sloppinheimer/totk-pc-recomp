@@ -1493,6 +1493,7 @@ static void as_play_test(Cpu *c, uint64_t me) {
 }
 static uint64_t audit_skeleton(uint64_t a);
 static int pup_ready_key(uint32_t key);
+static int pup_bound_to(uint32_t key, uint64_t actor);
 // The sync audit (coop_players.c, audit_tick): the enemies this game updates within SYNC_M of any Link, as a JSON
 // array of key, place, life and whether it is dead (life 0 or going away).
 typedef struct { FILE *f; float links[COOP_MAX_PLAYERS + 1][3]; int nl, n; } AuditScan;
@@ -1824,7 +1825,13 @@ static void peer_one(int cell, uint64_t a, void *arg) {
     }
     if (life != (int)e->life && (f->last < 0 || life >= f->last)) set_life(a, e->life), life = e->life;
     f->last = life;
-    pup_bind(key, f->owner, a);
+    // Not made a frozen copy while this game is in a load (or a menu), nor in its first 2 s after it, nor before this
+    // game has seen it run 3 s: player 2's game warped to where player 1 stood, froze three of player 1's enemies at
+    // once (held here 1.3 s, its clock standing) and stayed on the loading screen for minutes (a play session,
+    // 2026-11-07; that the freeze held the load up is a guess). Meanwhile it runs its own update, put at the owner's
+    // place when it drifts.
+    int coop_runs_for_ms(void);   // coop_players.c
+    if (pup_bound_to(key, a) || (coop_runs_for_ms() >= 2000 && my_age >= 3000)) pup_bind(key, f->owner, a);
     if (enemy_puppets_on() && pup_ready_key(key)) { s->puppets++; return; }   // posed from the owner's (enemy puppets)
     float p[3];
     if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
@@ -2744,6 +2751,10 @@ static void pup_release(uint32_t key) {
 static uint64_t pup_ready_actor(uint32_t key) {   // this game's frozen copy of it, 0 none
     int i = pup_find(key);
     return i >= 0 && atomic_load(&pups[i].ready) ? atomic_load(&pups[i].actor) : 0;
+}
+static int pup_bound_to(uint32_t key, uint64_t actor) {   // already this actor's copy
+    int i = pup_find(key);
+    return i >= 0 && atomic_load(&pups[i].actor) == actor;
 }
 static int pup_ready_key(uint32_t key) {
     int i = pup_find(key);

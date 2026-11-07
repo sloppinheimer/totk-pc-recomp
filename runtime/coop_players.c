@@ -2115,8 +2115,12 @@ static void old_items_tick(Cpu *c) {
         if (!actor_is(old_items[i].actor, old_items[i].name)) { old_items[i].actor = 0; continue; }
         // Still the proxy's: making its gear again with no item does not take it (load_3rd.txt: four tries, the
         // shield stayed in hand). After 2 s it is deleted all the same, as a broken weapon is, and the gear lets go.
-        int held = eq_item(old_items[i].eq, old_items[i].k) == old_items[i].actor;
+        uint64_t cur = eq_item(old_items[i].eq, old_items[i].k);
+        int held = cur == old_items[i].actor;
         if (held && (old_items[i].remade || prop_tick - old_items[i].since < 60)) continue;
+        // One made again: deleted only once another item holds its slot. Out of the gear alone, it was deleted while
+        // the slot was between items, and the co-op Link drew an empty hand (a play session, 2026-11-07).
+        if (old_items[i].remade && !cur) continue;
         char nm[48];
         rt_log("coop: proxy: its old %s, %s, is deleted", coop_actor_name(old_items[i].actor, nm, sizeof nm), held ? "still in its gear" : "out of its gear");
         coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, old_items[i].actor, COOP_DELETE_REASON, 0, 0);
@@ -4190,6 +4194,10 @@ static void fanstate_log(uint64_t me) {
            (unsigned long long)so, w[0], w[1], w[2], w[3], w[4], w[5], v[0], v[1], v[2]);
 }
 static int this_paused;   // this game sits in a menu (the clock and this Link both still; set by the tick)
+static uint64_t runs_since_ns;   // when this game last came out of a pause (0 while paused)
+// How long this game has run since its last pause (a menu, a load), in ms; -1 while paused (coop_world.c: enemies are
+// not frozen as copies then).
+int coop_runs_for_ms(void) { return runs_since_ns ? (int)((plat_now_ns() - runs_since_ns) / 1000000ull) : -1; }
 // ---- the sync audit (tools/coop/sync_audit.py). Once a second, at the turn of a second of plat_now_ns (the
 // performance counter, one clock for every game on this PC), each game writes what it shows to logs/audit.jsonl, one
 // JSON line: this Link (place, life, gear, dyes, fused materials, hands), each co-op Link as shown here, the objects
@@ -4549,6 +4557,8 @@ void coop_players_tick(Cpu *c, int numpad3) {
         if (dpx * dpx + dpy * dpy + dpz * dpz > 0.0004f) memcpy(last_p, st.pos, 12), p_moved = now_ns;
         int paused = now_ns - t_moved > 150000000ull && now_ns - p_moved > 150000000ull;
         this_paused = paused;
+        if (paused) runs_since_ns = 0;
+        else if (!runs_since_ns) runs_since_ns = now_ns;
         static int was_paused = -1;
         if (paused != was_paused)
             rt_log("coop: this Link %s (input sent %s; clock still %.2f s, Link still %.2f s, time %.2f, at %.3f %.3f %.3f)",
