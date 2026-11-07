@@ -67,6 +67,18 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   (bow_walk_3rd.txt): the stand-in's slots took the owner's clips with the owner's masks (0x1a8, 0x1f0, 0x2c8 by
   TOTK_COOP_TEST_ANIMSLOTS); not seen on a frame (the stand-in stayed far up the stairs). The mask's flags, which TotK
   Online copies too, are the stand-in's own.
+  The masks are off again unless `TOTK_COOP_STANDIN_MASKS=1`: in a sword fight (attack_enemy_3rd.txt) the stand-in
+  stood in a T pose with them and not without them; the same offset in its graph may not be the same mask (it has no
+  Player component). Not worked out.
+  **Its sword's hits (2026-11-07):** the owner's weapon-attack byte (EquipmentUser +0x660 in 1.4.3 as in 1.2.1, 1 for
+  about 0.1 s in each swing: TOTK_COOP_TEST_EQDIFF) goes as NetState flags bit 13 and is written onto the stand-in
+  every tick. That alone made no contact from its swing in the owner's game. So, as TotK Online does, the contact of
+  this Link's sword on a copy, taken out here (contacts_filter), is sent to the copy's owner ("CE" packet: the key,
+  the contact, the body's place from the enemy's main body), and the owner's game adds it to its enemy's waiting
+  contacts at that enemy's next hit update, its handles made the stand-in's and its sword's (ce_add). Pair test (B
+  attacks A's blue Bokoblin, stand-in on): two contacts sent and added, and the Bokoblin died in A's game.
+  **Hits on the stand-in** are all taken out in the game that shows it (its owner's game has the attack on the real
+  Link from its copy of the enemy).
   Not done: its arrows, the other
   co-op features on it (riding, shield surf, glider, hits it takes), and it is not seen moving in a frame yet.
 - **Not done:**
@@ -74,17 +86,15 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   - enemies taking the stand-in for a player: TotK Online hooks the game's "is a player" check (1.2.1 main+0x1736dec,
     1.4.3 main+0x1d1fc70 by tools/coop/xver_match.py; returns 1 for PlayerPuppet) and patches four places in the same
     family (1.4.3 near main+0x1d1f960, 0x1d1f9e4, 0x1d1fa54, 0x1d1ffd0) that would read the Player component it lacks;
-  - the stand-in's "weapon attacking" byte (EquipmentUser +0x660 in 1.2.1, the owner's written every frame; probably
-    what turns its swing's attack sensor and trail on; 1.4.3 offset not found), so its sword may not hit in the
-    owner's game (checked only with the old co-op Link);
   - the stand-in's main body set to motion type 0 every frame (phive requestChangeMotionType; TotK Online's, meaning
     not checked);
   - the stand-in's paraglider and Ultrahand arm as actors of their own tied to it (Parasail, PlayerRaulHand, by
     requestRegisterRelation), with the glider's colour and open state; the glider goes as a moved object's copy now,
     only while open;
   - riding, shield surf and hits taken, which work on the co-op Link, not done for the PlayerPuppet stand-in;
-  - all contacts with an actor another game owns taken out (here only a Link's Weapon_ on an enemy copy), and the
-    contacts between this Link and another game's actor (an enemy's body slam) sent and put in on the other games;
+  - all contacts with an actor another game owns taken out (here a Link's Weapon_ on an enemy copy, and every hit on
+    a PlayerPuppet stand-in), and the contacts other than this Link's sword on a copy (an enemy's body slam on this
+    Link) sent and put in on the other games;
   - the actors TotK Online syncs by name (Animal, Korok, GameRomHorse, Barrel, BombFruit, TBox and more): here enemies
     and moved objects; horses and animals are not synced, chests are left out on purpose; actors past 1000 m deleted;
   - shared world progress, a design choice (drop-in saves here): TotK Online's server shares the game flags, the

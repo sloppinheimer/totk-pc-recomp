@@ -79,6 +79,7 @@ typedef struct {
     float shield_local[3], shield_rot[9];   // where, in the owner's frame (NetState flags bit 11)
     int8_t dye_want[COOP_GEAR_SLOTS], dye_have[COOP_GEAR_SLOTS];   // the armor's dye colour, the same way (-1 none)
     int out_want, out_have;            // puppet mode: bits 0..2 weapon, bow, shield in the owner's hands; as last made
+    int attack_want;                   // the owner's weapon attack is on (NetState flags bit 13; the stand-in's)
     float phys_pos[3];                 // puppet mode: where its physics step put it (before placement), for snap
     int since_snap;                    // ticks since its body was last teleported
     float body_pos[3], body_rot[9];    // its physics body's position and rotation (mLastTransform)
@@ -175,6 +176,7 @@ const int coop_gear_slot[COOP_GEAR_SLOTS] = {0, 7, 8, 9, 10, 11};   // weapon, b
 #define GEAR_WEAPON_CREATE 0xaf100c
 #define GEAR_ARMOR_CREATE 0xc48ac0
 #define GEAR_IN_HAND 0x3e322c    // (eq, 0 weapon / 3 bow / 4 shield): 1 when out; c4a5f4 passes 1 for it, else 2
+#define EQ_ATTACKING 0x660       // EquipmentUser byte: 1 while the weapon's attack is on (a swing; TOTK_COOP_TEST_EQDIFF)
 #define GEAR_TABLE 0x28
 #define GEAR_NONE "-"            // on the wire: the slot is empty ("" is not known yet)
 static char my_gear[COOP_GEAR_SLOTS][32];
@@ -3764,6 +3766,12 @@ static uint64_t eq_item(uint64_t eq, int kind) {
     }
     return 0;
 }
+// The reference object of an actor's EquipmentUser row (0 the weapon), or 0 (coop_world.c: a stand-in's sword's
+// handle in a contact it sends on).
+uint64_t coop_eq_row_ref(uint64_t actor, int row) {
+    uint64_t eq = coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x230);
+    return eq && row >= 0 && row < 24 ? coop_rd_ptr(eq + GEAR_TABLE + 0x18 * (uint64_t)row) : 0;
+}
 // An item of a Link's (in this Link's or a co-op Link's EquipmentUser) or a copy of another player's object: not an
 // enemy's weapon (coop_world.c, enemy puppets).
 int coop_is_players_item(uint64_t a) {
@@ -4523,6 +4531,10 @@ void coop_players_tick(Cpu *c, int numpad3) {
         // bit 16 of the EquipmentUser's flags at +0x4600 (and the wait time at +0x3f14 to 0; main+0x2529c3c, its
         // ResetLightningWait clears it). Sent as NetState flags bit 12, so the proxy sparks too (the tester's list).
         if (my_eq && eq_points_to(my_eq, me) && (LD64(my_eq + 0x4600) >> 16 & 1)) st.flags |= 1u << 12;
+        // The weapon's attack is on (EquipmentUser +0x660, 1 for about 0.1 s in each swing in 1.4.3 as in 1.2.1:
+        // TOTK_COOP_TEST_EQDIFF, 2026-11-07): flags bit 13. TotK Online writes it onto its stand-in every frame (read
+        // for behaviour only), so the stand-in's swing hits there.
+        if (my_eq && LD8(my_eq + EQ_ATTACKING)) st.flags |= 1u << 13;
         {   // test (TOTK_COOP_TEST_LIGHTNING): at 20 s this Link's lightning wait is set, as the AI node sets it; logged
             // each second while it lasts, and each LightningStrike that shows up near this Link
             static int on = -1, done, said;
@@ -4754,6 +4766,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
             s->dye_want[k] = st.dye[k];
             if (k < 3) memcpy(s->fuse_want[k], st.fuse[k], 32), s->fuse_want[k][31] = 0;
             if (k < 3) s->out_want = (s->out_want & ~(1 << k)) | (int)((st.flags >> (8 + k)) & 1) << k;
+            if (k == 0) s->attack_want = (int)(st.flags >> 13 & 1);
         }
         // The owner's stick in world space (their camera), then in this PC's camera frame.
         int32_t sticks[4];
@@ -4867,6 +4880,18 @@ void coop_players_tick(Cpu *c, int numpad3) {
             // The PlayerPuppet stand-in (TOTK_COOP_STANDIN=puppet): its items, made once, are taken out and put away
             // with the game's in-hand calls as its owner holds them (TotK Online's way, read for behaviour only):
             // nothing of the stand-in's own puts them back. Checked every 6 ticks.
+            // ... and its weapon's attack on while its owner's is (flags bit 13), every tick
+            if (eq && coop_standin_puppet()) {
+                uint8_t att = (uint8_t)s->attack_want;
+                static int also = -1;   // TOTK_COOP_TEST_ATK598=1: +0x598 too (it flips with +0x660 in a swing)
+                if (also < 0) also = cfg_get("TOTK_COOP_TEST_ATK598") != NULL;
+                if (also) ST8(eq + 0x598, att);
+                if (LD8(eq + EQ_ATTACKING) != att) {
+                    ST8(eq + EQ_ATTACKING, att);
+                    static int said_a;
+                    if (att && said_a++ < 10) rt_log("coop: stand-in: slot %d: its weapon's attack on, as its owner's", i);
+                }
+            }
             if (eq && coop_standin_puppet() && s->live_ticks % 6 == 0) {
                 static const uint64_t row[3] = {0, 3, 4};
                 for (int k = 0; k < 3; k++) {

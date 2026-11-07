@@ -2385,6 +2385,83 @@ static int ct_is_link(uint64_t a) {
     for (int i = 0; i < n; i++) if (co[i] == a) return 2;
     return 0;
 }
+// ---- contacts sent to the enemy's owner (TOTK_COOP_STANDIN=puppet). TotK Online records, in the game whose Link
+// made it, a contact with an actor another game owns, takes it out there and puts it into the owner's game, where the
+// game builds the hit from it (read for behaviour only). The PlayerPuppet's swing in the owner's game makes no hit
+// of its own (its attack byte on, no contact came: pair test, 2026-11-07), so this Link's sword contact on a copy goes
+// to the copy's owner ("CE" packets: the enemy's key, the body's place from the enemy's main body), whose game adds
+// it to that enemy's waiting contacts with the handles made the stand-in's (attacker) and its weapon's.
+#define ECONTACT_KIND 0x4543   // "CE"
+int coop_standin_puppet(void);   // coop_players.c
+static ContactPacket ce_out;
+static int ce_out_n;
+static uint64_t ce_out_dc;
+static struct { _Atomic int n; uint64_t dc, by, weap; uint32_t brel[CONTACT_MAX]; _Alignas(16) uint8_t e[CONTACT_MAX][CONTACT_SZ]; } ce_in;
+static int ce_owner_of(uint64_t a, uint32_t *key) {
+    *key = key_of_actor(a);
+    for (int k = 0; *key && k < FOLLOW_N; k++) if (follow[k].key == *key) return follow[k].owner;
+    return 0;
+}
+static void ce_queue(uint64_t dc, uint64_t a, uint64_t e) {
+    uint32_t key = 0;
+    int owner = ce_owner_of(a, &key);
+    if (!owner || !key) return;
+    if (ce_out_dc != dc || ce_out.key != key) ce_out_n = 0;
+    if (ce_out_n >= CONTACT_MAX) return;
+    if (!ce_out_n) memset(&ce_out, 0, offsetof(ContactPacket, e)), ce_out.key = key, ce_out.to = (uint32_t)owner, ce_out.kind = ECONTACT_KIND;
+    ce_out_dc = dc;
+    if (!coop_rd(e, ce_out.e[ce_out_n], CONTACT_SZ)) return;
+    uint64_t body, mb0 = enemy_body(a);
+    memcpy(&body, ce_out.e[ce_out_n] + 0x58, 8);
+    ce_out.brel[ce_out_n] = body && mb0 && body >= mb0 && body - mb0 < 0x20000 ? (uint32_t)(body - mb0) + 1 : 0;
+    ce_out_n++, ce_out.n = (uint32_t)ce_out_n;
+}
+static void ce_flush(void) {
+    if (!ce_out_n) return;
+    coop_net_hit_send(&ce_out, (int)(offsetof(ContactPacket, e) + ce_out.n * CONTACT_SZ));
+    static int said;
+    if (said++ < 20) rt_log("coop: contact: %d of this Link's sword on the copy of %08x sent to player %u", ce_out_n, ce_out.key, ce_out.to);
+    ce_out_n = 0;
+}
+uint64_t coop_eq_row_ref(uint64_t actor, int row);   // coop_players.c
+// A CE packet from player `from` (the hit update of its enemy adds it: ce_add).
+static void ce_take(const ContactPacket *cp, int from) {
+    if (!cp->n || cp->n > CONTACT_MAX || atomic_load(&ce_in.n)) return;
+    uint64_t a = 0, co[COOP_MAX_PLAYERS];
+    int ids[COOP_MAX_PLAYERS], nc = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
+    for (int i = 0; i < KNOWN_N && !a; i++) if (mine_known[i].key == cp->key) a = mine_known[i].actor;
+    uint64_t by = 0;
+    for (int i = 0; i < nc; i++) if (ids[i] == from) by = co[i];
+    uint64_t dc = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x2f8) : 0;
+    if (!dc || !by) { rt_log("coop: contact from player %d on %08x: %s", from, cp->key, !dc ? "no such enemy here" : "no stand-in of theirs"); return; }
+    memcpy(ce_in.e, cp->e, cp->n * CONTACT_SZ), memcpy(ce_in.brel, cp->brel, sizeof ce_in.brel);
+    ce_in.dc = dc, ce_in.by = actor_ref(by), ce_in.weap = coop_eq_row_ref(by, 0);
+    atomic_store(&ce_in.n, (int)cp->n);
+}
+static void ce_add(uint64_t dc) {
+    if (!atomic_load(&ce_in.n) || dc != ce_in.dc) return;
+    int n = atomic_exchange(&ce_in.n, 0);
+    uint64_t a = coop_rd_ptr(dc + 0x198), l = contact_list(dc), base;
+    int32_t cnt = 0, cap = 0;
+    if (!l || !coop_rd(l + 0x18, &cnt, 4) || !coop_rd(l + 8, &cap, 4) || !(base = coop_rd_ptr(l + 0x10)) || cnt < 0) return;
+    int added = 0;
+    for (int k = 0; k < n && cnt < cap; k++, cnt++, added++) {
+        uint8_t *e = ce_in.e[k];
+        uint64_t refs[2] = {ce_in.weap ? ce_in.weap : ce_in.by, ce_in.by};
+        for (int hk = 0; hk < 2; hk++) {
+            uint32_t ser = 0xffffffffu;
+            if (refs[hk]) coop_rd(refs[hk] + 0x48, &ser, 4);
+            memcpy(e + (hk ? 0x80 : 0x68), &refs[hk], 8), memcpy(e + (hk ? 0x88 : 0x70), &ser, 4);
+        }
+        uint64_t mb = enemy_body(a), body = ce_in.brel[k] && mb ? mb + ce_in.brel[k] - 1 : mb;
+        memcpy(e + 0x58, &body, 8);
+        memcpy((void *)(uintptr_t)(base + (uint64_t)cnt * CONTACT_SZ), e, CONTACT_SZ);
+    }
+    memcpy((void *)(uintptr_t)(l + 0x18), &cnt, 4);
+    char nm[48];
+    static int said;
+    if (said++ < 20) rt_log("coop: contact: %d from a stand-in's sword added to %s (weapon %s)", added, coop_actor_name(a, nm, sizeof nm), ce_in.weap ? "its own" : "none");
+}
 static void contacts_filter(uint64_t dc) {
     static int on = -1;
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_CONTACT_FILTER"); on = !(e && *e == '0'); }
@@ -2395,7 +2472,19 @@ static void contacts_filter(uint64_t dc) {
     // capacity as contact_send does; code review, 2026-11-07)
     if (!(l = contact_list(dc)) || !coop_rd(l + 0x18, &cnt, 4) || cnt <= 0 || !coop_rd(l + 8, &cap, 4) || cap <= 0) return;
     if (cnt > cap) cnt = cap;
-    if (cnt > 64 || !(base = coop_rd_ptr(l + 0x10)) || !ct_is_copy(a)) return;
+    if (cnt > 64 || !(base = coop_rd_ptr(l + 0x10))) return;
+    // A PlayerPuppet stand-in takes no hit here at all (TotK Online deletes every contact with an actor another game
+    // owns): its owner's game has the attack on the real Link from its copy of the enemy. Hit here, it played its own
+    // reaction, ended in a T pose and put its sword on its back (pair test, attack_enemy_3rd.txt, 2026-11-07).
+
+    if (coop_standin_puppet() && ct_is_link(a) == 2) {
+        int32_t zero = 0;
+        memcpy((void *)(uintptr_t)(l + 0x18), &zero, 4);
+        static _Atomic int said_s;
+        if (atomic_fetch_add(&said_s, 1) < 10) rt_log("coop: contact on a stand-in: %d taken out (its owner's game counts them)", cnt);
+        return;
+    }
+    if (!ct_is_copy(a)) return;
     int out = 0, keep = 0;
     for (int k = 0; k < cnt; k++) {
         uint64_t e = base + (uint64_t)k * CONTACT_SZ, r1 = coop_rd_ptr(e + 0x68), r2 = coop_rd_ptr(e + 0x80);
@@ -2408,14 +2497,20 @@ static void contacts_filter(uint64_t dc) {
             rt_log("coop: contact on the copy of %s by %s with %s (kind %u): %s", coop_actor_name(a, an, sizeof an),
                    who == 1 ? "this Link" : who == 2 ? "a co-op Link" : "something else", wn[0] ? wn : "-", LD8(e + 0x90),
                    drop ? "taken out (its owner's game counts it)" : "kept");
-        if (drop) { out++; continue; }
+        if (drop) {
+            if (who == 1 && coop_standin_puppet()) ce_queue(dc, a, e);
+            out++;
+            continue;
+        }
         if (keep != k) memmove((void *)(uintptr_t)(base + (uint64_t)keep * CONTACT_SZ), (void *)(uintptr_t)e, CONTACT_SZ);
         keep++;
     }
     if (out) memcpy((void *)(uintptr_t)(l + 0x18), &keep, 4);
+    ce_flush();
 }
 void coop_hit_update(Cpu *c) {
     contacts_test(c->x[0]);
+    ce_add(c->x[0]);
     contacts_filter(c->x[0]);
     if (contact_on()) {
         uint64_t x0 = c->x[0];
@@ -2828,6 +2923,11 @@ static void peer_tick(Cpu *c, uint64_t me) {
     while ((n = coop_net_hit_take(&lhp, sizeof lhp, &from)) != 0) {
         {   // contact replay (a test)
             const ContactPacket *cp = (const ContactPacket *)&lhp;
+            if (n >= (int)offsetof(ContactPacket, e) && cp->kind == ECONTACT_KIND && (int)cp->to == my_id && cp->n <= CONTACT_MAX &&
+                n == (int)(offsetof(ContactPacket, e) + cp->n * CONTACT_SZ)) {
+                ce_take(cp, from);
+                continue;
+            }
             if (n >= (int)offsetof(ContactPacket, e) && cp->kind == CONTACT_KIND) {
                 if (contact_on() && (int)cp->to == my_id && cp->n && cp->n <= CONTACT_MAX &&
                     n == (int)(offsetof(ContactPacket, e) + cp->n * CONTACT_SZ) && !atomic_load(&ct_n)) {
@@ -4366,6 +4466,8 @@ void coop_world_tick(Cpu *c, uint64_t me) {
     coop_anim_slots_test(me);
     void coop_anim_copy_test(Cpu *c, uint64_t me);   // (below)
     coop_anim_copy_test(c, me);
+    void coop_eqdiff_test(uint64_t me);   // (below)
+    coop_eqdiff_test(me);
 }
 
 // An enemy another game runs (contacts_filter): a copy following its owner, or one this game has seen run elsewhere
@@ -4637,11 +4739,36 @@ void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, uint64_t age_
     int played = 0, masked = 0;
     for (int i = 0; i < COOP_ANIM_SLOTS; i++) {
         if (in[i].idx != 0xffff) {
-            uint64_t b = anim_bind_at(g, in[i].bind);
+            // The masks are off unless TOTK_COOP_STANDIN_MASKS=1: with them, in a sword fight the stand-in stood in a
+            // T pose (pair test, attack_enemy_3rd.txt, frames of 2026-11-07), and without them it did not. The same
+            // offset in its graph may not hold the same mask (it has no Player component); not worked out.
+            static int masks = -1;
+            if (masks < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_MASKS"); masks = e && *e == '1'; }
+            uint64_t b = masks ? anim_bind_at(g, in[i].bind) : 0;
             masked += b != 0;
             anim_play_bind(c, q, i, in[i].idx, in[i].weight / 65535.0f, in[i].frame + in[i].rate * age, b), played++;
         } else if (i < n && have[i].idx != 0xffff && have[i].w > 0) anim_play(c, q, i, have[i].idx, 0, have[i].f);
     }
     static int said;
     if (played && !said++) rt_log("coop: stand-in: its owner's animation (%d slots, %d with a body mask) plays on it", played, masked);
+}
+
+// Test (TOTK_COOP_TEST_EQDIFF=1): this Link's EquipmentUser ([actor+0x228]+0x230, its first 0x4800 bytes) each tick;
+// every byte that goes between 0 and 1 is logged with the world time (at most 200 lines): to find the "weapon is
+// attacking" byte TotK Online copies onto its stand-in (1.2.1 eq+0x660; read for behaviour only) by a swing's times.
+void coop_eqdiff_test(uint64_t me) {
+    static int on = -1;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_EQDIFF") != NULL;
+    if (!on) return;
+    enum { N = 0x4800 };
+    static uint8_t last[N], now[N];
+    static int have, said;
+    static uint16_t flips[N];
+    uint64_t eq = coop_rd_ptr(coop_rd_ptr(me + 0x228) + 0x230);
+    if (!eq || !coop_rd(eq, now, N)) return;
+    if (have)
+        for (int i = 0; i < N && said < 200; i++)
+            if (now[i] != last[i] && now[i] <= 1 && last[i] <= 1 && flips[i]++ < 12)
+                rt_log("coop: test: eqdiff +%#x %u -> %u at %.2f s", i, last[i], now[i], frame_step_world_us() / 1e6), said++;
+    memcpy(last, now, N), have = 1;
 }
