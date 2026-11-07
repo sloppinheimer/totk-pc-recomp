@@ -46,6 +46,9 @@ ap.add_argument('--out', type=Path, help='default build/<version>/romfs-patches'
 ap.add_argument('--fields', default='InstanceHeapSize,DisplayRadius,LoadRadius',
                 help='(a test) the fields of the Player ActorInfo row put on the stand-in')
 ap.add_argument('--drop', default='', help='(a test) more components of the actor parameters left out, comma separated')
+ap.add_argument('--game-fields', default='DefaultAffiliation',
+                help="the fields of the Player's GameActorInfo row put on the stand-in's (comma separated; '' none)")
+ap.add_argument('--category', default='Enemy', help="(a test) the stand-in's actor category (TotK Online's: Enemy)")
 ap.add_argument('--resident-emitter', action='store_true',
                 help="(a test, the old pack) keep the Player's perception emitter as it is: resident, which enemies ignore")
 ap.add_argument('--emitter-sublayer', default='',
@@ -72,7 +75,7 @@ dic = dicts[zstandard.get_frame_parameters(raw).dict_id]
 pack = oead.Sarc(zstandard.ZstdDecompressor(dict_data=dic).decompress(raw, max_output_size=1 << 28))
 
 param = byml.read(bytes(pack.get_file('Actor/Player.engine__actor__ActorParam.bgyml').data))
-param['Category'] = 'Enemy'
+param['Category'] = args.category
 gone = [k for k in PLAYER_ONLY + tuple(x for x in args.drop.split(',') if x) if param['Components'].pop(k, None) is not None]
 w = oead.SarcWriter(endian=oead.Endianness.Little)
 for f in pack.get_files():
@@ -139,6 +142,15 @@ for table in (f'RSDB/ActorInfo.Product.{ver}.rstbl.byml.zs', f'RSDB/GameActorInf
         # when its owner is 40 m from this game's Link. (The handover suite case's "went away (state 7)" was game A
         # falling off the island and reloading, 2026-11-07.) The stand-in is wherever its owner is: always updated.
         row['CalcRadius'] = 100000.0
+    else:
+        # Its affiliation. An actor's DefaultAffiliation is in this table too (1356 rows; the Player's "Player"), and the
+        # test actor's row has none. With the Player's AffiliationParam alone and an emitter that is not resident, a
+        # Bokoblin 3 m from the stand-in noticed something for a few seconds and never became aware (the stand-in foe
+        # test, 2026-11-07): its perception filter (PerceptionFilterEnemy) takes its targets by affiliation, likely
+        # from here.
+        for k in (x for x in args.game_fields.split(',') if x):
+            if k in player: row[k] = player[k]
+            else: row.pop(k, None)
     row['__RowId'] = NAME
     if 'Category' in row: row['Category'] = param['Category']
     rows[ids.index(REPLACED)] = row
