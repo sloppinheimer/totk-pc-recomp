@@ -4398,6 +4398,35 @@ static void anim_slots_log(const char *who, uint64_t a) {
                (unsigned long long)p, (unsigned long long)(pv - MOD_MAIN_BASE), (unsigned long long)(coop_rd_ptr(pv + 0x30) - MOD_MAIN_BASE),
                p == ap ? " (= the model's player)" : "");
     }
+    {   // the partial binds (TotK Online, 1.2.1): G+0xf8 a count and an array of per-slot entries, each's byte +0x1c
+        // the slot's partial index; the bind record [[[G+0x20] + index*0x48]+0x58]+0x18]+8. Raw words to check them.
+        uint64_t c8 = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x40), x = c8 ? coop_rd_ptr(c8 + 0x18) : 0, g = x ? coop_rd_ptr(x + 0x18) : 0;
+        uint64_t w[8] = {0};
+        if (g) coop_rd(g + 0xf0, w, sizeof w);
+        char l2[600];
+        int m2 = snprintf(l2, sizeof l2, "coop: test: anim binds of %s: G+0xf0..: %llx %llx %llx %llx %llx %llx;", who, (unsigned long long)w[0],
+                          (unsigned long long)w[1], (unsigned long long)w[2], (unsigned long long)w[3], (unsigned long long)w[4], (unsigned long long)w[5]);
+        uint64_t ev[6] = {0};
+        if (w[1]) coop_rd(w[1], ev, sizeof ev);
+        m2 += snprintf(l2 + m2, sizeof l2 - m2, " [G+0xf8]: %llx %llx %llx %llx %llx %llx;", (unsigned long long)ev[0], (unsigned long long)ev[1],
+                       (unsigned long long)ev[2], (unsigned long long)ev[3], (unsigned long long)ev[4], (unsigned long long)ev[5]);
+        for (int z = 0; z < 6; z++) {   // each word that points somewhere: its first 8 pointers' byte +0x1c
+            uint64_t arr2 = ev[z];
+            if (arr2 < 0x100000000ull || arr2 > 0x8000000000ull) continue;
+            m2 += snprintf(l2 + m2, sizeof l2 - m2, " w%d:", z);
+            for (int i = 0; i < 7 && m2 < 560; i++) {
+                uint64_t e = coop_rd_ptr(arr2 + 8ull * i);
+                uint8_t b = 0xff;
+                if (e) coop_rd(e + 0x1c, &b, 1);
+                m2 += snprintf(l2 + m2, sizeof l2 - m2, " %u", b);
+            }
+        }
+        uint64_t g20 = g ? coop_rd_ptr(g + 0x20) : 0;
+        int32_t g18 = 0;
+        if (g) coop_rd(g + 0x18, &g18, 4);
+        m2 += snprintf(l2 + m2, sizeof l2 - m2, "; G+0x18 %d, G+0x20 %llx", g18, (unsigned long long)g20);
+        rt_log("%s", l2);
+    }
     for (int i = 0; arr && i < n && i < 8 && m < 640; i++) {
         uint8_t s[0x30];
         if (!coop_rd(arr + 0xb0ull * i, s, sizeof s)) break;

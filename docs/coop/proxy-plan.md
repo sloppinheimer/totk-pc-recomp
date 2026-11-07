@@ -63,7 +63,11 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   Not done: the owner's upper/lower body masks (a layered clip plays on the whole body), its arrows, the other
   co-op features on it (riding, shield surf, glider, hits it takes), and it is not seen moving in a frame yet.
 - **Not done:**
-  - the stand-in's arrows shot by it with its owner's camera (patched unproject), and the body masks (above);
+  - the stand-in's arrows shot by it with its owner's camera (patched unproject);
+  - the stand-in's body masks: 1.2.1's per-slot partial index (byte +0x1c of an entry in a list at G+0xf8) does not
+    read the same in 1.4.3: [G+0xf8] holds two lists of 2 entries (indices 0 4 and 4 5 on an idle Link), not one
+    per slot (TOTK_COOP_TEST_ANIMSLOTS logs them); G+0x18 is 7, G+0x20 the bind table. Layered clips play on the whole
+    body until it is worked out; idle and a swing looked right on frames;
   - Ultrahand glue made again in the other games, and breaks refused there: 1.2.1's doScotch / createScotch /
     removeScotch matched no single function in 1.4.3 (two to three candidates each), and no test script glues;
   - rotating ground's time copied ([[actor+0x228]+0x2b0]+0x20 float +0x3c in 1.2.1; no such actor near the test saves);
