@@ -114,7 +114,10 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   and what a shared quest flag does in a game whose quest is elsewhere. Known gaps: a change pushed by another thread
   between the read and calc is applied but not sent; the same flag changed in two games in one frame can end swapped.
 - **Not done:**
-  - the stand-in's arrows shot by it with its owner's camera (patched unproject);
+  - the stand-in's arrows shot by it with its owner's camera (patched unproject): not ported, on purpose for now.
+    TotK Online has the stand-in shoot because it syncs no arrows; here the owner's arrows (nocked and flying) are
+    sent as objects and their copies follow them (the `fuse` suite case), placed on the PlayerPuppet's bow after its
+    model phase as on the old co-op Link, and an arrow's damage on a copy goes to its owner as lost life;
   - enemies taking the stand-in for a player: the "is a player" check (1.2.1 main+0x1736dec, 1.4.3 main+0x1d1fc70 by
     tools/coop/xver_match.py, a guess 6/7) is hooked and answers 1 for a PlayerPuppet (coop_spawn.c), but in a sword
     fight beside the stand-in it was never called (TOTK_COOP_TEST_ISPLAYER logs its calls): the match may be wrong or
@@ -122,11 +125,16 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     0x1d1f9e4, 0x1d1fa54, 0x1d1ffd0) are not made (mid-function; no crash seen without them);
   - the stand-in's paraglider and Ultrahand arm as actors of their own tied to it (Parasail, PlayerRaulHand, by
     requestRegisterRelation), with the glider's colour and open state; the glider goes as a moved object's copy now,
-    only while open;
-  - riding, shield surf and hits taken, which work on the co-op Link, not done for the PlayerPuppet stand-in;
-  - all contacts with an actor another game owns taken out (here a Link's Weapon_ on an enemy copy, and every hit on
-    a PlayerPuppet stand-in), and the contacts other than this Link's sword on a copy (an enemy's body slam on this
-    Link) sent and put in on the other games;
+    only while open, and is placed on the PlayerPuppet after its model phase (2026-11-07: the copy was made in the
+    other game, glide.txt; not seen on a frame, the owner glided out of view);
+  - riding and shield surf on the PlayerPuppet (2026-11-07): it is put on its owner's ridden object (ride_place, in
+    coop_puppet_place) and its shield placed in a surf (shield_place after its model phase), as the co-op Link is;
+    in surf.txt the stand-in jumped with its shield as its owner did (small frames); riding an object not tried.
+    Hits it takes are all taken out where it is shown (contacts_filter): its owner's game has them on the real Link;
+  - contacts: here a Link's Weapon_ on an enemy copy is taken out and sent to the owner (CE), and every hit on a
+    PlayerPuppet is taken out. Not ported: TotK Online also takes out an enemy copy's body contacts on this Link and
+    replays them in the owner's game. Here the copy's own attack (its weapon or body) hurts this Link in this game,
+    and the owner's enemy's hit on the stand-in there is taken out, so each hit still counts once;
   - the actors TotK Online syncs by name (Animal, Korok, GameRomHorse, Barrel, BombFruit, TBox and more): here enemies
     and moved objects, and horses and animals (next item); chests are left out on purpose; actors past 1000 m deleted;
   - **horses and animals: written, not run in a game yet** (2026-11-07; runtime/coop_mounts.c, `TOTK_COOP_MOUNTS=1`
