@@ -230,10 +230,10 @@ void coop_mounts_tick(Cpu *c, uint64_t me) {
         const char *e = cfg_get("TOTK_COOP_TEST_MOUNT_PUT"), *col = e ? strchr(e, ':') : NULL;
         put_at = e ? (float)atof(e) : -1, put_id = col ? atoi(col + 1) : 0;
     }
-    if (put_id && coop_net_id() != put_id) put_at = -1;
+    if (put_id && coop_net_id() && coop_net_id() != put_id) put_at = -1;   // (not before this game has its id)
     static int puts;
     float wt = frame_step_world_us() / 1e6f;
-    if (put_at >= 0 && puts < 3 && wt >= put_at + 2 * puts && near_i >= 0 && !now_key && c) {
+    if (put_at >= 0 && (!put_id || coop_net_id() == put_id) && puts < 3 && wt >= put_at + 2 * puts && near_i >= 0 && !now_key && c) {
         puts++;
         uint64_t a = atomic_load_explicit(&horses[near_i].actor, memory_order_relaxed);
         float hp[3], hr[9];
