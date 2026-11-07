@@ -14,9 +14,10 @@
 #   -MarkShotsA / -MarkShotsB 30-60:2: that game saves the swapchain image, the overlay's map markers included, at those
 #    world seconds as <ShotsDir>\A-overlay\mark-<s>.png (TOTK_COOP_TEST_MARKSHOTS; -ShotsA/-ShotsB save the picture
 #    before the overlay); -MarkSelf: both games also mark their own Link and log the map transform every 2 s
+#   -EnvA / -EnvB "TOTK_COOP_TEST_TRAVEL=40;TOTK_COOP_TEST_NOTICESHOT=1": these settings for that game only
 param([int]$Seconds = 90, [string]$ScriptA = "tools\coop\walk.txt", [string]$ScriptB = "tools\coop\idle.txt", [string]$FakeGearA = "", [string]$FakeDyeA = "", [string]$FakeHandA = "",
       [string]$ShotsA = "", [string]$ShotsB = "", [string]$ShotsDir = "", [int]$QuitBAfter = 0, [string]$FakeAtA = "", [string]$SpawnA = "", [string]$SpawnB = "", [string]$Profile = "build\profile-v143", [switch]$ShotsSmall, [string]$BDir = "build\v143b",
-      [string]$MarkShotsA = "", [string]$MarkShotsB = "", [switch]$MarkSelf)
+      [string]$MarkShotsA = "", [string]$MarkShotsB = "", [switch]$MarkSelf, [string]$EnvA = "", [string]$EnvB = "")
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
@@ -60,6 +61,9 @@ foreach ($g in @(@{dir = $a; prof = 'build\prof-coop-a'; script = $ScriptA; name
     if ($mark) { $md = Join-Path (Join-Path $root $ShotsDir) "$($g.name)-overlay"; New-Item -ItemType Directory -Force $md | Out-Null; $env:TOTK_COOP_TEST_MARKSHOTS = $mark; $env:TOTK_MENU_TEST_DIR = $md }
     else { Remove-Item Env:TOTK_COOP_TEST_MARKSHOTS, Env:TOTK_MENU_TEST_DIR -ErrorAction SilentlyContinue }
     if ($MarkSelf) { $env:TOTK_COOP_TEST_MARKSELF = '1' } else { Remove-Item Env:TOTK_COOP_TEST_MARKSELF -ErrorAction SilentlyContinue }
+    foreach ($kv in (($EnvA + ';' + $EnvB) -split ';' | Where-Object { $_ -match '=' })) { Remove-Item "Env:$(($kv -split '=', 2)[0])" -ErrorAction SilentlyContinue }
+    $mine = if ($g.name -eq 'A') { $EnvA } else { $EnvB }
+    foreach ($kv in ($mine -split ';' | Where-Object { $_ -match '=' })) { $k, $v = $kv -split '=', 2; Set-Item "Env:$k" $v }
     $games += Start-Quiet (Join-Path $g.dir 'totk.exe') '' $g.dir
     Start-Sleep 3
 }
@@ -76,6 +80,6 @@ Stop-Process -Id $relay.Id -Force -ErrorAction SilentlyContinue
 Start-Sleep 1
 foreach ($d in $a, $b) {
     "=== $d"
-    Select-String -Path (Join-Path $d 'logs\totk.log') -Pattern 'coop net|coop: (slot|player slot|remote|markers)|FATAL' | Select-Object -ExpandProperty Line
+    Select-String -Path (Join-Path $d 'logs\totk.log') -Pattern 'coop net|coop: (slot|player slot|remote|markers|notice|test: notice|test: travel)|FATAL' | Select-Object -ExpandProperty Line
 }
 "=== relay"; Get-Content (Join-Path $root 'build\relay.log')

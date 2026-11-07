@@ -1124,6 +1124,11 @@ const char *romfs_entry(uint64_t i, uint64_t *offset, uint64_t *size) {
 
 const char *romfs_image_path(void) { return image_file; }
 
+void *romfs_read_whole(const char *rel, size_t *n, const char *keeps) {
+    Overlay *base;
+    return read_served(rel, &base, n, keeps);
+}
+
 size_t romfs_overlay_count(void) { return noverlay; }
 
 int romfs_patches_loaded(void) { return patches_loaded; }

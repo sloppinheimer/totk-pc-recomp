@@ -256,7 +256,43 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
     ground ..." (none 0), "the minimap shows (... layer), N_Cut_00 at (765, -360) 249x249 ... off <small>" and "the
     map shows ..." after 40 s. A large "off" on the minimap means the transform is wrong; a "no map shows" while the
     minimap is on screen means a pane check fails.
-- **Notices** when a player joins or leaves, and when one fast travels, with the place's name.
+- **Notices** when a player joins or leaves, and when one fast travels, with the place's name. Written 2026-11-07
+  (runtime/coop_notices.c, ui/coop_notices.cpp; `TOTK_COOP_NOTICES=0` turns them off). **Not run in the game yet**:
+  compiled with clang, and the place loading and naming ran on the real 1.4.3 files in a host test (below).
+  - **Shown with the port's overlay**, a line near the top of the screen for 6 s (drawn as the name tags are), not
+    the game's banners. The game's location banner (layout `Pa_LocationName`, opened by the sequence node
+    `SeqOneShotRequestOpenLocation`, main+0x1ff46f4 its name getter) takes a location, not a text, and no way to put
+    our own text in it was found. The sentence is in the menu language (6 new menu texts in en, ru, pt-BR, zh-Hans);
+    the place's name is in the game's language, and with a Japanese, Chinese or Korean game its glyphs are added to
+    that language's system font (fonts_up).
+  - **Joins and leaves**: each overlay frame compares `coop_net_players` with the last frame's. A join waits up to
+    3 s for the player's name (the relay's WELCOME). Players already there when this game takes its seat (the first
+    5 s) are "is here", not "joined". Leaving the session yourself, or the session ending, shows nothing.
+  - **Fast travel, detected by its effect (fallback)**: the game's warp request was not found (looked at: the
+    sequence's `WarpMgr` name getter main+0x1fd1bf4, `Game/WarpInfoTable` and its warp events `DmF_SY_WarpOut` /
+    `DmF_SY_WarpIn`, the `SeqQueryGetCurrentLocation` node). A travel is this Link more than 250 m from where it stood a
+    tick before, not within 20 s of its life reading 0 (a death's respawn), and 1.5 s later within 40 m of a shrine,
+    Skyview Tower or lightroot. Elsewhere (a travel medallion, a save loaded with the clock still running) it is
+    "is now near" the nearest named place within 600 m (shops and districts left out), or nothing.
+  - **Place names** come from the game's map locations: `Banc/MainField/LocationArea/MainField.locationarea.byml`
+    and MinusField's (1256 + 303 points; `LocationName` "Work/Location/<label>.game__location__Location.gyml"),
+    named from `Mals/<lang>.Product.<n>.sarc.zs`: `LocationMsg/Location.msbt` by label, shrines (`Dungeon<nnn>`) from
+    `LocationMsg/Dungeon.msbt` label `0<nnn>`. Russian and other languages keep a name's grammatical forms in tag
+    group 0xc9 type 10; the first form is used. The host test named 1533 of 1559 points in each of the 15 languages
+    (the 26 left: Dragon's Tears, minigame goals; no travel point among them), e.g. Tower01 "Lookout Landing Skyview
+    Tower", Dungeon000 "Tajikats Shrine", CheckPoint012 "Kimnaz Lightroot", Japanese ruby left out.
+  - **Wire**: the traveller sends the label (not the name) in a HIT packet of kind "TR" (`CoopTravelPacket`, 64
+    bytes), three times 0.4 s apart; each receiver tells it once (by its count) in its own language. NetState is
+    unchanged, so `COOP_NET_VERSION` stays 21: an older game drops the packet (no kind it knows).
+  - **Test**: tools/coop/notices_3rd.txt (with -EnvA/-EnvB, new in run_pair.ps1) has the command, the log lines and
+    the frames (`TOTK_COOP_TEST_NOTICESHOT=1` saves each notice's frame with the overlay as notice-<n>.png;
+    `TOTK_SHOTS` frames have no overlay). `TOTK_COOP_TEST_TRAVEL=<s>[,x,y,z]` puts this Link beside Ukouh Shrine
+    (or at x y z) with ForceSetMatrix, as a travel would, since a real fast travel cannot be scripted yet.
+  - **Unverified / to check in the game**: that a real fast travel's load leaves the Link more than 250 m away in one
+    co-op tick and standing within 40 m of the travel point's map marker 1.5 s after; whether leaving a shrine (its
+    inside is another stage) reads as a travel to that shrine (a false notice); whether a death's game over reads
+    life 0 before the respawn; whether a menu save load restarts the world clock (then no notice) or not ("is now
+    near"); the frame layout (top centre, 16% down) against the game's own HUD and its location banner.
 - **Character mods**: branch `mod-pack-restbl` (30f0a50, 2026-11-04) is now on main (cherry-picked 2026-11-07,
   no conflict). With it the full Playable Riju mod (7795 files served, 2278 changed files inside 70 packs) loads into
   the world as Riju on this build (sandbox C:\Dev\totk-sandbox, its exe replaced by this build's; the old one kept as

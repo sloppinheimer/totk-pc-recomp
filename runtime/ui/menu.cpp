@@ -63,6 +63,10 @@ void coop_tags_draw(float w, float h, float scale, bool menu_open);
 bool coop_markers_wanted(void);       // ui/coop_markers.cpp: the other players on the map and the minimap
 void coop_markers_draw(float w, float h, float scale, bool menu_open);
 const char *coop_markers_shot(void);
+int coop_notices_wanted(void);       // coop_notices.c: joins, leaves and fast travels to show (checked each frame)
+void coop_notices_draw(float w, float h, float scale, bool menu_open);   // ui/coop_notices.cpp
+void coop_notices_glyphs(const char *lang, void (*visit)(void *ctx, const char *text), void *ctx);
+const char *coop_notices_shot(void);   // ui/coop_notices.cpp: TOTK_COOP_TEST_NOTICESHOT's file for this frame, or NULL
 }
 
 // Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
@@ -360,6 +364,8 @@ static int fonts_up(float scale) {
             if (const CheatInfo *ci = cheats_info(k); ci && ci->name) b.AddText(ci->name);
         for (int k = 0; k < mods_count(); k++)
             if (const ModInfo *mi = mods_at(k); mi) b.AddText(mi->name);
+        // and the place names the co-op notices show, when the game speaks this language (coop_notices.c)
+        coop_notices_glyphs(kCjk[i].lang, add_row_glyphs, &b);
         b.BuildRanges(&ranges[i]);
         ImFontConfig mc;
         mc.MergeMode = true;
@@ -1504,6 +1510,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     perf_tick(plat_now_ns(), t);
     amiibo_tick();
     bool open = g_open.load(std::memory_order_relaxed);
+    bool notices = coop_notices_wanted();   // (each frame: it also finds the joins and leaves)
     if (!open) {
         if (g_save_pending) g_save_pending = opt_save_tick(1);   // closed: the last change goes to totk.ini now
         if (g_test.at && !g_test.opened && frame >= g_test.at) {
@@ -1512,7 +1519,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
             g_tab_request = 0;
             set_open(1);
             open = true;
-        } else if (!g_perf_mode && !coop_tags_wanted() && !coop_markers_wanted()) {
+        } else if (!g_perf_mode && !coop_tags_wanted() && !coop_markers_wanted() && !notices) {
             return 0;
         }
     }
@@ -1564,9 +1571,11 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     perf_draw(t, scale);
     coop_markers_draw((float)t->width, (float)t->height, scale, open);
     coop_tags_draw((float)t->width, (float)t->height, scale, open);
+    coop_notices_draw((float)t->width, (float)t->height, scale, open);
     ImGui::Render();
     if (!*shot) *shot = coop_markers_shot();   // TOTK_COOP_TEST_MARKSHOTS (tests)
     // TOTK_COOP_TEST_TAGSHOT=<frame>: that frame's swapchain image, overlay and all, to TOTK_MENU_TEST_DIR (tests)
+    *shot = coop_notices_shot();
     static long long tag_shot = -2;
     if (tag_shot == -2) tag_shot = cfg_get("TOTK_COOP_TEST_TAGSHOT") ? atoll(cfg_get("TOTK_COOP_TEST_TAGSHOT")) : -1;
     if (tag_shot > 0 && frame >= (uint64_t)tag_shot) {
