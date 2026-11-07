@@ -820,3 +820,33 @@ clearing +0x28 bit 0 as well; setting +0x28 to 0x80010 (it stayed so: the state 
 Likely an arrow made on its own, not by a bow, is put to sleep by the arrow's own logic, and only a bow's shot or
 nock keeps one awake. Next: find what the bow does to its arrow when it nocks it (the EquipmentUser's arrow, or
 the shot call), and do the same to the copy; or show the copy by another actor that does not sleep.
+
+## Map and minimap markers (research, 2026-11-07)
+- One screen draws both the map and the HUD minimap: AppMap_00 (UI/LayoutArchive/Common.Product.140.Nin_NX_NVN.blarc).
+  Its animation AppMap_00_MiniMap.bflan is the minimap pose: N_Cut_00..03 move to layout (765, -360), N_Cut_00
+  shrinks from 2250x1080 to 249x249, Pa_Map_00, Pa_MapIcon_00 and N_IconArea_00 scale to 0.9, and the full map's
+  cursor, stamp box and tabs are hidden. Confidence: sure for the files; that the HUD minimap is this pose is likely
+  (the set-up below loads "MiniMap" first and no other layout holds a map).
+- The map picture is the part Pa_Map_00 (PaMap_00.bflyt). Ground, depths and sky each have an SR/T pane pair
+  (N_GroundSR_00/N_GroundT_00, N_UndergroundSR_00/T, N_SkySR_00/T) above 3000x3000 tile pictures, the first at
+  (-16500, 13500): 36000x30000 units over Hyrule's 12000x10000 m, so 3 units a metre, y north (world -z). The game
+  pans and zooms by those panes, so the T pane's global matrix maps (3 x, -3 z) to the layout. Confidence: likely
+  (from the files; not yet checked against the game's own arrow, see the self check below).
+- main+0x96c1ac: the AppMap screen's layout set-up (x0 the screen, [screen+0x28] its layout): looks up its
+  animations ("MiniMap", "InArashi", ...), the part Pa_Map_00 (made into a 0x27758-byte map object at
+  screen+0x208), Pa_Cursor_00, Pa_PlayerNavi_00, N_IconArea_00 (screen+0x2a8), Pa_North_00 (screen+0x2a0). It sits
+  in a function table at main+0x372b3f0 that also points at "LayoutMsg/AppMap_00". Confidence: sure (code).
+- Layout lookups: main+0x406760 (layout, "Pane" or "Part/Pane") and main+0x406acc (layout, "Part"): a layout's root
+  pane is +0x18; its parts are a list at +0x48 (first node [+0x50], next [node+8], name inline at node-0x28, the part's
+  layout [node+0x10]). Confidence: sure (code).
+- nn::ui2d::Pane in 1.4.3 (type name N2nn4ui2d4PaneE, vtable main+0x357f280): +0x18 parent, +0x20 children list head
+  (first [+0x28], next [node+8], child node-8; main+0x6070 FindPaneByName, which does not look inside parts),
+  +0x30 translate, +0x3c rotate, +0x48 scale, +0x50 size, +0x58 flags (bit 0 visible), +0x59 alpha, +0x5a global
+  alpha, +0x5b base position, +0x70 global matrix (3x4 rows; the constructor main+0x10d6080 sets identity), +0xb0
+  name, +0xc9 user data. Confidence: sure (constructor, name setter main+0x402b30, the scale walk main+0x10d66d0).
+- What was not used: the game's own pins and stamps (placing one writes the save's map data), and new panes in the
+  layout (a RomFS patch, and the icons are made by code). Both need far more of the map object (0x27758 bytes)
+  understood than drawing over it with the overlay.
+- Self check for the transform: TOTK_COOP_TEST_MARKSELF=1 marks this PC's own Link too, and the log says where the
+  transform puts it ("this Link ... at (X, Y), off d"): on the minimap the game keeps Link in the middle of N_Cut_00,
+  so d near 0 there confirms the 3-units-a-metre mapping.
