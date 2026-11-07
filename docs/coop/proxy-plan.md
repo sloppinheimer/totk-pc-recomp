@@ -147,7 +147,28 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
    here or in re-notes.md and that no suite case uses.
 
 ## Wanted (the tester, 2026-11-07)
-- **Map and minimap markers** for the other players.
+- **Map and minimap markers** for the other players. Written (2026-11-07, branch `claude/coop-markers-e22868`),
+  never run: compiles (clang -fsyntax-only), nothing else checked.
+  - What it does: runtime/coop_markers.c finds the game's map screen (AppMap_00, which is also the HUD minimap) and
+    reads the global matrix of its ground pane, then ui/coop_markers.cpp draws a coloured dot and the player's name
+    for each other player with the overlay, clipped to the map's area; a player off the view is a ring on its edge
+    (no name on the minimap). The name tags over the Links are hidden while the full map shows. Nothing is written
+    to the game or the save: no pin, no stamp, no pane. `TOTK_COOP_MARKERS=0` turns it off. Evidence and offsets:
+    re-notes.md "Map and minimap markers".
+  - New hook: main+0x96c1ac (the map screen's set-up) in COOP_HOOKED, so the generated code rebuilds.
+  - Unproven: that the minimap is the AppMap screen in its MiniMap pose; the 3 layout units a metre; that a hidden
+    minimap (menus, cutscenes) shows as a hidden or transparent pane (if the game stops drawing the screen instead,
+    the markers stay on screen there); the layout-to-screen scale on a screen not 16:9 (assumed: the layout's 1080
+    rows fill the height, centred).
+  - Test: `$env:TOTK_COOP_PUPPET=1; tools\coop\run_pair.ps1 -Seconds 75 -ScriptA tools\coop\walk_far_3rd.txt
+    -ScriptB tools\coop\map_markers_3rd.txt -MarkShotsB 30-62:2 -ShotsDir build\markers -MarkSelf` (overlay shots in
+    build\markers\B-overlay). Expect in B's frames: before 40 s the minimap (bottom right) with a white dot on B's own
+    arrow (MarkSelf) and a blue or orange dot about 20 m away for A with the name "A"; 41-55 s the full map with both
+    dots and names, nearer each other after the zoom at 46 s; from 57 s the minimap again and no name tag drawn while
+    the full map was open. B's log: "coop: markers: the map screen was set up", "map panes: root ..., N_Cut_00 ...,
+    ground ..." (none 0), "the minimap shows (... layer), N_Cut_00 at (765, -360) 249x249 ... off <small>" and "the
+    map shows ..." after 40 s. A large "off" on the minimap means the transform is wrong; a "no map shows" while the
+    minimap is on screen means a pane check fails.
 - **Notices** when a player joins or leaves, and when one fast travels, with the place's name.
 - **Character mods**: branch `mod-pack-restbl` (30f0a50, 2026-11-04) is now on main (cherry-picked 2026-11-07,
   no conflict). With it the full Playable Riju mod (7795 files served, 2278 changed files inside 70 packs) loads into

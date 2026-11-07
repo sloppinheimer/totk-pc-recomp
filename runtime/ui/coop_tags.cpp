@@ -13,6 +13,7 @@ extern "C" {
 #include "host.h"
 typedef struct { float x, y, dist; char name[17]; } CoopTag;
 int coop_name_tags(CoopTag *out, int max, float aspect);
+int coop_markers_map_open(void);   // coop_markers.c: the game's full map shows
 }
 
 // Something to draw: a session with others in it (or the self test).
@@ -27,6 +28,7 @@ extern "C" bool coop_tags_wanted(void) {
 
 extern "C" void coop_tags_draw(float w, float h, float scale, bool menu_open) {
     if (menu_open || !coop_tags_wanted()) return;
+    if (coop_markers_map_open()) return;   // the full map covers the world: its markers name the players instead
     CoopTag tags[COOP_MAX_PLAYERS + 1];
     int n = coop_name_tags(tags, COOP_MAX_PLAYERS + 1, h > 0 ? w / h : 16.0f / 9.0f);
     static int t;

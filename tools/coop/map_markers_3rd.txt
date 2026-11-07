@@ -1,0 +1,11 @@
+# The 100% save (third in the Continue list), for game B while game A plays walk_far_3rd.txt (A walks about 20 m
+# away from 24 s to 33 s): B stands and shows the minimap, opens the map (MINUS) at 40 s, zooms in with the right
+# stick at 46 s, closes it at 56 s, and stands on the minimap again (coop_markers.c, the other player's marker).
+300 A 4
+520 DOWN 4
+580 DOWN 4
+640 A 4
+800 A 4
+@40000 MINUS 150
+@46000 RSTICK 0 32767 1500
+@56000 MINUS 150

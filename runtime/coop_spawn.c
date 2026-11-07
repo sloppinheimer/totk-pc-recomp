@@ -895,6 +895,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
     if (addr == MOD_MAIN_BASE + 0x31dbc0) { void coop_hit_delivered(Cpu *c); coop_hit_delivered(c); return 0; }   // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x300a30) { void coop_hit_update(Cpu *c); coop_hit_update(c); return 0; }        // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x50ad74) { void coop_enemy_action(Cpu *c); coop_enemy_action(c); return 0; }    // coop_world.c
+    if (addr == MOD_MAIN_BASE + 0x96c1ac) { void coop_markers_screen(uint64_t); coop_markers_screen(c->x[0]); return 0; }   // coop_markers.c: the AppMap screen's set-up
     // main+0x1d1fc70 (x0 an actor link, x1 its query): TotK Online's "is this a player" check (1.2.1 main+0x1736dec by
     // tools/coop/xver_match.py; read for behaviour only), made 1 for a PlayerPuppet stand-in, so the game's systems
     // that ask it (enemies' targets among them) take the stand-in for a player.

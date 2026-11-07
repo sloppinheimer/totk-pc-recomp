@@ -60,6 +60,9 @@ bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into th
 void tab_coop(float scale);          // ui/coop_tab.cpp (sets the page modal itself)
 bool coop_tags_wanted(void);          // ui/coop_tags.cpp: the other players' names over their Links
 void coop_tags_draw(float w, float h, float scale, bool menu_open);
+bool coop_markers_wanted(void);       // ui/coop_markers.cpp: the other players on the map and the minimap
+void coop_markers_draw(float w, float h, float scale, bool menu_open);
+const char *coop_markers_shot(void);
 }
 
 // Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
@@ -1509,7 +1512,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
             g_tab_request = 0;
             set_open(1);
             open = true;
-        } else if (!g_perf_mode && !coop_tags_wanted()) {
+        } else if (!g_perf_mode && !coop_tags_wanted() && !coop_markers_wanted()) {
             return 0;
         }
     }
@@ -1559,8 +1562,10 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     ImGui::NewFrame();
     if (open) layout_menu(t->width, t->height, scale);
     perf_draw(t, scale);
+    coop_markers_draw((float)t->width, (float)t->height, scale, open);
     coop_tags_draw((float)t->width, (float)t->height, scale, open);
     ImGui::Render();
+    if (!*shot) *shot = coop_markers_shot();   // TOTK_COOP_TEST_MARKSHOTS (tests)
     // TOTK_COOP_TEST_TAGSHOT=<frame>: that frame's swapchain image, overlay and all, to TOTK_MENU_TEST_DIR (tests)
     static long long tag_shot = -2;
     if (tag_shot == -2) tag_shot = cfg_get("TOTK_COOP_TEST_TAGSHOT") ? atoll(cfg_get("TOTK_COOP_TEST_TAGSHOT")) : -1;
