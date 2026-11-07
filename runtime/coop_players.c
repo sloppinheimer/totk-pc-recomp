@@ -2025,7 +2025,11 @@ static int prop_skip(const char *nm) {
                                 // point, a cannon terminal and door; taken as made, each game had copies of the other's,
                                 // and a warp to a place with a copied warp point hung about a minute (a play session,
                                 // 2026-11-06)
-                                "DgnObj_ZonauShrineEntrance", "DgnObj_WarpPoint", "ZonauShrine_EntranceGate", "FldObj_Cannon"};
+                                "DgnObj_ZonauShrineEntrance", "DgnObj_WarpPoint", "ZonauShrine_EntranceGate", "FldObj_Cannon",
+                                // the Gloom Hands (MiasmaSwarm and its MiasmaTentacle hands): made in one game when its
+                                // Link came near, then sent as moved objects; the other game's copy of a MiasmaTentacle
+                                // crashed it at once (access violation in main+0x4f2894, a play session, 2026-11-07)
+                                "Miasma"};
     // (LightningStrike, a thunderstorm's strike, was left out here for a while; it is sent again, the one that hits
     // this Link, so the others see it struck: the tester's list, 2026-11-06. Its copy runs its own update, copy_place.)   // chests: each player's own
     for (size_t i = 0; i < sizeof pre / sizeof *pre; i++) if (!strncmp(nm, pre[i], strlen(pre[i]))) return 1;
