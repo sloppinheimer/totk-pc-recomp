@@ -6,8 +6,13 @@
 // The map picture is the part Pa_Map_00 (layout PaMap_00), whose ground tiles are 3000-unit pictures laid out over
 // 36000x30000 units under the pane N_GroundT_00 (P_Ground_00_00 at (-16500, 13500)): 3 layout units a metre, x east,
 // y north (world -z), the world's (0, 0) in the middle. The game pans and zooms the map by moving and scaling the panes
-// above the tiles, so N_GroundT_00's global matrix takes a world point to the screen in both poses:
-//   layout = GlbMtx(N_GroundT_00) * (3 x, -3 z), screen = centre + layout * (screen height / 1080), y down.
+// above the tiles, so N_GroundT_00's global matrix takes a world point to the map's layout position:
+//   map = GlbMtx(N_GroundT_00) * (3 x, -3 z), screen = centre + layout * (screen height / 1080), y down.
+// On the full map, layout = map. The minimap is not drawn there: its matrix still puts this PC's Link at (0, 0)
+// (pair test 2026-11-07: "this Link at (0, 0)" in every minimap frame), so the map is drawn centred and shown in the
+// corner as a picture (P_MapCapture_00 in N_Cut_01, at (765, -360)). The game's own icons are live panes in
+// N_IconArea_00, which the MiniMap pose moves to (765, -360) and scales 0.9 like the map; there the markers take the
+// same way: layout = GlbMtx(N_IconArea_00) * map. The minimap is round: a player outside it sits on the circle.
 // Nothing is added to the game: no pin, stamp or pane, nothing in the save. The markers are drawn over the game's
 // picture, clipped to N_Cut_00's rectangle (the map's visible area in either pose), and a player outside it sits on its
 // edge.
@@ -92,12 +97,13 @@ static uint64_t find_part(uint64_t lyt, const char *name) {
 
 static const char *const T_NAMES[3] = {"N_GroundT_00", "N_UndergroundT_00", "N_SkyT_00"};
 static struct {
-    uint64_t screen, root, cut, part, t[3];
+    uint64_t screen, root, cut, part, icons, t[3];
     int miss;   // a lookup that found nothing: tried again after 120 frames, not every frame
 } P;
 
 static int panes_ok(void) {
-    if (!P.root || !name_is(P.root, "RootPane") || !name_is(P.cut, "N_Cut_00") || !name_is(P.part, "Pa_Map_00")) return 0;
+    if (!P.root || !name_is(P.root, "RootPane") || !name_is(P.cut, "N_Cut_00") || !name_is(P.part, "Pa_Map_00") ||
+        !name_is(P.icons, "N_IconArea_00")) return 0;
     for (int i = 0; i < 3; i++)
         if (P.t[i] && !name_is(P.t[i], T_NAMES[i])) return 0;
     return P.t[0] || P.t[1] || P.t[2];
@@ -117,12 +123,14 @@ static int resolve(void) {
     P.root = root;
     P.cut = find_pane(root, "N_Cut_00", 0, &budget);
     P.part = find_pane(root, "Pa_Map_00", 0, &budget);
+    P.icons = find_pane(root, "N_IconArea_00", 0, &budget);
     uint64_t map = find_part(lyt, "Pa_Map_00"), mroot = map ? coop_rd_ptr(map + LYT_ROOT) : 0;
     for (int i = 0; i < 3 && mroot; i++) budget = 4096, P.t[i] = find_pane(mroot, T_NAMES[i], 0, &budget);
     static int said;
     if (said++ < 4)
-        rt_log("coop: markers: map panes: root %#llx, N_Cut_00 %#llx, Pa_Map_00 %#llx (layout %#llx), ground %#llx, "
-               "depths %#llx, sky %#llx", (unsigned long long)root, (unsigned long long)P.cut, (unsigned long long)P.part,
+        rt_log("coop: markers: map panes: root %#llx, N_Cut_00 %#llx, N_IconArea_00 %#llx, Pa_Map_00 %#llx (layout %#llx), "
+               "ground %#llx, depths %#llx, sky %#llx", (unsigned long long)root, (unsigned long long)P.cut,
+               (unsigned long long)P.icons, (unsigned long long)P.part,
                (unsigned long long)map, (unsigned long long)P.t[0], (unsigned long long)P.t[1], (unsigned long long)P.t[2]);
     if (!panes_ok()) return 0;
     P.miss = 0;
@@ -148,6 +156,14 @@ static float shown(uint64_t pane) {
 
 static int glb(uint64_t pane, float m[12]) { return coop_rd(pane + PANE_GLBMTX, m, 48) && isfinite(m[0]) && isfinite(m[3]); }
 
+// A world position to the layout: through the ground pane's matrix m to the map's position, then through ic (the
+// icon area's matrix on the minimap, identity on the full map).
+static void to_layout(const float m[12], const float ic[12], const float p[3], float *X, float *Y) {
+    float lx = MAP_UNITS_PER_M * p[0], ly = -MAP_UNITS_PER_M * p[2];
+    float mx = m[0] * lx + m[1] * ly + m[3], my = m[4] * lx + m[5] * ly + m[7];
+    *X = ic[0] * mx + ic[1] * my + ic[3], *Y = ic[4] * mx + ic[5] * my + ic[7];
+}
+
 typedef struct { float x, y; int id, edge; char name[17]; } CoopMarker;   // x, y: pixels; edge: held at the map's edge
 typedef struct { int mode; float x0, y0, x1, y1, alpha; } CoopMarkView;   // mode 0 nothing shown, 1 map, 2 minimap
 
@@ -165,7 +181,7 @@ int coop_markers(CoopMarker *out, int max, float w, float h, CoopMarkView *v) {
     for (int i = 0; i < 3 && !t; i++)
         if (P.t[i] && (alpha = shown(P.t[i])) > 0.05f) t = P.t[i];
     float cut_alpha = t ? shown(P.cut) : 0;
-    float m[12], c[12], size[2];
+    float m[12], c[12], ic[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}, size[2];
     float k = h / 1080.0f;   // layout units to pixels: the layout's 1080 rows fill the screen's height
     float hx = 0, hy = 0;
     if (t && cut_alpha > 0.05f && glb(t, m) && glb(P.cut, c) && coop_rd(P.cut + PANE_SIZE, size, 8))
@@ -176,6 +192,7 @@ int coop_markers(CoopMarker *out, int max, float w, float h, CoopMarkView *v) {
         return 0;
     }
     v->mode = hx < MINI_MAX_HALF ? 2 : 1;
+    if (v->mode == 2 && !glb(P.icons, ic)) return 0;
     v->x0 = w / 2 + (c[3] - hx) * k, v->x1 = w / 2 + (c[3] + hx) * k;
     v->y0 = h / 2 - (c[7] + hy) * k, v->y1 = h / 2 - (c[7] - hy) * k;
     if (v->x0 < 0) v->x0 = 0;
@@ -196,13 +213,19 @@ int coop_markers(CoopMarker *out, int max, float w, float h, CoopMarkView *v) {
     char names[COOP_MAX_PLAYERS][17];
     int nn = coop_net_players(nids, names, COOP_MAX_PLAYERS), r = 0;
     float margin = (v->mode == 2 ? 6 : 10) * k;
+    float ccx = w / 2 + c[3] * k, ccy = h / 2 - c[7] * k, rad = fminf(hx, hy) * k - margin;   // the minimap's circle
     for (int i = 0; i < n && r < max; i++) {
-        float lx = MAP_UNITS_PER_M * pos[i][0], ly = -MAP_UNITS_PER_M * pos[i][2];
-        float X = m[0] * lx + m[1] * ly + m[3], Y = m[4] * lx + m[5] * ly + m[7];
+        float X, Y;
+        to_layout(m, ic, pos[i], &X, &Y);
         CoopMarker *o = &out[r++];
         o->x = w / 2 + X * k, o->y = h / 2 - Y * k, o->id = ids[i], o->edge = 0;
-        float cx = fminf(fmaxf(o->x, v->x0 + margin), v->x1 - margin), cy = fminf(fmaxf(o->y, v->y0 + margin), v->y1 - margin);
-        if (cx != o->x || cy != o->y) o->x = cx, o->y = cy, o->edge = 1;
+        if (v->mode == 2) {
+            float dx = o->x - ccx, dy = o->y - ccy, d = hypotf(dx, dy);
+            if (d > rad && rad > 0) o->x = ccx + dx * rad / d, o->y = ccy + dy * rad / d, o->edge = 1;
+        } else {
+            float cx = fminf(fmaxf(o->x, v->x0 + margin), v->x1 - margin), cy = fminf(fmaxf(o->y, v->y0 + margin), v->y1 - margin);
+            if (cx != o->x || cy != o->y) o->x = cx, o->y = cy, o->edge = 1;
+        }
         const char *nm = ids[i] ? "" : "(you)";
         for (int j = 0; j < nn; j++) if (nids[j] == ids[i]) nm = names[j];
         snprintf(o->name, sizeof o->name, "%s", nm[0] ? nm : "Player");
@@ -215,14 +238,12 @@ int coop_markers(CoopMarker *out, int max, float w, float h, CoopMarkView *v) {
     if (v->mode != last_mode || (self_test && ++ticks % 120 == 0)) {
         last_mode = v->mode;
         float X = 0, Y = 0;
-        if (have_me) {
-            float lx = MAP_UNITS_PER_M * mine[0], ly = -MAP_UNITS_PER_M * mine[2];
-            X = m[0] * lx + m[1] * ly + m[3], Y = m[4] * lx + m[5] * ly + m[7];
-        }
-        rt_log("coop: markers: %s shows (%s layer), N_Cut_00 at (%.0f, %.0f) %.0fx%.0f, zoom %.4f; this Link (%.0f, %.0f) "
-               "at (%.0f, %.0f), off %.1f; %d marker(s)", v->mode == 2 ? "the minimap" : "the map",
-               t == P.t[0] ? "ground" : t == P.t[1] ? "depths" : "sky", c[3], c[7], 2 * hx, 2 * hy,
-               sqrtf(m[0] * m[0] + m[4] * m[4]), mine[0], mine[2], X, Y, hypotf(X - c[3], Y - c[7]), r);
+        if (have_me) to_layout(m, ic, mine, &X, &Y);
+        rt_log("coop: markers: %s shows (%s layer), N_Cut_00 at (%.0f, %.0f) %.0fx%.0f, zoom %.4f, icon area at "
+               "(%.0f, %.0f) scale %.3f; this Link (%.0f, %.0f) at (%.0f, %.0f), off %.1f; %d marker(s)",
+               v->mode == 2 ? "the minimap" : "the map", t == P.t[0] ? "ground" : t == P.t[1] ? "depths" : "sky", c[3],
+               c[7], 2 * hx, 2 * hy, sqrtf(m[0] * m[0] + m[4] * m[4]), ic[3], ic[7], sqrtf(ic[0] * ic[0] + ic[4] * ic[4]),
+               mine[0], mine[2], X, Y, hypotf(X - c[3], Y - c[7]), r);
     }
     return r;
 }

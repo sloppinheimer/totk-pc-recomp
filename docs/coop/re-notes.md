@@ -847,6 +847,10 @@ the shot call), and do the same to the copy; or show the copy by another actor t
 - What was not used: the game's own pins and stamps (placing one writes the save's map data), and new panes in the
   layout (a RomFS patch, and the icons are made by code). Both need far more of the map object (0x27758 bytes)
   understood than drawing over it with the overlay.
+- Pair test (2026-11-07): full map right. On the minimap the ground pane's matrix put this Link at (0, 0) with zoom
+  0.252, not at N_Cut_00's (765, -360): the minimap is the map drawn centred and shown as a picture
+  (P_MapCapture_00 in N_Cut_01). The markers now go through N_IconArea_00's matrix there, the live pane the game's
+  icons sit in (likely; checked by the next run's "off").
 - Self check for the transform: TOTK_COOP_TEST_MARKSELF=1 marks this PC's own Link too, and the log says where the
   transform puts it ("this Link ... at (X, Y), off d"): on the minimap the game keeps Link in the middle of N_Cut_00,
   so d near 0 there confirms the 3-units-a-metre mapping.
