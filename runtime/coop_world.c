@@ -210,10 +210,30 @@ void coop_actors_all(void (*fn)(uint64_t actor, const char *name, uint32_t key, 
     }
 }
 
+// Enemies made at run time (no place in the map: a night's Stalkoblins, a spawner's) are made in the other games
+// too (spawn_*, below); each such actor's key is the one its maker gave it, kept here.
+#define KEYED_N 128
+static struct { _Atomic uint64_t actor; uint32_t key; } keyed[KEYED_N];
+static uint32_t keyed_of(uint64_t a) {
+    for (int i = 0; i < KEYED_N; i++) if (atomic_load_explicit(&keyed[i].actor, memory_order_acquire) == a) return keyed[i].key;
+    return 0;
+}
+static void keyed_set(uint64_t a, uint32_t key) {
+    int f = -1;
+    for (int i = 0; i < KEYED_N; i++) {
+        uint64_t x = atomic_load(&keyed[i].actor);
+        if (x == a) { f = i; break; }
+        if (f < 0 && !x) f = i;
+    }
+    if (f < 0) f = (int)(key % KEYED_N);
+    keyed[f].key = key, atomic_store_explicit(&keyed[f].actor, a, memory_order_release);
+}
 // An enemy this game updates, with its key (0 if not an enemy).
 static uint32_t enemy_of(int cell, uint64_t a, char *nm, size_t n) {
     coop_actor_name(a, nm, n);
     if (strncmp(nm, "Enemy_", 6)) return 0;
+    uint32_t kk = keyed_of(a);
+    if (kk) return kk;
     if (!home_is(cell, a)) {
         if (!coop_rd(a + COOP_ACTOR_POS, seen[cell].home, 12)) return 0;
         atomic_store_explicit(&seen[cell].home_of, a, memory_order_release);
@@ -2542,6 +2562,150 @@ static void link_dump_test(uint64_t me) {
     done++;
 }
 static void enemy_poke_test(void);   // (after pups)
+// ---- enemies made at run time, made in the other games too (TotK Online's way: it registers every actor the game
+// hands over from its create queue, 1.2.1 main+0xcd7d40, and the other games make one by name; read for behaviour).
+// The game hands a new actor over at main+0x89841c (ActorCreateInfo::getActor returning to main+0x898420; found from
+// the 1.2.1 site by its code). An Enemy_ with no map placement (its placement hash, [actor+0x370]+0x88 in 1.2.1, 0) is
+// sent to the others (SPAWN_KIND: its key, name, place, rotation), and each makes one there with that key; when it goes
+// away here without dying (unloaded), SPAWN_GONE deletes the others' (a death goes by the enemy sync).
+#define SPAWN_KIND 0x5053   // "SP"
+#define SPAWN_GONE 0x4753   // "SG"
+#define PLACE_HASH_PTR 0x370
+#define PLACE_HASH 0x88   // the same in 1.4.3: the same Chuchu's value in both games, another's different (TOTK_COOP_TEST_ACTORDUMP)
+typedef struct { uint32_t key, to, kind, pad; char name[48]; float pos[3], rot[9]; } SpawnPacket;
+_Static_assert(sizeof(SpawnPacket) <= COOP_HIT_MAX, "SpawnPacket fits a HIT packet");
+static struct { _Atomic uint64_t actor; uint64_t at_ns; } born[64];   // handed over here, to look at (spawn_tick)
+static _Atomic unsigned born_n;
+void coop_actor_created(uint64_t a) {   // coop_spawn.c, from the getActor hook
+    if (!a || !coop_net_on()) return;
+    unsigned i = atomic_fetch_add(&born_n, 1) % 64;
+    born[i].at_ns = plat_now_ns();
+    atomic_store(&born[i].actor, a);
+}
+static struct { uint32_t key; char name[48]; float pos[3]; int state; uint64_t actor, ref, ns; int from;
+                _Alignas(16) uint8_t handle[0x40], link[0x40]; } made[32];   // the copies being made here (state 1, 2 made)
+static struct { uint32_t key; uint64_t actor; } spawned_mine[64];   // enemies this game made at run time and sent
+static int spawn_on(void) {   // TOTK_COOP_SPAWN_SYNC=0: not done
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_SPAWN_SYNC"); on = !(e && *e == '0'); }
+    return on;
+}
+// Test (TOTK_COOP_TEST_ACTORDUMP=<dir>): 20 s into the world, each Enemy_ actor here (up to 6): its first 0x800 bytes,
+// and 0x200 bytes behind each word of them that points into the heap, to <dir>/actor_<player>_<key>.bin (for finding
+// the placement hash in 1.4.3: a word the same in both games for one enemy and different for another).
+static void actor_dump_test(void) {
+    static int done;
+    const char *dir = done ? NULL : cfg_get("TOTK_COOP_TEST_ACTORDUMP");
+    if (!dir || frame_step_world_us() < 20000000) return;
+    done = 1;
+    int n = 0;
+    for (int i = 0; i < SEEN_N && n < 6; i++) {
+        uint64_t a = atomic_load(&seen[i].actor);
+        char nm[48];
+        if (!a || strncmp(coop_actor_name(a, nm, sizeof nm), "Enemy_", 6)) continue;
+        uint32_t key = enemy_of(i, a, nm, sizeof nm);
+        static uint8_t buf[0x800 + 0x100 * 0x200];
+        memset(buf, 0, sizeof buf);
+        coop_rd(a, buf, 0x800);
+        for (int k = 0; k < 0x100; k++) {
+            uint64_t p;
+            memcpy(&p, buf + 8 * k, 8);
+            if (p > 0x100000000ull && p < 0x8000000000ull) coop_rd(p, buf + 0x800 + k * 0x200, 0x200);
+        }
+        char path[PLAT_PATH_MAX];
+        snprintf(path, sizeof path, "%s/actor_%d_%08x.bin", dir, coop_net_id(), key);
+        rt_log("coop: test: actordump %s %s: %s", nm, path, plat_file_write(path, buf, sizeof buf) ? "written" : "not written");
+        n++;
+    }
+}
+static void spawn_tick(Cpu *c) {
+    actor_dump_test();
+    if (!spawn_on()) return;
+    uint64_t now = plat_now_ns();
+    for (int i = 0; i < 64; i++) {   // new actors 0.3 s on (its place settled)
+        uint64_t a = atomic_load(&born[i].actor);
+        if (!a || now - born[i].at_ns < 300000000ull) continue;
+        atomic_store(&born[i].actor, 0);
+        char nm[48];
+        int32_t st = 0;
+        coop_actor_name(a, nm, sizeof nm);
+        if (strncmp(nm, "Enemy_", 6) || !coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6) continue;
+        uint64_t ph = 0, pp = coop_rd_ptr(a + PLACE_HASH_PTR);
+        if (pp) coop_rd(pp + PLACE_HASH, &ph, 8);
+        static int said;
+        if (said++ < 40) rt_log("coop: spawn sync: %s %llx handed over, placement hash %llx", nm, (unsigned long long)a, (unsigned long long)ph);
+        if (ph && ph != ~0ull) continue;   // placed in the map: every game has it
+        int ours = 0;   // a copy this game made for another
+        for (int k = 0; k < 32 && !ours; k++) if (made[k].state && made[k].actor == a) ours = 1;
+        float p[3], r[9];
+        if (!coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(a + COOP_ACTOR_ROT, r, 36)) continue;
+        for (int k = 0; k < 32 && !ours; k++)
+            if (made[k].state == 1 && !strcmp(made[k].name, nm) && dist3(made[k].pos, p) < 2) ours = 1, made[k].actor = a;
+        if (ours) continue;
+        SpawnPacket sp = {.key = enemy_key(nm, p), .kind = SPAWN_KIND};
+        snprintf(sp.name, sizeof sp.name, "%s", nm), memcpy(sp.pos, p, 12), memcpy(sp.rot, r, 36);
+        keyed_set(a, sp.key);
+        int f = 0;
+        for (int k = 0; k < 64; k++) if (!spawned_mine[k].key) { f = k; break; }
+        spawned_mine[f].key = sp.key, spawned_mine[f].actor = a;
+        coop_net_hit_send(&sp, sizeof sp);
+        rt_log("coop: spawn sync: %s %08x made here at %.1f %.1f %.1f: sent to the others", nm, sp.key, p[0], p[1], p[2]);
+    }
+    for (int k = 0; k < 32; k++) {   // the copies being made
+        if (made[k].state != 1) continue;
+        int st = coop_handle_status(made[k].handle);
+        if (st == 3) {
+            uint64_t a = coop_claim(c, made[k].handle, made[k].link, &made[k].ref);
+            if (a) made[k].actor = a, made[k].state = 2, keyed_set(a, made[k].key);
+            else made[k].state = 0;
+            rt_log("coop: spawn sync: %s %08x for player %d %s", made[k].name, made[k].key, made[k].from, a ? "made here" : "not made");
+        } else if (st > 3 || now - made[k].ns > 10000000000ull) {
+            made[k].state = 0;
+            rt_log("coop: spawn sync: %s %08x could not be made (%d)", made[k].name, made[k].key, st);
+        }
+    }
+    // this game's spawned enemies gone (unloaded, not dead): the others' copies go too
+    for (int k = 0; k < 64; k++) {
+        if (!spawned_mine[k].key) continue;
+        uint64_t a = spawned_mine[k].actor;
+        int32_t st = 0;
+        char nm[48];
+        int alive = coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6 && !strncmp(coop_actor_name(a, nm, sizeof nm), "Enemy_", 6);
+        if (alive && keyed_of(a) == spawned_mine[k].key) continue;
+        if (!alive || life_of(a) != 0) {
+            SpawnPacket sp = {.key = spawned_mine[k].key, .kind = SPAWN_GONE};
+            coop_net_hit_send(&sp, sizeof sp);
+            rt_log("coop: spawn sync: %08x gone here: the others go too", sp.key);
+        }
+        spawned_mine[k].key = 0, spawned_mine[k].actor = 0;
+    }
+}
+static void spawn_take(Cpu *c, const SpawnPacket *sp, int from) {
+    if (!spawn_on()) return;
+    for (int i = 0; i < KEYED_N; i++)
+        if (keyed[i].key == sp->key && atomic_load(&keyed[i].actor)) {
+            uint64_t a = atomic_load(&keyed[i].actor);
+            if (sp->kind == SPAWN_GONE) {
+                coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, a, COOP_DELETE_REASON, 0, 0);
+                atomic_store(&keyed[i].actor, 0);
+                rt_log("coop: spawn sync: %08x gone in player %d game: deleted here", sp->key, from);
+            }
+            return;   // (have it)
+        }
+    if (sp->kind != SPAWN_KIND) return;
+    for (int k = 0; k < 32; k++) if (made[k].state && made[k].key == sp->key) return;
+    for (int k = 0; k < 32; k++) {
+        if (made[k].state) continue;
+        memset(made[k].handle, 0, sizeof made[k].handle);
+        char nm[48];
+        snprintf(nm, sizeof nm, "%.47s", sp->name);
+        if (!coop_request_create(c, nm, sp->pos, sp->rot, made[k].handle)) return;
+        made[k].key = sp->key, made[k].state = 1, made[k].actor = 0, made[k].ns = plat_now_ns(), made[k].from = from;
+        memcpy(made[k].name, nm, sizeof nm), memcpy(made[k].pos, sp->pos, 12);
+        rt_log("coop: spawn sync: %s %08x made in player %d game: requested here", nm, sp->key, from);
+        return;
+    }
+}
 static void peer_tick(Cpu *c, uint64_t me) {
     pup_me = me;
     enemy_poke_test();
@@ -2569,6 +2733,10 @@ static void peer_tick(Cpu *c, uint64_t me) {
                 }
                 continue;
             }
+        }
+        {
+            const SpawnPacket *sp = (const SpawnPacket *)&lhp;
+            if (n == (int)sizeof(SpawnPacket) && (sp->kind == SPAWN_KIND || sp->kind == SPAWN_GONE)) { spawn_take(c, sp, from); continue; }
         }
         if (n >= (int)offsetof(LinkHitPacket, s) && lhp.kind == LINKHIT_KIND && lhp.nslots <= LH_SLOTS &&
             n == (int)(offsetof(LinkHitPacket, s) + lhp.nslots * sizeof(LinkHitSlot))) {
@@ -2598,6 +2766,7 @@ static void peer_tick(Cpu *c, uint64_t me) {
             }
     }
     epose_take_tick(c);
+    spawn_tick(c);
     epose_send_tick();
     link_hits_send();
     enemy_weapon_test();

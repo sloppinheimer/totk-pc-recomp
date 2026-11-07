@@ -895,6 +895,36 @@ int coop_hook(Cpu *c, uint64_t addr) {
     if (addr == MOD_MAIN_BASE + 0x31dbc0) { void coop_hit_delivered(Cpu *c); coop_hit_delivered(c); return 0; }   // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x300a30) { void coop_hit_update(Cpu *c); coop_hit_update(c); return 0; }        // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x50ad74) { void coop_enemy_action(Cpu *c); coop_enemy_action(c); return 0; }    // coop_world.c
+    // ActorCreateInfo::getActor (main+0x50d6bc) from the create queue (returning to main+0x898420): an actor the game
+    // hands over; run here, then its result goes to the spawn sync (coop_world.c coop_actor_created)
+    if (addr == MOD_MAIN_BASE + 0x50d6bc) {   // Test (TOTK_COOP_TEST_GETACTOR=1): which call sites run, every 1000 calls
+        static int on = -1;
+        if (on < 0) on = cfg_get("TOTK_COOP_TEST_GETACTOR") != NULL;
+        static struct { _Atomic uint64_t lr; _Atomic uint32_t n; } site[32];
+        static _Atomic uint32_t total;
+        for (int i = 0; on && i < 32; i++) {
+            uint64_t have = atomic_load(&site[i].lr), lr = c->x[30];
+            if (have == lr || (!have && atomic_compare_exchange_strong(&site[i].lr, &have, lr))) { atomic_fetch_add(&site[i].n, 1); break; }
+        }
+        if (on && (atomic_fetch_add(&total, 1) + 1) % 50 == 1)
+            for (int i = 0; i < 32 && atomic_load(&site[i].lr); i++)
+                rt_log("coop: test: getActor from main+%#llx: %u calls", (unsigned long long)(atomic_load(&site[i].lr) - MOD_MAIN_BASE), atomic_load(&site[i].n));
+    }
+    // (the create queues that hand actors over this way in 1.4.3, each "status 3, getActor(handle, 0, 0), handle
+    // cleared" as 1.2.1's main+0xcd7d40: main+0x50d364 (the async create manager's, most of them), 0x61a8b4,
+    // 0x6609b4, 0x89841c; TOTK_COOP_TEST_GETACTOR counted the sites, 2026-11-07)
+    uint64_t qlr = c->x[30] - MOD_MAIN_BASE;
+    if (addr == MOD_MAIN_BASE + 0x50d6bc && (qlr == 0x50d368 || qlr == 0x61a8b8 || qlr == 0x6609b8 || qlr == 0x898420)) {
+        static __thread int inside;
+        if (inside) return 0;
+        inside = 1;
+        c->pc = addr;
+        rt_dispatch(c);
+        inside = 0;
+        void coop_actor_created(uint64_t a);
+        coop_actor_created(c->x[0]);
+        return 1;
+    }
     if (addr == MOD_MAIN_BASE + 0x599670) return create_trace(c);
     // HUD control guide (bottom-right prompts such as "Dive R"): main+0x2192c50 (type) shows one, main+0x4cb540 (type)
     // hides one, on the one CtrlGuide screen. Every Player's calc calls them; a co-op Link's must not change this
