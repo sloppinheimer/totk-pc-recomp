@@ -1,6 +1,7 @@
 # The 100% save (third in the Continue list), nothing equipped: at 14 s equip the first weapon, then (L) the first
-# shield from the inventory, then hold the shield up (ZL) from 25 s to 130 s, standing. For an enemy's hits on a
-# guarding Link (both games guarding: one takes the enemy's real hits, the other the hits sent from it).
+# shield from the inventory, swing once at 23 s (the sword drawn: with it sheathed and no enemy aware of the Link,
+# ZL only locks on and the shield stays on the back, as in the game that follows the enemy), then at once hold the shield up
+# (ZL) from 23.4 s to 130 s, standing. For an enemy's hits on a guarding Link.
 300 A 4
 520 DOWN 4
 580 DOWN 4
@@ -13,4 +14,5 @@
 @18000 A 150
 @18800 A 150
 @19700 PLUS 150
-@25000 ZL 105000
+@23000 Y 150
+@23400 ZL 106000

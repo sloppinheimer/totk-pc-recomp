@@ -1013,6 +1013,34 @@ int coop_hook(Cpu *c, uint64_t addr) {
         if (atomic_fetch_add(&applied, 1) == 0) rt_log("coop: test: the copied pose goes on after the co-op Link's animation");
         return 1;
     }
+    if (addr == MOD_MAIN_BASE + 0x2192c50 && !coop_in_remote_calc()) {
+        // Test (TOTK_COOP_TEST_GUIDELOG=1): each distinct HUD prompt this Link's game shows (x1 its type) and the
+        // call chain that shows it, 30 of them: what decides the Sneakstrike prompt (an enemy not aware of Link).
+        static int on = -1;
+        static uint64_t seen[30];
+        static _Atomic int n;
+        if (on < 0) on = cfg_get("TOTK_COOP_TEST_GUIDELOG") != NULL;
+        uint64_t key = (c->x[1] & 0xffff) << 32 | ((c->x[30] - MOD_MAIN_BASE) & 0xffffffff);
+        int had = 0;
+        for (int i = 0; on && i < atomic_load(&n) && i < 30; i++) had |= seen[i] == key;
+        if (on && !had && atomic_load(&n) < 30) {
+            seen[atomic_fetch_add(&n, 1)] = key;
+            char chain[300];
+            int m = 0;
+            uint64_t fp = c->x[29];
+            for (int d = 0; d < 8 && fp && m < 280; d++) {
+                uint64_t next = 0, ret = 0;
+                if (!plat_mem_read(fp, &next, 8) || !plat_mem_read(fp + 8, &ret, 8) || !ret) break;
+                m += snprintf(chain + m, sizeof chain - m, " %llx", (unsigned long long)(ret - MOD_MAIN_BASE));
+                if (next <= fp) break;
+                fp = next;
+            }
+            chain[m] = 0;
+            rt_log("coop: test: guide prompt x0 %llx x1 %#llx x2 %#llx at %.1f s; lr main+%llx, frames%s", (unsigned long long)c->x[0],
+                   (unsigned long long)c->x[1], (unsigned long long)c->x[2], frame_step_world_us() / 1e6,
+                   (unsigned long long)(c->x[30] - MOD_MAIN_BASE), chain);
+        }
+    }
     if (addr == MOD_MAIN_BASE + 0x2192c50 || addr == MOD_MAIN_BASE + 0x4cb540) return coop_in_remote_calc();
     // The ability screen effects ([main+0x3a5e878], the manager at its +0x3a8 ability): main+0x2056f3c starts one,
     // main+0x205719c ends it ("UltraHand_End", "ReverseRecorder_End"...), main+0x2057384 focus on/off. A co-op Link's

@@ -2226,12 +2226,14 @@ static void link_hit_take(Cpu *c, const LinkHitPacket *lh, int from, uint64_t me
 static void hit_watch_test(uint64_t me) {
     static int on = -1, phase;
     static double from, to;
-    static unsigned off = 0x1a4;
+    static unsigned off = 0x1a4, comp = 0x2f8;   // [@<off>[:<comp>]]: <comp> another entry of the +0x228 table
     if (on < 0) {
         const char *e = cfg_get("TOTK_COOP_TEST_HITWATCH");
         on = e && sscanf(e, "%lf-%lf", &from, &to) == 2;
         const char *at = e ? strchr(e, '@') : NULL;
         if (at) off = (unsigned)strtoul(at + 1, NULL, 0);
+        const char *co = at ? strchr(at, ':') : NULL;
+        if (co) comp = (unsigned)strtoul(co + 1, NULL, 0);
     }
     if (!on || !me) return;
     double t = frame_step_world_us() / 1e6;
@@ -2251,7 +2253,7 @@ static void hit_watch_test(uint64_t me) {
     void coop_watch_disarm(void);
     extern int coop_watch_writes;
     if (phase == 0 && t >= from) {
-        uint64_t dc = coop_rd_ptr(coop_rd_ptr(me + 0x228) + 0x2f8);
+        uint64_t dc = coop_rd_ptr(coop_rd_ptr(me + 0x228) + comp);
         if (dc) coop_watch_writes = 1, phase = coop_watch_arm(dc + off, 8) ? 1 : 2;
     } else if (phase == 1 && t >= to) coop_watch_disarm(), phase = 2;
 }
@@ -2288,8 +2290,63 @@ static void guard_scan_test(uint64_t me) {
         if (any) rt_log("%s", line);
     }
 }
+// Test (TOTK_COOP_TEST_LINKDUMP=<s>[,<s2>[,<s3>]]): at those world seconds, this Link's actor (0x3000 bytes) and the
+// first 0x800 bytes of each object its +0x228 table points to (128 of them, in table order, zeros for none) to
+// <TOTK_COOP_TEST_LINKDUMP_DIR or .>/linkdump_<player id>_<n>.bin: two games' Links side by side, for a state one
+// has and the other not (an enemy aware of it).
+static void actor_dump(uint64_t a, const char *what, int n) {
+    enum { AS = 0x3000, CN = 128, CS = 0x800 };
+    static uint8_t buf[AS + CN * CS];
+    memset(buf, 0, sizeof buf);
+    coop_rd(a, buf, AS);
+    uint64_t tab = coop_rd_ptr(a + 0x228);
+    for (int k = 0; tab && k < CN; k++) {
+        uint64_t cp = coop_rd_ptr(tab + 8 * k);
+        if (cp > 0x100000000ull && cp < 0x8000000000ull) coop_rd(cp, buf + AS + k * CS, CS);
+    }
+    const char *dir = cfg_get("TOTK_COOP_TEST_LINKDUMP_DIR");
+    char path[PLAT_PATH_MAX];
+    snprintf(path, sizeof path, "%s/%sdump_%d_%d.bin", dir ? dir : ".", what, coop_net_id(), n);
+    rt_log("coop: test: %sdump %s at %.1f s: %s", what, path, frame_step_world_us() / 1e6, plat_file_write(path, buf, sizeof buf) ? "written" : "not written");
+}
+static uint64_t pup_ready_actor(uint32_t key);
+static void link_dump_test(uint64_t me) {
+    static int on = -1, done;
+    static double at[3];
+    static int nat;
+    if (on < 0) {
+        const char *e = cfg_get("TOTK_COOP_TEST_LINKDUMP");
+        nat = e ? sscanf(e, "%lf,%lf,%lf", &at[0], &at[1], &at[2]) : 0;
+        on = nat > 0;
+    }
+    if (!on || done >= nat || frame_step_world_us() / 1e6 < at[done]) return;
+    {   // and the nearest Enemy_ this game runs or follows (TOTK_COOP_TEST_LINKDUMP_KEY=<hex key>: that one)
+        const char *ks = cfg_get("TOTK_COOP_TEST_LINKDUMP_KEY");
+        uint32_t want = ks ? (uint32_t)strtoul(ks, NULL, 16) : 0;
+        uint64_t en = want ? pup_ready_actor(want) : 0;
+        for (int i = 0; !en && want && i < KNOWN_N; i++) if (mine_known[i].key == want) en = mine_known[i].actor;
+        if (en) actor_dump(en, "enemy", done);
+    }
+    enum { AS = 0x3000, CN = 128, CS = 0x800 };
+    static uint8_t buf[AS + CN * CS];
+    memset(buf, 0, sizeof buf);
+    coop_rd(me, buf, AS);
+    uint64_t tab = coop_rd_ptr(me + 0x228);
+    for (int k = 0; tab && k < CN; k++) {
+        uint64_t cp = coop_rd_ptr(tab + 8 * k);
+        if (cp > 0x100000000ull && cp < 0x8000000000ull) coop_rd(cp, buf + AS + k * CS, CS);
+    }
+    const char *dir = cfg_get("TOTK_COOP_TEST_LINKDUMP_DIR");
+    char path[PLAT_PATH_MAX];
+    snprintf(path, sizeof path, "%s/linkdump_%d_%d.bin", dir ? dir : ".", coop_net_id(), done);
+    rt_log("coop: test: linkdump %s at %.1f s: %s", path, frame_step_world_us() / 1e6, plat_file_write(path, buf, sizeof buf) ? "written" : "not written");
+    done++;
+}
+static void enemy_poke_test(void);   // (after pups)
 static void peer_tick(Cpu *c, uint64_t me) {
     pup_me = me;
+    enemy_poke_test();
+    link_dump_test(me);
     guard_scan_test(me);
     hit_watch_test(me);
     link_hit_check(me);
@@ -2445,6 +2502,33 @@ static struct {
     uint32_t weap_hash[EPOSE_ITEMS];
     PupRec r[PUP_HIST];
 } pups[PUP_N];
+// Test (TOTK_COOP_TEST_ENEMYPOKE=<comp>:<off>=<value>[;...]): every tick, those 32-bit words written into each
+// frozen enemy copy's component (+0x228 table entry <comp>): an aware enemy's state put on a copy, to find what makes
+// this game's Link see it as fighting it (no Sneakstrike prompt, the shield up).
+static void enemy_poke_test(void) {
+    static int n = -1;
+    static uint32_t cm[16], of[16], va[16];
+    if (n < 0) {
+        n = 0;
+        const char *e = cfg_get("TOTK_COOP_TEST_ENEMYPOKE");
+        while (e && *e && n < 16) {
+            unsigned a1, a2, a3;
+            if (sscanf(e, "%x:%x=%x", &a1, &a2, &a3) != 3) break;
+            cm[n] = a1, of[n] = a2, va[n] = a3, n++;
+            e = strchr(e, ';');
+            if (e) e++;
+        }
+        if (n) rt_log("coop: test: enemypoke %d words", n);
+    }
+    for (int p = 0; n && p < PUP_N; p++) {
+        uint64_t a = atomic_load(&pups[p].ready) ? atomic_load(&pups[p].actor) : 0, tab = a ? coop_rd_ptr(a + 0x228) : 0;
+        for (int k = 0; tab && k < n; k++) {
+            uint64_t o = coop_rd_ptr(tab + cm[k]);
+            if (o) memcpy((void *)(uintptr_t)(o + of[k]), &va[k], 4);
+        }
+    }
+}
+
 // Weapons let go (their enemy no longer posed here) whose body is still to be put back, by epose_take_tick.
 static uint64_t weap_free[64];
 static int weap_free_n;
