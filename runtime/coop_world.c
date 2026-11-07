@@ -457,8 +457,8 @@ static void target_probe_one(int cell, uint64_t a, void *arg) {
 int coop_watch_arm(uint64_t addr, uint64_t len);   // coop_watch_win.c: the readers of a range, reported on disarm
 void coop_watch_disarm(void);
 
-// Test (TOTK_COOP_TEST_WATCH5=<s>): from that many seconds into the world, for 10 s, the game functions that read
-// slot 5 ([main+0x3ad9830] +0x250, this Link's perception data where enemies seem to take the player from).
+// Test (TOTK_COOP_TEST_WATCH5=<s>): from that many seconds into the world, for 10 s (TOTK_COOP_TEST_WATCHLEN=<s>
+// for another length), the game functions that read slot 5 ([main+0x3ad9830] +0x250, this Link's perception data where enemies seem to take the player from).
 static const uint32_t skel_path[8] = {0x48, 0x2a8, 0x20, 0x20, 0, 0xf8, 0x58, 0xb0};   // actor to its body skeleton (g3d)
 static void watch_slot5(void) {
     const char *e = cfg_get("TOTK_COOP_TEST_WATCH5");
@@ -525,7 +525,7 @@ static void watch_slot5(void) {
         }
         if (obj && coop_watch_arm(obj + 0x250, 8)) phase = 1, rt_log("coop: test: watching slot 5 at %llx", (unsigned long long)(obj + 0x250));
         else phase = 2;
-    } else if (phase == 1 && s >= atof(e) + 10) {
+    } else if (phase == 1 && s >= atof(e) + (cfg_get("TOTK_COOP_TEST_WATCHLEN") ? atof(cfg_get("TOTK_COOP_TEST_WATCHLEN")) : 10)) {
         coop_watch_disarm();
         phase = 2;
     }

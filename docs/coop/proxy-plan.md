@@ -342,6 +342,10 @@ un_pair.ps1 -Seconds 80 -ScriptA
   Player`, no flicks at all. Next try: `make_puppet_pack.py --keep AttentionReceiverRef` puts the Player's
   AttentionReceiver back (left out as one-Link-only). Unlikely to be the cause: attention is the Link's lock-on side
   (the Bokoblin has AttentionSender and LockOn client params), not the enemy's perception. Not run.
+  Fourth run (cbea934, --keep AttentionReceiverRef): no change. Pack toggles stop here.
+  Next, read watches: who reads the stand-in's perception data during the flicks, against who reads this Link's in
+  a real notice. The functions that read the Link's data but not the stand-in's are where the stand-in drops out.
+  Uses TOTK_COOP_TEST_WATCH5 with WATCHWHAT=coopdata or data, and TOTK_COOP_TEST_WATCHLEN for the window.
   Unverified: that 20 m keeps B's own Link out of the Bokoblin's notice; the earlier note saw one stay unaware
   with the Link 44 m off.
 - Not done: TotK Online's four crash-guard patches in the bow function family (1.4.3 near main+0x1d1f960, 0x1d1f9e4,
