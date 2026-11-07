@@ -655,6 +655,7 @@ static int ride_place(const Slot *s, float out[3]);   // the owner rides an obje
 static void shield_place(Cpu *c, Slot *s);
 static uint64_t eq_item(uint64_t eq, int kind);
 static void drop_old_item(Cpu *c, uint64_t eq, int k, uint64_t old);
+static void watch_old_item(uint64_t eq, int k, uint64_t old, int remade);
 static int item_local(uint64_t link, uint64_t item, float local[3]);
 static void beam_dump(uint64_t a, int copy);
 static void beam_log(uint64_t a, uint32_t id, const char *who);
@@ -2075,16 +2076,33 @@ static int copy_pending_near(const float *p) {
 // proxy let go of it later, it lay on the ground, was sent as a world object and could be picked up in the owner's
 // game (a play session, 2026-11-05: "holds Weapon_Shield_030, owner -" four times, then "I move Weapon_Shield_030").
 // It is watched for 30 s; once it is out of the proxy's gear it is deleted, and it is never sent meanwhile.
-static struct { uint64_t actor, eq; int k, until, since; char name[48]; } old_items[16];
-static void drop_old_item(Cpu *c, uint64_t eq, int k, uint64_t old) {
-    (void)c;
+// remade: one only watched after its item was made again (deleted once out of the gear, kept while held).
+static struct { uint64_t actor, eq; int k, until, since, remade; char name[48]; } old_items[16];
+static void watch_old_item(uint64_t eq, int k, uint64_t old, int remade) {
     int f = 0;
     for (int i = 0; i < 16; i++) {
-        if (old_items[i].actor == old) { old_items[i].until = prop_tick + 900; return; }   // (since stays: the first time)
+        if (old_items[i].actor == old) {   // (since stays: the first time)
+            old_items[i].until = prop_tick + 900, old_items[i].remade &= remade;
+            return;
+        }
         if (old_items[i].until < old_items[f].until) f = i;
     }
     old_items[f].actor = old, old_items[f].eq = eq, old_items[f].k = k, old_items[f].until = prop_tick + 900, old_items[f].since = prop_tick;
+    old_items[f].remade = remade;
     coop_actor_name(old, old_items[f].name, sizeof old_items[f].name);
+}
+static void drop_old_item(Cpu *c, uint64_t eq, int k, uint64_t old) { (void)c, watch_old_item(eq, k, old, 0); }
+// give_gear on a co-op Link, and its weapon, bow or shield as it was before watched as an old item (deleted once out
+// of its gear, never sent meanwhile). Each item made again (taken out, put away, its gear fixed) is a new actor; the
+// one before stayed in the world, the prop sync sent it, and the other player had swords, shields and fused parts
+// lying about them (a play session, 2026-11-07).
+static void regive_gear(Cpu *c, uint64_t eq, int k, const char *name, int dye, int out_want, uint8_t st[0x60], const char *fuse,
+                        uint8_t att_st[0x60]) {
+    uint64_t old = k <= 2 ? eq_item(eq, k) : 0;
+    give_gear(c, eq, k, name, dye, out_want, st, fuse, att_st);
+    // (the create's new item takes the slot later: the old one is watched until it is out of the gear, and kept while
+    // it is held; an emptied slot's is let go of after 2 s even if still held, as before)
+    if (old) watch_old_item(eq, k, old, name[0] != 0);
 }
 static int old_item(uint64_t a) {
     for (int i = 0; i < 16; i++) if (old_items[i].actor == a && old_items[i].until >= prop_tick) return 1;
@@ -2098,7 +2116,7 @@ static void old_items_tick(Cpu *c) {
         // Still the proxy's: making its gear again with no item does not take it (load_3rd.txt: four tries, the
         // shield stayed in hand). After 2 s it is deleted all the same, as a broken weapon is, and the gear lets go.
         int held = eq_item(old_items[i].eq, old_items[i].k) == old_items[i].actor;
-        if (held && prop_tick - old_items[i].since < 60) continue;
+        if (held && (old_items[i].remade || prop_tick - old_items[i].since < 60)) continue;
         char nm[48];
         rt_log("coop: proxy: its old %s, %s, is deleted", coop_actor_name(old_items[i].actor, nm, sizeof nm), held ? "still in its gear" : "out of its gear");
         coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, old_items[i].actor, COOP_DELETE_REASON, 0, 0);
@@ -4784,10 +4802,8 @@ void coop_players_tick(Cpu *c, int numpad3) {
                     if ((none && k > 2) || (!strcmp(held[k], s->gear_want[k]) && !redye)) continue;   // nothing to change
                     rt_log("coop: slot %d: owner's gear slot %d is %s (dye %d%s%s)", i, coop_gear_slot[k], s->gear_want[k], s->dye_want[k],
                            k <= 2 && s->fuse_want[k][0] ? ", fused with " : "", k <= 2 ? s->fuse_want[k] : "");
-                    uint64_t old = none && k <= 2 ? eq_item(eq, k) : 0;
-                    give_gear(c, eq, k, none ? "" : s->gear_want[k], s->dye_want[k], -1, s->gear_str[k], k <= 2 ? s->fuse_want[k] : NULL,
-                              s->att_str[k < 3 ? k : 0]);
-                    if (old) drop_old_item(c, eq, k, old);
+                    regive_gear(c, eq, k, none ? "" : s->gear_want[k], s->dye_want[k], -1, s->gear_str[k], k <= 2 ? s->fuse_want[k] : NULL,
+                                s->att_str[k < 3 ? k : 0]);
                     // Proxy mode: armor made on the frozen proxy did not show (the hood and tunic stayed as they
                     // were; the default mode shows them, 2026-11-05). Its own update runs for a while to take it.
                     if (proxied(s)) s->thaw = PROXY_THAW_TICKS, rt_log("coop: proxy: slot %d runs its own update for %d ticks (gear)", i, PROXY_THAW_TICKS);
@@ -4820,7 +4836,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
                     if (no_remake < 0) no_remake = cfg_get("TOTK_COOP_TEST_NODRAWREMAKE") != NULL;
                     for (int k = 0; k < 3 && !no_remake; k++)
                         if ((s->out_want & ~s->out_have) >> k & 1 && s->gear_want[k][0] && strcmp(s->gear_want[k], GEAR_NONE)) {
-                            give_gear(c, eq, k, s->gear_want[k], -1, 1, s->gear_str[k], s->fuse_want[k], s->att_str[k]);
+                            regive_gear(c, eq, k, s->gear_want[k], -1, 1, s->gear_str[k], s->fuse_want[k], s->att_str[k]);
                             rt_log("coop: proxy: slot %d: %s made again in hand", i, s->gear_want[k]);
                         }
                     // ... and one put away is made again put away (the create's "2"): made in hand, the thaw no longer
@@ -4828,7 +4844,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
                     // with it, a play session, 2026-11-05).
                     for (int k = 0; k < 3 && !no_remake; k++)
                         if ((s->out_have & ~s->out_want) >> k & 1 && s->gear_want[k][0] && strcmp(s->gear_want[k], GEAR_NONE)) {
-                            give_gear(c, eq, k, s->gear_want[k], -1, 0, s->gear_str[k], s->fuse_want[k], s->att_str[k]);
+                            regive_gear(c, eq, k, s->gear_want[k], -1, 0, s->gear_str[k], s->fuse_want[k], s->att_str[k]);
                             rt_log("coop: proxy: slot %d: %s made again put away", i, s->gear_want[k]);
                         }
                 }
@@ -4861,10 +4877,8 @@ void coop_players_tick(Cpu *c, int numpad3) {
                         if (!strcmp(held2[k], s->gear_want[k])) continue;
                         rt_log("coop: proxy: slot %d gear slot %d holds %s, owner %s: made again", i, coop_gear_slot[k], held2[k], s->gear_want[k]);
                         int none = !strcmp(s->gear_want[k], GEAR_NONE);
-                        uint64_t old = none && k <= 2 ? eq_item(eq, k) : 0;
-                        give_gear(c, eq, k, none ? "" : s->gear_want[k], s->dye_want[k], k <= 2 ? (s->out_want >> k & 1) : -1, s->gear_str[k],
-                                  k <= 2 ? s->fuse_want[k] : NULL, s->att_str[k < 3 ? k : 0]);
-                        if (old) drop_old_item(c, eq, k, old);
+                        regive_gear(c, eq, k, none ? "" : s->gear_want[k], s->dye_want[k], k <= 2 ? (s->out_want >> k & 1) : -1, s->gear_str[k],
+                                    k <= 2 ? s->fuse_want[k] : NULL, s->att_str[k < 3 ? k : 0]);
                         fixed = 1;
                     }
                     if (fixed) s->thaw = PROXY_THAW_TICKS, ++*gear_fixes;
@@ -4881,7 +4895,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
                     // link-hands, every session of 2026-11-06).
                     for (int k = 0; k < 3; k++)
                         if (((now ^ s->out_want) >> k & 1) && s->gear_want[k][0] && strcmp(s->gear_want[k], GEAR_NONE)) {
-                            give_gear(c, eq, k, s->gear_want[k], -1, s->out_want >> k & 1, s->gear_str[k], s->fuse_want[k], s->att_str[k]);
+                            regive_gear(c, eq, k, s->gear_want[k], -1, s->out_want >> k & 1, s->gear_str[k], s->fuse_want[k], s->att_str[k]);
                             rt_log("coop: proxy: slot %d: %s made again %s", i, s->gear_want[k], s->out_want >> k & 1 ? "in hand" : "put away");
                         }
                 } else if (now == s->out_want) *retries = 0;
