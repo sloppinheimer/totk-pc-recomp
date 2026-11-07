@@ -114,6 +114,45 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     not throw or bash in the owner's game, so that hit is lost (code review, a guess);
   - the Gloom Hands: left out, as TotK Online leaves them out.
 
+## To remove once the TotK Online way is the default (2026-11-07)
+Nothing here goes before what replaces it is the default, the tester has played with it, and the full suite passes
+without it. One area per commit, the suite after each; the findings stay in this file and re-notes.md, the code in
+git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c 5078, coop_spawn.c 1783).
+1. **Enemy puppets, the frozen model** (`TOTK_COOP_ENEMY_MODEL=puppet`; replaced by the native enemy model, default
+   since 424a896). In coop_world.c: `enemy_puppets_on`, the pose packets with bones and items (`epose_calc_start`,
+   `epose_send_tick`'s bone and item part, `epose_take_tick`'s pose part, PupRec's bones), the enemy weapons frozen
+   and put in a copy's hand (`weap_collect`, `weap_one`, `weap_let_go`, `pups[].weap`), the awareness words
+   (`pup_aware_apply`, AWARE_*), the frozen copy's hits (`pup_hits`), the skeleton writers and phases
+   (`coop_enemy_puppet_skel`, `coop_enemy_puppet_writer`, `coop_enemy_puppet_calc`, `coop_enemy_puppet_phase` and
+   their lines in coop_spawn.c), the jitter logs, `enemy_poke_test`. Keep: the pose packet's header, EAction, the
+   owner and follow tables, `native_follow`, `coop_enemy_action`.
+2. **Hit relays the contact sync replaces**: hits on a proxy replayed in its owner's game (`link_hits_send`,
+   `link_hit_take`, `link_hit_deliver`, LinkHitPacket, `coop_hit_drop`, the guard-bit and shield tests), the
+   proxy-contact relay test (`contact_send`, `contact_add`, CONTACT_KIND, `contact_on`). Keep: `contacts_filter`,
+   the CE packets (`ce_queue`/`ce_take`/`ce_add`). The lost-life HitPacket stays until the stand-in shoots its own
+   arrows (it carries arrow and bomb damage now).
+3. **The co-op Link as a second Player** (replaced by the PlayerPuppet stand-in once it is the default): the
+   controller swap and input (`coop_players_calc`'s controller part, `set_input`, `coop_fill_controller`), what
+   kept a second Player from changing this game (the HUD guide, tips and game-data setters skipped inside its
+   update, coop_spawn.c), proxy mode (`proxy_drive`, `proxied`, thaws and attack thaws, `PROXY_THAW_TICKS`, the
+   gear retries and remakes on draw, `gear_fixes`, the in-hand bit writes of puppet mode), the skeleton record and
+   pose copies (`coop_proxy_put_records`, `coop_puppet_before_writer`, pose packets for Links, `snap`, the shake
+   and body-top logs). Keep: `coop_puppet_place` (the stand-in is placed by it), gear made once (`regive_gear`),
+   `gear_hand`, NetState and its slots.
+   **Before this goes, on the PlayerPuppet:** riding objects (`ride_place`, `ride_carry`), shield surf and the fused
+   shield's scale (`shield_place`, `proxy_fuse_scale`), the glider (a moved object's copy now), lightning sparks,
+   life shown on it, the name tags (check they find it), its arrows, and the audit's checks of a co-op Link
+   (sync_audit.py), and the suite cases that test the old one (`tour`'s swings, `equip`, `hands`) made for it.
+4. **One-off probes** (104 `TOTK_COOP_TEST_*` switches in runtime/coop_*.c): each whose finding is written down
+   here or in re-notes.md and that no suite case uses.
+
+## Wanted (the tester, 2026-11-07)
+- **Map and minimap markers** for the other players.
+- **Notices** when a player joins or leaves, and when one fast travels, with the place's name.
+- **Character mods**: branch `mod-pack-restbl` (one commit, 30f0a50, 2026-11-04, 147 behind main) raises the
+  resource-size entries of files inside a mod's packs, which made the Playable Riju mod load; never merged
+  (docs/coop/character-mods.md is on that branch). It touches runtime/romfs.c, which `restbl_overlay` changed since.
+
 ## Still wrong in a play session (last build, 075576d)
 - **Shake:** the puppet jumps 3-13 cm on some frames, even standing still. Its physics body now matches its owner
   exactly (position and rotation), so physics drift is not the cause. Almost every jump is in the same tick as a
