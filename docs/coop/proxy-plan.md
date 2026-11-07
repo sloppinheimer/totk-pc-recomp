@@ -276,6 +276,14 @@ right in the tester's own two-pad session.
     jerks a few times more than the enemy; not seen on screen.
 - Measuring tool for all of this: tools/coop/top_compare.py on TOTK_COOP_TOP_LOG from both games.
 
+- **The Gloom Hands are not synced** (to do, the tester's call 2026-11-07: "we need to sync that"). MiasmaSwarm and its
+  MiasmaTentacle hands are made in one game only, when its Link comes near (a spawner, not a map enemy), and their
+  names are no Enemy_, so the enemy sync never sees them. They went as moved objects instead, and the other game's
+  copy of a hand crashed it (access violation in main+0x4f2894, from main+0x2371630). Since 8cdaede the prop sync
+  skips "Miasma" (coop_players.c, prop_skip): no crash, and the other player does not see them. To do: run them as
+  enemies of the game that made them, and in the other game make the swarm (not single hands) and drive it as an
+  enemy copy, with its hands placed from the owner's; then hits both ways, and the Phantom Ganon that follows.
+
 ## Plan
 1. **Frozen proxy (make or break).** Passed (see Status). The co-op Link's own update is fully off in proxy mode. Each frame we drive:
    - its model transform, and the push to the model's parts;
@@ -295,4 +303,5 @@ right in the tester's own two-pad session.
 3. **Head and hair skeleton.** Not needed (see Status).
 4. **Animation state instead of bones** (research): find how the Player plays animations by name, so a proxy can
    replay them and get effects and sounds for free.
-5. **Enemies targeting the other player** (separate research; see "Enemy targets: not found").
+5. **Enemies targeting the other player**: done by the hand-over (Status, "Enemies fight only their own game's player").
+6. **The Gloom Hands in both games** (see "Still wrong").
