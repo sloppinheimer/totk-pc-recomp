@@ -67,9 +67,14 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   (bow_walk_3rd.txt): the stand-in's slots took the owner's clips with the owner's masks (0x1a8, 0x1f0, 0x2c8 by
   TOTK_COOP_TEST_ANIMSLOTS); not seen on a frame (the stand-in stayed far up the stairs). The mask's flags, which TotK
   Online copies too, are the stand-in's own.
-  The masks are off again unless `TOTK_COOP_STANDIN_MASKS=1`: in a sword fight (attack_enemy_3rd.txt) the stand-in
-  stood in a T pose with them and not without them; the same offset in its graph may not be the same mask (it has no
-  Player component). Not worked out.
+  The masks' flags: the stand-in's graph has the same layer objects at the same offsets, but the flags its graph
+  sets in them differ (a Link's whole-body mask 83 83 80 83 80 83 80, the stand-in's 83 83 80 80 83; TOTK_COOP_TEST_BINDS),
+  and with its own flags it stood in a T pose in a sword fight. So the owner also sends each used mask's state
+  (NetState.mask, CoopMask: offset, u16 +0x1c, byte flags [+0x10] count +8, word flags [+0x28] count +0x20;
+  COOP_NET_VERSION 22) and the stand-in's masks take it before its slots are played, the mask's change count (+0x18)
+  bumped so the play binds it again (coop_anim_masks_apply). With that, masks are on (`TOTK_COOP_STANDIN_MASKS=0`:
+  off): in the sword fight (attack_enemy_3rd.txt) the stand-in stood and held its sword, and walking with the bow
+  drawn (bow_walk_3rd.txt) it walked with the bow up (full-size frames, 2026-11-07).
   **Its sword's hits (2026-11-07):** the owner's weapon-attack byte (EquipmentUser +0x660 in 1.4.3 as in 1.2.1, 1 for
   about 0.1 s in each swing: TOTK_COOP_TEST_EQDIFF) goes as NetState flags bit 13 and is written onto the stand-in
   every tick. That alone made no contact from its swing in the owner's game. So, as TotK Online does, the contact of

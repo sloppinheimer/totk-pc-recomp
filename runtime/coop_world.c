@@ -4541,6 +4541,8 @@ void coop_world_tick(Cpu *c, uint64_t me) {
     coop_anim_copy_test(c, me);
     void coop_eqdiff_test(uint64_t me);   // (below)
     coop_eqdiff_test(me);
+    void coop_binds_test(uint64_t me);   // (below)
+    coop_binds_test(me);
     if (coop_world_role()) ground_tick();
 }
 
@@ -4813,11 +4815,11 @@ void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, uint64_t age_
     int played = 0, masked = 0;
     for (int i = 0; i < COOP_ANIM_SLOTS; i++) {
         if (in[i].idx != 0xffff) {
-            // The masks are off unless TOTK_COOP_STANDIN_MASKS=1: with them, in a sword fight the stand-in stood in a
-            // T pose (pair test, attack_enemy_3rd.txt, frames of 2026-11-07), and without them it did not. The same
-            // offset in its graph may not hold the same mask (it has no Player component); not worked out.
+            // The masks (TOTK_COOP_STANDIN_MASKS=0: none, every clip on the whole body). Played with the stand-in's
+            // own mask flags they put it in a T pose in a sword fight; with its owner's flags on them
+            // (coop_anim_masks_apply) it stood and held its sword (attack_enemy_3rd.txt frames, 2026-11-07).
             static int masks = -1;
-            if (masks < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_MASKS"); masks = e && *e == '1'; }
+            if (masks < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_MASKS"); masks = !(e && *e == '0'); }
             uint64_t b = masks ? anim_bind_at(g, in[i].bind) : 0;
             masked += b != 0;
             anim_play_bind(c, q, i, in[i].idx, in[i].weight / 65535.0f, in[i].frame + in[i].rate * age, b), played++;
@@ -4845,4 +4847,83 @@ void coop_eqdiff_test(uint64_t me) {
             if (now[i] != last[i] && now[i] <= 1 && last[i] <= 1 && flips[i]++ < 12)
                 rt_log("coop: test: eqdiff +%#x %u -> %u at %.2f s", i, last[i], now[i], frame_step_world_us() / 1e6), said++;
     memcpy(last, now, N), have = 1;
+}
+
+// Test (TOTK_COOP_TEST_BINDS=1): the masks at the graph offsets a Link's slots use (anim_bind_off), for this Link and
+// each stand-in side by side, every 2 s: the layer object's mask (+0xc0) and that mask's first 0x40 bytes, to see
+// whether one offset holds the same mask in both (the stand-in has no Player component).
+void coop_binds_test(uint64_t me) {
+    static int on = -1;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_BINDS") != NULL;
+    static uint64_t last;
+    uint64_t now = plat_now_ns();
+    if (!on || now - last < 2000000000ull) return;
+    last = now;
+    static const uint16_t offs[] = {0x1a8, 0x1f0, 0x238, 0x280, 0x2c8, 0x310};
+    uint64_t co[COOP_MAX_PLAYERS];
+    int ids[COOP_MAX_PLAYERS], nc = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
+    for (int w = 0; w <= nc && w < 3; w++) {
+        uint64_t a = w ? co[w - 1] : me, g = anim_graph_of(a);
+        for (unsigned k = 0; g && k < sizeof offs / sizeof offs[0]; k++) {
+            uint64_t layer = coop_rd_ptr(g + offs[k]), b = layer ? coop_rd_ptr(layer + 0xc0) : 0;
+            uint32_t v[16] = {0};
+            if (b) coop_rd(b, v, sizeof v);
+            char ln[400];
+            int m = snprintf(ln, sizeof ln, "coop: test: binds %s G+%#x: layer %llx (vt main+%#llx) mask %llx:", w ? "stand-in" : "this Link", offs[k],
+                             (unsigned long long)layer, (unsigned long long)(layer ? coop_rd_ptr(layer) - MOD_MAIN_BASE : 0), (unsigned long long)b);
+            for (int i = 0; i < 16; i++) m += snprintf(ln + m, sizeof ln - m, " %x", v[i]);
+            rt_log("%s", ln);
+        }
+    }
+}
+
+// The masks' state (CoopMask). The stand-in's graph has the same layer objects at the same offsets as a Link's, each
+// with its mask at +0xc0, but the flags the graph sets in them differ (a Link's whole-body mask 83 83 80 83 80 83 80,
+// the stand-in's 83 83 80 80 83, TOTK_COOP_TEST_BINDS, 2026-11-07): the stand-in's own graph does not set them as the
+// owner's does. So the owner sends the flags of each mask its slots use (offset, u16 +0x1c, byte flags [+0x10] count
+// +8, word flags [+0x28] count +0x20) and the stand-in's masks take them before its slots are played; a change bumps
+// the mask's change count (+0x18), which the play compares with the slot's (+0xa8) to bind it again.
+void coop_anim_masks_pack(uint64_t me, const CoopAnim *anim, CoopMask *out) {
+    memset(out, 0, sizeof(CoopMask) * COOP_ANIM_MASKS);
+    uint64_t g = anim_graph_of(me);
+    int n = 0;
+    for (int i = 0; g && i < COOP_ANIM_SLOTS && n < COOP_ANIM_MASKS; i++) {
+        uint16_t off = anim[i].bind;
+        int dup = !off;
+        for (int k = 0; k < n && !dup; k++) dup = out[k].off == off;
+        uint64_t b = dup ? 0 : anim_bind_at(g, off);
+        if (!b) continue;
+        CoopMask *m = &out[n];
+        uint32_t nb = 0, nw = 0;
+        coop_rd(b + 8, &nb, 4), coop_rd(b + 0x20, &nw, 4), coop_rd(b + 0x1c, &m->c1c, 2);
+        if (nb > 16) nb = 16;
+        if (nw > 16) nw = 16;
+        uint64_t pb = coop_rd_ptr(b + 0x10), pw = coop_rd_ptr(b + 0x28);
+        if ((nb && (!pb || !coop_rd(pb, m->b, nb))) || (nw && (!pw || !coop_rd(pw, m->w, 4 * nw)))) continue;
+        m->off = off, m->nb = (uint8_t)nb, m->nw = (uint8_t)nw, n++;
+    }
+}
+void coop_anim_masks_apply(uint64_t standin, const CoopMask *in) {
+    uint64_t g = anim_graph_of(standin);
+    int changed = 0;
+    for (int k = 0; g && k < COOP_ANIM_MASKS; k++) {
+        if (!in[k].off) continue;
+        uint64_t b = anim_bind_at(g, in[k].off);
+        uint32_t nb = 0, nw = 0;
+        if (!b || !coop_rd(b + 8, &nb, 4) || !coop_rd(b + 0x20, &nw, 4) || nb != in[k].nb || nw != in[k].nw) continue;   // (another shape)
+        uint64_t pb = coop_rd_ptr(b + 0x10), pw = coop_rd_ptr(b + 0x28);
+        uint8_t hb[16];
+        uint32_t hw[16];
+        uint16_t c1c = 0;
+        coop_rd(b + 0x1c, &c1c, 2);
+        if ((nb && (!pb || !coop_rd(pb, hb, nb))) || (nw && (!pw || !coop_rd(pw, hw, 4 * nw)))) continue;
+        if ((!nb || !memcmp(hb, in[k].b, nb)) && (!nw || !memcmp(hw, in[k].w, 4 * nw)) && c1c == in[k].c1c) continue;
+        if (nb) memcpy((void *)(uintptr_t)pb, in[k].b, nb);
+        if (nw) memcpy((void *)(uintptr_t)pw, in[k].w, 4 * nw);
+        ST16(b + 0x1c, in[k].c1c);
+        ST32(b + 0x18, LD32(b + 0x18) + 1);
+        changed++;
+    }
+    static int said;
+    if (changed && said++ < 5) rt_log("coop: stand-in: %d of its body masks set as its owner's", changed);
 }

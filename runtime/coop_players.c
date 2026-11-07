@@ -4626,6 +4626,8 @@ void coop_players_tick(Cpu *c, int numpad3) {
         if (fw && *fw) st.weather = atoi(fw);
         void coop_anim_pack(uint64_t me, CoopAnim *out);   // coop_world.c: the stand-in's animation (TOTK_COOP_STANDIN=puppet)
         coop_anim_pack(me, st.anim);
+        void coop_anim_masks_pack(uint64_t me, const CoopAnim *anim, CoopMask *out);   // coop_world.c
+        coop_anim_masks_pack(me, st.anim, st.mask);
         coop_net_publish(&st);
         if (coop_proxy_mode()) props_receive(c), ride_carry(c, me), destroy_watch(me), old_items_tick(c);   // placed objects co-op players move; riding them; destroyed
         props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test(), bone_arrow_test(me), impact_test(), glide_log(me), newnear_test(me), beam_test(me), beam_end_tick(), link_hit_test(me);
@@ -4689,6 +4691,8 @@ void coop_players_tick(Cpu *c, int numpad3) {
         if (coop_standin_puppet() && s->state == LIVE && s->actor && age < 2000000000ull && coop_rd(s->actor + COOP_ACTOR_STATE, &ast, 4) &&
             ast >= 2 && ast <= 6) {
             void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, uint64_t age_ns);   // coop_world.c
+            void coop_anim_masks_apply(uint64_t standin, const CoopMask *in);   // coop_world.c
+            coop_anim_masks_apply(s->actor, st.mask);
             coop_anim_apply(c, s->actor, st.anim, age);
         }
         if (st.seq != s->last_seq) {   // a new report: the owner's velocity since the previous one

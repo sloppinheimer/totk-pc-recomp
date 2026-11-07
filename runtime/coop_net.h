@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define COOP_MAX_PLAYERS 8
-#define COOP_NET_VERSION 21   // packet header version: games and relays of another version ignore each other
+#define COOP_NET_VERSION 22   // packet header version: games and relays of another version ignore each other
 
 // One player's state, sent about 30 times a second. Positions and directions are world space; the sticks are as the
 // player's own camera saw them, with the camera's horizontal forward and right so a receiver can turn them into its
@@ -33,6 +33,11 @@ typedef struct {
 // animation graph the mask's layer is (bind, an offset, 0 none; coop_world.c anim_bind_off).
 #define COOP_ANIM_SLOTS 7
 typedef struct { uint16_t idx, weight; float frame, rate; uint16_t bind, pad; } CoopAnim;
+// A body mask's state as the owner's animation graph set it (TotK Online sends a slot's partial-bind flags; read for
+// behaviour only): where it is (CoopAnim.bind, 0 none), its u16 at +0x1c, its byte flags ([+0x10], nb of them) and
+// its word flags ([+0x28], nw), at most 16 each (coop_world.c, coop_anim_pack).
+#define COOP_ANIM_MASKS 4
+typedef struct { uint16_t off, c1c; uint8_t nb, nw, pad[2]; uint8_t b[16]; uint32_t w[16]; } CoopMask;
 typedef struct {
     uint32_t seq, flags;              // flags bits 8..10: weapon, bow, shield in hand (puppet mode draws them);
                                       // bit 11: the shield is placed as shield_pos / shield_q say (a shield surf)
@@ -54,8 +59,9 @@ typedef struct {
     uint16_t life, life_max;          // this Link's life and most life, quarter hearts (0: unknown)
     float shield_fuse_scale[3];       // the scale (actor +0x2e4) of the actor fused to the shield (0: none or unknown)
     CoopAnim anim[COOP_ANIM_SLOTS];   // this Link's animation player's first slots (coop_world.c, coop_anim_pack)
+    CoopMask mask[COOP_ANIM_MASKS];   // the masks those slots use, as the owner's graph set them
 } NetState;
-_Static_assert(sizeof(NetState) == 464 + 16 * COOP_ANIM_SLOTS, "NetState wire size");
+_Static_assert(sizeof(NetState) == 464 + 16 * COOP_ANIM_SLOTS + 88 * COOP_ANIM_MASKS, "NetState wire size");
 #define COOP_GEAR_SLOTS 6
 extern const int coop_gear_slot[COOP_GEAR_SLOTS];   // the EquipmentUser slots they are (coop_players.c)
 
