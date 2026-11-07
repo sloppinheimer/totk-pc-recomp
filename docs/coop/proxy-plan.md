@@ -329,6 +329,15 @@ un_pair.ps1 -Seconds 80 -ScriptA
   said nothing. Both now take the owner's reported place (coop_players.c coop_player_places). The foe log also
   prints the stand-in's actor position each second. If it stays off the owner's place, enemies may sense the stand-in
   there, and its actor position must be kept at the owner's too.
+  Second run (a1294f6, places right): with the emitter not resident, the Bokoblin 3 m from the stand-in, facing it,
+  B's Link 26 m off, stayed unaware. Its awareness words went c182 12 12 0 0 28, then for a few seconds at a time
+  c182 12 12 1 0 5c (it noticed something), and never c082. Next cause, now fixed in the pack: the actor table
+  GameActorInfo holds an actor's DefaultAffiliation (1356 rows; the Player's "Player", the Bokoblin's "Enemy"), and
+  the stand-in's row (the test actor's) had none. The Bokoblin's receiver has DefaultFilter PerceptionFilterEnemy,
+  IsReceiveFromSensorWorld true and IsReceiveResidentEmitter false, so it senses the stand-in through the sensor
+  world and keeps targets by affiliation. make_puppet_pack.py now copies the Player's DefaultAffiliation into the
+  stand-in's row (`--game-fields`, default DefaultAffiliation; '' for the old row). `--category Player` tries the
+  Player's category instead of TotK Online's Enemy, if the affiliation alone is not enough. Not run.
   Unverified: that 20 m keeps B's own Link out of the Bokoblin's notice; the earlier note saw one stay unaware
   with the Link 44 m off.
 - Not done: TotK Online's four crash-guard patches in the bow function family (1.4.3 near main+0x1d1f960, 0x1d1f9e4,
