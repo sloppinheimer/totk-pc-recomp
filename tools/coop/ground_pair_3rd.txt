@@ -1,7 +1,7 @@
 # The 100% save (third in the Continue list), then nothing: with TOTK_COOP_TEST_GROUND=<s>[,x,y,z] in both games
 # (run_pair.ps1 passes the environment on) each Link is put at that place at that world time (default 4 m above the
 # rotating ground at 2394.5 267.0 520.8, Banc/MainField/H-5_Static) and the turning nodes' angles are logged every
-# second (coop_world.c, rotating ground).
+# second (coop_world.c, rotating ground). TOTK_COOP_TEST_GROUND_SPIN=1 as well: the host turns its platform on.
 480 A 4
 700 DOWN 4
 760 DOWN 4

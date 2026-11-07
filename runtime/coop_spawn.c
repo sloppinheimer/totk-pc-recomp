@@ -953,13 +953,12 @@ int coop_hook(Cpu *c, uint64_t addr) {
     if (addr == MOD_MAIN_BASE + 0xc6a9f0) { int coop_gamedata_event_bool(Cpu *c, uint64_t addr); return coop_gamedata_event_bool(c, addr); }
     // Ultrahand glue (coop_glue.c): doScotch main+0x1d66e34 (a bond made: captured), a bond's break main+0x1c0bb54
     if (addr == MOD_MAIN_BASE + 0x1d66e34 || addr == MOD_MAIN_BASE + 0x1c0bb54) { int coop_glue_hook(Cpu *c, uint64_t addr); return coop_glue_hook(c, addr); }
-    // the rotating-ground AI node's update, main+0x2329170 (coop_world.c, rotating ground)
-    // (and, for TOTK_COOP_TEST_GROUND, its enter, its turn helper and the ground control manager's set: counted)
-    if (addr == MOD_MAIN_BASE + 0x2329170 || addr == MOD_MAIN_BASE + 0x2329078 || addr == MOD_MAIN_BASE + 0x298a20c || addr == MOD_MAIN_BASE + 0x2988330) {
-        void coop_ground_probe(Cpu *c, uint64_t off), coop_ground_update(Cpu *c);
-        coop_ground_probe(c, addr - MOD_MAIN_BASE);
-        if (addr == MOD_MAIN_BASE + 0x2329170) coop_ground_update(c);
-        return 0;
+    // rotating ground (coop_world.c): the Rotate logic and AI nodes' updates and enters, their turn helper, the turn
+    // set, and the blackboard byte read the logic node takes its switch from
+    if (addr == MOD_MAIN_BASE + 0x1cf0260 || addr == MOD_MAIN_BASE + 0x1cf0160 || addr == MOD_MAIN_BASE + 0x2329170 || addr == MOD_MAIN_BASE + 0x2329078 ||
+        addr == MOD_MAIN_BASE + 0x298a20c || addr == MOD_MAIN_BASE + 0x2988330 || addr == MOD_MAIN_BASE + 0x1b13c9c) {
+        int coop_ground_hook(Cpu *c, uint64_t off);
+        return coop_ground_hook(c, addr - MOD_MAIN_BASE);
     }
     if (addr == MOD_MAIN_BASE + 0x31dbc0) { void coop_hit_delivered(Cpu *c); coop_hit_delivered(c); return 0; }   // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x300a30) { void coop_hit_update(Cpu *c); coop_hit_update(c); return 0; }        // coop_world.c

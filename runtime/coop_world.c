@@ -2439,33 +2439,60 @@ static int ct_is_link(uint64_t a) {
     return 0;
 }
 // ---- rotating ground (TotK Online's ActorGroundControlSync, read for behaviour only): a GroundControlActor_Rotate
-// actor turns the platforms tied to it. In 1.4.3 its AI node ExecuteGroundControlRotate (vtable main+0x37733c0) does
-// it: the node's update (main+0x2329170: x0 the node, x1 its context, +0xc the frame time) runs the turn helper at
-// node+0x20 (main+0x298a20c), which adds speed * time to the angle and puts the turn on the ground control the
-// helper's +0x18 index names (main+0x2988330). Helper: +8 top speed, +0xc acceleration, +0x10 speed now, +0x14 the
-// angle (radians, kept in 0..2 pi), set by the node's enter (main+0x2329078: RotateSpeedX, RotateAccelX * pi/180). The
-// node's actor: [[[node+8]+8]+0x1f8] (main+0x6bc918). (TotK Online's 1.2.1 place, [[actor+0x228]+0x2b0]+0x20 +0x3c,
-// is not this in 1.4.3; a spawned one read 0 there.)
-// So the update's entry is hooked (coop_ground_update, coop_spawn.c): every node seen is noted; the host (the lowest
-// player id, world role 1) sends each one's angle ten times a second ("GR" packets: key and angle, up to GR_MAX), and
-// in the others the update first sets its angle to the host's, moved on by this node's own speed for the time since
-// it came, so the platforms stand the same in every game. TOTK_COOP_GROUND=0: not.
+// actor turns the platforms tied to it. Two nodes in 1.4.3 drive the same turn helper (main+0x298a20c: (helper, input,
+// out)): the actor's own logic node ActorLogicGroundControlRotate (its parameters name it; enter main+0x1cf0160,
+// update main+0x1cf0260: x0 the node, x1 the frame time; node+8 the actor, helper at node+0x28), and the AI node
+// ExecuteGroundControlRotate (vtable main+0x37733c0; enter main+0x2329078, update main+0x2329170: x1+0xc the frame
+// time; actor [[[node+8]+8]+0x1f8], helper at node+0x20). Helper: +8 top speed, +0xc acceleration (RotateSpeedX,
+// RotateAccelX times pi/180, set by the enter), +0x10 speed now, +0x14 the angle (radians, kept in 0..2 pi), +0x18
+// the ground control's index. Its input: two bytes, turn and turn the other way, then the frame time. With either on,
+// the speed goes to the top speed; with neither, to 0; while the speed is not 0 it adds speed * time to the angle and
+// puts the turn on the ground control (main+0x2988330). The logic node reads its two bytes each update from the
+// actor's blackboard, RotateAxisX and RotateAxisXInv (main+0x1b13c9c, the two calls before the helper): a placed one
+// whose switch is off stands still (the H-5 one in a pair test: the helper ran each frame, the turn was never set,
+// 2026-11-07). The logic node's angle at node+0x3c is TotK Online's 1.2.1 place.
+// Each update's entry is hooked (coop_ground_hook, coop_spawn.c). The host (the lowest player id, world role 1) sends
+// each node's angle, speed and two switch bytes ten times a second ("GR" packets, up to GR_MAX), and in the others a
+// node's update first takes the host's: its angle moved on by the host's speed for the time since it came, the speed,
+// and (logic nodes) the switch bytes, answered in place of its own blackboard's, so the platforms turn and stand as
+// the host's. TOTK_COOP_GROUND=0: not.
 // Test: TOTK_COOP_TEST_GROUND=<s>[,x,y,z] (both games, tools/coop/ground_pair_3rd.txt): at that world time this Link
 // is put at x y z (default 4 m above the placed one at 2394.5 267.0 520.8, Banc/MainField/H-5_Static, RotateSpeedX
-// 6), and every second each node's angle, speed and, in a guest, the host's last are logged.
+// 6); every second each node's state and what turns ground near the Link are logged (ground_probe_log).
+// TOTK_COOP_TEST_GROUND_SPIN=1: the host turns its logic nodes on (RotateAxisX answered 1), for a test where the
+// platform's switch is off.
 #define GROUND_KIND 0x5247   // "GR"
 #define GR_MAX 16
-typedef struct { uint32_t kind, n; struct { uint32_t key; float phase; } g[GR_MAX]; } GroundPacket;
+typedef struct { uint32_t key; float angle, speed; uint8_t on, inv, pad[2]; } GroundState;
+typedef struct { uint32_t kind, n; GroundState g[GR_MAX]; } GroundPacket;
 _Static_assert(sizeof(GroundPacket) <= COOP_HIT_MAX, "GroundPacket fits a HIT packet");
-#define GROUND_ANGLE 0x34    // node+: the helper's angle
-#define GROUND_SPEED 0x30    // node+: the helper's speed now
+#define GH_SPEED 0x10   // helper+
+#define GH_ANGLE 0x14
+#define GH_TOP 0x8
 #define GROUND_N 32
-// The nodes seen (the update runs on game threads): node, its actor, when last seen; key and home set by the tick.
-static struct { _Atomic uint64_t node, actor; _Atomic int64_t seen_us; _Atomic uint32_t key; float home[3]; } gnodes[GROUND_N];
-static struct { _Atomic uint32_t key, phase_bits; _Atomic uint64_t ns; } ground_in[GR_MAX];   // the host's angles
+// The nodes seen (the updates run on game threads): node, its actor, its helper, when last seen, the switch bytes its
+// blackboard last gave (logic nodes); key and home set by the tick.
+static struct {
+    _Atomic uint64_t node, actor, helper;
+    _Atomic int64_t seen_us;
+    _Atomic uint32_t key;
+    _Atomic uint8_t on, inv, logic;
+    float home[3];
+} gnodes[GROUND_N];
+static struct { _Atomic uint32_t key; GroundState s; _Atomic uint64_t ns; } ground_in[GR_MAX];   // the host's
 static int ground_on(void) {
     static int on = -1;
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_GROUND"); on = !(e && *e == '0'); }
+    return on;
+}
+static int ground_test_on(void) {
+    static int on = -1;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_GROUND") != NULL;
+    return on;
+}
+static int ground_spin(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_TEST_GROUND_SPIN"); on = e && *e == '1'; }
     return on;
 }
 static float wrap_2pi(float a) {
@@ -2473,58 +2500,58 @@ static float wrap_2pi(float a) {
     a = fmodf(a, tp);
     return a < 0 ? a + tp : a;
 }
-void coop_ground_update(Cpu *c) {   // coop_spawn.c coop_hook: main+0x2329170's entry
-    if (!ground_on() || !coop_world_role()) return;
-    uint64_t node = c->x[0], a = node ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(node + 8) + 8) + 0x1f8) : 0;
-    if (!a) return;
+// Test counters (ground_probe_log): node updates and enters of each kind, helper runs, turns set (with their callers).
+static _Atomic uint32_t gp_update[2], gp_enter[2], gp_helper, gp_set;
+static struct { _Atomic uint64_t lr; _Atomic uint32_t n, idx; } gp_callers[16];
+// While a logic node's update runs on this thread: its slot, how many blackboard bytes it has read, and what to answer.
+static __thread int bb_slot = -1, bb_reads, bb_force;
+static __thread uint8_t bb_want[2];
+static int ground_slot(uint64_t node, uint64_t actor, uint64_t helper, int logic) {
     int f = -1;
     for (int i = 0; i < GROUND_N && f < 0; i++) if (atomic_load_explicit(&gnodes[i].node, memory_order_acquire) == node) f = i;
     for (int i = 0; i < GROUND_N && f < 0; i++) {
         uint64_t z = 0;
         if (atomic_compare_exchange_strong(&gnodes[i].node, &z, node)) f = i, atomic_store(&gnodes[i].key, 0);
     }
-    if (f < 0) return;
-    atomic_store_explicit(&gnodes[f].actor, a, memory_order_relaxed);
+    if (f < 0) return -1;
+    atomic_store_explicit(&gnodes[f].actor, actor, memory_order_relaxed);
+    atomic_store_explicit(&gnodes[f].helper, helper, memory_order_relaxed);
+    atomic_store_explicit(&gnodes[f].logic, (uint8_t)logic, memory_order_relaxed);
     atomic_store_explicit(&gnodes[f].seen_us, frame_step_world_us(), memory_order_release);
-    uint32_t key = atomic_load_explicit(&gnodes[f].key, memory_order_acquire);
-    if (!key || coop_world_role() == 1) return;
+    return f;
+}
+// The host's state for this key, moved on to now; 0 if none fresh.
+static int ground_host(uint32_t key, GroundState *out) {
     uint64_t now = plat_now_ns();
     for (int i = 0; i < GR_MAX; i++) {
         uint64_t ns = atomic_load_explicit(&ground_in[i].ns, memory_order_acquire);
         if (!ns || atomic_load_explicit(&ground_in[i].key, memory_order_relaxed) != key || now - ns > 1000000000ull) continue;
-        uint32_t bits = atomic_load_explicit(&ground_in[i].phase_bits, memory_order_relaxed);
-        float ph, sp = 0;
-        memcpy(&ph, &bits, 4);
-        coop_rd(node + GROUND_SPEED, &sp, 4);
-        ph = wrap_2pi(ph + sp * (float)(now - ns) / 1e9f);
-        memcpy(&bits, &ph, 4);
-        ST32(node + GROUND_ANGLE, bits);
-        static _Atomic int said;
-        if (!atomic_fetch_add(&said, 1)) rt_log("coop: ground %08x turns as the host's (angle %.3f)", key, ph);
-        break;
+        *out = ground_in[i].s;
+        if (atomic_load_explicit(&ground_in[i].ns, memory_order_acquire) != ns) return 0;   // changed while read
+        out->angle = wrap_2pi(out->angle + out->speed * (float)(now - ns) / 1e9f);
+        return 1;
     }
+    return 0;
 }
-// Test (TOTK_COOP_TEST_GROUND): what turns the ground near this Link. Counted on game threads, logged each second:
-// the calls of the Rotate node's update and enter (main+0x2329170, 0x2329078), of its turn helper (main+0x298a20c),
-// and of main+0x2988330 (ground control manager, &index, matrix), which puts a turn on the ground control an index
-// names whatever node drives it, with the callers' return addresses and the indices they set; and every actor within
-// 80 m whose name has "GroundControl", with its state, whether it ran its calc in the last second, and its ground
-// control index ([[[actor+0x228]+0x50]+0x20]+0x140 -> u16 +0xc, as the node's enter reads it). In the first run the
-// update was never seen though the area had loaded (the Link stood 7 m under H-5's), and the actor's parameters name
-// a logic node, ActorLogicGroundControlRotate, not the AI node (2026-11-07).
-static _Atomic uint32_t gp_update, gp_enter, gp_helper, gp_set;
-static struct { _Atomic uint64_t lr; _Atomic uint32_t n, idx; } gp_callers[16];
-static int ground_test_on(void) {
-    static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_GROUND") != NULL;
-    return on;
+static void ground_take_host(int f, uint64_t helper) {   // a guest: the host's angle and speed before the update
+    uint32_t key = atomic_load_explicit(&gnodes[f].key, memory_order_acquire);
+    GroundState s;
+    if (!key || coop_world_role() == 1 || !ground_host(key, &s)) return;
+    uint32_t b;
+    memcpy(&b, &s.angle, 4), ST32(helper + GH_ANGLE, b);
+    memcpy(&b, &s.speed, 4), ST32(helper + GH_SPEED, b);
+    bb_force = 1, bb_want[0] = s.on, bb_want[1] = s.inv;
+    static _Atomic int said;
+    if (!atomic_fetch_add(&said, 1)) rt_log("coop: ground %08x turns as the host's (angle %.3f, speed %.3f, on %d %d)", key, s.angle, s.speed, s.on, s.inv);
 }
-void coop_ground_probe(Cpu *c, uint64_t off) {   // coop_spawn.c coop_hook, with the main offset entered
-    if (!ground_test_on()) return;
-    if (off == 0x2329170) atomic_fetch_add_explicit(&gp_update, 1, memory_order_relaxed);
-    else if (off == 0x2329078) atomic_fetch_add_explicit(&gp_enter, 1, memory_order_relaxed);
-    else if (off == 0x298a20c) atomic_fetch_add_explicit(&gp_helper, 1, memory_order_relaxed);
-    else if (off == 0x2988330) {
+int coop_ground_hook(Cpu *c, uint64_t off) {   // coop_spawn.c coop_hook, with the main offset entered
+    if (off == 0x1b13c9c && bb_slot < 0) return 0;   // (a read every system makes: out at once)
+    if (!ground_on() || !coop_world_role()) return 0;
+    int test = ground_test_on();
+    if (off == 0x298a20c) { if (test) atomic_fetch_add_explicit(&gp_helper, 1, memory_order_relaxed); return 0; }
+    if (off == 0x2329078 || off == 0x1cf0160) { if (test) atomic_fetch_add_explicit(&gp_enter[off == 0x1cf0160], 1, memory_order_relaxed); return 0; }
+    if (off == 0x2988330) {
+        if (!test) return 0;
         atomic_fetch_add_explicit(&gp_set, 1, memory_order_relaxed);
         uint16_t idx = 0xffff;
         coop_rd(c->x[1], &idx, 2);
@@ -2535,7 +2562,48 @@ void coop_ground_probe(Cpu *c, uint64_t off) {   // coop_spawn.c coop_hook, with
                 break;
             }
         }
+        return 0;
     }
+    if (off == 0x2329170) {   // the AI node: its switch bytes are its own inputs, not taken here
+        if (test) atomic_fetch_add_explicit(&gp_update[0], 1, memory_order_relaxed);
+        uint64_t node = c->x[0], a = node ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(node + 8) + 8) + 0x1f8) : 0;
+        int f = a ? ground_slot(node, a, node + 0x20, 0) : -1;
+        if (f >= 0) ground_take_host(f, node + 0x20), bb_force = 0;
+        return 0;
+    }
+    if (off == 0x1cf0260) {   // the logic node: run here, its two blackboard reads watched (and answered in a guest)
+        static __thread int inside;
+        if (inside) return 0;
+        if (test) atomic_fetch_add_explicit(&gp_update[1], 1, memory_order_relaxed);
+        uint64_t node = c->x[0], a = node ? coop_rd_ptr(node + 8) : 0;
+        int f = a ? ground_slot(node, a, node + 0x28, 1) : -1;
+        if (f < 0) return 0;
+        bb_force = 0, bb_reads = 0;
+        ground_take_host(f, node + 0x28);
+        if (!bb_force && coop_world_role() == 1 && ground_spin()) bb_force = 1, bb_want[0] = 1, bb_want[1] = 0;
+        bb_slot = f;
+        inside = 1;
+        c->pc = MOD_MAIN_BASE + off;
+        rt_dispatch(c);
+        inside = 0;
+        bb_slot = -1, bb_force = 0;
+        return 1;
+    }
+    if (off == 0x1b13c9c) {   // the blackboard's byte read: only the first two inside a logic node's update
+        static __thread int inside;
+        if (inside || bb_slot < 0 || bb_reads >= 2) return 0;
+        int k = bb_reads++, f = bb_slot;
+        inside = 1;
+        c->pc = MOD_MAIN_BASE + off;
+        rt_dispatch(c);
+        inside = 0;
+        uint8_t v = (uint8_t)(c->x[0] & 1);
+        if (k == 0) atomic_store_explicit(&gnodes[f].on, v, memory_order_relaxed);
+        else atomic_store_explicit(&gnodes[f].inv, v, memory_order_relaxed);
+        if (bb_force) c->x[0] = (c->x[0] & ~1ull) | bb_want[k];
+        return 1;
+    }
+    return 0;
 }
 typedef struct { float me[3]; int n; char line[1400]; int len; } GroundNear;
 static int live_now(uint64_t a) {   // ran its calc in the last second (the seen table)
@@ -2564,6 +2632,9 @@ static void ground_near_one(uint64_t a, const char *nm, uint32_t key, void *arg)
                        live_now(a) ? " live" : " at rest", idx == 0xffff ? -1 : idx);
     g->n++;
 }
+// Test (TOTK_COOP_TEST_GROUND), each second: the GroundControl actors within 80 m of this Link (every actor, at rest
+// too), and the calls since the last line: node updates and enters (AI, logic), helper runs, turns set with their
+// callers' return addresses and indices.
 static void ground_probe_log(uint64_t me) {
     GroundNear g = {.n = 0, .len = 0};
     if (!coop_rd(me + COOP_ACTOR_POS, g.me, 12)) return;
@@ -2578,17 +2649,17 @@ static void ground_probe_log(uint64_t me) {
         n += snprintf(cl + n, sizeof cl - n, " main+%#llx x%u (index %u);", (unsigned long long)(lr - MOD_MAIN_BASE), atomic_exchange(&gp_callers[i].n, 0),
                       atomic_load(&gp_callers[i].idx));
     }
-    rt_log("coop: test: ground: in the last second: Rotate node update %u, enter %u, turn helper %u, ground control set %u;%s",
-           atomic_exchange(&gp_update, 0), atomic_exchange(&gp_enter, 0), atomic_exchange(&gp_helper, 0), atomic_exchange(&gp_set, 0), cl);
+    rt_log("coop: test: ground: in the last second: logic node update %u, enter %u; AI node update %u, enter %u; turn helper %u; turn set %u;%s",
+           atomic_exchange(&gp_update[1], 0), atomic_exchange(&gp_enter[1], 0), atomic_exchange(&gp_update[0], 0), atomic_exchange(&gp_enter[0], 0),
+           atomic_exchange(&gp_helper, 0), atomic_exchange(&gp_set, 0), cl);
 }
 static void ground_tick(Cpu *c, uint64_t me) {
     if (!ground_on() || !coop_net_on()) return;
     static int64_t test_at = -2;
     static float test_p[3] = {2394.5f, 271.0f, 520.8f};
-    static int test;
+    int test = ground_test_on();
     if (test_at == -2) {
         const char *v = cfg_get("TOTK_COOP_TEST_GROUND");
-        test = v != NULL;
         test_at = v ? (int64_t)(atof(v) * 1e6) : -1;
         const char *xyz = v ? strchr(v, ',') : NULL;
         if (xyz) sscanf(xyz + 1, "%f,%f,%f", &test_p[0], &test_p[1], &test_p[2]);
@@ -2603,12 +2674,12 @@ static void ground_tick(Cpu *c, uint64_t me) {
     static uint64_t last_send, last_test;
     uint64_t now = plat_now_ns();
     int log = test && now - last_test > 1000000000ull;
-    if (log) last_test = now;
-    if (log) ground_probe_log(me);
+    if (log) last_test = now, ground_probe_log(me);
     GroundPacket p = {.kind = GROUND_KIND};
     for (int i = 0; i < GROUND_N; i++) {
         uint64_t node = atomic_load_explicit(&gnodes[i].node, memory_order_acquire), a = atomic_load(&gnodes[i].actor);
-        if (!node || !a) continue;
+        uint64_t helper = atomic_load(&gnodes[i].helper);
+        if (!node || !a || !helper) continue;
         if (now_us - atomic_load(&gnodes[i].seen_us) > 2000000) {   // not updated for 2 s: gone (or asleep)
             atomic_store(&gnodes[i].key, 0), atomic_store_explicit(&gnodes[i].node, 0, memory_order_release);
             continue;
@@ -2616,26 +2687,25 @@ static void ground_tick(Cpu *c, uint64_t me) {
         char nm[64];
         coop_actor_name(a, nm, sizeof nm);
         uint32_t key = atomic_load(&gnodes[i].key);
+        int logic = atomic_load(&gnodes[i].logic);
         if (!key) {   // keyed once, by where it was first seen (a placed one by its placement: actor_key)
             if (!coop_rd(a + COOP_ACTOR_POS, gnodes[i].home, 12)) continue;
             key = actor_key(a, nm, gnodes[i].home);
             atomic_store_explicit(&gnodes[i].key, key, memory_order_release);
-            rt_log("coop: ground: %s %08x at %.1f %.1f %.1f is turned by its AI here", nm, key, gnodes[i].home[0], gnodes[i].home[1],
-                   gnodes[i].home[2]);
+            rt_log("coop: ground: %s %08x at %.1f %.1f %.1f is turned by its %s node here", nm, key, gnodes[i].home[0], gnodes[i].home[1],
+                   gnodes[i].home[2], logic ? "logic" : "AI");
         }
-        float ph = 0, sp = 0;
-        coop_rd(node + GROUND_ANGLE, &ph, 4), coop_rd(node + GROUND_SPEED, &sp, 4);
+        GroundState s = {.key = key, .on = atomic_load(&gnodes[i].on), .inv = atomic_load(&gnodes[i].inv)};
+        float top = 0;
+        coop_rd(helper + GH_ANGLE, &s.angle, 4), coop_rd(helper + GH_SPEED, &s.speed, 4), coop_rd(helper + GH_TOP, &top, 4);
         if (log) {
-            float host = -1;
-            for (int k = 0; k < GR_MAX; k++)
-                if (atomic_load(&ground_in[k].key) == key && now - atomic_load(&ground_in[k].ns) < 1000000000ull) {
-                    uint32_t b = atomic_load(&ground_in[k].phase_bits);
-                    memcpy(&host, &b, 4);
-                }
-            rt_log("coop: test: ground %s %08x angle %.3f speed %.3f%s, host's last %.3f", nm, key, ph, sp,
-                   coop_world_role() == 1 ? " (host)" : "", host);
+            GroundState h;
+            int have = ground_host(key, &h);
+            rt_log("coop: test: ground %s %08x (%s node) angle %.3f speed %.3f (top %.3f) switch %d %d%s; host's %s %.3f speed %.3f switch %d %d", nm, key,
+                   logic ? "logic" : "AI", s.angle, s.speed, top, s.on, s.inv, coop_world_role() == 1 ? " (host)" : "", have ? "now" : "none",
+                   have ? h.angle : 0.0f, have ? h.speed : 0.0f, have ? h.on : 0, have ? h.inv : 0);
         }
-        if (coop_world_role() == 1 && p.n < GR_MAX) p.g[p.n].key = key, p.g[p.n].phase = ph, p.n++;
+        if (coop_world_role() == 1 && p.n < GR_MAX) p.g[p.n++] = s;
     }
     if (coop_world_role() == 1 && p.n && now - last_send > 100000000ull) {
         last_send = now;
@@ -2650,10 +2720,9 @@ static void ground_take(const GroundPacket *p, int n) {
         for (int i = 0; i < GR_MAX && f < 0; i++) if (atomic_load(&ground_in[i].key) == p->g[k].key) f = i;
         for (int i = 0; i < GR_MAX && f < 0; i++) if (now - atomic_load(&ground_in[i].ns) > 2000000000ull) f = i;
         if (f < 0) continue;
-        uint32_t bits;
-        memcpy(&bits, &p->g[k].phase, 4);
-        atomic_store(&ground_in[f].ns, 0);   // (a reader skips it while it changes)
-        atomic_store(&ground_in[f].key, p->g[k].key), atomic_store(&ground_in[f].phase_bits, bits);
+        atomic_store(&ground_in[f].ns, 0);   // (a reader skips it, or sees the change and drops what it read)
+        ground_in[f].s = p->g[k];
+        atomic_store(&ground_in[f].key, p->g[k].key);
         atomic_store_explicit(&ground_in[f].ns, now, memory_order_release);
     }
 }

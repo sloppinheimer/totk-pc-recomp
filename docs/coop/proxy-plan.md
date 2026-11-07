@@ -261,37 +261,35 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     right stick quickly left and right until they part: A logs "bond 1 ... is no longer glued here: taken off the
     list" within 2 s and B "... is gone there: parted here". Also try it the other way (the person at B). The packets
     need no protocol version change (old builds drop them);
-  - rotating ground: written, not run (coop_world.c, rotating ground; `TOTK_COOP_GROUND=0` off). 1.2.1's place
-    for the phase ([[actor+0x228]+0x2b0]+0x20 float +0x3c) is not what turns it in 1.4.3: the turn is the AI node
-    ExecuteGroundControlRotate's (vtable main+0x37733c0): its update main+0x2329170 runs the helper at node+0x20
-    (main+0x298a20c), which adds speed * frame time to the angle at helper+0x14 (radians, kept in 0..2 pi; speed now
-    +0x10, top speed +8, acceleration +0xc, set from RotateSpeedX / RotateAccelX by the enter main+0x2329078) and puts
-    the turn on the ground control its +0x18 index names (main+0x2988330). The node's actor is [[[node+8]+8]+0x1f8].
-    So that update's entry is hooked: each node is noted and keyed (actor_key); the host sends each one's angle ten
-    times a second ("GR"), and in the other games the update first sets its angle to the host's, moved on by its own
-    speed for the time since it came. Not covered: GroundControlActor_RotateRightAngleOrder (the RotateInOrder node).
-    Placed ones in MainField (bcett files, 25): H-5_Static at 2394.5 267.0 520.8 (RotateSpeedX 6), the stacked sky
-    platforms of Set_SkyIsland_HyruleForest_F-2_South near 205.5 1062-1863 -2028 (10 of them, 2.5-26), Firone H-7
-    near 2344 1689-1757 1750, Akkare J-2 4472 1548 -2026, Zora H-4 2910.6 1065.4 -525, gerudo A-6 -3484.9 2042.5
-    320.0, Rito SkyField -3070..-2844, LargeDungeonWater 3502.8 1922.4 -704.7; none on the Great Sky Island. Test:
-    `$env:TOTK_COOP_TEST_GROUND='25'` (or '25,x,y,z'), run_pair.ps1 -Seconds 70 -ScriptA tools\coop\ground_pair_3rd.txt
-    -ScriptB tools\coop\ground_pair_3rd.txt: both Links are put 4 m above H-5's at 25 s (2.5 km from the save's
-    start: the area must stream in). Each game logs "coop: test: ground: this Link put at 2394.5 271.0 520.8", then
-    "coop: ground: GroundControlActor_Rotate <key> at 2394.5 267.0 520.8 is turned by its AI here" with the same key
-    in both, then every second "coop: test: ground GroundControlActor_Rotate <key> angle a speed s[ (host)], host's
-    last h"; the guest once "coop: ground <key> turns as the host's (angle ...)". A pass: s reaching 0.105 (6 degrees a
-    second: the enter multiplies RotateSpeedX and RotateAccelX by pi/180, main+0x2d02604) and rising angles in
-    the host; in the guest its angle within about 0.02 of the host's last, every second. No "is turned by its AI" line
-    means the node does not run there (the area did not load, or the actor's AI is another node).
-    First run (pair test on main, 2026-11-07): both Links were put there and stood at y 259.8 (the area loaded, the
-    actor's place is 7 m above), and no node was ever seen, so the hooked update never ran. The actor's parameters
-    (Pack/Actor/GroundControlActor_Rotate) name a logic node, ActorLogicGroundControlRotate (aidefn), its GroundControl
-    type "Rotate", and blackboard RotateSpeedX (0) / RotateAccelX (360): what runs it is not known. The test now logs
-    each second "coop: test: ground: this Link at x y z; GroundControl actors within 80 m: n; <name> at d m (x y z)
-    state s live|at rest index i; ..." and "coop: test: ground: in the last second: Rotate node update u, enter e, turn
-    helper h, ground control set g; main+<return address> xN (index i); ...". main+0x2988330, which sets the turn of
-    the ground control an index names, is counted with its callers: the caller that sets the H-5 actor's index is
-    what turns it, and is the next place to read;
+  - rotating ground: written, the sync not seen working yet (coop_world.c, rotating ground; `TOTK_COOP_GROUND=0`
+    off). What turns it in 1.4.3, by code: a turn helper (main+0x298a20c; +8 top speed, +0xc acceleration, +0x10 speed
+    now, +0x14 the angle in radians kept in 0..2 pi, +0x18 the ground control's index) that two nodes drive: the
+    actor's own logic node ActorLogicGroundControlRotate (named by Pack/Actor/GroundControlActor_Rotate's parameters;
+    enter main+0x1cf0160, update main+0x1cf0260, node+8 the actor, helper at node+0x28, so the angle is at node+0x3c,
+    TotK Online's 1.2.1 place) and the AI node ExecuteGroundControlRotate (update main+0x2329170, helper at
+    node+0x20). Each update gives the helper two switch bytes, turn and turn the other way; the logic node reads them
+    from the actor's blackboard (RotateAxisX, RotateAxisXInv, main+0x1b13c9c). With neither on the speed falls to 0
+    and no turn is set (main+0x2988330 is called only while the speed is not 0). Pair test at H-5's (2026-11-07, 621b133):
+    the GroundControlActor_Rotate at 2394.5 267.0 520.8 (ground control index 8952) was live, the helper ran once a
+    frame, the AI node never, and no turn was set: its switch is off, so it does not turn in that save.
+    The sync now hooks both updates: the host sends each node's angle, speed and two switch bytes ("GR", 16 bytes
+    each), and in a guest the update first takes the host's angle (moved on by the host's speed for the time since it
+    came) and speed, and its two blackboard reads answer the host's switch bytes. Placed ones in MainField (bcett, 25,
+    none on the Great Sky Island): H-5_Static 2394.5 267.0 520.8 (RotateSpeedX 6), Set_SkyIsland_HyruleForest_F-2_South
+    near 205.5 1062-1863 -2028 (10, 2.5-26), Firone H-7 near 2344 1689-1757 1750, Akkare J-2 4472.0 1548.3 -2026.5,
+    Zora H-4 2910.6 1065.4 -525.0, gerudo A-6 -3484.9 2042.5 320.0, Rito SkyField -3070..-2844, LargeDungeonWater
+    3502.8 1922.4 -704.7; which ones turn without a switch is not known. Test: `$env:TOTK_COOP_TEST_GROUND='25'` and
+    `$env:TOTK_COOP_TEST_GROUND_SPIN='1'` (the host answers RotateAxisX 1 for its logic nodes, so H-5's turns there),
+    run_pair.ps1 -Seconds 75 -ScriptA/-ScriptB tools\coop\ground_pair_3rd.txt. Each game logs "coop: test: ground:
+    this Link put at 2394.5 271.0 520.8", "coop: ground: GroundControlActor_Rotate <key> at 2394.5 267.0 520.8 is
+    turned by its logic node here" (the same key in both), then every second "coop: test: ground: this Link at ...;
+    GroundControl actors within 80 m: ...", "coop: test: ground: in the last second: logic node update u, enter e; AI
+    node update 0, enter 0; turn helper h; turn set s; main+0x298a3f4 xN (index 8952)" and "coop: test: ground
+    GroundControlActor_Rotate <key> (logic node) angle a speed v (top 0.105) switch o i[ (host)]; host's now a' speed
+    v' switch 1 0". The guest logs once "coop: ground <key> turns as the host's (angle ..., speed ..., on 1 0)". A
+    pass: in the host switch 1 0, the speed reaches 0.105 (6 degrees a second) and the angle rises; turn set about
+    60 a second in both games; in the guest the angle within about 0.02 of "host's now" each second. Without SPIN
+    both stand still at the same angle;
   - a thrown weapon or a shield bash on a copy is taken out of its contacts as a sword hit is, but the stand-in does
     not throw or bash in the owner's game, so that hit is lost (code review, a guess);
   - the Gloom Hands: left out, as TotK Online leaves them out.
