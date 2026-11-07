@@ -60,17 +60,17 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   mode and the proxy's thaws are off for it). Pair test (equip_draw_3rd.txt): B's stand-in of A stood in A's pose
   holding A's Master Sword in hand, drawn by setEquipmentInHand (full-size frames), and played A's swing clip 1397.
   NetState grew for the slots: COOP_NET_VERSION 20 (relay too), so older builds do not meet this one.
-  Not done: the owner's upper/lower body masks (a layered clip plays on the whole body), its arrows, the other
+  Body masks (2026-11-07): each slot holds its mask (bind) at +0x08; the bind sits at +0xc0 of a layer object the
+  animation graph G points to ([G+0x1a8] whole body, [G+0x1f0], [G+0x2c8] upper body on an idle, walking and bow
+  Link). The owner sends that offset per slot (CoopAnim.bind; COOP_NET_VERSION 21) and the stand-in plays the clip
+  with its own bind from the same offset (the play's 4th argument, a record whose +8 is the bind). Pair test
+  (bow_walk_3rd.txt): the stand-in's slots took the owner's clips with the owner's masks (0x1a8, 0x1f0, 0x2c8 by
+  TOTK_COOP_TEST_ANIMSLOTS); not seen on a frame (the stand-in stayed far up the stairs). The mask's flags, which TotK
+  Online copies too, are the stand-in's own.
+  Not done: its arrows, the other
   co-op features on it (riding, shield surf, glider, hits it takes), and it is not seen moving in a frame yet.
 - **Not done:**
   - the stand-in's arrows shot by it with its owner's camera (patched unproject);
-  - the stand-in's body masks: 1.2.1's per-slot partial index (byte +0x1c of an entry in a list at G+0xf8) does not
-    read the same in 1.4.3: [G+0xf8] holds two lists of 2 entries (indices 0 4 and 4 5 on an idle Link), not one
-    per slot (TOTK_COOP_TEST_ANIMSLOTS logs them); G+0x18 is 7, G+0x20 the bind table. Layered clips play on the whole
-    body until it is worked out; idle and a swing looked right on frames. Next way in: the play (main+0x1b569fc)
-    compares its 4th argument's +8 with the slot's +0x08 (and a value at slot +0xa8), so each slot seems to hold its
-    current bind at +0x08: read it on the owner, find its index in the bind table, send the index, and pass the
-    stand-in's own bind of that index (unverified);
   - enemies taking the stand-in for a player: TotK Online hooks the game's "is a player" check (1.2.1 main+0x1736dec,
     1.4.3 main+0x1d1fc70 by tools/coop/xver_match.py; returns 1 for PlayerPuppet) and patches four places in the same
     family (1.4.3 near main+0x1d1f960, 0x1d1f9e4, 0x1d1fa54, 0x1d1ffd0) that would read the Player component it lacks;

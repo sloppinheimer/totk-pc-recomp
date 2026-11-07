@@ -4381,6 +4381,8 @@ static int ct_is_copy(uint64_t a) {
 // only; 1.2.1 layout, checked here on 1.4.3): [[[actor+0x228]+8]+0x28]+0x40, its slot count at +0x38 and slots of
 // 0xb0 bytes from [+0x40]: animation index u16 +2, weight f32 +0x10, frame f32 +0x28. Logged every 0.5 s for this
 // Link and each co-op stand-in.
+static uint16_t anim_bind_off(uint64_t g, uint64_t b);
+static uint64_t anim_graph_of(uint64_t a);
 static void anim_slots_log(const char *who, uint64_t a) {
     uint64_t mc = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 8), model = mc ? coop_rd_ptr(mc + 0x28) : 0;
     uint64_t ap = model ? coop_rd_ptr(model + 0x40) : 0, arr = ap ? coop_rd_ptr(ap + 0x40) : 0;
@@ -4426,6 +4428,45 @@ static void anim_slots_log(const char *who, uint64_t a) {
         if (g) coop_rd(g + 0x18, &g18, 4);
         m2 += snprintf(l2 + m2, sizeof l2 - m2, "; G+0x18 %d, G+0x20 %llx", g18, (unsigned long long)g20);
         rt_log("%s", l2);
+        // each slot's bind (+0x08) and change count (+0xa8), against the table's: [[[G+0x20]+i*0x48]+0x58]+0x18 is
+        // TotK Online's record P, whose +8 the play compares with the slot's +0x08
+        char l3[700];
+        int m3 = snprintf(l3, sizeof l3, "coop: test: anim bind table of %s:", who);
+        for (int i = 0; g20 && i < 10 && m3 < 600; i++) {
+            uint64_t e = coop_rd_ptr(g20 + 0x48ull * i + 0x58), p = e ? coop_rd_ptr(e + 0x18) : 0, b = p ? coop_rd_ptr(p + 8) : 0;
+            m3 += snprintf(l3 + m3, sizeof l3 - m3, " [%d] P %llx B %llx", i, (unsigned long long)p, (unsigned long long)b);
+        }
+        m3 += snprintf(l3 + m3, sizeof l3 - m3, "; slots:");
+        for (int i = 0; arr && i < 7 && m3 < 680; i++) {
+            uint64_t b = coop_rd_ptr(arr + 0xb0ull * i + 8);
+            uint32_t cc = 0;
+            coop_rd(arr + 0xb0ull * i + 0xa8, &cc, 4);
+            m3 += snprintf(l3 + m3, sizeof l3 - m3, " %llx/%u", (unsigned long long)b, cc);
+        }
+        rt_log("%s", l3);
+        // where each slot's bind is held: words equal to it in G's first 0x400 bytes, and one level down (0x200 of
+        // each object G points to), as "G+off" or "G+off -> +off2"
+        static int found_said;
+        for (int i = 0; arr && g && i < 3 && found_said < 12; i++) {
+            uint64_t b = coop_rd_ptr(arr + 0xb0ull * i + 8);
+            if (!b) continue;
+            static uint64_t gw[0x400 / 8], ow[0x200 / 8];
+            if (!coop_rd(g, gw, sizeof gw)) break;
+            char l4[400];
+            int m4 = snprintf(l4, sizeof l4, "coop: test: anim bind %llx of slot %d is at:", (unsigned long long)b, i);
+            for (int j = 0; j < 0x400 / 8 && m4 < 360; j++) {
+                if (gw[j] == b) m4 += snprintf(l4 + m4, sizeof l4 - m4, " G+%#x", j * 8);
+                if (gw[j] < 0x100000000ull || gw[j] > 0x8000000000ull || !coop_rd(gw[j], ow, sizeof ow)) continue;
+                for (int q = 0; q < 0x200 / 8 && m4 < 360; q++)
+                    if (ow[q] == b) m4 += snprintf(l4 + m4, sizeof l4 - m4, " G+%#x->+%#x", j * 8, q * 8);
+                    else if (ow[q] > 0x100000000ull && ow[q] < 0x8000000000ull && (q & 1) == 0) {
+                        uint64_t z = 0;   // two levels: an array of records whose +8 is the bind
+                        for (int r = 0; r < 16; r++)
+                            if (coop_rd(ow[q] + 0x48ull * r + 8, &z, 8) && z == b) { m4 += snprintf(l4 + m4, sizeof l4 - m4, " G+%#x->+%#x->[%d*0x48]+8", j * 8, q * 8, r); break; }
+                    }
+            }
+            rt_log("%s", l4), found_said++;
+        }
     }
     for (int i = 0; arr && i < n && i < 8 && m < 640; i++) {
         uint8_t s[0x30];
@@ -4433,7 +4474,9 @@ static void anim_slots_log(const char *who, uint64_t a) {
         uint16_t idx;
         float w, f;
         memcpy(&idx, s + 2, 2), memcpy(&w, s + 0x10, 4), memcpy(&f, s + 0x28, 4);
-        m += snprintf(line + m, sizeof line - m, " [%d] %u w%.2f f%.1f", i, idx, w, f);
+        uint64_t b;
+        memcpy(&b, s + 8, 8);
+        m += snprintf(line + m, sizeof line - m, " [%d] %u w%.2f f%.1f m%#x", i, idx, w, f, anim_bind_off(anim_graph_of(a), b));
     }
     rt_log("%s", line);
 }
@@ -4458,9 +4501,52 @@ static uint64_t anim_player_of(uint64_t a) {
     uint64_t mc = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 8), model = mc ? coop_rd_ptr(mc + 0x28) : 0;
     return model ? coop_rd_ptr(model + 0x40) : 0;
 }
+static uint64_t anim_graph_of(uint64_t a) {
+    uint64_t c8 = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x40), x = c8 ? coop_rd_ptr(c8 + 0x18) : 0;
+    return x ? coop_rd_ptr(x + 0x18) : 0;
+}
 static uint64_t anim_caller_of(uint64_t a) {
-    uint64_t c8 = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x40), x = c8 ? coop_rd_ptr(c8 + 0x18) : 0, g = x ? coop_rd_ptr(x + 0x18) : 0;
+    uint64_t g = anim_graph_of(a);
     return g ? coop_rd_ptr(g + 0x28) : 0;
+}
+// A slot's body mask (its bind, slot +0x08; the play compares its 4th argument's +8 with it and the bind's +0x18 with
+// slot +0xa8) is held at +0xc0 of a layer object the graph points to: [G+0x1a8]+0xc0 for a Link's whole-body layers,
+// [G+0x2c8]+0xc0 for the upper-body one (idle, walking and the bow; TOTK_COOP_TEST_ANIMSLOTS, 2026-11-07). The same
+// offset names the same mask in every game (both load Link's animation set), so it is what is sent. 0: not found.
+static uint16_t anim_bind_off(uint64_t g, uint64_t b) {
+    static __thread struct { uint64_t g, b; uint16_t off; } cache[8];
+    if (!g || !b) return 0;
+    for (int i = 0; i < 8; i++) if (cache[i].g == g && cache[i].b == b) return cache[i].off;
+    uint16_t off = 0;
+    static __thread uint64_t gw[0x800 / 8];
+    if (coop_rd(g, gw, sizeof gw))
+        for (int j = 1; j < 0x800 / 8 && !off; j++)
+            if (gw[j] > 0x100000000ull && gw[j] < 0x8000000000ull && coop_rd_ptr(gw[j] + 0xc0) == b) off = (uint16_t)(j * 8);
+    static __thread int next;
+    cache[next].g = g, cache[next].b = b, cache[next].off = off, next = (next + 1) & 7;
+    return off;
+}
+static uint64_t anim_bind_at(uint64_t g, uint16_t off) {
+    uint64_t layer = g && off && off < 0x800 ? coop_rd_ptr(g + off) : 0;
+    return layer ? coop_rd_ptr(layer + 0xc0) : 0;
+}
+// bind: the mask (0 none): passed as a record whose +8 is it, as the play reads it.
+static void anim_play_bind(Cpu *c, uint64_t q, int slot, int idx, float weight, float frame, uint64_t bind) {
+    static __thread uint64_t rec[2];
+    rec[0] = 0, rec[1] = bind;
+    uint64_t vt = coop_rd_ptr(q), fn = vt ? coop_rd_ptr(vt + 0x30) : 0, ap = q;
+    if (!fn) return;
+    __uint128_t v0 = c->v[0], v1 = c->v[1];
+    uint32_t wb, fb;
+    memcpy(&wb, &weight, 4), memcpy(&fb, &frame, 4);
+    c->v[0] = wb, c->v[1] = fb;
+    uint64_t saved_x[31], sp0 = c->sp;
+    memcpy(saved_x, c->x, sizeof saved_x);
+    c->sp = (sp0 - 0x100) & ~0xfull;
+    rt_call(c, fn, 6, ap, (uint64_t)slot, (uint64_t)idx, bind ? (uint64_t)(uintptr_t)rec : 0ull, 0ull, 0xffffull);
+    c->sp = sp0;
+    memcpy(c->x, saved_x, sizeof saved_x);
+    c->v[0] = v0, c->v[1] = v1;
 }
 static void anim_play(Cpu *c, uint64_t q, int slot, int idx, float weight, float frame) {
     uint64_t vt = coop_rd_ptr(q), fn = vt ? coop_rd_ptr(vt + 0x30) : 0, ap = q;
@@ -4479,7 +4565,7 @@ static void anim_play(Cpu *c, uint64_t q, int slot, int idx, float weight, float
 }
 // An animation player's first slots as {index, weight, frame}; the count read (at most max).
 #define ANIM_SLOTS COOP_ANIM_SLOTS
-typedef struct { uint16_t idx, pad; float w, f; } AnimSlot;
+typedef struct { uint16_t idx, pad; float w, f; uint64_t bind; } AnimSlot;   // bind: slot +0x08
 static int anim_read(uint64_t ap, AnimSlot *out, int max) {
     uint64_t arr = ap ? coop_rd_ptr(ap + 0x40) : 0;
     int32_t n = 0;
@@ -4488,7 +4574,7 @@ static int anim_read(uint64_t ap, AnimSlot *out, int max) {
     for (int i = 0; i < n; i++) {
         uint8_t s[0x30];
         if (!coop_rd(arr + 0xb0ull * i, s, sizeof s)) return i;
-        memcpy(&out[i].idx, s + 2, 2), memcpy(&out[i].w, s + 0x10, 4), memcpy(&out[i].f, s + 0x28, 4);
+        memcpy(&out[i].idx, s + 2, 2), memcpy(&out[i].w, s + 0x10, 4), memcpy(&out[i].f, s + 0x28, 4), memcpy(&out[i].bind, s + 8, 8);
     }
     return n;
 }
@@ -4514,11 +4600,13 @@ void coop_anim_copy_test(Cpu *c, uint64_t me) {
 // The owner sends its Link's first seven animation slots with its state (NetState.anim): clip, weight, frame and the
 // frames a second it moved since the last send. Each other game plays them on its PlayerPuppet every tick, the frame
 // carried on by that rate for the state's age, so the stand-in moves with its owner's own clips and nothing of its
-// own chooses another (it has no Player component). The owner's upper and lower body masks (partial binds) are not
-// sent yet: a layered clip plays on the whole body.
+// own chooses another (it has no Player component). Each slot's body mask goes as where it is in the graph
+// (anim_bind_off) and is played with the stand-in's own mask from there (TotK Online sends its partial-bind index
+// and flags; read for behaviour only).
 void coop_anim_pack(uint64_t me, CoopAnim *out) {
     AnimSlot s[COOP_ANIM_SLOTS];
     int n = anim_read(anim_player_of(me), s, COOP_ANIM_SLOTS);
+    uint64_t g = anim_graph_of(me);
     static float last_f[COOP_ANIM_SLOTS];
     static uint16_t last_i[COOP_ANIM_SLOTS];
     static uint64_t last_ns;
@@ -4529,7 +4617,7 @@ void coop_anim_pack(uint64_t me, CoopAnim *out) {
         CoopAnim a = {.idx = 0xffff};
         if (i < n && s[i].idx != 0xffff && s[i].w == s[i].w && s[i].f == s[i].f) {
             float w = s[i].w < 0 ? 0 : s[i].w > 1 ? 1 : s[i].w;
-            a.idx = s[i].idx, a.weight = (uint16_t)lroundf(w * 65535), a.frame = s[i].f;
+            a.idx = s[i].idx, a.weight = (uint16_t)lroundf(w * 65535), a.frame = s[i].f, a.bind = anim_bind_off(g, s[i].bind);
             a.rate = last_i[i] == s[i].idx && dt > 0 && dt < 0.5f && s[i].f >= last_f[i] ? (s[i].f - last_f[i]) / dt : 0;
             if (a.rate > 600) a.rate = 0;
         }
@@ -4544,13 +4632,16 @@ void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, uint64_t age_
     if (!q) return;
     AnimSlot have[COOP_ANIM_SLOTS];
     int n = anim_read(anim_player_of(standin), have, COOP_ANIM_SLOTS);
+    uint64_t g = anim_graph_of(standin);
     float age = age_ns < 1000000000ull ? (float)(age_ns / 1e9) : 1;
-    int played = 0;
+    int played = 0, masked = 0;
     for (int i = 0; i < COOP_ANIM_SLOTS; i++) {
         if (in[i].idx != 0xffff) {
-            anim_play(c, q, i, in[i].idx, in[i].weight / 65535.0f, in[i].frame + in[i].rate * age), played++;
+            uint64_t b = anim_bind_at(g, in[i].bind);
+            masked += b != 0;
+            anim_play_bind(c, q, i, in[i].idx, in[i].weight / 65535.0f, in[i].frame + in[i].rate * age, b), played++;
         } else if (i < n && have[i].idx != 0xffff && have[i].w > 0) anim_play(c, q, i, have[i].idx, 0, have[i].f);
     }
     static int said;
-    if (played && !said++) rt_log("coop: stand-in: its owner's animation (%d slots) plays on it", played);
+    if (played && !said++) rt_log("coop: stand-in: its owner's animation (%d slots, %d with a body mask) plays on it", played, masked);
 }
