@@ -226,7 +226,9 @@ void coop_mounts_tick(Cpu *c, uint64_t me) {
     // the horse faces its +z, column 2, as a Link does), on its ground, facing it, by its saddle: 0.7, then 0.4, then
     // 1.0 m forward of its origin, which is at its hindquarters. The script presses A just after each. (Walking up,
     // the Link reached its side only after the presses; put at the origin, it stood by the rump facing the flank and
-    // no Mount prompt showed: suite frames of 2026-11-07.)
+    // no Mount prompt showed: suite frames of 2026-11-07.) A Link that has moved over 0.35 m across since the last put is
+    // not put again: something has it (in the third run it went towards the horse's middle and 1.8 m below its origin
+    // after the A presses, and the next put took it away from that).
     static float put_at = -2;
     static int put_id;
     if (put_at == -2) {
@@ -235,8 +237,17 @@ void coop_mounts_tick(Cpu *c, uint64_t me) {
     }
     if (put_id && coop_net_id() && coop_net_id() != put_id) put_at = -1;   // (not before this game has its id)
     static int puts;
+    static float put_pos[3];
     float wt = frame_step_world_us() / 1e6f;
-    if (put_at >= 0 && (!put_id || coop_net_id() == put_id) && puts < 3 && wt >= put_at + 2 * puts && near_i >= 0 && !now_key && c) {
+    int put_game = put_at >= 0 && (!put_id || coop_net_id() == put_id);
+    if (put_game && puts > 0 && puts < 3 && wt >= put_at + 2 * puts) {
+        float dx = lp[0] - put_pos[0], dz = lp[2] - put_pos[2], moved = sqrtf(dx * dx + dz * dz);
+        if (moved > 0.35f) {
+            rt_log("coop: test: mount: this Link not put again at %.1f s: it moved %.2f m since the last put", wt, moved);
+            puts = 3;
+        }
+    }
+    if (put_game && puts < 3 && wt >= put_at + 2 * puts && near_i >= 0 && !now_key && c) {
         puts++;
         uint64_t a = atomic_load_explicit(&horses[near_i].actor, memory_order_relaxed);
         float hp[3], hr[9];
@@ -254,20 +265,27 @@ void coop_mounts_tick(Cpu *c, uint64_t me) {
                     m[r * 4 + 3] = hp[r] + hr[r * 3 + 0] * side[0] + hr[r * 3 + 1] * side[1] + hr[r * 3 + 2] * side[2];
                 }
                 coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
+                put_pos[0] = m[3], put_pos[1] = m[7], put_pos[2] = m[11];
                 rt_log("coop: test: mount: this Link put beside %s at %.1f s, %.1f m forward of its origin (%.2f %.2f %.2f)",
                        horses[near_i].name, wt, side[2], m[3], m[7], m[11]);
             }
         }
     }
-    // Test (TOTK_COOP_TEST_MOUNT=1): once a second, the nearest horse and where this Link is in its frame (the box's
-    // numbers come from these), and who runs it.
+    // Test (TOTK_COOP_TEST_MOUNT=1): once a second, ten times a second from 0.5 s before the first put to 12 s after
+    // it, the nearest horse, where this Link is in its frame (the box's numbers come from these), both world heights (a
+    // horse rearing and a Link falling look alike in the frame alone) and who runs it.
     static int test = -1;
     if (test < 0) test = cfg_get("TOTK_COOP_TEST_MOUNT") != NULL;
-    if (test && t % 30 == 0 && near_i >= 0) {
+    int dense = put_game && wt >= put_at - 0.5f && wt <= put_at + 12;
+    if (test && t % (dense ? 3 : 30) == 0 && near_i >= 0) {
         uint32_t nk = atomic_load_explicit(&horses[near_i].key, memory_order_relaxed);
+        uint64_t na = atomic_load_explicit(&horses[near_i].actor, memory_order_relaxed);
+        float hy = 0;
+        coop_rd(na + COOP_ACTOR_POS + 4, &hy, 4);
         char rb[24];
-        rt_log("coop: test: mount: nearest %s %08x, this Link at %.2f %.2f %.2f in its frame%s (run %s)", horses[near_i].name,
-               nk, near_off[0], near_off[1], near_off[2], now_key == nk ? ", riding" : "", run_by(nk, rb, sizeof rb));
+        rt_log("coop: test: mount: nearest %s %08x, this Link at %.2f %.2f %.2f in its frame%s (y %.2f, horse y %.2f, %.1f s; run %s)",
+               horses[near_i].name, nk, near_off[0], near_off[1], near_off[2], now_key == nk ? ", riding" : "", lp[1], hy, wt,
+               run_by(nk, rb, sizeof rb));
     }
 }
 

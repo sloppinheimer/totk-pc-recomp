@@ -2040,8 +2040,10 @@ static void beam_dump(uint64_t a, int copy) {
 
 static int prop_skip(const char *nm) {
     if (is_beam(nm)) return 0;
-    // horses, their saddles and reins: with TOTK_COOP_MOUNTS=1 a horse is the shared world's (coop_mounts.c), and
-    // each game's horse has its own saddle and reins on
+    // A horse's parts: its mane (every Horse_ actor is a Horse_Link_Mane*), saddle and reins. Each game's horse has
+    // its own; sent as moved objects, a horse's mane hung in the air beside the other Link (suite case mount,
+    // 2026-11-07). With TOTK_COOP_MOUNTS=1 the horse itself is the shared world's (coop_mounts.c), not a moved object.
+    if (!strncmp(nm, "Horse_", 6) || !strncmp(nm, "GameRomHorseSaddle_", 19) || !strncmp(nm, "GameRomHorseReins_", 18)) return 1;
     if (coop_mounts_on() && !strncmp(nm, "GameRomHorse", 12)) return 1;
     // (Parasail, the Link's paraglider, was left out here: a copy of it seemed to take the other game down with the
     // Ultrahand crash, which was the beam's race (beam_hook). It is sent in its Link's frame: COOP_OBJ_ONLINK.)

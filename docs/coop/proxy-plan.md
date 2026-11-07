@@ -154,7 +154,13 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     A presses. So `TOTK_COOP_TEST_MOUNT_PUT=30:1` puts player 1's Link 0.9 m to the horse's right, facing it, at 30,
     32 and 34 s, and the script presses A just after each. Second run: put and facing the horse as meant, but at its
     origin, which is by its rump, and no Mount prompt showed. The puts now go 0.7, 0.4 and 1.0 m forward of the
-    origin, by the saddle; not run yet;
+    origin, by the saddle. Third run: put there (the log has the Link at -0.92 -0.45 0.72 in the horse's frame right
+    after it, and a frame shows it crouched by the saddle; the Link behind the rump in that frame is B's co-op Link,
+    left at the start), then after the A presses it went to -0.49 -0.92 1.13 and -0.45 -1.83 1.17 (a mount and a
+    rearing horse, or a fall: not told apart), and the next put took it away. Now a Link that has moved over 0.35 m
+    since a put is not put again, and the test log goes ten times a second around the puts, with both world
+    heights; not run yet. A horse's mane (Horse_Link_Mane*), saddle and reins are no moved objects any more, with or
+    without TOTK_COOP_MOUNTS: a mane's copy hung in the air beside B's Link;
   - shared world progress beyond the bools and per-object flags (below): numbers (Ints, Enums: shrine states, quest
     counters), arrays and strings, shrine clears with each player's blessings worked out, and catching a player up on
     what the others did before they joined;
