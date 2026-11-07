@@ -149,9 +149,13 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
 ## Wanted (the tester, 2026-11-07)
 - **Map and minimap markers** for the other players.
 - **Notices** when a player joins or leaves, and when one fast travels, with the place's name.
-- **Character mods**: branch `mod-pack-restbl` (one commit, 30f0a50, 2026-11-04, 147 behind main) raises the
-  resource-size entries of files inside a mod's packs, which made the Playable Riju mod load; never merged
-  (docs/coop/character-mods.md is on that branch). It touches runtime/romfs.c, which `restbl_overlay` changed since.
+- **Character mods**: branch `mod-pack-restbl` (30f0a50, 2026-11-04) is now on main (cherry-picked 2026-11-07,
+  no conflict). With it the full Playable Riju mod (7795 files served, 2278 changed files inside 70 packs) loads into
+  the world as Riju on this build (sandbox C:\Dev	otk-sandbox, its exe replaced by this build's; the old one kept as
+  totk-sandbox.old.exe; its bisection subset moved to mods-bisect-subset). Combat, menus and co-op with it are not
+  tried. Per-player characters (one player Riju, the other Link) are still to do (docs/coop/character-mods.md); the
+  PlayerPuppet stand-in is the way in: tools/coop/make_puppet_pack.py builds it from the game's own Player.pack, so a
+  stand-in could be built from a mod's Player.pack instead, per player.
 
 ## Still wrong in a play session (last build, 075576d)
 - **Shake:** the puppet jumps 3-13 cm on some frames, even standing still. Its physics body now matches its owner
