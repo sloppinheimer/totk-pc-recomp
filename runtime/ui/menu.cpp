@@ -1575,7 +1575,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     ImGui::Render();
     if (!*shot) *shot = coop_markers_shot();   // TOTK_COOP_TEST_MARKSHOTS (tests)
     // TOTK_COOP_TEST_TAGSHOT=<frame>: that frame's swapchain image, overlay and all, to TOTK_MENU_TEST_DIR (tests)
-    *shot = coop_notices_shot();
+    if (!*shot) *shot = coop_notices_shot();   // (after the markers': it overwrote their shot, merge 53e62d1)
     static long long tag_shot = -2;
     if (tag_shot == -2) tag_shot = cfg_get("TOTK_COOP_TEST_TAGSHOT") ? atoll(cfg_get("TOTK_COOP_TEST_TAGSHOT")) : -1;
     if (tag_shot > 0 && frame >= (uint64_t)tag_shot) {
