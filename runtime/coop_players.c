@@ -17,6 +17,7 @@
 
 #include "cfg.h"
 #include "coop_game.h"
+#include "coop_mounts.h"
 #include "coop_net.h"
 #include "host.h"
 #include "input.h"
@@ -1126,7 +1127,23 @@ static int owner_smoothed(Slot *s, float m[12]) {
     }
     return 1;
 }
+static void owner_matrix_raw(Slot *s, float m[12]);
+// Where the owner's Link is here. A rider of a horse (ride_owner COOP_RIDE_MOUNT) at its place on this game's copy
+// of that horse (coop_mounts.c coop_mount_place), which the native model eases after the owner's horse, so the
+// stand-in, co-op Link or PlayerPuppet, sits on that copy and not at its owner's delayed place beside it.
 static void owner_matrix(Slot *s, float m[12]) {
+    owner_matrix_raw(s, m);
+    float rp[3];
+    if (s->ride_owner == COOP_RIDE_MOUNT && coop_mount_place(s->ride_id, s->ride_off, rp)) m[3] = rp[0], m[7] = rp[1], m[11] = rp[2];
+}
+// The remote player whose state says they ride the horse of that key (coop_mounts.c), 0 none.
+int coop_player_riding_mount(uint32_t key) {
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++)
+        if (slots[i].state == LIVE && slots[i].source == SRC_NET && slots[i].ride_owner == COOP_RIDE_MOUNT && slots[i].ride_id == key)
+            return slots[i].net_id;
+    return 0;
+}
+static void owner_matrix_raw(Slot *s, float m[12]) {
     if (owner_smoothed(s, m)) return;
     float ahead = 0;
     int coop_puppet_mode(void);   // coop_world.c
@@ -2022,6 +2039,9 @@ static void beam_dump(uint64_t a, int copy) {
 
 static int prop_skip(const char *nm) {
     if (is_beam(nm)) return 0;
+    // horses, their saddles and reins: with TOTK_COOP_MOUNTS=1 a horse is the shared world's (coop_mounts.c), and
+    // each game's horse has its own saddle and reins on
+    if (coop_mounts_on() && !strncmp(nm, "GameRomHorse", 12)) return 1;
     // (Parasail, the Link's paraglider, was left out here: a copy of it seemed to take the other game down with the
     // Ultrahand crash, which was the beam's race (beam_hook). It is sent in its Link's frame: COOP_OBJ_ONLINK.)
     // Sage_: the sages' companion spirits, and Weapon_Bow_128, Tulin's bow, which follow the Link: sent as moved
@@ -4622,6 +4642,11 @@ void coop_players_tick(Cpu *c, int numpad3) {
         read_weather(c, me);
         st.weather = weather_now;
         st.ride_owner = (uint8_t)ride_owner_now, st.ride_id = ride_id_now, memcpy(st.ride_off, ride_off_now, 12);
+        {   // on a horse (coop_mounts.c): that, in place of an object
+            uint32_t mk;
+            float mo[3];
+            if (coop_mount_riding(&mk, mo)) st.ride_owner = COOP_RIDE_MOUNT, st.ride_id = mk, memcpy(st.ride_off, mo, 12);
+        }
         const char *fw = cfg_get("TOTK_COOP_FAKEWEATHER");   // test: report this weather type instead
         if (fw && *fw) st.weather = atoi(fw);
         void coop_anim_pack(uint64_t me, CoopAnim *out);   // coop_world.c: the stand-in's animation (TOTK_COOP_STANDIN=puppet)

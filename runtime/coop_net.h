@@ -50,7 +50,8 @@ typedef struct {
     float day_seconds;                // time of day, 0..86400 (-1 unknown): the host's is followed
     int32_t weather;                  // weather type at the player (-1 unknown): the host's is followed
     int8_t dye[6];                    // per gear slot: the armor's dye colour (the create's 4th argument; -1 none)
-    uint8_t ride_owner, pad;          // riding: the player whose object this Link stands on (0 none)
+    uint8_t ride_owner, pad;          // riding: the player whose object this Link stands on (0 none), or
+                                      // COOP_RIDE_MOUNT: a horse of the shared world, ride_id its key (coop_mounts.c)
     char fuse[3][32];                 // weapon, bow, shield: the fused material's actor name ("" none; the weapon
                                       // create's 7th argument, e.g. AsbObj_RockParts_C_S_01)
     uint32_t ride_id;                 // riding: that object's id as its owner sends it (CoopObj.id)
@@ -61,6 +62,7 @@ typedef struct {
     CoopAnim anim[COOP_ANIM_SLOTS];   // this Link's animation player's first slots (coop_world.c, coop_anim_pack)
     CoopMask mask[COOP_ANIM_MASKS];   // the masks those slots use, as the owner's graph set them
 } NetState;
+#define COOP_RIDE_MOUNT 0xfe   // NetState.ride_owner for a horse (no player has this id; an older game rides nothing)
 _Static_assert(sizeof(NetState) == 464 + 16 * COOP_ANIM_SLOTS + 88 * COOP_ANIM_MASKS, "NetState wire size");
 #define COOP_GEAR_SLOTS 6
 extern const int coop_gear_slot[COOP_GEAR_SLOTS];   // the EquipmentUser slots they are (coop_players.c)

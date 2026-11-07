@@ -31,7 +31,15 @@ $cases = @(
     # and the enemy dies in A's game from B's co-op Link there (coop_world.c, contacts_filter)
     @{n = 'hits'; s = 80; a = 'idle_3rd.txt'; b = 'attack_enemy_3rd.txt';
       env = @{TOTK_COOP_TEST_SPAWN = 'Enemy_Bokoblin_Middle@26'; TOTK_COOP_TEST_SPAWN_AT = '41.6,1511.0,1504.9'};
-      want = @('B:contact on the copy of Enemy_Bokoblin_Middle by this Link with Weapon_\w+ \(kind \d+\): taken out', 'B:Enemy_Bokoblin_Middle \w+ died in player 1')}
+      want = @('B:contact on the copy of Enemy_Bokoblin_Middle by this Link with Weapon_\w+ \(kind \d+\): taken out', 'B:Enemy_Bokoblin_Middle \w+ died in player 1')},
+    # a horse (TOTK_COOP_MOUNTS=1, coop_mounts.c): one spawned at one place in both games (one key) is a synced horse
+    # in each; A's Link gets on it, its game runs it, and B puts A's stand-in on its own copy of it. The riding lines
+    # need the ride box to fit (TOTK_COOP_TEST_MOUNT logs where the Link is in the horse's frame each second)
+    @{n = 'mount'; s = 80; a = 'mount_horse_3rd.txt'; b = 'idle_3rd.txt';
+      env = @{TOTK_COOP_MOUNTS = '1'; TOTK_COOP_TEST_MOUNT = '1'; TOTK_COOP_TEST_SPAWN = 'GameRomHorse01@26'; TOTK_COOP_TEST_SPAWN_AT = '41.6,1511.0,1504.9'};
+      want = @('A:coop: mounts: on', 'A:coop: test: mount: nearest GameRomHorse01', 'B:coop: test: mount: nearest GameRomHorse01',
+               'A:coop: mounts: this Link rides GameRomHorse01', 'B:coop: mounts: player 1 rides GameRomHorse01',
+               "B:coop: mounts: a rider's stand-in is put on this game's GameRomHorse01")}
 )
 $pass = 0; $fail = 0
 foreach ($c in $cases) {
