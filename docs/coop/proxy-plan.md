@@ -282,7 +282,16 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     last h"; the guest once "coop: ground <key> turns as the host's (angle ...)". A pass: s reaching 0.105 (6 degrees a
     second: the enter multiplies RotateSpeedX and RotateAccelX by pi/180, main+0x2d02604) and rising angles in
     the host; in the guest its angle within about 0.02 of the host's last, every second. No "is turned by its AI" line
-    means the node does not run there (the area did not load, or the actor's AI is another node);
+    means the node does not run there (the area did not load, or the actor's AI is another node).
+    First run (pair test on main, 2026-11-07): both Links were put there and stood at y 259.8 (the area loaded, the
+    actor's place is 7 m above), and no node was ever seen, so the hooked update never ran. The actor's parameters
+    (Pack/Actor/GroundControlActor_Rotate) name a logic node, ActorLogicGroundControlRotate (aidefn), its GroundControl
+    type "Rotate", and blackboard RotateSpeedX (0) / RotateAccelX (360): what runs it is not known. The test now logs
+    each second "coop: test: ground: this Link at x y z; GroundControl actors within 80 m: n; <name> at d m (x y z)
+    state s live|at rest index i; ..." and "coop: test: ground: in the last second: Rotate node update u, enter e, turn
+    helper h, ground control set g; main+<return address> xN (index i); ...". main+0x2988330, which sets the turn of
+    the ground control an index names, is counted with its callers: the caller that sets the H-5 actor's index is
+    what turns it, and is the next place to read;
   - a thrown weapon or a shield bash on a copy is taken out of its contacts as a sword hit is, but the stand-in does
     not throw or bash in the owner's game, so that hit is lost (code review, a guess);
   - the Gloom Hands: left out, as TotK Online leaves them out.

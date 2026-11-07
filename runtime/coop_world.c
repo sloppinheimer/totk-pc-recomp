@@ -2504,6 +2504,83 @@ void coop_ground_update(Cpu *c) {   // coop_spawn.c coop_hook: main+0x2329170's 
         break;
     }
 }
+// Test (TOTK_COOP_TEST_GROUND): what turns the ground near this Link. Counted on game threads, logged each second:
+// the calls of the Rotate node's update and enter (main+0x2329170, 0x2329078), of its turn helper (main+0x298a20c),
+// and of main+0x2988330 (ground control manager, &index, matrix), which puts a turn on the ground control an index
+// names whatever node drives it, with the callers' return addresses and the indices they set; and every actor within
+// 80 m whose name has "GroundControl", with its state, whether it ran its calc in the last second, and its ground
+// control index ([[[actor+0x228]+0x50]+0x20]+0x140 -> u16 +0xc, as the node's enter reads it). In the first run the
+// update was never seen though the area had loaded (the Link stood 7 m under H-5's), and the actor's parameters name
+// a logic node, ActorLogicGroundControlRotate, not the AI node (2026-11-07).
+static _Atomic uint32_t gp_update, gp_enter, gp_helper, gp_set;
+static struct { _Atomic uint64_t lr; _Atomic uint32_t n, idx; } gp_callers[16];
+static int ground_test_on(void) {
+    static int on = -1;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_GROUND") != NULL;
+    return on;
+}
+void coop_ground_probe(Cpu *c, uint64_t off) {   // coop_spawn.c coop_hook, with the main offset entered
+    if (!ground_test_on()) return;
+    if (off == 0x2329170) atomic_fetch_add_explicit(&gp_update, 1, memory_order_relaxed);
+    else if (off == 0x2329078) atomic_fetch_add_explicit(&gp_enter, 1, memory_order_relaxed);
+    else if (off == 0x298a20c) atomic_fetch_add_explicit(&gp_helper, 1, memory_order_relaxed);
+    else if (off == 0x2988330) {
+        atomic_fetch_add_explicit(&gp_set, 1, memory_order_relaxed);
+        uint16_t idx = 0xffff;
+        coop_rd(c->x[1], &idx, 2);
+        for (int i = 0; i < 16; i++) {
+            uint64_t have = atomic_load(&gp_callers[i].lr), lr = c->x[30];
+            if (have == lr || (!have && atomic_compare_exchange_strong(&gp_callers[i].lr, &have, lr))) {
+                atomic_fetch_add(&gp_callers[i].n, 1), atomic_store(&gp_callers[i].idx, idx);
+                break;
+            }
+        }
+    }
+}
+typedef struct { float me[3]; int n; char line[1400]; int len; } GroundNear;
+static int live_now(uint64_t a) {   // ran its calc in the last second (the seen table)
+    uint32_t h = (uint32_t)((a >> 4) * 2654435761u) & (SEEN_N - 1);
+    int64_t now = frame_step_world_us();
+    for (int k = 0; k < 32; k++, h = (h + 1) & (SEEN_N - 1))
+        if (atomic_load_explicit(&seen[h].actor, memory_order_relaxed) == a)
+            return now - atomic_load_explicit(&seen[h].at_us, memory_order_relaxed) < 1000000;
+    return 0;
+}
+static void ground_near_one(uint64_t a, const char *nm, uint32_t key, void *arg) {
+    GroundNear *g = arg;
+    (void)key;
+    if (!strstr(nm, "GroundControl")) return;
+    float p[3];
+    if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+    float d = sqrtf((p[0] - g->me[0]) * (p[0] - g->me[0]) + (p[1] - g->me[1]) * (p[1] - g->me[1]) + (p[2] - g->me[2]) * (p[2] - g->me[2]));
+    if (d > 80 || g->n >= 12 || g->len > (int)sizeof g->line - 160) return;
+    int32_t st = 0;
+    coop_rd(a + COOP_ACTOR_STATE, &st, 4);
+    uint64_t t = coop_rd_ptr(a + 0x228), ph = t ? coop_rd_ptr(t + 0x50) : 0, ctl = ph ? coop_rd_ptr(ph + 0x20) : 0;
+    uint64_t gc = ctl ? coop_rd_ptr(ctl + 0x140) : 0;
+    uint16_t idx = 0xffff;
+    if (gc) coop_rd(gc + 0xc, &idx, 2);
+    g->len += snprintf(g->line + g->len, sizeof g->line - g->len, " %s at %.1f m (%.1f %.1f %.1f) state %d%s index %d;", nm, d, p[0], p[1], p[2], st,
+                       live_now(a) ? " live" : " at rest", idx == 0xffff ? -1 : idx);
+    g->n++;
+}
+static void ground_probe_log(uint64_t me) {
+    GroundNear g = {.n = 0, .len = 0};
+    if (!coop_rd(me + COOP_ACTOR_POS, g.me, 12)) return;
+    coop_actors_all(ground_near_one, &g);
+    rt_log("coop: test: ground: this Link at %.1f %.1f %.1f; GroundControl actors within 80 m: %d;%s", g.me[0], g.me[1], g.me[2], g.n, g.line);
+    char cl[600];
+    int n = 0;
+    cl[0] = 0;
+    for (int i = 0; i < 16 && n < (int)sizeof cl - 60; i++) {
+        uint64_t lr = atomic_load(&gp_callers[i].lr);
+        if (!lr) break;
+        n += snprintf(cl + n, sizeof cl - n, " main+%#llx x%u (index %u);", (unsigned long long)(lr - MOD_MAIN_BASE), atomic_exchange(&gp_callers[i].n, 0),
+                      atomic_load(&gp_callers[i].idx));
+    }
+    rt_log("coop: test: ground: in the last second: Rotate node update %u, enter %u, turn helper %u, ground control set %u;%s",
+           atomic_exchange(&gp_update, 0), atomic_exchange(&gp_enter, 0), atomic_exchange(&gp_helper, 0), atomic_exchange(&gp_set, 0), cl);
+}
 static void ground_tick(Cpu *c, uint64_t me) {
     if (!ground_on() || !coop_net_on()) return;
     static int64_t test_at = -2;
@@ -2527,6 +2604,7 @@ static void ground_tick(Cpu *c, uint64_t me) {
     uint64_t now = plat_now_ns();
     int log = test && now - last_test > 1000000000ull;
     if (log) last_test = now;
+    if (log) ground_probe_log(me);
     GroundPacket p = {.kind = GROUND_KIND};
     for (int i = 0; i < GROUND_N; i++) {
         uint64_t node = atomic_load_explicit(&gnodes[i].node, memory_order_acquire), a = atomic_load(&gnodes[i].actor);
