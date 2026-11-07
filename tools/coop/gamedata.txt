@@ -1,0 +1,6 @@
+# Shared world progress test (tools/coop/gamedata_test.ps1): title screen to the first save slot
+# (tools/input/load_save.txt), then nothing. Both games play it; the change comes from TOTK_COOP_TEST_GAMEDATA in A.
+300 A 4
+520 A 4
+700 A 4
+900 A 4
