@@ -43,7 +43,8 @@ PLAYER_ONLY = ('PlayerRef', 'PlayerCameraTargetRef', 'RiderRef', 'LifterRef', 'S
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 ap.add_argument('--version', choices=('v121', 'v143'), default='v143')
 ap.add_argument('--out', type=Path, help='default build/<version>/romfs-patches')
-ap.add_argument('--fields', default='InstanceHeapSize', help='(a test) the fields of the Player ActorInfo row put on the stand-in')
+ap.add_argument('--fields', default='InstanceHeapSize,DisplayRadius,LoadRadius',
+                help='(a test) the fields of the Player ActorInfo row put on the stand-in')
 ap.add_argument('--drop', default='', help='(a test) more components of the actor parameters left out, comma separated')
 ap.add_argument('--resident-emitter', action='store_true',
                 help="(a test, the old pack) keep the Player's perception emitter as it is: resident, which enemies ignore")
@@ -118,7 +119,8 @@ def unzs(raw):
 # The actor tables (RSDB ActorInfo and GameActorInfo, one row per actor, the two in the same order: the game pairs
 # their rows by place, so a row added to both crashed the load in the actor creator, main+0x514aac, 2026-11-07). An
 # actor missing from them is refused at creation. So the rows of an unused test actor (REPLACED, in no map) become the
-# stand-in's, in place: renamed, with the category of the actor parameters and the Player's instance heap size (the
+# stand-in's, in place: renamed, with the category of the actor parameters, the Player's instance heap size, display
+# and load radii and an update radius that never ends (the
 # whole Player row in ActorInfo crashed the same load). TotK Online turns a pigeon's row into its PlayerPuppet's the
 # same way (read for behaviour only).
 REPLACED = 'Npc_Hylia_TestTube_001'
@@ -133,6 +135,10 @@ for table in (f'RSDB/ActorInfo.Product.{ver}.rstbl.byml.zs', f'RSDB/GameActorInf
         for k in (x for x in args.fields.split(',') if x):
             if k in player: row[k] = player[k]
             else: row.pop(k, None)
+        # Its update radius (CalcRadius): the test actor's 40 m would stop its update, and so its placing at its owner,
+        # when its owner is 40 m from this game's Link. (The handover suite case's "went away (state 7)" was game A
+        # falling off the island and reloading, 2026-11-07.) The stand-in is wherever its owner is: always updated.
+        row['CalcRadius'] = 100000.0
     row['__RowId'] = NAME
     if 'Category' in row: row['Category'] = param['Category']
     rows[ids.index(REPLACED)] = row
