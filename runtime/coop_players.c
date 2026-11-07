@@ -806,6 +806,15 @@ int coop_players_phase(Cpu *c, uint64_t addr) {
     c->pc = addr;
     rt_dispatch(c);
     inside = 0;
+    // A PlayerPuppet stand-in, after its model phase (the push that puts items on their bones): its shield where its
+    // owner's is in a shield surf, and the copies that ride on it (a nocked arrow on its bow, its paraglider), as
+    // proxy_drive does for the old co-op Link.
+    Slot *ps = slot_of_actor(c->x[0]);
+    if (ps && coop_standin_puppet() && addr == MOD_MAIN_BASE + 0x245030 && ps->state == LIVE && ps->source == SRC_NET) {
+        shield_place(c, ps);
+        for (int k = 0; k < COOP_OBJS; k++)
+            if (ps->mir[k].state == 3 && ps->mir[k].ticks >= COPY_WARMUP && (ps->mir[k].flags & (COOP_OBJ_LOCAL | COOP_OBJ_ONLINK))) place_copy(c, ps, k);
+    }
     return 1;
 }
 // Puppet mode, from the hook on main+0x257310 (x0 the actor): that step copies the physics body's transform into the
@@ -910,6 +919,14 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
     }
     float m[12], pos[3] = {0}, rot[9];
     owner_matrix(s, m);
+    if (coop_standin_puppet()) {   // its owner rides an object: on this game's one of it (as proxy_drive)
+        float rp[3];
+        if (ride_place(s, rp)) {
+            m[3] = rp[0], m[7] = rp[1], m[11] = rp[2];
+            static int said_r;
+            if (!said_r++) rt_log("coop: stand-in: slot %d rides its owner's object here", (int)(s - slots));
+        }
+    }
     {   // how far the physics step's transform is from the owner's (what placement covers), logged every 60 frames
         float pp[3], pr[9];
         static __thread float dp_max, dr_max;   // (per thread: the puppets are placed on several, code review)
