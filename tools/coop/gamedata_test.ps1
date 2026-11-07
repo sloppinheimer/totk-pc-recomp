@@ -27,17 +27,17 @@
 # Failing signs: no "sharing world progress" line (the calc hook did not run, or no other player was seen); "NOT as
 # sent"; B's "unknown here" counting up (the two games' tables differ).
 # Other "= ... in this game, shared" lines are the games' own changes while standing (time of day flags and the like).
-param([int]$Seconds = 80)
+param([int]$Seconds = 80, [string]$BDir = "build\v143b")
 $ErrorActionPreference = 'Stop'
 $env:TOTK_COOP_SHARE_WORLD = '1'
 $env:TOTK_COOP_TEST_GAMEDATA = 'A:25'
 try {
-    & (Join-Path $PSScriptRoot 'run_pair.ps1') -Seconds $Seconds -ScriptA tools\coop\gamedata.txt -ScriptB tools\coop\gamedata.txt | Out-Null
+    & (Join-Path $PSScriptRoot 'run_pair.ps1') -Seconds $Seconds -ScriptA tools\coop\gamedata.txt -ScriptB tools\coop\gamedata.txt -BDir $BDir | Out-Null
 } finally {
     Remove-Item Env:TOTK_COOP_SHARE_WORLD, Env:TOTK_COOP_TEST_GAMEDATA -ErrorAction SilentlyContinue
 }
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-foreach ($g in @(@{n = 'A'; d = 'build\v143'}, @{n = 'B'; d = 'build\v143b'})) {
+foreach ($g in @(@{n = 'A'; d = 'build\v143'}, @{n = 'B'; d = $BDir})) {
     "=== $($g.n)"
     Select-String -Path (Join-Path $root "$($g.d)\logs\totk.log") -Pattern 'coop: gamedata|coop net|FATAL' | Select-Object -ExpandProperty Line
 }
