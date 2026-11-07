@@ -77,6 +77,9 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   the contact, the body's place from the enemy's main body), and the owner's game adds it to its enemy's waiting
   contacts at that enemy's next hit update, its handles made the stand-in's and its sword's (ce_add). Pair test (B
   attacks A's blue Bokoblin, stand-in on): two contacts sent and added, and the Bokoblin died in A's game.
+  **Its main body** is asked for motion type 0 every tick (requestChangeMotionType, 1.4.3 main+0xae4300, the same
+  code as 1.2.1's 0xe8be30; `TOTK_COOP_STANDIN_MOTION=0` not), as TotK Online does; it still followed its owner to
+  0.00 m and held its sword (equip_draw_3rd.txt). What type 0 changes is not checked.
   **Hits on the stand-in** are all taken out in the game that shows it (its owner's game has the attack on the real
   Link from its copy of the enemy).
   Not done: its arrows, the other
@@ -86,8 +89,6 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   - enemies taking the stand-in for a player: TotK Online hooks the game's "is a player" check (1.2.1 main+0x1736dec,
     1.4.3 main+0x1d1fc70 by tools/coop/xver_match.py; returns 1 for PlayerPuppet) and patches four places in the same
     family (1.4.3 near main+0x1d1f960, 0x1d1f9e4, 0x1d1fa54, 0x1d1ffd0) that would read the Player component it lacks;
-  - the stand-in's main body set to motion type 0 every frame (phive requestChangeMotionType; TotK Online's, meaning
-    not checked);
   - the stand-in's paraglider and Ultrahand arm as actors of their own tied to it (Parasail, PlayerRaulHand, by
     requestRegisterRelation), with the glider's colour and open state; the glider goes as a moved object's copy now,
     only while open;

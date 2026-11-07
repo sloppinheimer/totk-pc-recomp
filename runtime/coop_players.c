@@ -4880,6 +4880,15 @@ void coop_players_tick(Cpu *c, int numpad3) {
             // The PlayerPuppet stand-in (TOTK_COOP_STANDIN=puppet): its items, made once, are taken out and put away
             // with the game's in-hand calls as its owner holds them (TotK Online's way, read for behaviour only):
             // nothing of the stand-in's own puts them back. Checked every 6 ticks.
+            // Its main body asked for motion type 0 every tick (phive RigidBodyBase::requestChangeMotionType, 1.4.3
+            // main+0xae4300 from 1.2.1's 0xe8be30, the same code; TotK Online does it, read for behaviour only), so
+            // the physics does not push it about. TOTK_COOP_STANDIN_MOTION=0: not.
+            if (coop_standin_puppet() && s->state == LIVE && s->actor) {
+                static int mo = -1;
+                if (mo < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_MOTION"); mo = !(e && *e == '0'); }
+                uint64_t body = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(s->actor + 0x228) + 0x50) + 0x20) + 0x150);
+                if (mo && body) coop_guest_call(c, MOD_MAIN_BASE + 0xae4300, body, 0, 0, 0);
+            }
             // ... and its weapon's attack on while its owner's is (flags bit 13), every tick
             if (eq && coop_standin_puppet()) {
                 uint8_t att = (uint8_t)s->attack_want;
