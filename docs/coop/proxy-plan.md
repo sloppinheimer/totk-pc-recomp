@@ -256,7 +256,12 @@ right in the tester's own two-pad session.
     handover_to). The game running it gives it to another player's game when that player's Link is 5 m nearer to it
     than its own and within 30 m, at most once in 5 s; it stops running and reporting it, the other game finds its
     owner gone and runs its own one from where it stands (with the owner's awareness words already on it). If that
-    game does not take it up within 3 s, the first takes it back and does not offer it again for 30 s. TotK Online's
+    game does not take it up within 3 s, the first takes it back and does not offer it again for 30 s. When two games
+    claim one enemy (one let it go and takes it back, or both had it from the start), the one whose Link is 3 m nearer
+    to it than every other's, within 30 m, keeps it, before the longest-held: in a play session a game whose Link was
+    30 m off let its enemies go and took them back as they went in and out of the part of the world it updates, and
+    the nearer player's game went each time from its own one, fighting, to the far game's, which had stood still (one
+    stayed knocked down and could not be locked on to for a while). TotK Online's
     server gives every actor to the nearest player's game. Pair test (the same Bokoblin spawned in both games, A's
     Link 36 m from it, B's 15 m): A handed it to B, it hit B's Link (14 -> 11) and A's proxy of B lost the same.
     Without the hand-over B was not hit. An enemy fighting between two players may change games as they move

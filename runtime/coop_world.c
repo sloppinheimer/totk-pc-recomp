@@ -1650,6 +1650,10 @@ typedef struct {
 #define HANDOVER_GAIN_M 5.0f
 #define HANDOVER_HOLD_US 5000000
 #define HANDOVER_WAIT_US 3000000
+#define HANDOVER_CLAIM_M 3.0f   // (between two games' claims: smaller than HANDOVER_GAIN_M, so no hand-over undoes it)
+static float dist3(const float a[3], const float b[3]) {
+    return sqrtf((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+}
 static int handover_on(void) {
     static int on = -1;
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_ENEMY_HANDOVER"); on = !(e && *e == '0'); }
@@ -1733,6 +1737,25 @@ static void peer_one(int cell, uint64_t a, void *arg) {
             uint32_t ag = claim[i]->age_ms;
             int older = ag > best_age + CLAIM_TIE_MS, tie = !older && best_age <= ag + CLAIM_TIE_MS;
             if (older || (tie && claim_id[i] < best)) best = claim_id[i], best_age = ag;
+        }
+        // Claimed by more than one game: the one whose Link is HANDOVER_CLAIM_M nearer to it than every other's (within
+        // HANDOVER_M) keeps it, before the longest-held. A game whose Link was 30 m off let its enemies go and took
+        // them back as they went in and out of the part of the world it updates; each time the nearer player's game
+        // went from its own one, fighting, to the far game's, which had stood still: one stayed knocked down and could
+        // not be locked on to for a while (a play session, 2026-11-07).
+        float ep[3];
+        if (n_claims && handover_on() && s->have_me && coop_rd(a + COOP_ACTOR_POS, ep, 12)) {
+            int ids[COOP_MAX_PLAYERS + 1], nid = 0, near_id = 0;
+            float d[COOP_MAX_PLAYERS + 1], dn = 1e30f, d2nd = 1e30f;
+            ids[nid] = s->me_id, d[nid++] = dist3(ep, s->me);
+            for (int i = 0; i < n_claims; i++)
+                for (int k = 0; k < s->no; k++)
+                    if (s->ids[k] == claim_id[i] && nid <= COOP_MAX_PLAYERS) ids[nid] = claim_id[i], d[nid++] = dist3(ep, s->others[k]);
+            for (int i = 0; i < nid; i++) {
+                if (d[i] < dn) d2nd = dn, dn = d[i], near_id = ids[i];
+                else if (d[i] < d2nd) d2nd = d[i];
+            }
+            if (near_id && dn < HANDOVER_M && dn + HANDOVER_CLAIM_M < d2nd) best = near_id;
         }
         int was = f->owner;
         f->owner = best == s->me_id ? 0 : best;

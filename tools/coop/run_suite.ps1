@@ -24,7 +24,8 @@ $cases = @(
     # 44 m off: the game that runs it (A, the lower id) hands it to B's (coop_world.c, handover_to)
     @{n = 'handover'; s = 75; a = 'walk_far_3rd.txt'; b = 'idle_3rd.txt';
       env = @{TOTK_COOP_TEST_SPAWN = 'Enemy_Bokoblin_Junior@40'; TOTK_COOP_TEST_SPAWN_AT = '41.6,1511.0,1504.9'};
-      want = @('A:Enemy_Bokoblin_Junior \w+ handed to player 2')}   # (B may run it from the start: its spawn can be the older)
+      # (B's from the start, as the nearer claim, or handed to it later)
+      want = @('A:Enemy_Bokoblin_Junior \w+ (handed to player 2|is run by another game)')}
 )
 $pass = 0; $fail = 0
 foreach ($c in $cases) {
