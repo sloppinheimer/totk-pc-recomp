@@ -2339,8 +2339,51 @@ static void contacts_test(uint64_t dc) {
         }
     }
 }
+// TotK Online (read for behaviour only) deletes, in each game, the contacts with an actor another game runs, so a hit
+// is counted in one game only: the owner's, where the attacker's stand-in swings too. Here, on the copy of an enemy
+// another game runs (native model), the contacts waiting for its hit update whose attacker (handle +0x80's actor) is
+// a Link, this one or a co-op Link, and whose weapon (handle +0x68's) is a Weapon_ are taken out of the list before
+// the hit is built: this Link's sword lands in the owner's game from its co-op Link there (and so is not also sent as
+// the copy's lost life, peer_one), and a co-op Link's sword was its player's hit, already counted in the owner's game.
+// The copy's reaction is its owner's action (coop_enemy_action). Arrows, bombs and the rest stay (their damage goes
+// to the owner as lost life). TOTK_COOP_CONTACT_FILTER=0: none taken out.
+static int ct_is_copy(uint64_t a);   // (below the copies' table)
+static int ct_is_link(uint64_t a) {
+    if (!a) return 0;
+    if (a == pup_me) return 1;
+    uint64_t co[COOP_MAX_PLAYERS];
+    int ids[COOP_MAX_PLAYERS], n = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
+    for (int i = 0; i < n; i++) if (co[i] == a) return 2;
+    return 0;
+}
+static void contacts_filter(uint64_t dc) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_CONTACT_FILTER"); on = !(e && *e == '0'); }
+    if (!on || !enemy_native() || !coop_net_on()) return;
+    uint64_t a = coop_rd_ptr(dc + 0x198), l, base;
+    int32_t cnt = 0;
+    if (!ct_is_copy(a) || !(l = contact_list(dc)) || !coop_rd(l + 0x18, &cnt, 4) || cnt <= 0 || cnt > 64 || !(base = coop_rd_ptr(l + 0x10))) return;
+    int out = 0, keep = 0;
+    for (int k = 0; k < cnt; k++) {
+        uint64_t e = base + (uint64_t)k * CONTACT_SZ, r1 = coop_rd_ptr(e + 0x68), r2 = coop_rd_ptr(e + 0x80);
+        uint64_t w = r1 ? coop_rd_ptr(r1 + 0x40) : 0, by = r2 ? coop_rd_ptr(r2 + 0x40) : 0;
+        char wn[48] = "", an[48] = "";
+        if (w) coop_actor_name(w, wn, sizeof wn);
+        int who = ct_is_link(by), drop = who && !strncmp(wn, "Weapon_", 7);
+        static _Atomic int said;
+        if (atomic_fetch_add(&said, 1) < 40)
+            rt_log("coop: contact on the copy of %s by %s with %s (kind %u): %s", coop_actor_name(a, an, sizeof an),
+                   who == 1 ? "this Link" : who == 2 ? "a co-op Link" : "something else", wn[0] ? wn : "-", LD8(e + 0x90),
+                   drop ? "taken out (its owner's game counts it)" : "kept");
+        if (drop) { out++; continue; }
+        if (keep != k) memmove((void *)(uintptr_t)(base + (uint64_t)keep * CONTACT_SZ), (void *)(uintptr_t)e, CONTACT_SZ);
+        keep++;
+    }
+    if (out) memcpy((void *)(uintptr_t)(l + 0x18), &keep, 4);
+}
 void coop_hit_update(Cpu *c) {
     contacts_test(c->x[0]);
+    contacts_filter(c->x[0]);
     if (contact_on()) {
         uint64_t x0 = c->x[0];
         if (x0 && x0 == atomic_load(&ct_dc)) contact_add(x0);
@@ -4285,4 +4328,13 @@ void coop_world_tick(Cpu *c, uint64_t me) {
     if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "enemy"); }
     if (on && ++t % 300 == 0) { probe_me = me; each_live(probe_one, NULL); }
     if (coop_world_role()) peer_tick(c, me);
+}
+
+// An enemy another game runs (contacts_filter): a copy following its owner, or one this game has seen run elsewhere
+// before it follows (pup_bind waits for its first 3 s here).
+static int ct_is_copy(uint64_t a) {
+    for (int k = 0; a && k < PUP_N; k++) if (atomic_load_explicit(&pups[k].actor, memory_order_relaxed) == a) return 1;
+    uint32_t key = a ? key_of_actor(a) : 0;
+    for (int k = 0; key && k < FOLLOW_N; k++) if (follow[k].key == key) return follow[k].owner != 0;
+    return 0;
 }

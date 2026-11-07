@@ -25,7 +25,12 @@ $cases = @(
     @{n = 'handover'; s = 75; a = 'walk_far_3rd.txt'; b = 'idle_3rd.txt';
       env = @{TOTK_COOP_TEST_SPAWN = 'Enemy_Bokoblin_Junior@40'; TOTK_COOP_TEST_SPAWN_AT = '41.6,1511.0,1504.9'};
       # (B's from the start, as the nearer claim, or handed to it later)
-      want = @('A:Enemy_Bokoblin_Junior \w+ (handed to player 2|is run by another game)')}
+      want = @('A:Enemy_Bokoblin_Junior \w+ (handed to player 2|is run by another game)')},
+    # a hit on an enemy another game runs: B's sword on its copy of A's Bokoblin is taken out of the copy's contacts,
+    # and the enemy dies in A's game from B's co-op Link there (coop_world.c, contacts_filter)
+    @{n = 'hits'; s = 80; a = 'idle_3rd.txt'; b = 'attack_enemy_3rd.txt';
+      env = @{TOTK_COOP_TEST_SPAWN = 'Enemy_Bokoblin_Middle@26'; TOTK_COOP_TEST_SPAWN_AT = '41.6,1511.0,1504.9'};
+      want = @('B:contact on the copy of Enemy_Bokoblin_Middle by this Link with Weapon_\w+ \(kind \d+\): taken out', 'B:Enemy_Bokoblin_Middle \w+ died in player 1')}
 )
 $pass = 0; $fail = 0
 foreach ($c in $cases) {

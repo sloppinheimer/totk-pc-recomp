@@ -25,10 +25,12 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   life, and its action requests (main+0x50ad74, 1.2.1 0xa29340) are replaced by the owner's last one. Pair test:
   game B's copy of a Bokoblin took player A's hits with its own reaction, died with its own effect and dropped its
   horn and weapon; Chuchus' copies played the owner's actions (id 105). Hit replays onto proxies are off with it.
-  Open (review, 2026-11-07): a follower's sword hit on its copy now hurts the copy, so its life loss goes to the
-  owner as a hit, and the follower's co-op Link swinging in the owner's game may land the same hit there: counted
-  twice if both happen (not tested). TotK Online deletes contacts with actors another game owns, except the stand-in's
-  sword, so only the owner's game counts it; that is the fix ("Not done" below).
+- **Done: a sword hit counts in the owner's game only** (coop_world.c, contacts_filter; `TOTK_COOP_CONTACT_FILTER=0`
+  off). TotK Online deletes the contacts with actors another game owns. Here the contacts waiting in a copy's hit
+  update (main+0x300a30) from a Link's Weapon_ are taken out, so the copy is not hurt and sends no lost life; the
+  player's co-op Link in the owner's game lands the hit there. Pair test (suite case `hits`): B's sword on its copy of
+  A's blue Bokoblin was taken out, and the Bokoblin died in A's game with no hit sent from B. Arrows and bombs are not
+  taken out: their damage still goes to the owner as lost life, as the co-op Link does not shoot in the owner's game.
 - **Done, not seen end to end: enemies made at run time** (a night's Stalkoblins) are made in the other games: the
   create queues' getActor (main+0x50d364, 0x61a8b4, 0x6609b4, 0x89841c), an Enemy_ with no placement hash
   ([actor+0x370]+0x88, the same in 1.4.3), sent with its key; the others make one and give it that key. The test
@@ -42,7 +44,6 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     animation slots (clip, weight, frame, partial masks) replayed into its animation player (1.2.1: player
     [[[actor+0x228]+8]+0x28]+0x40, slots 0xb0 bytes, play by vtable +0x30); gear made once and drawn with the in-hand
     calls; arrows shot by the stand-in with its owner's camera (patched unproject);
-  - contacts with actors another game owns deleted, except the stand-in's sword, so its hits land in the owner's game;
   - map actors keyed by their placement hash instead of name and first place;
   - Ultrahand glue made again in the other games, and breaks refused there; rotating ground's time copied;
   - the Gloom Hands (TotK Online leaves them out too).
