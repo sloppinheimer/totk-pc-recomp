@@ -355,6 +355,17 @@ un_pair.ps1 -Seconds 80 -ScriptA
   Next, read watches: who reads the stand-in's perception data during the flicks, against who reads this Link's in
   a real notice. The functions that read the Link's data but not the stand-in's are where the stand-in drops out.
   Uses TOTK_COOP_TEST_WATCH5 with WATCHWHAT=coopdata or data, and TOTK_COOP_TEST_WATCHLEN for the window.
+  Read watches (eeb6fe3): neither run was a fair test. Stand-in run: B's Link 2089 m off (A fell and reloaded
+  elsewhere, so B did not load that area), three readers only (main+0x3020e0, 0x42c554, 0x328d80). Control (B's Link
+  2 m from the Bokoblin, made facing the same way as the Link): 36 readers, but never c082 either, only
+  "1 0 5c / f3" spells. A fight is c082 c c 1 1 (+0x84 is the action, not awareness). So the "1" spells the stand-in
+  got are the same kind the Link gets from a Bokoblin that has not seen him, and the setup was the problem.
+  Matched pair now:
+  - control: TOTK_COOP_TEST_SPAWN_AT=self (3 m in front of this Link, facing it), B playing walk_late_3rd.txt
+    (walks into it at 45 s);
+  - stand-in: SPAWN_AT=standin, A playing standin_walk_3rd.txt (6 s away from B, then into the Bokoblin at 45 s).
+  The control must reach c082 first; only then does the stand-in run, and its reader list against the control's,
+  mean anything.
   Unverified: that 20 m keeps B's own Link out of the Bokoblin's notice; the earlier note saw one stay unaware
   with the Link 44 m off.
 - Not done: TotK Online's four crash-guard patches in the bow function family (1.4.3 near main+0x1d1f960, 0x1d1f9e4,

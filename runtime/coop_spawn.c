@@ -355,7 +355,8 @@ static void spawn(Cpu *c, int k) {
     {   // TOTK_COOP_TEST_SPAWN_AT=x,y,z: at that world place instead (the same enemy in two games: its key is its place);
         // x,y,z,1: and facing the other way from the Link (towards it, when placed in front of it).
         // =standin: 3 m in front of the first other player's stand-in instead, facing it (an enemy next to that
-        // player only, in the game that does not own them; tools/coop/standin_foe_3rd.txt)
+        // player only, in the game that does not own them; tools/coop/standin_foe_3rd.txt). =self: 3 m in front of
+        // this PC's Link, facing it: the same place against this game's own player, the control for =standin
         const char *e = k == 1 ? cfg_get("TOTK_COOP_TEST_SPAWN_AT") : NULL;
         float q[3];
         int back = 0;
@@ -374,6 +375,10 @@ static void spawn(Cpu *c, int k) {
             at[0] = sp[0] + 3 * sr[2], at[1] = sp[1] + 0.5f, at[2] = sp[2] + 3 * sr[8];
             back = 1;
             rt_log("coop: spawn %s 3 m in front of player %d's stand-in at %.1f %.1f %.1f", names[k], ids[0], sp[0], sp[1], sp[2]);
+        } else if (e && !strcmp(e, "self")) {
+            at[0] = pos[0] + 3 * rot[2], at[1] = pos[1] + 0.5f, at[2] = pos[2] + 3 * rot[8];
+            back = 1;
+            rt_log("coop: spawn %s 3 m in front of this Link at %.1f %.1f %.1f", names[k], pos[0], pos[1], pos[2]);
         } else if (e && sscanf(e, "%f,%f,%f,%d", &q[0], &q[1], &q[2], &back) >= 3) memcpy(at, q, sizeof at);
         if (back == 1)
             for (int r = 0; r < 3; r++) rot[r * 3 + 0] = -rot[r * 3 + 0], rot[r * 3 + 2] = -rot[r * 3 + 2];
