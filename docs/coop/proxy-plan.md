@@ -366,6 +366,16 @@ un_pair.ps1 -Seconds 80 -ScriptA
   - stand-in: SPAWN_AT=standin, A playing standin_walk_3rd.txt (6 s away from B, then into the Bokoblin at 45 s).
   The control must reach c082 first; only then does the stand-in run, and its reader list against the control's,
   mean anything.
+  Matched pair (c726237, with 6075057's later menu presses): control passes (c082 c c 1 1 at 42 s, 2.9 m, fights to
+  the end). Stand-in: c882 c c 0 0 4 for 3 s (a state the control never showed) while it turned away from the
+  stand-in 3 m in front of it, then c082 fighting toward B's own Link 30 m off, holding about 16 m from it. So it
+  does notice the stand-in now (the non-resident emitter and the affiliation), but when it goes to fight "the
+  player" it takes the perception manager's one player emitter (+0x58, B's Link). That is where the 2026-11-04
+  slot tests pointed. Next test: the same run with TOTK_COOP_ENEMY_REDIRECT=1. That hook on main+0x45b930 puts
+  the nearest stand-in's perception data in that field for each enemy nearer to it than to this Link (coop_spawn.c;
+  off by default since it changed nothing for a second Player, whose resident emitter was never noticed). Expect
+  "coop: perception: N checks taken to a co-op Link so far" in B's log and the foe staying within a few m of the
+  stand-in in c082.
   Unverified: that 20 m keeps B's own Link out of the Bokoblin's notice; the earlier note saw one stay unaware
   with the Link 44 m off.
 - Not done: TotK Online's four crash-guard patches in the bow function family (1.4.3 near main+0x1d1f960, 0x1d1f9e4,
