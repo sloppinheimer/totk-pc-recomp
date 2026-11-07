@@ -894,6 +894,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
     if (addr == MOD_MAIN_BASE + 0x916860) return beam_hook(c, addr);
     if (addr == MOD_MAIN_BASE + 0x31dbc0) { void coop_hit_delivered(Cpu *c); coop_hit_delivered(c); return 0; }   // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x300a30) { void coop_hit_update(Cpu *c); coop_hit_update(c); return 0; }        // coop_world.c
+    if (addr == MOD_MAIN_BASE + 0x50ad74) { void coop_enemy_action(Cpu *c); coop_enemy_action(c); return 0; }    // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x599670) return create_trace(c);
     // HUD control guide (bottom-right prompts such as "Dive R"): main+0x2192c50 (type) shows one, main+0x4cb540 (type)
     // hides one, on the one CtrlGuide screen. Every Player's calc calls them; a co-op Link's must not change this

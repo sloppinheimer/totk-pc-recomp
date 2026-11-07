@@ -227,15 +227,33 @@ static uint32_t enemy_of(int cell, uint64_t a, char *nm, size_t n) {
 // over the live enemies (dup_count), then skipped.
 static struct { uint32_t key; int n; } dup_keys[512];
 static int dup_n;
+static float dist3(const float a[3], const float b[3]);
+// Every live enemy here, synced or not (refreshed with dup_count): coop_enemy_within.
+static uint64_t all_enemies[512];
+static int n_all_enemies;
 static void dup_one(int cell, uint64_t a, void *arg) {
     (void)arg;
     char nm[64];
     uint32_t key = enemy_of(cell, a, nm, sizeof nm);
     if (!key) return;
+    if (n_all_enemies < 512) all_enemies[n_all_enemies++] = a;
     for (int i = 0; i < dup_n; i++) if (dup_keys[i].key == key) { dup_keys[i].n++; return; }
     if (dup_n < 512) dup_keys[dup_n].key = key, dup_keys[dup_n++].n = 1;
 }
-static void dup_count(void) { dup_n = 0, each_live(dup_one, NULL); }
+static void dup_count(void) { dup_n = 0, n_all_enemies = 0, each_live(dup_one, NULL); }
+// Whether a live enemy of this game (synced or not) stands within m of p: a weapon there is in its hand (or was), not
+// a thing lying in the world (coop_players.c, prop_fn). Night's Stalkoblins are made in each game on its own and not
+// synced; one's sword was sent as a moved object and its copy hung in the air in the other game (a play session,
+// 2026-11-07).
+int coop_enemy_within(const float p[3], float m) {
+    for (int i = 0; i < n_all_enemies; i++) {
+        float q[3];
+        int32_t st = 0;
+        if (!coop_rd(all_enemies[i] + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || !coop_rd(all_enemies[i] + COOP_ACTOR_POS, q, 12)) continue;
+        if (dist3(p, q) < m) return 1;
+    }
+    return 0;
+}
 static int dup_key(uint32_t key) {
     for (int i = 0; i < dup_n; i++) if (dup_keys[i].key == key) return dup_keys[i].n > 1;
     return 0;
@@ -1916,6 +1934,7 @@ void coop_hit_delivered(Cpu *c) {
         }
 }
 static int contact_on(void);
+static int enemy_native(void);
 // When a contact went to each player (plat_now_ns): a hit on that player's proxy within CONTACT_COVER_NS of one is
 // the contact's, so its hit replay is not sent (link_hits_send); a hit with no contact (one the contact list does not
 // carry) still goes as the hit replay.
@@ -1926,7 +1945,8 @@ static void link_hits_send(void) {
     int ids[COOP_MAX_PLAYERS], n = coop_player_actors(acts, ids, COOP_MAX_PLAYERS);
     static uint32_t rcv_seen[RCV_N];
     for (int i = 0; i < RCV_N; i++) {
-        uint64_t dc = i < n ? coop_rd_ptr(coop_rd_ptr(acts[i] + 0x228) + 0x2f8) : 0;
+        // (none with the native enemy model: an enemy's hits on a proxy here are its copy's in that player's game)
+        uint64_t dc = i < n && !enemy_native() ? coop_rd_ptr(coop_rd_ptr(acts[i] + 0x228) + 0x2f8) : 0;
         atomic_store(&proxy_rcv[i], dc ? dc + 0x190 : 0);
         atomic_store(&proxy_id[i], i < n ? ids[i] : 0);
     }
@@ -2060,9 +2080,11 @@ static _Atomic uint64_t lh_x1;   // the attack it is delivered with
 // is that body +0xb558, guarding or not, both Links, every run: TOTK_COOP_TEST_CONTACTS, 2026-11-06).
 typedef struct { uint32_t key, to, kind, n, brel[CONTACT_MAX]; uint8_t e[CONTACT_MAX][CONTACT_SZ]; } ContactPacket;
 _Static_assert(sizeof(ContactPacket) <= COOP_HIT_MAX, "ContactPacket fits a HIT packet");
-static int contact_on(void) {   // TOTK_COOP_LINKHIT_CONTACT=0: the hit replay only
+// TOTK_COOP_LINKHIT_CONTACT=0: the hit replay only. Off with the native enemy model unless set: there the copy of an
+// enemy fighting this game's Link hits it itself, in this game (sent as well, a hit counted twice).
+static int contact_on(void) {
     static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_LINKHIT_CONTACT"); on = !(e && *e == '0'); }
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_LINKHIT_CONTACT"); on = e ? *e != '0' : !enemy_native(); }
     return on;
 }
 static uint64_t contact_list(uint64_t dc) {
@@ -2673,6 +2695,20 @@ typedef struct {
     uint32_t key; float pos[3], rot[9]; uint8_t nitems, has_aware, pad[2]; uint64_t t_ns; uint32_t aware[AWARE_N];
 } EPoseHead;
 typedef struct { uint32_t hash; float pos[3], rot[9]; } EItem;   // hash: its name's (name_hash_of)
+// The native enemy model (enemy_native, TotK Online's way; read for behaviour only): pad[0] EPOSE_NATIVE, the packet
+// is the header (the enemy's place and rotation) and, with EPOSE_ACTION, an EAction after it; no items, no bones.
+#define EPOSE_NATIVE 2
+#define EPOSE_ACTION 1
+// An enemy's action request as the game made it (main+0x50ad74's x1, 0x58 bytes: three Vec3, ids, a pointer at +0x38
+// to its name when +0x40 is 1, an action id at +0x4c) and its mode (w2); name: that name, copied.
+#define EACT_REQ 0x58
+typedef struct { uint8_t mode, has_name, pad[2]; char name[32]; uint8_t req[EACT_REQ]; } EAction;
+_Static_assert(sizeof(EAction) == 0x7c && 88 + 0x7c <= COOP_EPOSE_MAX, "EAction fits an EPOSE packet");
+static int enemy_native(void) {   // TOTK_COOP_ENEMY_MODEL=puppet: frozen copies posed bone by bone (the old model)
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_ENEMY_MODEL"); on = !(e && !strcmp(e, "puppet")); }
+    return on;
+}
 _Static_assert(sizeof(EPoseHead) == 88 && sizeof(EItem) == 52 && 88 + EPOSE_ITEMS * 52 == 244, "EPOSE header size (COOP_EPOSE_MAX)");
 typedef struct {
     uint64_t ns, src_ns;   // ns: here (src_ns, the owner's, moved onto this clock); src_ns: the owner's
@@ -2693,6 +2729,13 @@ static struct {
     uint32_t weap_hash[EPOSE_ITEMS];
     uint32_t aware[AWARE_N];   // the owner's awareness words, latest (have_aware)
     int have_aware;
+    // native model: the owner's latest action (under pup_lock); esc_s: how long the copy's own state bit has been set
+    // (enemy_action_hook); name: the action's name where the copy's request points
+    EAction act;
+    int has_act;
+    float esc_s;
+    uint64_t esc_ns;
+    char act_name[32];
     PupRec r[PUP_HIST];
 } pups[PUP_N];
 // Test (TOTK_COOP_TEST_ENEMYPOKE=<comp>:<off>=<value>[;...]): every tick, those 32-bit words written into each
@@ -2940,7 +2983,9 @@ static const int16_t *enemy_parents(uint64_t a, int n, const float (*w)[16], con
     return out;
 }
 // The owner: an enemy's place and its skeleton's records packed into out; its length, 0 when it has no skeleton found.
+static int epose_pack_native(uint64_t a, uint32_t key, uint8_t *out, int max);
 static int epose_pack(uint64_t a, uint32_t key, uint8_t *out, int max) {
+    if (enemy_native()) return epose_pack_native(a, key, out, max);
     EPoseHead h = {.key = key, .t_ns = plat_now_ns()};
     {
         uint64_t aw = coop_rd_ptr(coop_rd_ptr(a + 0x228) + AWARE_COMP);
@@ -3197,8 +3242,13 @@ static void epose_send_tick(void) {
 }
 static int pup_decode(const uint8_t *in, int len, PupRec *r) {
     EPoseHead h;
-    if (len < (int)sizeof h + 4) return 0;
+    if (len < (int)sizeof h) return 0;
     memcpy(&h, in, sizeof h);
+    if (h.pad[0] & EPOSE_NATIVE) {   // the native model's: its place and rotation only (the action: epose_take_tick)
+        memcpy(r->pos, h.pos, 12), mat_quat(h.rot, r->q), r->src_ns = h.t_ns, r->n = 0, r->ni = 0;
+        return 1;
+    }
+    if (len < (int)sizeof h + 4) return 0;
     in += sizeof h, len -= (int)sizeof h;
     if (h.nitems > EPOSE_ITEMS || len < h.nitems * (int)sizeof(EItem) + 4) return 0;
     r->ni = h.nitems;
@@ -3344,6 +3394,124 @@ static void pup_aware_apply(void) {
         }
     }
 }
+// ---- the native enemy model (TotK Online's way, read for behaviour only; docs/coop/proxy-plan.md). An enemy another
+// game runs is not frozen here: its own update and AI run, it is eased to the owner's place each tick (p += (owner's -
+// p) * min(10 * dt, 1), the rotation set), its life is the owner's (peer_one), and whenever its AI makes an action
+// request (main+0x50ad74, 1.2.1 main+0xa29340: tools/coop/xver_match.py and the code), the owner's last one is put in
+// its place. So the copy plays the owner's actions with its own animation, and holds its own weapon.
+#define ENEMY_UPDATE_TRANS 0x2af6004   // engine::actor::ActorBase::updateTrans(actor, const Vector3 &, int), 1.2.1 0xe8daf0
+#define ENEMY_UPDATE_ROT 0x2af6094     // engine::actor::ActorBase::updateRotation(actor, const Matrix33 &, int), 1.2.1 0xe655d8
+static void native_follow(Cpu *c, int k) {
+    uint64_t a = atomic_load(&pups[k].actor);
+    int32_t st = 0;
+    float p[3];
+    if (!a || !coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || !coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+    plat_mutex_lock(&pup_lock);
+    const PupRec *r = &pups[k].r[(pups[k].count - 1) % PUP_HIST];
+    float t[3], q[4];
+    memcpy(t, r->pos, 12), memcpy(q, r->q, 16);
+    plat_mutex_unlock(&pup_lock);
+    static uint64_t last[PUP_N];
+    uint64_t now = plat_now_ns();
+    float dt = last[k] ? (float)((now - last[k]) / 1e9) : 1.0f / 30;
+    last[k] = now;
+    if (dt > 1) dt = 1;
+    float f = fminf(10 * dt, 1);
+    _Alignas(16) float np[4] = {p[0] + (t[0] - p[0]) * f, p[1] + (t[1] - p[1]) * f, p[2] + (t[2] - p[2]) * f, 0};
+    _Alignas(16) float m[9];
+    quat_mat(q, m);
+    coop_guest_call(c, MOD_MAIN_BASE + ENEMY_UPDATE_ROT, a, (uint64_t)(uintptr_t)m, 0, 0);
+    coop_guest_call(c, MOD_MAIN_BASE + ENEMY_UPDATE_TRANS, a, (uint64_t)(uintptr_t)np, 0, 0);
+    static int said;
+    if (!said++) rt_log("coop: native enemies: %08x eased to its owner's place (%.2f m off)", pups[k].key,
+                        sqrtf((t[0] - p[0]) * (t[0] - p[0]) + (t[1] - p[1]) * (t[1] - p[1]) + (t[2] - p[2]) * (t[2] - p[2])));
+}
+// The owner's side: each enemy's last action request, by actor (the hook runs on the enemies' threads).
+static struct { uint64_t actor; EAction a; uint64_t ns; } act_mine[64];
+static PlatMutex act_lock = PLAT_MUTEX_INIT;
+static int epose_pack_native(uint64_t a, uint32_t key, uint8_t *out, int max) {
+    EPoseHead h = {.key = key, .t_ns = plat_now_ns()};
+    if (!coop_rd(a + COOP_ACTOR_POS, h.pos, 12) || !coop_rd(a + COOP_ACTOR_ROT, h.rot, 36)) return 0;
+    h.pad[0] = EPOSE_NATIVE;
+    int len = (int)sizeof h;
+    plat_mutex_lock(&act_lock);
+    for (int i = 0; i < 64; i++)
+        if (act_mine[i].actor == a && len + (int)sizeof(EAction) <= max) {
+            memcpy(out + sizeof h, &act_mine[i].a, sizeof(EAction)), len += (int)sizeof(EAction), h.pad[0] |= EPOSE_ACTION;
+            break;
+        }
+    plat_mutex_unlock(&act_lock);
+    memcpy(out, &h, sizeof h);
+    return len;
+}
+// main+0x50ad74 (x0 an object whose +0x18 is the actor, x1 the 0x58-byte request, w2 its mode): on this game's enemy
+// the request is kept to be sent; on another game's (a copy, native model) the owner's last one replaces it, unless
+// the copy's own state bit (component 8 -> +0x18 -> +0x18, byte +0x124 bit 5: TotK Online's escape, meaning unknown)
+// has been set for over 0.25 s. A dead enemy (life 0) plays its own.
+#define ENEMY_ACTION 0x50ad74
+void coop_enemy_action(Cpu *c) {
+    if (!enemy_native() || !coop_net_on()) return;
+    uint64_t obj = c->x[0], req = c->x[1], a = obj ? coop_rd_ptr(obj + 0x18) : 0;
+    if (!a || !req) return;
+    char nm[48];
+    if (strncmp(coop_actor_name(a, nm, sizeof nm), "Enemy_", 6) || life_of(a) == 0) return;
+    static _Atomic int said_seen;
+    if (atomic_fetch_add(&said_seen, 1) < 3) rt_log("coop: native enemies: %s makes an action request (mode %u)", nm, (unsigned)c->x[2]);
+    // a copy: the owner's
+    for (int k = 0; k < PUP_N; k++) {
+        if (atomic_load_explicit(&pups[k].actor, memory_order_relaxed) != a) continue;
+        plat_mutex_lock(&pup_lock);
+        int have = pups[k].has_act && pups[k].count && plat_now_ns() - pups[k].last_ns < PUP_STALE_NS;
+        // the escape: the copy's own state while its bit has been set 0.25 s
+        uint64_t s = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 8 * 8) + 0x18) + 0x18);
+        uint8_t b = 0;
+        uint64_t now = plat_now_ns();
+        if (s && coop_rd(s + 0x124, &b, 1) && (b & 0x20)) {
+            pups[k].esc_s += pups[k].esc_ns ? (float)((now - pups[k].esc_ns) / 1e9) : 0;
+        } else pups[k].esc_s = 0;
+        pups[k].esc_ns = now;
+        if (have && pups[k].esc_s <= 0.25f) {
+            memcpy((void *)(uintptr_t)req, pups[k].act.req, EACT_REQ);
+            if (pups[k].act.has_name) {
+                memcpy(pups[k].act_name, pups[k].act.name, sizeof pups[k].act_name);
+                pups[k].act_name[31] = 0;
+                uint64_t np = (uint64_t)(uintptr_t)pups[k].act_name;
+                memcpy((void *)(uintptr_t)(req + 0x38), &np, 8);
+            }
+            c->x[2] = pups[k].act.mode;
+            static _Atomic int said;
+            if (atomic_fetch_add(&said, 1) < 6)
+                rt_log("coop: native enemies: %s %08x plays its owner's action %s (id %u, mode %u)", nm, pups[k].key,
+                       pups[k].act.has_name ? pups[k].act.name : "-", *(uint32_t *)(pups[k].act.req + 0x4c), pups[k].act.mode);
+        }
+        plat_mutex_unlock(&pup_lock);
+        return;
+    }
+    // this game's: kept (it goes out with the enemy's next pose packet, epose_pack_native)
+    EAction e = {.mode = (uint8_t)c->x[2]};
+    coop_rd(req, e.req, EACT_REQ);
+    uint64_t np = 0;
+    uint8_t has = 0;
+    memcpy(&np, e.req + 0x38, 8), has = e.req[0x40];
+    if (has == 1 && np) {
+        for (int i = 0; i < 31; i++) {
+            char ch = 0;
+            if (!coop_rd(np + (uint64_t)i, &ch, 1) || !ch) break;
+            e.name[i] = ch;
+        }
+        e.has_name = 1;
+    }
+    memset(e.req + 0x38, 0, 8);   // (a pointer of this game's: the copy's points to its own copy of the name)
+    plat_mutex_lock(&act_lock);
+    int f = -1;
+    uint64_t oldest = UINT64_MAX;
+    for (int i = 0; i < 64; i++) {
+        if (act_mine[i].actor == a) { f = i; break; }
+        if (act_mine[i].ns < oldest) oldest = act_mine[i].ns, f = i;
+    }
+    act_mine[f].actor = a, act_mine[f].a = e, act_mine[f].ns = plat_now_ns();
+    plat_mutex_unlock(&act_lock);
+}
 static void epose_take_tick(Cpu *c) {
     pup_aware_apply();
     for (int i = 0; i < weap_free_n; i++) if (!weap_bound(weap_free[i])) weap_let_go(c, weap_free[i]);
@@ -3379,6 +3547,8 @@ static void epose_take_tick(Cpu *c) {
             memcpy(&hh, in, sizeof hh);
             pups[i].have_aware = hh.has_aware;
             if (hh.has_aware) memcpy(pups[i].aware, hh.aware, sizeof pups[i].aware);
+            if ((hh.pad[0] & EPOSE_ACTION) && len >= (int)(sizeof hh + sizeof(EAction)))
+                memcpy(&pups[i].act, in + sizeof hh, sizeof(EAction)), pups[i].has_act = 1;
             // The owner's clock onto this one: the smallest (arrival - owner's time) seen, the packet that came
             // quickest, rising slowly so a drift between the clocks is followed.
             static int64_t off[COOP_MAX_PLAYERS + 1];
@@ -3397,6 +3567,10 @@ static void epose_take_tick(Cpu *c) {
     for (int k = 0; k < PUP_N; k++) {
         if (!pups[k].key) continue;
         int ok = atomic_load(&pups[k].actor) && pups[k].count >= 2 && now - pups[k].last_ns < PUP_STALE_NS;
+        if (enemy_native()) {   // never frozen: its own update runs, eased to the owner's place (native_follow)
+            if (ok) native_follow(c, k);
+            ok = 0;
+        }
         int was = atomic_load(&pups[k].ready);
         if (ok != was) {
             char nm[64] = "";

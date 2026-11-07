@@ -654,7 +654,6 @@ static int proxied(const Slot *s) {
 static int ride_place(const Slot *s, float out[3]);   // the owner rides an object: where, here
 static void shield_place(Cpu *c, Slot *s);
 static uint64_t eq_item(uint64_t eq, int kind);
-static void drop_old_item(Cpu *c, uint64_t eq, int k, uint64_t old);
 static void watch_old_item(uint64_t eq, int k, uint64_t old, int remade);
 static int item_local(uint64_t link, uint64_t item, float local[3]);
 static void beam_dump(uint64_t a, int copy);
@@ -2091,7 +2090,6 @@ static void watch_old_item(uint64_t eq, int k, uint64_t old, int remade) {
     old_items[f].remade = remade;
     coop_actor_name(old, old_items[f].name, sizeof old_items[f].name);
 }
-static void drop_old_item(Cpu *c, uint64_t eq, int k, uint64_t old) { (void)c, watch_old_item(eq, k, old, 0); }
 // give_gear on a co-op Link, and its weapon, bow or shield as it was before watched as an old item (deleted once out
 // of its gear, never sent meanwhile). Each item made again (taken out, put away, its gear fixed) is a new actor; the
 // one before stayed in the world, the prop sync sent it, and the other player had swords, shields and fused parts
@@ -2138,6 +2136,8 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
     if (coop_rd(a + COOP_ACTOR_STATE, &ast, 4) && ast > 6 && !is_beam(nm)) return;
     float p[3];
     if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+    int coop_enemy_within(const float p[3], float m);   // coop_world.c
+    if (!strncmp(nm, "Weapon_", 7) && coop_enemy_within(p, 3.0f)) return;   // an enemy's (in its hand, or just let go of)
     float d2 = (p[0] - ps->me[0]) * (p[0] - ps->me[0]) + (p[1] - ps->me[1]) * (p[1] - ps->me[1]) + (p[2] - ps->me[2]) * (p[2] - ps->me[2]);
     float dco = 1e18f;
     for (int i = 0; i < COOP_MAX_PLAYERS; i++) {
