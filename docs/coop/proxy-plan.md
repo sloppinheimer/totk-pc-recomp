@@ -164,7 +164,7 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   - shared world progress beyond the bools and per-object flags (below): numbers (Ints, Enums: shrine states, quest
     counters), arrays and strings, shrine clears with each player's blessings worked out, and catching a player up on
     what the others did before they joined;
-  - Ultrahand glue: written, not run yet (runtime/coop_glue.c; `TOTK_COOP_GLUE=0` off). The 1.4.3 functions, found
+  - Ultrahand glue: the scripted test passes, a played glue is not tried yet (runtime/coop_glue.c; `TOTK_COOP_GLUE=0` off). The 1.4.3 functions, found
     by code (2026-11-07): the capture site is the tail call at main+0x1d61b04 in main+0x1d61a6c (1.2.1 0x16575dc in
     0x1657544: the same 39 instructions); doScotch main+0x1d66e34 (its only caller is that tail call); createScotch
     main+0x1c0b94c (the same 55 instructions as 1.2.1's 0x165710c; the matcher's two candidates were wrong);
@@ -189,14 +189,47 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     A "coop: glue: made here: bond 1, ..." and in B "coop: glue: bond 1 from player N made again here: ..." and,
     after A's removeScotch, "... is gone there: parted here". First run (2026-11-07, a Zonai cart and wheel): the cart
     rolled off the In-isa stairs and went away 1.5 s after it was made, and the glue at 40 s read the gone actor
-    (component 0, body 0); the wheel had its scotch component and a body handle (0x61). Planks should rest (not tried yet); the test now
-    glues at once and stops with "went away" if either goes. A real glue needs a player: in game A hold an object with Ultrahand, glue it to another, and look for the
-    same lines; then shake it apart. The packets need no protocol version change (old builds drop them);
-  - rotating ground: written, not proven (coop_world.c, ground_tick; `TOTK_COOP_GROUND=0` off): the host sends each
-    GroundControlActor_Rotate*'s phase ([[actor+0x228]+0x2b0]+0x20 float +0x3c, 1.2.1's place, unchecked in 1.4.3)
-    ten times a second ("GR" packets), the others write it. Pair test with one spawned in both games: the packet
-    arrived and the key matched, but the phase stayed 0 in both (a spawned one turns nothing), so the offset is not
-    proven; no rotating platform near the test saves;
+    (component 0, body 0); the wheel had its scotch component and a body handle (0x61). With the planks (and the test gluing 1 s after both exist) it passed: glued in A, made again in B on try 1,
+    parted in both (pair test on main, 2026-11-07). Every bond takes the hooked path, by code: doScotch, its capture function main+0x1d61a6c,
+    the glue step main+0x1c0ba8c and the component's message handler main+0x1c0bf20 are reached by direct branches
+    only (no pointer to any of them in the data or the code), and the handler only through the component's message
+    method (vtable slot main+0x367d560); the requests come from the Ultrahand's glue work (main+0x1d5565c, its own
+    argument class of 0x1b8 bytes) and from the component (main+0x1c09388, base arguments from the pool main+0x1c0c480),
+    so Ultrahand glue, autobuild and the game's own all reach doScotch's entry. (A bond both games make on their own,
+    a structure built by a load in each, would be sent by both and each game's breaks refused by the other's copy:
+    not seen, not handled.) A played test (a person at game A; game B can idle): set
+    `$env:TOTK_COOP_TEST_GLUE='AsbObj_WoodSquare_A_M_01,AsbObj_WoodRectangle_A_M_01,make'` (made 1.5 m in front
+    of A's Link at 30 s, not glued; "coop: test: glue: both made; glue them with Ultrahand"), run run_pair.ps1
+    -Seconds 240 -ScriptA tools\coop\glue_pair_3rd.txt -ScriptB tools\coop\glue_pair_3rd.txt with game A's window in
+    front and a pad or keyboard on it; once both planks lie there: choose Ultrahand (hold L, pick it, let go; or tap
+    L if it is the one chosen), aim at one plank, A to take it, move it with the stick and R/ZR until it touches the
+    other (the glue shows green), A to let go: they stick. Game A logs "coop: glue: made here: bond 1, ..." and the
+    matrices line; game B "bond 1 from player N made again here". Then take the pair with Ultrahand and shake the
+    right stick quickly left and right until they part: A logs "bond 1 ... is no longer glued here: taken off the
+    list" within 2 s and B "... is gone there: parted here". Also try it the other way (the person at B). The packets
+    need no protocol version change (old builds drop them);
+  - rotating ground: written, not run (coop_world.c, rotating ground; `TOTK_COOP_GROUND=0` off). 1.2.1's place
+    for the phase ([[actor+0x228]+0x2b0]+0x20 float +0x3c) is not what turns it in 1.4.3: the turn is the AI node
+    ExecuteGroundControlRotate's (vtable main+0x37733c0): its update main+0x2329170 runs the helper at node+0x20
+    (main+0x298a20c), which adds speed * frame time to the angle at helper+0x14 (radians, kept in 0..2 pi; speed now
+    +0x10, top speed +8, acceleration +0xc, set from RotateSpeedX / RotateAccelX by the enter main+0x2329078) and puts
+    the turn on the ground control its +0x18 index names (main+0x2988330). The node's actor is [[[node+8]+8]+0x1f8].
+    So that update's entry is hooked: each node is noted and keyed (actor_key); the host sends each one's angle ten
+    times a second ("GR"), and in the other games the update first sets its angle to the host's, moved on by its own
+    speed for the time since it came. Not covered: GroundControlActor_RotateRightAngleOrder (the RotateInOrder node).
+    Placed ones in MainField (bcett files, 25): H-5_Static at 2394.5 267.0 520.8 (RotateSpeedX 6), the stacked sky
+    platforms of Set_SkyIsland_HyruleForest_F-2_South near 205.5 1062-1863 -2028 (10 of them, 2.5-26), Firone H-7
+    near 2344 1689-1757 1750, Akkare J-2 4472 1548 -2026, Zora H-4 2910.6 1065.4 -525, gerudo A-6 -3484.9 2042.5
+    320.0, Rito SkyField -3070..-2844, LargeDungeonWater 3502.8 1922.4 -704.7; none on the Great Sky Island. Test:
+    `$env:TOTK_COOP_TEST_GROUND='25'` (or '25,x,y,z'), run_pair.ps1 -Seconds 70 -ScriptA tools\coop\ground_pair_3rd.txt
+    -ScriptB tools\coop\ground_pair_3rd.txt: both Links are put 4 m above H-5's at 25 s (2.5 km from the save's
+    start: the area must stream in). Each game logs "coop: test: ground: this Link put at 2394.5 271.0 520.8", then
+    "coop: ground: GroundControlActor_Rotate <key> at 2394.5 267.0 520.8 is turned by its AI here" with the same key
+    in both, then every second "coop: test: ground GroundControlActor_Rotate <key> angle a speed s[ (host)], host's
+    last h"; the guest once "coop: ground <key> turns as the host's (angle ...)". A pass: s reaching 0.105 (6 degrees a
+    second: the enter multiplies RotateSpeedX and RotateAccelX by pi/180, main+0x2d02604) and rising angles in
+    the host; in the guest its angle within about 0.02 of the host's last, every second. No "is turned by its AI" line
+    means the node does not run there (the area did not load, or the actor's AI is another node);
   - a thrown weapon or a shield bash on a copy is taken out of its contacts as a sword hit is, but the stand-in does
     not throw or bash in the owner's game, so that hit is lost (code review, a guess);
   - the Gloom Hands: left out, as TotK Online leaves them out.

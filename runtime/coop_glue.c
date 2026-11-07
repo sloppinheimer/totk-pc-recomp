@@ -522,7 +522,8 @@ void coop_glue_tick(Cpu *c, uint64_t me) {
 // exist glues them with the game's own calls (make_bond: createScotch and doScotch on their main bodies, each matrix
 // that body's frame at the point between them, a guess at what the game passes); doScotch's entry then captures it as
 // any glue made here. 20 s later it parts the first with removeScotch, as a shake of Ultrahand would. Each step is
-// logged; it stops if either goes away. Objects that rest: AsbObj_WoodSquare_A_M_01,AsbObj_WoodRectangle_A_M_01
+// logged; it stops if either goes away. TOTK_COOP_TEST_GLUE=<n1>,<n2>,make: only made, for a player to glue them by
+// hand with Ultrahand (docs/coop/proxy-plan.md says how). Objects that rest: AsbObj_WoodSquare_A_M_01,AsbObj_WoodRectangle_A_M_01
 // (building planks); a Zonai cart or wheel rolls off the In-isa stairs.
 static void glue_test(Cpu *c, uint64_t me) {
     static const char *spec;
@@ -530,7 +531,8 @@ static void glue_test(Cpu *c, uint64_t me) {
     static char names[2][48];
     static _Alignas(16) uint8_t handle[2][0x40], link[2][0x40];
     static uint64_t obj[2];
-    static double glued_at;   // stage 2: when both were there; stage 3 on: when they were glued
+    static double glued_at;
+    static int make_only;   // stage 2: when both were there; stage 3 on: when they were glued
     if (!spec) {
         spec = cfg_get("TOTK_COOP_TEST_GLUE") ? cfg_get("TOTK_COOP_TEST_GLUE") : "";
         const char *who = cfg_get("TOTK_COOP_NAME");
@@ -539,6 +541,8 @@ static void glue_test(Cpu *c, uint64_t me) {
         if (comma && comma - spec < 47 && strlen(comma + 1) < 47) {
             memcpy(names[0], spec, (size_t)(comma - spec)), names[0][comma - spec] = 0;
             snprintf(names[1], sizeof names[1], "%s", comma + 1);
+            char *third = strchr(names[1], ',');   // <n1>,<n2>,make: made only, for a player to glue by hand
+            if (third) make_only = !strcmp(third + 1, "make"), *third = 0;
         } else if (*spec) {
             rt_log("coop: test: glue: TOTK_COOP_TEST_GLUE wants two names, a comma between");
             spec = "";
@@ -565,7 +569,8 @@ static void glue_test(Cpu *c, uint64_t me) {
                 obj[k] = coop_claim(c, handle[k], link[k], &ref);
                 rt_log("coop: test: glue: %s is %llx", names[k], (unsigned long long)obj[k]);
             }
-        if (obj[0] && obj[1]) stage = 2, glued_at = now;
+        if (obj[0] && obj[1]) stage = make_only ? 9 : 2, glued_at = now;
+        if (obj[0] && obj[1] && make_only) rt_log("coop: test: glue: both made; glue them with Ultrahand");
         if (now > 45) { rt_log("coop: test: glue: the two were not made in 15 s"); stage = 9; return; }
     }
     // Both still there (state 2..6, the name theirs): a Zonai cart made on the In-isa stairs rolled off and went away
