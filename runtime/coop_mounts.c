@@ -34,6 +34,7 @@
 #include "coop_mounts.h"
 #include "coop_net.h"
 #include "host.h"
+#include "layout.h"
 #include "platform/platform.h"
 
 int coop_mounts_on(void) {
@@ -121,10 +122,12 @@ static void in_frame(const float hp[3], const float r[9], const float p[3], floa
 }
 
 // ---- this Link's ride
-// The box (TOTK_COOP_MOUNT_BOX=x,ylo,yhi,z, metres in the horse's frame: |x| across, ylo..yhi up, |z| along): a Link
-// beside a horse stands over half a metre across from its origin and on its ground; on its back it is above it.
+// The box (TOTK_COOP_MOUNT_BOX=x,ylo,yhi,z, metres in the horse's frame: |x| across, ylo..yhi up, |z| along). A
+// GameRomHorse01's origin is about half a metre above the ground it stands on: a Link standing beside it was at
+// -0.83 -0.5 0 in its frame, and behind it -0.4 -1.0 -2.2 (suite case mount, 2026-11-07). On its back a Link is
+// across 0, so the box is narrow across and loose up and down; the riding numbers are not seen yet.
 #define MOUNT_HOLD_TICKS 10   // a third of a second at 30 ticks a second: not a Link jumping past
-static float box[4] = {0.45f, 0.6f, 2.2f, 0.9f};
+static float box[4] = {0.45f, -0.3f, 2.0f, 0.9f};
 static uint32_t ride_key;      // the horse this Link rides (0 none)
 static float ride_off[3];
 static PlatMutex ride_lock = PLAT_MUTEX_INIT;
@@ -216,6 +219,40 @@ void coop_mounts_tick(Cpu *c, uint64_t me) {
             rt_log("coop: mounts: this Link rides %s %08x (%.2f %.2f %.2f in its frame; run %s)", nm, now_key, on_off[0],
                    on_off[1], on_off[2], run_by(now_key, rb, sizeof rb));
         else rt_log("coop: mounts: this Link is off horse %08x", was);
+    }
+    // Test (TOTK_COOP_TEST_MOUNT_PUT=<s>[:<player id>], that player's game only when given): at <s>, <s>+2 and <s>+4 s
+    // into the world, while this Link rides nothing,
+    // it is put 0.9 m beside the nearest horse (its left, on its ground) facing it, where the game offers to mount
+    // with A (the script presses A then; walking up to a horse that wanders did not get there in time, 2026-11-07).
+    static float put_at = -2;
+    static int put_id;
+    if (put_at == -2) {
+        const char *e = cfg_get("TOTK_COOP_TEST_MOUNT_PUT"), *col = e ? strchr(e, ':') : NULL;
+        put_at = e ? (float)atof(e) : -1, put_id = col ? atoi(col + 1) : 0;
+    }
+    if (put_id && coop_net_id() != put_id) put_at = -1;
+    static int puts;
+    float wt = frame_step_world_us() / 1e6f;
+    if (put_at >= 0 && puts < 3 && wt >= put_at + 2 * puts && near_i >= 0 && !now_key && c) {
+        puts++;
+        uint64_t a = atomic_load_explicit(&horses[near_i].actor, memory_order_relaxed);
+        float hp[3], hr[9];
+        if (live(a) && coop_rd(a + COOP_ACTOR_POS, hp, 12) && coop_rd(a + COOP_ACTOR_ROT, hr, 36)) {
+            const float side[3] = {-0.9f, -0.5f, 0};
+            float m[12], f[3] = {hr[0], 0, hr[6]};   // facing the horse: its +x (column 0), level
+            float fl = sqrtf(f[0] * f[0] + f[2] * f[2]);
+            if (fl > 1e-3f) {
+                f[0] /= fl, f[2] /= fl;
+                // columns: x = up cross forward, y up, z forward (a Link faces its local +Z)
+                const float col[3][3] = {{f[2], 0, -f[0]}, {0, 1, 0}, {f[0], 0, f[2]}};
+                for (int r = 0; r < 3; r++) {
+                    for (int k = 0; k < 3; k++) m[r * 4 + k] = col[k][r];
+                    m[r * 4 + 3] = hp[r] + hr[r * 3 + 0] * side[0] + hr[r * 3 + 1] * side[1] + hr[r * 3 + 2] * side[2];
+                }
+                coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
+                rt_log("coop: test: mount: this Link put beside %s at %.1f s (%.2f %.2f %.2f)", horses[near_i].name, wt, m[3], m[7], m[11]);
+            }
+        }
     }
     // Test (TOTK_COOP_TEST_MOUNT=1): once a second, the nearest horse and where this Link is in its frame (the box's
     // numbers come from these), and who runs it.
