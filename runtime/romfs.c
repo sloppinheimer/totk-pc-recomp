@@ -624,10 +624,11 @@ static Restbl *restbl_unpack(const void *z, size_t n) {
 // With a player mod (or the TOTK_ROMFS_MODS manifest) serving files: the game's table with every shipped table of this
 // version merged in (an entry larger than the game's wins), the entries a mod's table for another version gives for
 // that mod's files, and each served mod file's entry raised to what its size needs (restbl_grow for a file the game
-// has, restbl_estimate for an added one). Never lowers the game's entries.
+// has, restbl_estimate for an added one). Never lowers the game's entries. A file the port's own overlay adds (the
+// co-op stand-in's actor pack, tools/coop/make_puppet_pack.py) gets an entry the same way.
 static void restbl_overlay(void) {
     int player = 0;
-    for (size_t k = 0; k < noverlay; k++) player |= overlays[k].mod || overlays[k].prio == 1;
+    for (size_t k = 0; k < noverlay; k++) player |= overlays[k].mod || overlays[k].prio == 1 || overlays[k].index == ADDED;
     if (!player || !restbl_rel[0]) return;
     static const char keeps[] = "mod files that grew may fail to load";
     double t0 = now_s();
@@ -672,7 +673,7 @@ static void restbl_overlay(void) {
     for (size_t k = 0; k < noverlay; k++) {
         Overlay *o = &overlays[k];
         if (o->index == gi) served = o;
-        if ((!o->mod && o->prio != 1) || o->index == gi) continue;
+        if ((!o->mod && o->prio != 1 && o->index != ADDED) || o->index == gi) continue;
         char key[4200];
         restbl_key(o->name, key, sizeof key);
         int mc = ends_with(o->name, ".mc");

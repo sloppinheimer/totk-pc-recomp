@@ -4353,6 +4353,10 @@ void coop_world_tick(Cpu *c, uint64_t me) {
     if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "enemy"); }
     if (on && ++t % 300 == 0) { probe_me = me; each_live(probe_one, NULL); }
     if (coop_world_role()) peer_tick(c, me);
+    void coop_anim_slots_test(uint64_t me);   // (below)
+    coop_anim_slots_test(me);
+    void coop_anim_copy_test(Cpu *c, uint64_t me);   // (below)
+    coop_anim_copy_test(c, me);
 }
 
 // An enemy another game runs (contacts_filter): a copy following its owner, or one this game has seen run elsewhere
@@ -4362,4 +4366,153 @@ static int ct_is_copy(uint64_t a) {
     uint32_t key = a ? key_of_actor(a) : 0;
     for (int k = 0; key && k < FOLLOW_N; k++) if (follow[k].key == key) return follow[k].owner != 0;
     return 0;
+}
+
+// Test (TOTK_COOP_TEST_ANIMSLOTS=1): the animation player TotK Online replays onto its stand-in (read for behaviour
+// only; 1.2.1 layout, checked here on 1.4.3): [[[actor+0x228]+8]+0x28]+0x40, its slot count at +0x38 and slots of
+// 0xb0 bytes from [+0x40]: animation index u16 +2, weight f32 +0x10, frame f32 +0x28. Logged every 0.5 s for this
+// Link and each co-op stand-in.
+static void anim_slots_log(const char *who, uint64_t a) {
+    uint64_t mc = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 8), model = mc ? coop_rd_ptr(mc + 0x28) : 0;
+    uint64_t ap = model ? coop_rd_ptr(model + 0x40) : 0, arr = ap ? coop_rd_ptr(ap + 0x40) : 0;
+    int32_t n = -1;
+    if (ap) coop_rd(ap + 0x38, &n, 4);
+    char line[700];
+    int m = snprintf(line, sizeof line, "coop: test: anim slots of %s: model %llx player %llx (vtable main+%#llx) count %d:", who,
+                     (unsigned long long)model, (unsigned long long)ap, (unsigned long long)(coop_rd_ptr(ap) - MOD_MAIN_BASE), n);
+    {   // TotK Online's player for its play call: [G+0x28], G = [[[actor+0x228]+0x40]+0x18]+0x18 (a guess at its chain)
+        uint64_t c8 = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x40), x = c8 ? coop_rd_ptr(c8 + 0x18) : 0, g = x ? coop_rd_ptr(x + 0x18) : 0;
+        uint64_t p = g ? coop_rd_ptr(g + 0x28) : 0, pv = p ? coop_rd_ptr(p) : 0;
+        rt_log("coop: test: anim chain of %s: comp8 %llx (vt main+%#llx) +0x18 %llx (vt main+%#llx) G %llx (vt main+%#llx) [G+0x28] %llx (vt main+%#llx, +0x30 main+%#llx)%s",
+               who, (unsigned long long)c8, (unsigned long long)(coop_rd_ptr(c8) - MOD_MAIN_BASE), (unsigned long long)x,
+               (unsigned long long)(coop_rd_ptr(x) - MOD_MAIN_BASE), (unsigned long long)g, (unsigned long long)(coop_rd_ptr(g) - MOD_MAIN_BASE),
+               (unsigned long long)p, (unsigned long long)(pv - MOD_MAIN_BASE), (unsigned long long)(coop_rd_ptr(pv + 0x30) - MOD_MAIN_BASE),
+               p == ap ? " (= the model's player)" : "");
+    }
+    for (int i = 0; arr && i < n && i < 8 && m < 640; i++) {
+        uint8_t s[0x30];
+        if (!coop_rd(arr + 0xb0ull * i, s, sizeof s)) break;
+        uint16_t idx;
+        float w, f;
+        memcpy(&idx, s + 2, 2), memcpy(&w, s + 0x10, 4), memcpy(&f, s + 0x28, 4);
+        m += snprintf(line + m, sizeof line - m, " [%d] %u w%.2f f%.1f", i, idx, w, f);
+    }
+    rt_log("%s", line);
+}
+void coop_anim_slots_test(uint64_t me) {
+    static int on = -1;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_ANIMSLOTS") != NULL;
+    static uint64_t last;
+    uint64_t now = plat_now_ns();
+    if (!on || now - last < 500000000ull) return;
+    last = now;
+    anim_slots_log("this Link", me);
+    uint64_t co[COOP_MAX_PLAYERS];
+    int ids[COOP_MAX_PLAYERS], n = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
+    for (int i = 0; i < n; i++) anim_slots_log("a stand-in", co[i]);
+}
+
+// The animation play TotK Online calls on its stand-in (read for behaviour only): the object Q = [G+0x28], G =
+// [[[actor+0x228]+0x40]+0x18]+0x18 (component 8's animation graph), its vtable +0x30 (1.4.3 main+0x1b569fc):
+// (Q, slot, animation index, partial bind or 0, 0, 0xffff, s0 weight, s1 frame); it writes the slot of the player
+// [[Q+8]+0x40] (the model's, anim_player_of).
+static uint64_t anim_player_of(uint64_t a) {
+    uint64_t mc = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 8), model = mc ? coop_rd_ptr(mc + 0x28) : 0;
+    return model ? coop_rd_ptr(model + 0x40) : 0;
+}
+static uint64_t anim_caller_of(uint64_t a) {
+    uint64_t c8 = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x40), x = c8 ? coop_rd_ptr(c8 + 0x18) : 0, g = x ? coop_rd_ptr(x + 0x18) : 0;
+    return g ? coop_rd_ptr(g + 0x28) : 0;
+}
+static void anim_play(Cpu *c, uint64_t q, int slot, int idx, float weight, float frame) {
+    uint64_t vt = coop_rd_ptr(q), fn = vt ? coop_rd_ptr(vt + 0x30) : 0, ap = q;
+    if (!fn) return;
+    __uint128_t v0 = c->v[0], v1 = c->v[1];
+    uint32_t wb, fb;
+    memcpy(&wb, &weight, 4), memcpy(&fb, &frame, 4);
+    c->v[0] = wb, c->v[1] = fb;
+    uint64_t saved_x[31], sp0 = c->sp;
+    memcpy(saved_x, c->x, sizeof saved_x);
+    c->sp = (sp0 - 0x100) & ~0xfull;
+    rt_call(c, fn, 6, ap, (uint64_t)slot, (uint64_t)idx, 0ull, 0ull, 0xffffull);
+    c->sp = sp0;
+    memcpy(c->x, saved_x, sizeof saved_x);
+    c->v[0] = v0, c->v[1] = v1;
+}
+// An animation player's first slots as {index, weight, frame}; the count read (at most max).
+#define ANIM_SLOTS COOP_ANIM_SLOTS
+typedef struct { uint16_t idx, pad; float w, f; } AnimSlot;
+static int anim_read(uint64_t ap, AnimSlot *out, int max) {
+    uint64_t arr = ap ? coop_rd_ptr(ap + 0x40) : 0;
+    int32_t n = 0;
+    if (!arr || !coop_rd(ap + 0x38, &n, 4) || n <= 0) return 0;
+    if (n > max) n = max;
+    for (int i = 0; i < n; i++) {
+        uint8_t s[0x30];
+        if (!coop_rd(arr + 0xb0ull * i, s, sizeof s)) return i;
+        memcpy(&out[i].idx, s + 2, 2), memcpy(&out[i].w, s + 0x10, 4), memcpy(&out[i].f, s + 0x28, 4);
+    }
+    return n;
+}
+// Test (TOTK_COOP_TEST_ANIMCOPY=1): this game's own Link's slots played on each stand-in every tick (no network).
+void coop_anim_copy_test(Cpu *c, uint64_t me) {
+    static int on = -1;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_ANIMCOPY") != NULL;
+    if (!on) return;
+    AnimSlot s[ANIM_SLOTS];
+    int n = anim_read(anim_player_of(me), s, ANIM_SLOTS);
+    uint64_t co[COOP_MAX_PLAYERS];
+    int ids[COOP_MAX_PLAYERS], nc = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
+    for (int k = 0; k < nc; k++) {
+        uint64_t ap = anim_caller_of(co[k]);
+        for (int i = 0; ap && i < n; i++) if (s[i].idx != 0xffff) anim_play(c, ap, i, s[i].idx, s[i].w, s[i].f);
+        static int said;
+        if (ap && !said++) rt_log("coop: test: animcopy: %d slots of this Link played on a stand-in (play main+%#llx)", n,
+                                  (unsigned long long)(coop_rd_ptr(coop_rd_ptr(ap) + 0x30) - MOD_MAIN_BASE));
+    }
+}
+
+// ---- the stand-in's animation (TOTK_COOP_STANDIN=puppet; TotK Online's ActorAnimationSync, read for behaviour only).
+// The owner sends its Link's first seven animation slots with its state (NetState.anim): clip, weight, frame and the
+// frames a second it moved since the last send. Each other game plays them on its PlayerPuppet every tick, the frame
+// carried on by that rate for the state's age, so the stand-in moves with its owner's own clips and nothing of its
+// own chooses another (it has no Player component). The owner's upper and lower body masks (partial binds) are not
+// sent yet: a layered clip plays on the whole body.
+void coop_anim_pack(uint64_t me, CoopAnim *out) {
+    AnimSlot s[COOP_ANIM_SLOTS];
+    int n = anim_read(anim_player_of(me), s, COOP_ANIM_SLOTS);
+    static float last_f[COOP_ANIM_SLOTS];
+    static uint16_t last_i[COOP_ANIM_SLOTS];
+    static uint64_t last_ns;
+    uint64_t now = plat_now_ns();
+    float dt = last_ns ? (float)((now - last_ns) / 1e9) : 0;
+    last_ns = now;
+    for (int i = 0; i < COOP_ANIM_SLOTS; i++) {
+        CoopAnim a = {.idx = 0xffff};
+        if (i < n && s[i].idx != 0xffff && s[i].w == s[i].w && s[i].f == s[i].f) {
+            float w = s[i].w < 0 ? 0 : s[i].w > 1 ? 1 : s[i].w;
+            a.idx = s[i].idx, a.weight = (uint16_t)lroundf(w * 65535), a.frame = s[i].f;
+            a.rate = last_i[i] == s[i].idx && dt > 0 && dt < 0.5f && s[i].f >= last_f[i] ? (s[i].f - last_f[i]) / dt : 0;
+            if (a.rate > 600) a.rate = 0;
+        }
+        last_i[i] = a.idx, last_f[i] = a.frame;
+        out[i] = a;
+    }
+}
+// The owner's slots (in, age_ns old) played on a stand-in; a slot the owner left empty is played with weight 0 on
+// the clip the stand-in still has there.
+void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, uint64_t age_ns) {
+    uint64_t q = anim_caller_of(standin);
+    if (!q) return;
+    AnimSlot have[COOP_ANIM_SLOTS];
+    int n = anim_read(anim_player_of(standin), have, COOP_ANIM_SLOTS);
+    float age = age_ns < 1000000000ull ? (float)(age_ns / 1e9) : 1;
+    int played = 0;
+    for (int i = 0; i < COOP_ANIM_SLOTS; i++) {
+        if (in[i].idx != 0xffff) {
+            anim_play(c, q, i, in[i].idx, in[i].weight / 65535.0f, in[i].frame + in[i].rate * age), played++;
+        } else if (i < n && have[i].idx != 0xffff && have[i].w > 0) anim_play(c, q, i, have[i].idx, 0, have[i].f);
+    }
+    static int said;
+    if (played && !said++) rt_log("coop: stand-in: its owner's animation (%d slots) plays on it", played);
 }

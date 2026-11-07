@@ -1026,6 +1026,14 @@ int coop_players_calc(Cpu *c, uint64_t addr) {
     return 1;
 }
 
+// The other player's stand-in: TOTK_COOP_STANDIN=puppet makes it TotK Online's kind (read for behaviour only), an
+// actor of its own, PlayerPuppet (tools/coop/make_puppet_pack.py: Link's model, animations, equipment user and body,
+// no Player component, so nothing of its own moves it or its gear); else a second Player (a co-op Link).
+int coop_standin_puppet(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN"); on = e && !strcmp(e, "puppet"); }
+    return on;
+}
 static void spawn_slot(Cpu *c, Slot *s) {
     uint64_t me = coop_player_actor();
     float pos[3], rot[9];
@@ -1033,10 +1041,10 @@ static void spawn_slot(Cpu *c, Slot *s) {
     if (s->have_want) memcpy(pos, s->want_pos, 12), memcpy(rot, s->want_rot, 36);
     else pos[0] += 2 * rot[2], pos[2] += 2 * rot[8];   // 2 m in front of this PC's Link
     pos[1] += 0.5f;
-    static const char player[] = "Player";
+    const char *player = coop_standin_puppet() ? "PlayerPuppet" : "Player";
     if (coop_request_create(c, player, pos, rot, s->handle)) {
         s->state = REQUESTED;
-        rt_log("coop: slot %d: Player requested at %.1f %.1f %.1f", (int)(s - slots), pos[0], pos[1], pos[2]);
+        rt_log("coop: slot %d: %s requested at %.1f %.1f %.1f", (int)(s - slots), player, pos[0], pos[1], pos[2]);
     }
 }
 
@@ -4603,6 +4611,8 @@ void coop_players_tick(Cpu *c, int numpad3) {
         st.ride_owner = (uint8_t)ride_owner_now, st.ride_id = ride_id_now, memcpy(st.ride_off, ride_off_now, 12);
         const char *fw = cfg_get("TOTK_COOP_FAKEWEATHER");   // test: report this weather type instead
         if (fw && *fw) st.weather = atoi(fw);
+        void coop_anim_pack(uint64_t me, CoopAnim *out);   // coop_world.c: the stand-in's animation (TOTK_COOP_STANDIN=puppet)
+        coop_anim_pack(me, st.anim);
         coop_net_publish(&st);
         if (coop_proxy_mode()) props_receive(c), ride_carry(c, me), destroy_watch(me), old_items_tick(c);   // placed objects co-op players move; riding them; destroyed
         props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test(), bone_arrow_test(me), impact_test(), glide_log(me), newnear_test(me), beam_test(me), beam_end_tick(), link_hit_test(me);
@@ -4662,6 +4672,10 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 host_weather = -1, host_far = 1;
         }
         if (!s && !(s = slot_new(SRC_NET, id))) continue;
+        if (coop_standin_puppet() && s->state == LIVE && s->actor && age < 2000000000ull) {
+            void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, uint64_t age_ns);   // coop_world.c
+            coop_anim_apply(c, s->actor, st.anim, age);
+        }
         if (st.seq != s->last_seq) {   // a new report: the owner's velocity since the previous one
             uint64_t at = plat_now_ns() - age;
             double dt = s->have_want && s->last_ns ? (double)(at - s->last_ns) / 1e9 : 0;
@@ -4847,6 +4861,20 @@ void coop_players_tick(Cpu *c, int numpad3) {
                     if (proxied(s)) s->thaw = PROXY_THAW_TICKS, rt_log("coop: proxy: slot %d runs its own update for %d ticks (gear)", i, PROXY_THAW_TICKS);
                 }
             if (s->state == LIVE) s->live_ticks++;
+            // The PlayerPuppet stand-in (TOTK_COOP_STANDIN=puppet): its items, made once, are taken out and put away
+            // with the game's in-hand calls as its owner holds them (TotK Online's way, read for behaviour only):
+            // nothing of the stand-in's own puts them back. Checked every 6 ticks.
+            if (eq && coop_standin_puppet() && s->live_ticks % 6 == 0) {
+                static const uint64_t row[3] = {0, 3, 4};
+                for (int k = 0; k < 3; k++) {
+                    if (!s->gear_want[k][0] || !strcmp(s->gear_want[k], GEAR_NONE)) continue;
+                    int want = s->out_want >> k & 1, now = (int)(coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, eq, row[k], 0, 0) & 1);
+                    if (want == now) continue;
+                    gear_hand(c, eq, k, want);
+                    static int said;
+                    if (said++ < 40) rt_log("coop: stand-in: slot %d: %s %s", i, s->gear_want[k], want ? "taken out" : "put away");
+                }
+            }
             int coop_puppet_mode(void);   // coop_world.c
             // Puppet mode: it gets no input, so it never draws an item itself. The EquipmentUser's per-slot byte
             // +0x4620 (0 weapon, 3 bow, 4 shield) bit 1 is what main+0x3e322c also reads as "in hand"; set while the

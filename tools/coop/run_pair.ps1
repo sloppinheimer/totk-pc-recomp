@@ -9,9 +9,10 @@
 #   -SpawnA / -SpawnB "Enemy_Bokoblin_Junior@20": that game spawns the actor beside its Link at that world time
 #   -ShotsSmall: the screenshots box-filtered to 480x270 (else full size)
 #   -Profile build\prof-play-1: both games play copies of that profile instead of the 1.4.3 one (it is not written)
+#   -BDir build\v143c: game B runs from that folder instead of build\v143b (a stuck game may hold its totk.exe)
 #   -FakeAtA 25: game A's fakes (-FakeGearA, -FakeDyeA, -FakeHandA) apply only from 25 s into its world
 param([int]$Seconds = 90, [string]$ScriptA = "tools\coop\walk.txt", [string]$ScriptB = "tools\coop\idle.txt", [string]$FakeGearA = "", [string]$FakeDyeA = "", [string]$FakeHandA = "",
-      [string]$ShotsA = "", [string]$ShotsB = "", [string]$ShotsDir = "", [int]$QuitBAfter = 0, [string]$FakeAtA = "", [string]$SpawnA = "", [string]$SpawnB = "", [string]$Profile = "build\profile-v143", [switch]$ShotsSmall)
+      [string]$ShotsA = "", [string]$ShotsB = "", [string]$ShotsDir = "", [int]$QuitBAfter = 0, [string]$FakeAtA = "", [string]$SpawnA = "", [string]$SpawnB = "", [string]$Profile = "build\profile-v143", [switch]$ShotsSmall, [string]$BDir = "build\v143b")
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
@@ -19,7 +20,7 @@ Get-Process totk -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep 2
 
 # build\v143b: hard links to build\v143's files, junctions to its folders, a logs folder of its own.
-$a = Join-Path $root 'build\v143'; $b = Join-Path $root 'build\v143b'
+$a = Join-Path $root 'build\v143'; $b = Join-Path $root $BDir
 if (-not (Test-Path $b)) { New-Item -ItemType Directory $b | Out-Null }
 foreach ($f in Get-ChildItem $a -Force) {
     $t = Join-Path $b $f.Name

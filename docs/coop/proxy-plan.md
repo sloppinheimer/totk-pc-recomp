@@ -43,11 +43,21 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   `TOTK_COOP_GEAR_INHAND=1`). On our co-op Link, whose own update runs in bursts, the sword sat on its back in more
   frames than when made again. TotK Online's stand-in has no AI and replays its owner's animation clips; that is
   what makes its gear stay in hand.
+- **Done, opt-in: the stand-in as TotK Online's** (`TOTK_COOP_STANDIN=puppet`; needs
+  `.venv\Scripts\python tools\coop\make_puppet_pack.py` after `tools/make_romfs_patches.py`, which writes the overlay's
+  manifest anew). A PlayerPuppet actor of its own: the Player's pack with the Player component, its brain, camera,
+  riding and life left out, under the category Enemy; its RSDB rows are an unused test actor's (Npc_Hylia_TestTube_001)
+  renamed in place (a row added crashed the load: ActorInfo and GameActorInfo are paired by place). Each game sends its
+  Link's first 7 animation slots with its state (NetState.anim: clip, weight, frame, frames a second); the others play
+  them on the stand-in every tick with the play TotK Online calls (1.4.3: Q = [G+0x28], G =
+  [[[actor+0x228]+0x40]+0x18]+0x18, Q's vtable +0x30 = main+0x1b569fc; the slots it writes are
+  [[[actor+0x228]+8]+0x28]+0x40, count +0x38, 0xb0 a slot, clip u16 +2, weight +0x10, frame +0x28). Its gear is made
+  once by the usual gear code and taken out or put away with the in-hand calls. Pair test (equip_draw_3rd.txt): B's
+  stand-in of A stood in A's pose holding A's Master Sword in hand (full-size frames), and played A's swing clip 1397.
+  Not done: the owner's upper/lower body masks (a layered clip plays on the whole body), its arrows, the other
+  co-op features on it (riding, shield surf, glider, hits it takes), and it is not seen moving in a frame yet.
 - **Not done:**
-  - the stand-in as TotK Online's: an actor of its own with Link's model and animation set and no AI, its owner's 7
-    animation slots (clip, weight, frame, partial masks) replayed into its animation player (1.2.1: player
-    [[[actor+0x228]+8]+0x28]+0x40, slots 0xb0 bytes, play by vtable +0x30); gear made once and drawn with the in-hand
-    calls; arrows shot by the stand-in with its owner's camera (patched unproject);
+  - the stand-in's arrows shot by it with its owner's camera (patched unproject), and the body masks (above);
   - Ultrahand glue made again in the other games, and breaks refused there; rotating ground's time copied;
   - the Gloom Hands (TotK Online leaves them out too).
 

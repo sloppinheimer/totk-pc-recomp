@@ -28,6 +28,10 @@ typedef struct {
 #define COOP_OBJ_LOCAL 2
 #define COOP_OBJ_FUSED 4   // a material fused to one of the owner's arrows
 #define COOP_OBJ_ONLINK 8  // pos and q are in the owner's Link's frame (its paraglider)
+// One slot of a Link's animation player (TotK Online sends seven to its stand-in; read for behaviour only): the clip
+// (0xffff none), its weight * 65535, its frame and how many frames a second it moves.
+#define COOP_ANIM_SLOTS 7
+typedef struct { uint16_t idx, weight; float frame, rate; } CoopAnim;
 typedef struct {
     uint32_t seq, flags;              // flags bits 8..10: weapon, bow, shield in hand (puppet mode draws them);
                                       // bit 11: the shield is placed as shield_pos / shield_q say (a shield surf)
@@ -48,8 +52,10 @@ typedef struct {
     float shield_pos[3], shield_q[4]; // with flags bit 11: the shield in this Link's frame (rotation as x y z w)
     uint16_t life, life_max;          // this Link's life and most life, quarter hearts (0: unknown)
     float shield_fuse_scale[3];       // the scale (actor +0x2e4) of the actor fused to the shield (0: none or unknown)
+    CoopAnim anim[COOP_ANIM_SLOTS];   // this Link's animation player's first slots (coop_world.c, coop_anim_pack)
+    uint32_t anim_pad;
 } NetState;
-_Static_assert(sizeof(NetState) == 464, "NetState wire size");
+_Static_assert(sizeof(NetState) == 464 + 12 * COOP_ANIM_SLOTS + 4, "NetState wire size");
 #define COOP_GEAR_SLOTS 6
 extern const int coop_gear_slot[COOP_GEAR_SLOTS];   // the EquipmentUser slots they are (coop_players.c)
 
