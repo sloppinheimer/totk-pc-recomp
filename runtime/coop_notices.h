@@ -22,7 +22,7 @@ void coop_notice_travel_take(const CoopTravelPacket *p, int len, int from);   //
 // by comparing the player list with the last frame's (coop_notices_wanted does it each overlay frame).
 typedef struct { char text[160]; float age_s; uint32_t id; } CoopNotice;   // id: 1, 2, ... in the order told
 int coop_notices_wanted(void);                                         // 1: something to draw now
-int coop_notices_get(CoopNotice *out, int max);
+int coop_notices_get(CoopNotice *out, int max);                         // the newest max live ones, oldest first
 #define COOP_NOTICE_SECONDS 6.0f
 // The place names of language `lang` (a ui_text catalog language), for the overlay font's glyphs: visited only when the
 // game's language is that one (ui/menu.cpp fonts_up).

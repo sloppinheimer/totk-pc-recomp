@@ -76,11 +76,13 @@ static void notice(const char *fmt, ...) {
 
 int coop_notices_get(CoopNotice *out, int max) {
     uint64_t now = plat_now_ns();
-    int n = 0;
+    int n = 0, live = 0;
     plat_mutex_lock(&lock);
+    for (int i = 0; i < nshown; i++) live += (now - shown[i].at_ns) / 1e9 < COOP_NOTICE_SECONDS;
+    int skip = live > max ? live - max : 0;   // more live than asked for: the newest max of them
     for (int i = 0; i < nshown && n < max; i++) {
         float age = (float)((now - shown[i].at_ns) / 1e9);
-        if (age >= COOP_NOTICE_SECONDS) continue;
+        if (age >= COOP_NOTICE_SECONDS || skip-- > 0) continue;
         snprintf(out[n].text, sizeof out[n].text, "%s", shown[i].text);
         out[n].id = shown[i].id;
         out[n++].age_s = age;
@@ -544,9 +546,13 @@ void coop_notices_tick(Cpu *c, uint64_t me) {
 // ---- fast travel: another player's (game thread, coop_world.c peer_tick)
 void coop_notice_travel_take(const CoopTravelPacket *p, int len, int from) {
     if (len != (int)sizeof *p || p->kind != COOP_TRAVEL_KIND || from < 1 || from > COOP_MAX_PLAYERS || !coop_notices_on()) return;
+    // The second and third copies come within a second of the first. Only then is the same seq a copy: a player who
+    // left and came back (or a new one with that id) counts from 1 again.
     static uint32_t told[COOP_MAX_PLAYERS + 1];
-    if (p->seq == told[from]) return;   // the second and third copies
-    told[from] = p->seq;
+    static uint64_t told_ns[COOP_MAX_PLAYERS + 1];
+    uint64_t now = plat_now_ns();
+    if (p->seq == told[from] && now - told_ns[from] < 5000000000ull) return;
+    told[from] = p->seq, told_ns[from] = now;
     char label[sizeof p->label + 1];
     memcpy(label, p->label, sizeof p->label), label[sizeof p->label] = 0;
     places_up();

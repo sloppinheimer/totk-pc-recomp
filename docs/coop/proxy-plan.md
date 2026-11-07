@@ -453,7 +453,10 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
   - Unproven: that the minimap is the AppMap screen in its MiniMap pose; the 3 layout units a metre; that a hidden
     minimap (menus, cutscenes) shows as a hidden or transparent pane (if the game stops drawing the screen instead,
     the markers stay on screen there); the layout-to-screen scale on a screen not 16:9 (assumed: the layout's 1080
-    rows fill the height, centred).
+    rows fill the height, centred); that this PC's Link ("Player") is a new actor after a save load and absent on
+    the title, which is how coop_markers.c `resolve` drops a freed map screen (log "coop: markers: this Link is
+    gone/another one: the map screen ... is taken as gone"). If the game keeps the map screen across a load without
+    setting it up again, the markers stay off until the next set-up.
   - Test: `$env:TOTK_COOP_PUPPET=1; tools\coop\run_pair.ps1 -Seconds 75 -ScriptA tools\coop\walk_far_3rd.txt
     -ScriptB tools\coop\map_markers_3rd.txt -MarkShotsB 30-62:2 -ShotsDir build\markers -MarkSelf` (overlay shots in
     build\markers\B-overlay). Expect in B's frames: before 40 s the minimap (bottom right) with a white dot on B's own
