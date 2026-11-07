@@ -35,6 +35,10 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   create queues' getActor (main+0x50d364, 0x61a8b4, 0x6609b4, 0x89841c), an Enemy_ with no placement hash
   ([actor+0x370]+0x88, the same in 1.4.3), sent with its key; the others make one and give it that key. The test
   spawn claims its own actor and never passes the queues, so only the hand-over and the hash were checked.
+- **Done: map actors keyed by their placement** (coop_world.c, actor_key; `TOTK_COOP_PLACE_KEY=0` the old way). An
+  actor placed in the map is keyed by its placement hash with its name, as TotK Online's; one made at run time keeps
+  the name and the place this game first saw it. Suite: every case pairs its enemies and objects as before (one run of
+  `handover` had its copy 2.9 m off its owner's for 14 s; it passed when run again).
 - **Tried, off: in hand by the game's calls** (setEquipmentInHand 0x4f5700 / removeEquipmentInHand 0x4f5194,
   `TOTK_COOP_GEAR_INHAND=1`). On our co-op Link, whose own update runs in bursts, the sword sat on its back in more
   frames than when made again. TotK Online's stand-in has no AI and replays its owner's animation clips; that is
@@ -44,7 +48,6 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     animation slots (clip, weight, frame, partial masks) replayed into its animation player (1.2.1: player
     [[[actor+0x228]+8]+0x28]+0x40, slots 0xb0 bytes, play by vtable +0x30); gear made once and drawn with the in-hand
     calls; arrows shot by the stand-in with its owner's camera (patched unproject);
-  - map actors keyed by their placement hash instead of name and first place;
   - Ultrahand glue made again in the other games, and breaks refused there; rotating ground's time copied;
   - the Gloom Hands (TotK Online leaves them out too).
 

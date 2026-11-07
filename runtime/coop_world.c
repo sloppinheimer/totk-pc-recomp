@@ -146,6 +146,33 @@ static uint32_t enemy_key(const char *name, const float home[3]) {
     }
     return h ? h : 1;
 }
+// An actor placed in the map has its placement's hash, [actor+0x370]+0x88 (the same in 1.2.1 and 1.4.3, and the
+// same actor's in both games; TOTK_COOP_TEST_ACTORDUMP); 0 or all ones for one made at run time. TotK Online keys map
+// actors by it (read for behaviour only): it holds when the actor has moved before a game first sees it, and two of
+// one name placed half a metre apart get two keys. Folded with the name to 32 bits; 0: none.
+#define PLACE_HASH_PTR 0x370
+#define PLACE_HASH 0x88
+static uint64_t place_hash(uint64_t a) {
+    uint64_t ph = 0, pp = a ? coop_rd_ptr(a + PLACE_HASH_PTR) : 0;
+    if (pp) coop_rd(pp + PLACE_HASH, &ph, 8);
+    return ph == ~0ull ? 0 : ph;
+}
+static uint32_t place_key(uint64_t a, const char *name) {
+    uint64_t ph = place_hash(a);
+    if (!ph) return 0;
+    uint32_t h = 2166136261u ^ 0x50u;   // (apart from enemy_key's)
+    for (const char *s = name; *s; s++) h = (h ^ (uint8_t)*s) * 16777619u;
+    for (int b = 0; b < 8; b++) h = (h ^ (uint8_t)(ph >> (8 * b))) * 16777619u;
+    return h ? h : 1;
+}
+// An actor's key: its placement's (place_key), else its name and home (enemy_key). TOTK_COOP_PLACE_KEY=0: the name
+// and home always (the old way).
+static uint32_t actor_key(uint64_t a, const char *name, const float home[3]) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_PLACE_KEY"); on = !(e && *e == '0'); }
+    uint32_t k = on ? place_key(a, name) : 0;
+    return k ? k : enemy_key(name, home);
+}
 
 // Calls fn for each actor updated in the last second, with its name, its key (the name and where this game first
 // saw it, as the enemies': a placed object has the same key in every game) and whether it was first seen just now.
@@ -164,7 +191,7 @@ void coop_actors_keyed(void (*fn)(uint64_t actor, const char *name, uint32_t key
             atomic_store_explicit(&seen[i].home_ok, 1, memory_order_release);
         }
         if (first_of[i] != a) first_of[i] = a, first = 1;
-        fn(a, nm, enemy_key(nm, seen[i].home), first, arg);
+        fn(a, nm, actor_key(a, nm, seen[i].home), first, arg);
     }
 }
 
@@ -206,7 +233,7 @@ void coop_actors_all(void (*fn)(uint64_t actor, const char *name, uint32_t key, 
         float home[3];
         if (!coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6) continue;
         if (!seen_home(a, home) && !coop_rd(a + COOP_ACTOR_POS, home, 12)) continue;
-        fn(a, nm, enemy_key(nm, home), arg);
+        fn(a, nm, actor_key(a, nm, home), arg);
     }
 }
 
@@ -254,7 +281,7 @@ static uint32_t enemy_of(int cell, uint64_t a, char *nm, size_t n) {
         atomic_store_explicit(&seen[cell].home_of, a, memory_order_release);
         atomic_store_explicit(&seen[cell].home_ok, 1, memory_order_release);
     }
-    return enemy_key(nm, seen[cell].home);
+    return actor_key(a, nm, seen[cell].home);
 }
 
 // Two enemies of one name made in the same half metre have one key: one game put both on the other's one enemy, which
@@ -2635,8 +2662,6 @@ static void enemy_poke_test(void);   // (after pups)
 // away here without dying (unloaded), SPAWN_GONE deletes the others' (a death goes by the enemy sync).
 #define SPAWN_KIND 0x5053   // "SP"
 #define SPAWN_GONE 0x4753   // "SG"
-#define PLACE_HASH_PTR 0x370
-#define PLACE_HASH 0x88   // the same in 1.4.3: the same Chuchu's value in both games, another's different (TOTK_COOP_TEST_ACTORDUMP)
 typedef struct { uint32_t key, to, kind, pad; char name[48]; float pos[3], rot[9]; } SpawnPacket;
 _Static_assert(sizeof(SpawnPacket) <= COOP_HIT_MAX, "SpawnPacket fits a HIT packet");
 #define BORN_N 256   // (a load hands over hundreds; only enemies are kept)
@@ -2704,7 +2729,7 @@ static void spawn_tick(Cpu *c) {
         if (!ready && now - at < 3000000000ull) continue;
         uint64_t want = a;   // taken (unless another was handed over into the slot meanwhile)
         if (!atomic_compare_exchange_strong(&born[i].actor, &want, 0) || !ready) continue;
-        uint64_t ph = 0, pp = coop_rd_ptr(a + PLACE_HASH_PTR);
+        uint64_t ph = 0, pp = coop_rd_ptr(a + PLACE_HASH_PTR);   // (place_hash, but all ones logged as it is)
         if (pp) coop_rd(pp + PLACE_HASH, &ph, 8);
         static int said;
         if (said++ < 40) rt_log("coop: spawn sync: %s %llx handed over, placement hash %llx", nm, (unsigned long long)a, (unsigned long long)ph);
