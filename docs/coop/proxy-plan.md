@@ -67,7 +67,29 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   - the stand-in's body masks: 1.2.1's per-slot partial index (byte +0x1c of an entry in a list at G+0xf8) does not
     read the same in 1.4.3: [G+0xf8] holds two lists of 2 entries (indices 0 4 and 4 5 on an idle Link), not one
     per slot (TOTK_COOP_TEST_ANIMSLOTS logs them); G+0x18 is 7, G+0x20 the bind table. Layered clips play on the whole
-    body until it is worked out; idle and a swing looked right on frames;
+    body until it is worked out; idle and a swing looked right on frames. Next way in: the play (main+0x1b569fc)
+    compares its 4th argument's +8 with the slot's +0x08 (and a value at slot +0xa8), so each slot seems to hold its
+    current bind at +0x08: read it on the owner, find its index in the bind table, send the index, and pass the
+    stand-in's own bind of that index (unverified);
+  - enemies taking the stand-in for a player: TotK Online hooks the game's "is a player" check (1.2.1 main+0x1736dec,
+    1.4.3 main+0x1d1fc70 by tools/coop/xver_match.py; returns 1 for PlayerPuppet) and patches four places in the same
+    family (1.4.3 near main+0x1d1f960, 0x1d1f9e4, 0x1d1fa54, 0x1d1ffd0) that would read the Player component it lacks;
+  - the stand-in's "weapon attacking" byte (EquipmentUser +0x660 in 1.2.1, the owner's written every frame; probably
+    what turns its swing's attack sensor and trail on; 1.4.3 offset not found), so its sword may not hit in the
+    owner's game (checked only with the old co-op Link);
+  - the stand-in's main body set to motion type 0 every frame (phive requestChangeMotionType; TotK Online's, meaning
+    not checked);
+  - the stand-in's paraglider and Ultrahand arm as actors of their own tied to it (Parasail, PlayerRaulHand, by
+    requestRegisterRelation), with the glider's colour and open state; the glider goes as a moved object's copy now,
+    only while open;
+  - riding, shield surf and hits taken, which work on the co-op Link, not done for the PlayerPuppet stand-in;
+  - all contacts with an actor another game owns taken out (here only a Link's Weapon_ on an enemy copy), and the
+    contacts between this Link and another game's actor (an enemy's body slam) sent and put in on the other games;
+  - the actors TotK Online syncs by name (Animal, Korok, GameRomHorse, Barrel, BombFruit, TBox and more): here enemies
+    and moved objects; horses and animals are not synced, chests are left out on purpose; actors past 1000 m deleted;
+  - shared world progress, a design choice (drop-in saves here): TotK Online's server shares the game flags, the
+    per-object flags (opened chests, Koroks found, broken objects), event flags at once, and shrine clears with each
+    player's blessings worked out; life, the pouch and horses stay each player's. Here each game keeps its own;
   - Ultrahand glue made again in the other games, and breaks refused there: 1.2.1's doScotch / createScotch /
     removeScotch matched no single function in 1.4.3 (two to three candidates each), and no test script glues;
   - rotating ground's time copied ([[actor+0x228]+0x2b0]+0x20 float +0x3c in 1.2.1; no such actor near the test saves);
