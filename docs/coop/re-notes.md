@@ -854,3 +854,17 @@ the shot call), and do the same to the copy; or show the copy by another actor t
 - Self check for the transform: TOTK_COOP_TEST_MARKSELF=1 marks this PC's own Link too, and the log says where the
   transform puts it ("this Link ... at (X, Y), off d"): on the minimap the game keeps Link in the middle of N_Cut_00,
   so d near 0 there confirms the 3-units-a-metre mapping.
+
+## The stand-in and enemies' perception (research, 2026-11-07)
+- 1.4.3 main+0x1d1fc70 = 1.2.1 main+0x1736dec (TotK Online's "PlayerPuppet is a player" hook; same code). The actor
+  from a link (main+0x1afbe4), its component +0x120, its name, looked up through main+0xd62b58 in
+  [main+0x39601e8] (1, 0, 1). Its one caller is main+0x1d1f9e8, in the function that loads "IsAdditionalArrowBow".
+  It is a bow check, not targeting. Confidence: sure (code).
+- PerceptionEmitterParam: the reader main+0x1abe6e0 names SubLayerSensor, IsResidentEmitter, NoiseAndTerrorOnlyEmitter
+  and NoEmitUntilConditionsMet (param +0x78.. +0x81). Player: resident, PerceptionPlayer; SageCommon: resident,
+  PerceptionSage; EnemyCommon (enemies, horses): not resident, PerceptionEnemy. The sublayer is named only in the
+  emitter param, not in the actor's physics. So the emitter makes its own sensor. Confidence: sure (files).
+- Reading: a resident emitter is the manager's one player (or Sage) emitter that receivers check directly
+  (main+0x45b930 takes the manager +0x58), so a second resident one is never seen. A non-resident one is sensed.
+  Confidence: likely; the reader of the flag in code is not found (a scan for loads of +0x80 next to +0x78 found
+  none). The pair test above decides it.
