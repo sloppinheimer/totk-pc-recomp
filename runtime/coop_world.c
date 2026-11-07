@@ -3693,7 +3693,10 @@ static void native_follow(Cpu *c, int k) {
     float dt = last[k] ? (float)((now - last[k]) / 1e9) : 1.0f / 30;
     last[k] = now;
     if (dt > 1) dt = 1;
-    float f = fminf(10 * dt, 1);
+    // (all the way when it is over SNAP_M off: knocked back in its owner's game, the copy, whose sword hits are taken
+    // out here (contacts_filter), was over 2 m behind for a few seconds, the sync audit, 2026-11-07)
+    float gap2 = (t[0] - p[0]) * (t[0] - p[0]) + (t[1] - p[1]) * (t[1] - p[1]) + (t[2] - p[2]) * (t[2] - p[2]);
+    float f = gap2 > SNAP_M * SNAP_M ? 1 : fminf(10 * dt, 1);
     _Alignas(16) float np[4] = {p[0] + (t[0] - p[0]) * f, p[1] + (t[1] - p[1]) * f, p[2] + (t[2] - p[2]) * f, 0};
     _Alignas(16) float m[9];
     quat_mat(q, m);

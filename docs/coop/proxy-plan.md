@@ -38,10 +38,11 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
 - **Done: map enemies keyed by their placement** (coop_world.c, actor_key; `TOTK_COOP_PLACE_KEY=0` the old way). An
   enemy placed in the map is keyed by its placement hash with its name, as TotK Online's (objects keep name and place); one made at run time keeps
   the name and the place this game first saw it. Suite: every case pairs its enemies and objects as before.
-- **Open: `handover` and `hits` fail their audit in some runs since these changes** (their wanted lines pass; last
-  run: 3 snapshots each of an enemy over 2 m from its owner. One earlier run: the copy in A, whose Link walked 40 m off,
-  stays 3 to 4 m from B's Bokoblin for 13 s). Likely the copy is beyond A's update range so it is not eased, which
-  would not be new; not checked against the commit before.
+- **Fixed: copies over 1.5 m behind** (the sync audit's enemy-place in `handover` and `hits`, after sword hits on
+  copies were taken out: a copy knocked back only in its owner's game trailed it by 2 to 4 m for seconds). The copy
+  is now put all the way at its owner's place when over SNAP_M off, eased below that (native_follow). Then `handover`
+  passed 2 of 2 and `hits` 1 of 1. One `handover` run before that saw player 2's co-op Link deleted in player 1's
+  game (state 7) with player 1's Link 27 m away, and made again 4 s later; not seen again, cause not known.
 - **Tried, off: in hand by the game's calls** (setEquipmentInHand 0x4f5700 / removeEquipmentInHand 0x4f5194,
   `TOTK_COOP_GEAR_INHAND=1`). On our co-op Link, whose own update runs in bursts, the sword sat on its back in more
   frames than when made again. TotK Online's stand-in has no AI and replays its owner's animation clips; that is
