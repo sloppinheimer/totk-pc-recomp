@@ -265,7 +265,7 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
 - **Notices** when a player joins or leaves, and when one fast travels, with the place's name. Written 2026-11-07
   (runtime/coop_notices.c, ui/coop_notices.cpp; `TOTK_COOP_NOTICES=0` turns them off). **Not run in the game yet**:
   compiled with clang, and the place loading and naming ran on the real 1.4.3 files in a host test (below).
-  - **Shown with the port's overlay**, a line near the top of the screen for 6 s (drawn as the name tags are), not
+  - **Shown with the port's overlay**, a line at the bottom left of the screen for 6 s (moved from top centre, 2026-11-07) (drawn as the name tags are), not
     the game's banners. The game's location banner (layout `Pa_LocationName`, opened by the sequence node
     `SeqOneShotRequestOpenLocation`, main+0x1ff46f4 its name getter) takes a location, not a text, and no way to put
     our own text in it was found. The sentence is in the menu language (6 new menu texts in en, ru, pt-BR, zh-Hans);
@@ -298,7 +298,7 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
     co-op tick and standing within 40 m of the travel point's map marker 1.5 s after; whether leaving a shrine (its
     inside is another stage) reads as a travel to that shrine (a false notice); whether a death's game over reads
     life 0 before the respawn; whether a menu save load restarts the world clock (then no notice) or not ("is now
-    near"); the frame layout (top centre, 16% down) against the game's own HUD and its location banner.
+    near"); the frame layout (bottom left) against the game's own HUD and its location banner.
 - **Character mods**: branch `mod-pack-restbl` (30f0a50, 2026-11-04) is now on main (cherry-picked 2026-11-07,
   no conflict). With it the full Playable Riju mod (7795 files served, 2278 changed files inside 70 packs) loads into
   the world as Riju on this build (sandbox C:\Dev\totk-sandbox, its exe replaced by this build's; the old one kept as
