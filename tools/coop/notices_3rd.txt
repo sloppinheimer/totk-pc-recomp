@@ -1,0 +1,22 @@
+# Co-op notices (runtime/coop_notices.c): game A on the 100% save (third in the Continue list, "In-isa Shrine"),
+# standing still. With TOTK_COOP_TEST_TRAVEL=40 in game A its Link is put beside Ukouh Shrine at 40 s of world time, as
+# a fast travel would put it; game B (tools\coop\idle_3rd.txt) shows "A travelled to Ukouh Shrine", and A shows
+# "B left" once B is closed (-QuitBAfter). With TOTK_COOP_TEST_NOTICESHOT=1 each game saves each notice's frame,
+# overlay and all, as notice-<n>.png in TOTK_MENU_TEST_DIR (make the folders first):
+#   mkdir build\notices\A, build\notices\B
+#   powershell -ExecutionPolicy Bypass -File tools\coop\run_pair.ps1 -Seconds 120 -ScriptA tools\coop\notices_3rd.txt
+#     -ScriptB tools\coop\idle_3rd.txt -QuitBAfter 100
+#     -EnvA "TOTK_COOP_TEST_TRAVEL=40;TOTK_COOP_TEST_NOTICESHOT=1;TOTK_MENU_TEST_DIR=C:\Dev\totkCoop\build\notices\A"
+#     -EnvB "TOTK_COOP_TEST_NOTICESHOT=1;TOTK_MENU_TEST_DIR=C:\Dev\totkCoop\build\notices\B"
+# Log lines to see (docs/coop/proxy-plan.md, "Notices"):
+#   A: coop: notices: 1256 places from Banc/MainField/... ; 303 places from Banc/MinusField/... ; 1533 of 1559 places named
+#   A and B: coop: notice: B joined (or "B is here") / coop: notice: A joined (or "A is here")
+#   A: coop: test: travel: this Link put at 279.0 1582.0 915.0
+#   A: coop: notices: this Link moved 640 m in a tick to ...: travel point Dungeon060
+#   B: coop: notice: A travelled to Ukouh Shrine
+#   A, about 5 s after B is closed: coop: notice: B left
+#   each: coop: test: notice <n> (<text>) saved as ...\notice-<n>.png: the line near the top of the frame
+300 A 4
+520 DOWN 4
+580 DOWN 4
+640 A 4

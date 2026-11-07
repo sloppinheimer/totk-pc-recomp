@@ -18,6 +18,7 @@
 #include "cfg.h"
 #include "coop_game.h"
 #include "coop_net.h"
+#include "coop_notices.h"
 #include "host.h"
 #include "input.h"
 #include "layout.h"
@@ -4500,6 +4501,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
 
     // This player's state out, when on a relay.
     if (coop_net_on()) {
+        coop_notices_tick(c, me);   // a fast travel of this Link, told to the others (coop_notices.c)
         NetState st = {0};
         coop_rd(me + COOP_ACTOR_POS, st.pos, 12), coop_rd(me + COOP_ACTOR_ROT, st.rot, 36);
         camera_frame(st.cam_fwd, st.cam_right);

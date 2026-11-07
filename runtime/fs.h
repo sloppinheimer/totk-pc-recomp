@@ -36,6 +36,9 @@ void romfs_close(uint64_t h);
 uint32_t romfs_entry_type(int *out, const char *path);
 uint64_t romfs_file_count(void);                           // files in the index (fs_init first)
 const char *romfs_entry(uint64_t i, uint64_t *offset, uint64_t *size);   // path, image offset and size of index row i
+// RomFS file rel (an overlay that replaces it if any) read whole into malloc'd memory, at most 16 MiB; NULL when it is
+// missing or unreadable, logged with `keeps` (what goes without it).
+void *romfs_read_whole(const char *rel, size_t *n, const char *keeps);
 const char *romfs_image_path(void);                        // the romfs.bin path fs_init opened
 size_t romfs_overlay_count(void);
 int romfs_patches_loaded(void);                            // a romfs-patches manifest gave at least one file

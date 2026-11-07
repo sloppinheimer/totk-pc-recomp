@@ -11,8 +11,9 @@
 #   -Profile build\prof-play-1: both games play copies of that profile instead of the 1.4.3 one (it is not written)
 #   -BDir build\v143c: game B runs from that folder instead of build\v143b (a stuck game may hold its totk.exe)
 #   -FakeAtA 25: game A's fakes (-FakeGearA, -FakeDyeA, -FakeHandA) apply only from 25 s into its world
+#   -EnvA / -EnvB "TOTK_COOP_TEST_TRAVEL=40;TOTK_COOP_TEST_NOTICESHOT=1": these settings for that game only
 param([int]$Seconds = 90, [string]$ScriptA = "tools\coop\walk.txt", [string]$ScriptB = "tools\coop\idle.txt", [string]$FakeGearA = "", [string]$FakeDyeA = "", [string]$FakeHandA = "",
-      [string]$ShotsA = "", [string]$ShotsB = "", [string]$ShotsDir = "", [int]$QuitBAfter = 0, [string]$FakeAtA = "", [string]$SpawnA = "", [string]$SpawnB = "", [string]$Profile = "build\profile-v143", [switch]$ShotsSmall, [string]$BDir = "build\v143b")
+      [string]$ShotsA = "", [string]$ShotsB = "", [string]$ShotsDir = "", [int]$QuitBAfter = 0, [string]$FakeAtA = "", [string]$SpawnA = "", [string]$SpawnB = "", [string]$Profile = "build\profile-v143", [switch]$ShotsSmall, [string]$BDir = "build\v143b", [string]$EnvA = "", [string]$EnvB = "")
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
@@ -52,6 +53,9 @@ foreach ($g in @(@{dir = $a; prof = 'build\prof-coop-a'; script = $ScriptA; name
     $shots = if ($g.name -eq 'A') { $ShotsA } else { $ShotsB }
     if ($shots) { $sd = Join-Path (Join-Path $root $ShotsDir) $g.name; New-Item -ItemType Directory -Force $sd | Out-Null; $env:TOTK_SHOTS = $shots; $env:TOTK_SHOTS_DIR = $sd; if ($ShotsSmall) { Remove-Item Env:TOTK_SHOTS_FULL -ErrorAction SilentlyContinue } else { $env:TOTK_SHOTS_FULL = '1' } }
     else { Remove-Item Env:TOTK_SHOTS, Env:TOTK_SHOTS_DIR, Env:TOTK_SHOTS_FULL -ErrorAction SilentlyContinue }
+    foreach ($kv in (($EnvA + ';' + $EnvB) -split ';' | Where-Object { $_ -match '=' })) { Remove-Item "Env:$(($kv -split '=', 2)[0])" -ErrorAction SilentlyContinue }
+    $mine = if ($g.name -eq 'A') { $EnvA } else { $EnvB }
+    foreach ($kv in ($mine -split ';' | Where-Object { $_ -match '=' })) { $k, $v = $kv -split '=', 2; Set-Item "Env:$k" $v }
     $games += Start-Quiet (Join-Path $g.dir 'totk.exe') '' $g.dir
     Start-Sleep 3
 }
@@ -68,6 +72,6 @@ Stop-Process -Id $relay.Id -Force -ErrorAction SilentlyContinue
 Start-Sleep 1
 foreach ($d in $a, $b) {
     "=== $d"
-    Select-String -Path (Join-Path $d 'logs\totk.log') -Pattern 'coop net|coop: (slot|player slot|remote)|FATAL' | Select-Object -ExpandProperty Line
+    Select-String -Path (Join-Path $d 'logs\totk.log') -Pattern 'coop net|coop: (slot|player slot|remote|notice|test: notice|test: travel)|FATAL' | Select-Object -ExpandProperty Line
 }
 "=== relay"; Get-Content (Join-Path $root 'build\relay.log')

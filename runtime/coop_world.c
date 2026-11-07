@@ -18,6 +18,7 @@
 #include "cfg.h"
 #include "coop_game.h"
 #include "coop_net.h"
+#include "coop_notices.h"
 #include "host.h"
 #include "layout.h"
 #include "platform/platform.h"
@@ -3017,6 +3018,10 @@ static void peer_tick(Cpu *c, uint64_t me) {
         {
             const SpawnPacket *sp = (const SpawnPacket *)&lhp;
             if (n == (int)sizeof(SpawnPacket) && (sp->kind == SPAWN_KIND || sp->kind == SPAWN_GONE)) { spawn_take(c, sp, from); continue; }
+        }
+        if (n == (int)sizeof(CoopTravelPacket) && ((const CoopTravelPacket *)&lhp)->kind == COOP_TRAVEL_KIND) {   // coop_notices.c
+            coop_notice_travel_take((const CoopTravelPacket *)&lhp, n, from);
+            continue;
         }
         if (n >= (int)offsetof(LinkHitPacket, s) && lhp.kind == LINKHIT_KIND && lhp.nslots <= LH_SLOTS &&
             n == (int)(offsetof(LinkHitPacket, s) + lhp.nslots * sizeof(LinkHitSlot))) {
