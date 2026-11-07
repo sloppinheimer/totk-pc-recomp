@@ -212,22 +212,27 @@ right in the tester's own two-pad session.
     with the Link's own attack object, dc+0x18d0, still never guarded); the Link's listener (vtable +0x48,
     main+0x1cca59c, the Player's damage filter: damage 3 -> 3 with the shield up, and no second armor cut without it);
     the proxy's own update with ZL let through in the owner's game (its hits still unguarded there). 
-  - **Contact replay** (TOTK_COOP_LINKHIT_CONTACT=1, off by default): the contact records waiting on the proxy's
+  - **Contact replay** (on by default; TOTK_COOP_LINKHIT_CONTACT=0 the hit replay only): the contact records waiting on the proxy's
     damage component ([dc+0x1910]+0x50, 0x1c0 bytes each) go to the player's game, which adds them to its own Link's
     list as that Link's hit update begins (main+0x300a30); its update builds the hit itself (damage, knock-back).
     The attacker handles name this game's frozen copy, the body is put at the same place from the Link's main body
-    (+0xb558). TotK Online does it this way too (read for behaviour only).
-  - **The block** (TOTK_COOP_CONTACT_GUARDBIT=1 with contact replay): the Player's hit filter (main+0x319120 from
+    (+0xb558). TotK Online does it this way too (read for behaviour only). A hit on a proxy within 0.4 s of a contact
+    sent to that player is the contact's; one without (a kind the contact list does not carry) still goes as the hit
+    replay. Fight test: two hits, each taken once (14 -> 10 -> 6), no hit replay beside them.
+  - **The block** (TOTK_COOP_CONTACT_GUARDBIT=1, off: see the end of this item): the Player's hit filter (main+0x319120 from
     main+0x1cca59c) cancels a hit when the equipment component's +0x4600 has bit 17, which the game sets when an
     attack meets the raised shield. With this Link's shield up (component +0x3b8 word +0x160 bit 28; action 0x41 at
     component +0x158 +0x84) and the attacker within 60 degrees of its facing, the bit is set: 26 hits and 3 hits, life
-    kept at 14 (without it 14 -> 10 -> 6). Not checked: the block's reaction and the shield's wear; a perfect guard.
+    kept at 14 (without it 14 -> 10 -> 6). Off by default: the hit is cancelled with no reaction (frames at a
+    block), and the shield-up bit may be ZL held alone (the shield on the back in those frames), so it would block for
+    a Link that is not guarding. Not checked either: the shield's wear, a perfect guard.
   - **The copy's awareness** (TOTK_COOP_ENEMY_AWARE, on): a frozen copy never noticed the follower's Link, so its game
     showed the Sneakstrike prompt beside an enemy fighting its player and its Link kept its sword sheathed and could
     not raise the shield. The owner sends six words of the enemy's component +0x158 with each pose (+0x24, +0x58,
     +0x60, +0x64, +0x70, +0x84: 0xc182 0x12 0x12 0 0 0x28 unaware, 0xc082 0xc 0xc 1 1 0x83 fighting) and the copy takes
-    them. Put on as fixed values they took the prompt away; synced, the prompt still came back in one run while the
-    Bokoblin attacked: not settled.
+    them. Put on as fixed values they took the prompt away. Synced, the copy follows its owner: the owner's Bokoblin
+    stayed unaware (0xc182, 0x12) until 60 s while it wandered, then noticed (0xc082, 0xc), and the copy with it
+    (+0x84 is its action, changing all the time, not awareness).
   - **Its weapons** (a play session: one lagged in the frozen enemy's hand and could be taken from it): the owner
     sends the Weapon_ actors within 2.5 m that are no Link's with each pose; the other games freeze theirs of that name
     nearest that place and put it there after the enemy's model push, its body 300 m under it. Pair test on the tester's

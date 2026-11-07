@@ -1817,6 +1817,12 @@ void coop_hit_delivered(Cpu *c) {
             return;
         }
 }
+static int contact_on(void);
+// When a contact went to each player (plat_now_ns): a hit on that player's proxy within CONTACT_COVER_NS of one is
+// the contact's, so its hit replay is not sent (link_hits_send); a hit with no contact (one the contact list does not
+// carry) still goes as the hit replay.
+#define CONTACT_COVER_NS 400000000ull
+static _Atomic uint64_t contact_sent_ns[COOP_MAX_PLAYERS + 1];
 static void link_hits_send(void) {
     uint64_t acts[COOP_MAX_PLAYERS];
     int ids[COOP_MAX_PLAYERS], n = coop_player_actors(acts, ids, COOP_MAX_PLAYERS);
@@ -1852,6 +1858,8 @@ static void link_hits_send(void) {
             rt_log("coop: %s %08x hit player %d's Link here for %d%s", nm[0] ? nm : "something", key, ids[i], dmg,
                    key && dmg > 0 ? ", sent to them" : "");
         if (!key || dmg <= 0 || dmg > 4000) continue;
+        if (contact_on() && ids[i] > 0 && ids[i] <= COOP_MAX_PLAYERS && plat_now_ns() - atomic_load(&contact_sent_ns[ids[i]]) < CONTACT_COVER_NS)
+            continue;   // its contact went to them: their game makes the hit itself
         // The record's slots the hit changed, pointers made relative to the proxy's damage component or actor, or
         // marked as the attacker's reference, so the player's game can write the same hit into its own Link.
         static LinkHitPacket lh;
@@ -1954,9 +1962,9 @@ static _Atomic uint64_t lh_x1;   // the attack it is delivered with
 // is that body +0xb558, guarding or not, both Links, every run: TOTK_COOP_TEST_CONTACTS, 2026-11-06).
 typedef struct { uint32_t key, to, kind, n, brel[CONTACT_MAX]; uint8_t e[CONTACT_MAX][CONTACT_SZ]; } ContactPacket;
 _Static_assert(sizeof(ContactPacket) <= COOP_HIT_MAX, "ContactPacket fits a HIT packet");
-static int contact_on(void) {
+static int contact_on(void) {   // TOTK_COOP_LINKHIT_CONTACT=0: the hit replay only
     static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_LINKHIT_CONTACT"); on = e && *e == '1'; }
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_LINKHIT_CONTACT"); on = !(e && *e == '0'); }
     return on;
 }
 static uint64_t contact_list(uint64_t dc) {
@@ -2013,7 +2021,10 @@ static void contact_send(uint64_t dc, int to) {
         cp.brel[cp.n] = body && mb0 && body >= mb0 && body - mb0 < 0x20000 ? (uint32_t)(body - mb0) + 1 : 0;
         cp.n++;
     }
-    if (cp.n) coop_net_hit_send(&cp, (int)(offsetof(ContactPacket, e) + cp.n * CONTACT_SZ));
+    if (cp.n) {
+        coop_net_hit_send(&cp, (int)(offsetof(ContactPacket, e) + cp.n * CONTACT_SZ));
+        if (to > 0 && to <= COOP_MAX_PLAYERS) atomic_store(&contact_sent_ns[to], plat_now_ns());
+    }
 }
 static _Alignas(16) uint8_t ct_in[CONTACT_MAX][CONTACT_SZ];
 static _Atomic int ct_n;                  // contacts waiting for this Link's hit update
@@ -2073,6 +2084,8 @@ static void contact_add(uint64_t dc) {
         // and the attacker in front of it (within 60 degrees of its facing), the bit is set: 26 hits, life kept at 14
         // (with the shield up and without the bit: 14 -> 10 -> 6; 2026-11-06). Whether the block's reaction plays
         // is not checked.
+        // (off by default: the "shield up" bit may be ZL held alone, the shield on the back in frames at a block, and
+        // the hit is cancelled with no reaction; 2026-11-06)
         static int gb = -1;
         if (gb < 0) { const char *ev = cfg_get("TOTK_COOP_CONTACT_GUARDBIT"); gb = ev && *ev == '1'; }
         if (gb) {
@@ -2088,7 +2101,7 @@ static void contact_add(uint64_t dc) {
             if (c1) coop_rd(c1 + 0x160, &f, 4);
             if (eq && front && f >> 28 & 1 && coop_rd(eq + 0x4600, &ef, 4)) ef |= 1u << 17, memcpy((void *)(uintptr_t)(eq + 0x4600), &ef, 4);
             static int said;
-            if (said++ < 20) rt_log("coop: test: contact guard: shield %s, attacker %s: %s", f >> 28 & 1 ? "up" : "down",
+            if (said++ < 20) rt_log("coop: contact guard at %.2f s: shield %s, attacker %s: %s", frame_step_world_us() / 1e6, f >> 28 & 1 ? "up" : "down",
                                     !att ? "not here" : front ? "in front" : "not in front", eq && front && f >> 28 & 1 ? "blocked" : "not blocked");
         }
         memcpy((void *)(uintptr_t)(base + (uint64_t)cnt * CONTACT_SZ), e, CONTACT_SZ);
@@ -2411,8 +2424,8 @@ static void peer_tick(Cpu *c, uint64_t me) {
         }
         if (n >= (int)offsetof(LinkHitPacket, s) && lhp.kind == LINKHIT_KIND && lhp.nslots <= LH_SLOTS &&
             n == (int)(offsetof(LinkHitPacket, s) + lhp.nslots * sizeof(LinkHitSlot))) {
-            // (with contact replay on, the contact makes the hit here instead)
-            if ((int)lhp.to == my_id && lhp.damage > 0 && lhp.damage <= 4000 && !contact_on()) link_hit_take(c, &lhp, from, me);
+            // (a hit its sender covered with a contact is not sent: link_hits_send)
+            if ((int)lhp.to == my_id && lhp.damage > 0 && lhp.damage <= 4000) link_hit_take(c, &lhp, from, me);
             continue;
         }
         memcpy(&hp, &lhp, sizeof hp);
@@ -3141,6 +3154,16 @@ static void pup_aware_apply(void) {
         uint64_t aw = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + AWARE_COMP) : 0;
         if (!aw) continue;
         for (int j = 0; j < AWARE_N; j++) memcpy((void *)(uintptr_t)(aw + AWARE_OFF[j]), &pups[k].aware[j], 4);
+        static uint32_t last[AWARE_N];
+        static uint64_t last_ns;
+        uint64_t now = plat_now_ns();
+        if (memcmp(last, pups[k].aware, sizeof last) || now - last_ns > 2000000000ull) {   // a change, or every 2 s
+            memcpy(last, pups[k].aware, sizeof last), last_ns = now;
+            static int said;
+            if (said++ < 60)
+                rt_log("coop: enemy %08x awareness from its owner at %.1f s: %x %x %x %x %x %x", pups[k].key, frame_step_world_us() / 1e6,
+                       pups[k].aware[0], pups[k].aware[1], pups[k].aware[2], pups[k].aware[3], pups[k].aware[4], pups[k].aware[5]);
+        }
     }
 }
 static void epose_take_tick(Cpu *c) {
