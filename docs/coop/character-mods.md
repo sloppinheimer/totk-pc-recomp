@@ -116,8 +116,9 @@ restart.
 (`Pack/Actor/Player.pack.zs`), body model (`Model/Link.Link_RaulSkin.bfres.mc`), animation set
 (`AS/Player.root.asb.zs`) and skin texture were opened 3.3 s after start. Loading another save from the menu
 (`tools/coop/load_3rd.txt`) kept the same Player (its address unchanged, `coop: this PC's Link is the Player at ...`
-logged once) and moved it 5061 m; only the armor packs were opened again. TotK has no return to the title screen, so
-nothing in a run makes the Player again or reads its files again, and its resources stay loaded as long as it exists.
+logged once) and moved it 5061 m; only the armor packs were opened again. A return to the title screen was not tried
+(the test scripts have none). So a save load does not make the Player again or read its files again, and its resources
+stay loaded as long as it exists.
 Serving other files under those names (the live overlay) would therefore not show either. What could work instead is
 not tried: this PC's Link hidden, with a stand-in of its own character driven from its own state as the others' are.
 
