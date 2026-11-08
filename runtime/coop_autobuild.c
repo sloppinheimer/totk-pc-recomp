@@ -881,10 +881,52 @@ static void rebuild_test(Cpu *c) {
     coop_guest_call(c, MOD_MAIN_BASE + 0x1d3b470, o, 0, 0, 0);
     rt_log("coop: test: rebuild: returned");
 }
+// TOTK_COOP_TEST_REBUILDOK=<s>: the confirm the ability's update runs when the build is confirmed (main+0x9a2c00 at
+// main+0x9a7260: main+0x1d3c0d4 on [ability+0x51f0], the build's object), called on the kept build object then
+static void rebuild_ok(Cpu *c) {
+    static double at = -1;
+    if (at < 0) { const char *e = cfg_get("TOTK_COOP_TEST_REBUILDOK"); at = e ? atof(e) : 0; }
+    if (at <= 0 || frame_step_world_us() / 1e6 < at || !coop_ab_obj) return;
+    at = 0;
+    // its first check (main+0x9a83dc) fails at once while the object's byte +0x3c70 is set; else it walks the part
+    // entries (+0x1b0 count, +0x1b8 list). TOTK_COOP_TEST_REBUILDOK70=1: that byte cleared first
+    uint8_t b70 = 0;
+    coop_rd(coop_ab_obj + 0x3c70, &b70, 1);
+    int32_t ne = 0;
+    coop_rd(coop_ab_obj + 0x1b0, &ne, 4);
+    rt_log("coop: test: rebuild: before the confirm: +0x3c70 %u, part entries %d", b70, ne);
+    if (b70 && cfg_get("TOTK_COOP_TEST_REBUILDOK70")) ST8(coop_ab_obj + 0x3c70, 0);
+    {   // the confirm reads the blueprint's +9 (parts) and +0xa (3 for the Fanplane: its bonds, it seems), both zeroed again
+        // by the build step: put back as at the build
+        uint64_t cai = coop_rd_ptr(coop_ab_obj + 0x3c50);
+        if (cai && coop_ab_cai[9]) memcpy((void *)(uintptr_t)cai, coop_ab_cai, 0xc + (size_t)coop_ab_cai[9] * 0x118);
+    }
+    // TOTK_COOP_TEST_REBUILDCLAIM=1: first each part's create handle (its pool entry +0x60, which main+0x1d3b470 gives
+    // requestCreateActor) put in the world (coop_claim): the new parts stayed in state 3, made and not put in
+    static _Alignas(16) uint8_t links[0x15][0x40];
+    uint64_t list = coop_rd_ptr(coop_ab_obj + 0x1b8);
+    for (int k = 0; cfg_get("TOTK_COOP_TEST_REBUILDCLAIM") && list && k < ne && k < 0x15; k++) {
+        uint64_t ent = coop_rd_ptr(list + 8 * (uint64_t)k), ref = 0;
+        if (!ent) continue;
+        int st = coop_handle_status((const uint8_t *)(uintptr_t)(ent + 0x60));
+        uint64_t a = st == 3 ? coop_claim(c, (uint8_t *)(uintptr_t)(ent + 0x60), links[k], &ref) : 0;
+        char nm[48] = "";
+        rt_log("coop: test: rebuild: part %d's handle status %d: put in the world %s %llx", k, st, a ? coop_actor_name(a, nm, sizeof nm) : "-", (unsigned long long)a);
+    }
+    uint64_t r = coop_guest_call(c, MOD_MAIN_BASE + 0x1d3c0d4, coop_ab_obj, 0, 0, 0);
+    rt_log("coop: test: rebuild: the confirm (main+0x1d3c0d4) on %llx returned %llx", (unsigned long long)coop_ab_obj, (unsigned long long)r);
+}
 
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
     if (!ablog_on()) return;
+    if (cfg_get("TOTK_COOP_TEST_FANHITAB") && atomic_load(&tracked_n) > 1) {   // FANHIT on the build's first fan from
+        extern uint64_t coop_fan_actor;                                        // when it is made (the confirm's calls)
+        char nm[48];
+        for (int i = 0; i < atomic_load(&tracked_n) && i < TRACK_N; i++)
+            if (live_device(i, nm, sizeof nm) && !strcmp(nm, "SpObj_WindGenerator_A_01")) { coop_fan_actor = fanhit_target(atomic_load(&tracked[i])); break; }
+    }
     rebuild_test(c);
+    rebuild_ok(c);
     compdump_test(atomic_load(&tracked_n) < TRACK_N ? atomic_load(&tracked_n) : TRACK_N);
     sweep_test(c, me);
     gluenear_test(c, me, atomic_load(&tracked_n));

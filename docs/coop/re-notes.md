@@ -1105,9 +1105,23 @@ the tester's idea: the other game builds the owner's blueprint itself, so the pa
   out as the build's first stage, and the rest (the see-through preview turning solid, physics, the group and the
   green look) is done by main+0x9a2c00's later states, which this does not run. Their place is not in the records
   (relative) nor as three floats in obj (TOTK_COOP_TEST_REBUILDDX found none): probably a matrix, not found yet.
-- Verdict: a second build from code is partly driven (the parts are made); finishing it needs main+0x9a2c00's states
-  after the call (its confirm path), not found yet. Whether the finished parts would be green in the other game, the
-  cost and the Link ties are still open. Not tried in B.
+- The confirm, found with the profiler on the build's first fan from when it is made (TOTK_COOP_TEST_FANHITAB=1
+  TOTK_COOP_TEST_FANHIT=29.97): main+0x9a2c00 at main+0x9a7260 calls main+0x1d3c0d4([ability+0x51f0], the build's
+  object) when a task check on ability+0x52c8 (main+0x1b2f20) passes and a byte at +0x1f5 is set; the parts then see
+  main+0x2af548c, main+0x194f8dc and main+0x1c071cc from it. main+0x1d3c0d4 checks first (main+0x9a83dc) that the
+  object's byte +0x3c70 is clear, that each part entry's task (+0x48) is done and the object's task at +0x3c58 is not
+  (main+0x1b2f20: a task handle, its id at +0x10), then the blueprint's "CmbAct" magic and its +9 (parts) and +0xa (3 for
+  the Fanplane), which the build step zeroes again.
+- Called from our tick on the second build (TOTK_COOP_TEST_REBUILDOK=42): it returned 0 every time, with the blueprint
+  put back and +0x3c70 cleared (TOTK_COOP_TEST_REBUILDOK70=1) or not: the tasks it checks are the ability job's.
+- The second build's parts made solid by hand (TOTK_COOP_TEST_REBUILDCLAIM=1: each part's create handle, its pool entry
+  +0x60, put in the world with coop_claim): state 3 -> 4, +0x440 0x630300, +0x5d0 a place, they fall and settle, and
+  the game draws them, solid, behind the first build (screenshots at 44-48 s). But they are not green (tan wing, grey
+  fans, beside the green first build) and in no group (not one unit). So the green and the group come from the
+  confirm (or after it), which does not run this way.
+- Verdict: a second build is made and drawn from code, but neither green nor one unit; the confirm, which most likely
+  gives both, needs the ability job's own tasks. Driving it means running it from the ability's job (main+0x9a2c00's
+  state, ability+0x52c8 and +0x1f5) rather than from our tick: not done. Not tried in B; cost and Link ties open.
 
 ## The green tint of autobuilt parts (open, 2026-11-08 afternoon)
 - What the autobuild passes when it makes a part (TOTK_COOP_TEST_CREATEDUMP=1, coop_spawn.c create_dump on
