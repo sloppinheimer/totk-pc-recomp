@@ -560,6 +560,11 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
     inside is another stage) reads as a travel to that shrine (a false notice); whether a death's game over reads
     life 0 before the respawn; whether a menu save load restarts the world clock (then no notice) or not ("is now
     near"); the frame layout (bottom left) against the game's own HUD and its location banner.
+  - Entering a shrine (2026-11-07, the tester saw "A is now near Mabe Village Ruins" there): the elevator's jump lands
+    on no travel point, so a jump that leaves from within 60 m of a shrine says "A has entered <shrine>" (near = 2 in
+    the travel packet). Leaving that shrine (landing back at its travel point) says nothing. Compile check only. To
+    check: enter a shrine and look for the notice and "into the shrine Dungeon<nnn>" in the traveller's log; leave it
+    and see no notice ("out of the shrine").
 - **Character mods**: branch `mod-pack-restbl` (30f0a50, 2026-11-04) is now on main (cherry-picked 2026-11-07,
   no conflict). With it the full Playable Riju mod (7795 files served, 2278 changed files inside 70 packs) loads into
   the world as Riju on this build (sandbox C:\Dev\totk-sandbox, its exe replaced by this build's; the old one kept as

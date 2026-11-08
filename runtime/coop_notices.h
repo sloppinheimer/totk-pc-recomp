@@ -11,7 +11,8 @@ typedef struct {
     uint32_t kind, seq;   // seq: the sender's count of its travels; each is sent three times (UDP), told once
     float pos[3];         // where the traveller stands after the load
     char label[40];       // the place's message label (City_BaseCamp, Dungeon000, CheckPoint012), "" none
-    uint8_t near, pad[3]; // 1: no travel point there, label is the nearest named place ("is now near")
+    uint8_t near, pad[3]; // 1: no travel point there, label is the nearest named place ("is now near");
+                          // 2: entered the shrine of label ("has entered")
 } CoopTravelPacket;
 
 int coop_notices_on(void);                                              // TOTK_COOP_NOTICES is not 0
