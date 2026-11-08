@@ -101,10 +101,22 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   bumped so the play binds it again (coop_anim_masks_apply). With that, masks are on (`TOTK_COOP_STANDIN_MASKS=0`:
   off): in the sword fight (attack_enemy_3rd.txt) the stand-in stood and held its sword, and walking with the bow
   drawn (bow_walk_3rd.txt) it walked with the bow up (full-size frames, 2026-11-07).
-  **Correction (2026-11-07, late):** "held its sword" here and below was read from still frames. In swings its sword
-  stays on its back and it swings an empty hand: the tester watched sword_swing_3rd.txt live on 21165e1 (the first stand-in),
-  573ebe7 and main, all the same. The game's in-hand state is set (setEquipmentInHand; its in-hand check says so), but
-  nothing moves the weapon to the hand: on a Link that is the Player's own work, and the stand-in has no Player component.
+  **Correction (2026-11-07, late), and the cause:** "held its sword" here and below was read from still frames. On the
+  test save (nothing equipped by either player) the stand-in's sword stayed on its back and it swung an empty hand; in
+  the tester's own play it was held. the tester found the rule: it is held only while this game's own Link has an item in that
+  slot (equipped, even put away again in the same menu, it is not). The cause: the held item's placing, main+0x45a460
+  (a method of the item's component, x1 the holder; called from main+0x455108 for every holder), follows the holder's
+  EquipmentUser +0x1620, an object every EquipmentUser shares (the stand-in's and this Link's point to the same one),
+  and with that object's +0x2cc set it asks game data (key 0x90b81999, by slot) for this game's player's item in that
+  slot; with none it never reads the holder's in-hand byte (+0x4620), so the item is not put in the hand. Found by a
+  read watch on the stand-in's in-hand bytes (TOTK_COOP_TEST_WATCHWHAT=coopeq: main+0x45a460 read them only when this
+  Link was armed) and the hook's logs (TOTK_COOP_TEST_HELDCALL). Fix (coop_spawn.c, the main+0x45a460 hook): for an
+  item a PlayerPuppet holds, the call runs with the stand-in's +0x1620 on a copy of that object with +0x2f4 bit 0 set
+  and +0x2cc clear, so it reads the stand-in's own byte; 0 there crashed another thread (main+0xc9ad84). the tester saw
+  the stand-in hold the Master Sword through its swings on the test save; `TOTK_COOP_STANDIN_HELDFIX=0` turns it off.
+  Tried first and left off (test switches): the item made again in hand, the in-hand bit (TOTK_COOP_STANDIN_HANDBIT=1),
+  a placeholder item in each empty slot (TOTK_COOP_STANDIN_PRIME=1), the item put at the hand bone
+  (TOTK_COOP_STANDIN_HOLD=1; placing items by hand had led to taken and wrongly sized items on the old co-op Link).
   **Its sword's hits (2026-11-07):** the owner's weapon-attack byte (EquipmentUser +0x660 in 1.4.3 as in 1.2.1, 1 for
   about 0.1 s in each swing: TOTK_COOP_TEST_EQDIFF) goes as NetState flags bit 13 and is written onto the stand-in
   every tick. That alone made no contact from its swing in the owner's game. So, as TotK Online does, the contact of

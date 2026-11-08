@@ -509,6 +509,20 @@ static void watch_slot5(void) {
             else phase = 2;
             return;
         }
+        if (what && !strcmp(what, "coopeq")) {   // who reads the first stand-in's in-hand bytes (EquipmentUser +0x4620)
+            uint64_t ca[1]; int ci[1];
+            uint64_t q = coop_player_actors(ca, ci, 1) ? coop_rd_ptr(coop_rd_ptr(ca[0] + 0x228) + 0x230) : 0;
+            if (q && coop_watch_arm(q + 0x4620, 8)) phase = 1, rt_log("coop: test: watching the stand-in's in-hand bytes %llx", (unsigned long long)(q + 0x4620));
+            else if (!q) return;
+            else phase = 2;
+            return;
+        }
+        if (what && !strcmp(what, "myeq")) {   // the same for this game's own Link
+            uint64_t q = coop_rd_ptr(coop_rd_ptr(coop_player_actor() + 0x228) + 0x230);
+            if (q && coop_watch_arm(q + 0x4620, 8)) phase = 1, rt_log("coop: test: watching this Link's in-hand bytes %llx", (unsigned long long)(q + 0x4620));
+            else phase = 2;
+            return;
+        }
         if (what && !strcmp(what, "coopdata")) {   // the first co-op Link's perception data
             uint64_t ca[1]; int ci[1];
             uint64_t d = coop_player_actors(ca, ci, 1) ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(ca[0] + 0x228) + 0x378) + 0x30) : 0;

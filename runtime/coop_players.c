@@ -49,6 +49,7 @@ typedef struct {
     struct { uint64_t ns; int64_t w_us; float pos[3], q[4]; } hist[16];   // puppet mode: the owner's last reports
                                        // (arrival time, and the owner's world clock then, -1 none)
     unsigned nhist;                    // under lock
+    int primed;                        // a PlayerPuppet stand-in's empty weapon, bow and shield slots given an item once
     int64_t woff_us;                   // this game's world clock less the owner's, the least delayed estimate
     int have_woff;
     float jit_prev[2][3], jit_sum, jit_max;   // puppet mode: frame-to-frame jerk of the placed position (log)
@@ -557,7 +558,7 @@ static Slot *slot_new(int source, int net_id) {
         if (slots[i].state == FREE) {
             Slot *s = &slots[i];
             s->source = source, s->net_id = net_id, s->prev = 0, s->have_want = 0;
-            memset(s->vel, 0, sizeof s->vel), s->last_seq = 0, s->last_ns = 0, s->nseen = 0, s->err_n = 0;
+            memset(s->vel, 0, sizeof s->vel), s->last_seq = 0, s->last_ns = 0, s->nseen = 0, s->err_n = 0, s->primed = 0;
             s->nhist = 0, s->jit_n = 0, s->jit_have = 0, s->have_woff = 0;
             memset(s->held, 0, sizeof s->held);
             memset(s->gear_want, 0, sizeof s->gear_want), memset(s->gear_have, 0, sizeof s->gear_have);
@@ -2227,10 +2228,65 @@ static int gear_inhand_on(void) {
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_GEAR_INHAND"); on = e && *e == '1'; }
     return on;
 }
+// Test (TOTK_COOP_TEST_INHAND=1): before each in-hand call, what setEquipmentInHand (main+0x4f5700) reads: the object
+// at eq+0x1620 that its chain starts from, that object's +0x325 bit 0, its [+0x10], [+0x18] and the byte +0x2d2 that
+// gates the hand attach; and the same for this game's own Link (the stand-in held its sword only while this Link had
+// one equipped: the tester, 2026-11-07).
+static void inhand_probe(uint64_t eq, const char *who) {
+    static int on = -1, said;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_INHAND") != NULL;
+    if (!on || !eq || said++ > 40) return;
+    uint64_t o = coop_rd_ptr(eq + 0x1620), o2 = o ? coop_rd_ptr(o + 0x10) : 0, o3 = o ? coop_rd_ptr(o + 0x18) : 0;
+    uint8_t b325 = 0, b2d2 = 0;
+    if (o) coop_rd(o + 0x325, &b325, 1), coop_rd(o + 0x2d2, &b2d2, 1);
+    char nm[48] = "";
+    if (o) coop_actor_name(o, nm, sizeof nm);
+    {   // what the record at +0x1620 points to: [+0x18] a reference object (+0x40 its actor), [+0x20] a serial
+        uint64_t r = o ? coop_rd_ptr(o + 0x18) : 0, ra = r ? coop_rd_ptr(r + 0x40) : 0;
+        uint32_t ser = 0, rser = 0;
+        if (o) coop_rd(o + 0x20, &ser, 4);
+        if (r) coop_rd(r + 0x48, &rser, 4);
+        char an[48] = "";
+        if (ra) coop_actor_name(ra, an, sizeof an);
+        rt_log("coop: test: inhand %s: record's ref %llx (actor %llx '%s', serial %u, record's %u); this Link %llx, stand-in %llx", who,
+               (unsigned long long)r, (unsigned long long)ra, an, rser, ser, (unsigned long long)coop_player_actor(),
+               (unsigned long long)(slots[0].actor));
+    }
+    rt_log("coop: test: inhand %s: eq %llx +0x1620 %llx ('%s') +0x325 %u [+0x10] %llx [+0x18] %llx +0x2d2 %u", who,
+           (unsigned long long)eq, (unsigned long long)o, nm, b325, (unsigned long long)o2, (unsigned long long)o3, b2d2);
+    // Where an actor holds that object: its first 0x1000 bytes and each of its components ([actor+0x228] table,
+    // 0x800 bytes each), for this game's Link and each stand-in, so the stand-in's own can be found at the same place.
+    uint64_t actors[1 + COOP_MAX_PLAYERS];
+    int na = 0;
+    actors[na++] = coop_player_actor();
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++) if (slots[i].actor && slots[i].state == LIVE) actors[na++] = slots[i].actor;
+    for (int a = 0; o && a < na; a++) {
+        static uint64_t buf[0x200];
+        if (coop_rd(actors[a], buf, 0x1000))
+            for (int w = 0; w < 0x200; w++) if (buf[w] == o) rt_log("coop: test: inhand: actor %d (%llx) +%#x holds it", a, (unsigned long long)actors[a], w * 8);
+        uint64_t tbl = coop_rd_ptr(actors[a] + 0x228);
+        for (int ci = 0; tbl && ci < 0x80; ci++) {
+            uint64_t comp = coop_rd_ptr(tbl + (uint64_t)ci * 8);
+            if (!comp) continue;
+            if (comp == o) rt_log("coop: test: inhand: actor %d component %#x is it", a, ci * 8);
+            if (!coop_rd(comp, buf, 0x800)) continue;
+            for (int w = 0; w < 0x100; w++) if (buf[w] == o) rt_log("coop: test: inhand: actor %d component %#x (%llx) +%#x holds it", a, ci * 8, (unsigned long long)comp, w * 8);
+        }
+    }
+}
+static uint64_t eq_of_actor(uint64_t a);
 static void gear_hand(Cpu *c, uint64_t eq, int k, int in) {
     static const uint64_t row[3] = {0, 3, 4};
+    static int on2 = -1, said2;
+    if (on2 < 0) on2 = cfg_get("TOTK_COOP_TEST_INHAND") != NULL;
+    uint64_t mine = eq_of_actor(coop_player_actor());
+    #define EQ_STATE(e, tag) do { if (on2 && (e) && said2 < 60) { uint8_t f28 = 0, f20 = 0, f4 = 0; uint32_t f0 = 0;         coop_rd((e) + 0x4628, &f28, 1), coop_rd((e) + 0x4620 + row[k], &f20, 1);         coop_rd((e) + 0x570 + row[k] * 0x100 + 0xf0, &f0, 4), coop_rd((e) + 0x570 + row[k] * 0x100 + 0xf4, &f4, 1);         said2++; rt_log("coop: test: inhand %s: +0x4628 %#x, row %llu +0x4620 %u, record +0xf0 %#x +0xf4 %u", tag, f28, (unsigned long long)row[k], f20, f0, f4); } } while (0)
+    EQ_STATE(eq, "stand-in before");
+    EQ_STATE(mine, "this Link");
     if (in) coop_guest_call(c, MOD_MAIN_BASE + GEAR_SET_IN_HAND, eq, row[k], 0, 0);
-    else coop_guest_call(c, MOD_MAIN_BASE + GEAR_REMOVE_IN_HAND, eq, row[k], 0, 0);
+    EQ_STATE(eq, "stand-in after");
+    #undef EQ_STATE
+    if (!in) coop_guest_call(c, MOD_MAIN_BASE + GEAR_REMOVE_IN_HAND, eq, row[k], 0, 0);
 }
 static int old_item(uint64_t a) {
     for (int i = 0; i < 16; i++) if (old_items[i].actor == a && old_items[i].until >= prop_tick) return 1;
@@ -4028,10 +4084,13 @@ static void shield_place(Cpu *c, Slot *s) {
 // does in a surf. A bone's world matrix: the body skeleton's record (+0x20, 0x40 a bone, columns: axes at 0, 4, 8,
 // translation at 12), world-oriented but from an origin of its own, moved so the root bone is at the model's place
 // (model +0x1f8, 3x4 rows); taken as model matrix times record, the hand was 11 m from the sword.
-// TOTK_COOP_STANDIN_HOLD=0: not sent, not put.
+// Off unless TOTK_COOP_STANDIN_HOLD=1 (a test): the game places the stand-in's held items itself once its read of this
+// Link's own equipment is taken out (coop_spawn.c, main+0x45a460), and placing items by hand on the old co-op Link had
+// led to items taken out of hands and fused parts at the wrong size (the tester). Its bones are not found on a PlayerPuppet
+// yet either (body_skeleton is a Player's path).
 static int hold_on(void) {
     static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_HOLD"); on = !(e && *e == '0'); }
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_HOLD"); on = e && *e == '1'; }
     return on;
 }
 static void mat34_mul(const float a[12], const float b[12], float out[12]) {   // a * b, both 3x4 rows (affine)
@@ -4106,11 +4165,22 @@ static void hold_place(Cpu *c, Slot *s) {
     static __thread float bw[HOLD_BONES][12];
     int nb = 0;
     for (int k = 0; eq && k < 3; k++) {
-        if (!(s->out_want >> k & 1) || s->hold_bone[k] == 0xff || (k == 2 && s->shield_placed)) continue;
+        static int why[3][5];   // (each reason it is not placed, logged once)
+        if (!(s->out_want >> k & 1) || (k == 2 && s->shield_placed)) continue;
+        if (s->hold_bone[k] == 0xff) { if (!why[k][0]++) rt_log("coop: stand-in: item %d in hand: no bone from its owner", k); continue; }
         uint64_t item = eq_item(eq, k), model = model_of(item);
-        if (!model) continue;
-        if (!nb && !(nb = bones_world(s->actor, bw))) return;
-        if (s->hold_bone[k] >= nb) continue;
+        if (!model) { if (!why[k][1]++) rt_log("coop: stand-in: item %d in hand: no %s", k, item ? "model of its item" : "item"); continue; }
+        if (!nb && !(nb = bones_world(s->actor, bw))) {
+            if (!why[k][2]++) {
+                uint64_t sk = body_skeleton(s->actor), wb = sk ? coop_rd_ptr(sk + 0x20) : 0;
+                uint16_t n16 = 0;
+                if (sk) coop_rd(sk + 0x48, &n16, 2);
+                rt_log("coop: stand-in: item %d in hand: its bones not read (skeleton %llx, bones %llx, count %u, model %llx)", k,
+                       (unsigned long long)sk, (unsigned long long)wb, n16, (unsigned long long)model_of(s->actor));
+            }
+            return;
+        }
+        if (s->hold_bone[k] >= nb) { if (!why[k][3]++) rt_log("coop: stand-in: item %d in hand: bone %d of %d", k, s->hold_bone[k], nb); continue; }
         float m[12], rot[9], pos[3];
         mat34_mul(bw[s->hold_bone[k]], s->hold[k], m);
         int ok = 1;
@@ -5195,6 +5265,26 @@ void coop_players_tick(Cpu *c, int numpad3) {
             }
             // The owner changed an item: make that slot the owner's item.
             uint64_t eq = s->state == LIVE && s->source == SRC_NET ? eq_of_actor(s->actor) : 0;
+            // A new PlayerPuppet stand-in's EquipmentUser starts with this game's Link's weapon, bow and shield. A slot
+            // this game's Link has empty is given an item once first, before its owner's: an item made into a slot
+            // that never held one stayed on the stand-in's back in its owner's hand, whatever was asked (in-hand calls,
+            // made again in hand, the in-hand bit, put at its hand bone), when both players had nothing equipped and
+            // one equipped first; with this game's Link holding one it was held (the tester, 2026-11-07, who suggested
+            // equipping one at load). The gear code below then makes it the owner's, or empties it.
+            // Off: it did not help (the cause was this Link's own equipment read for the stand-in's item: coop_spawn.c,
+            // main+0x45a460). TOTK_COOP_STANDIN_PRIME=1: done (a test).
+            if (eq && coop_standin_puppet() && !s->primed) {
+                static int prime = -1;
+                if (prime < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_PRIME"); prime = e && *e == '1'; }
+                static const char *const first[3] = {"Weapon_Sword_001", "Weapon_Bow_001", "Weapon_Shield_001"};
+                for (int k = 0; prime && k < 3; k++)
+                    if (!eq_item(eq, k)) {
+                        regive_gear(c, eq, k, first[k], -1, 0, s->gear_str[k], NULL, s->att_str[k]);
+                        strcpy(s->gear_have[k], first[k]);   // (so the gear code below sees a change to the owner's)
+                        rt_log("coop: stand-in: slot %d: its empty gear slot %d given %s first", i, coop_gear_slot[k], first[k]);
+                    }
+                s->primed = 1;
+            }
             // Proxy mode: no gear is made while this game is in a menu; it waits until the game runs again. Made
             // then, armor did not show on the proxy after the menu closed, also when made again later (menu_3rd.txt,
             // a play session, 2026-11-05).
@@ -5269,9 +5359,15 @@ void coop_players_tick(Cpu *c, int numpad3) {
             // Puppet mode: it gets no input, so it never draws an item itself. The EquipmentUser's per-slot byte
             // +0x4620 (0 weapon, 3 bow, 4 shield) bit 1 is what main+0x3e322c also reads as "in hand"; set while the
             // owner holds that item, the item goes to the puppet's hand (checked with the sword, 2026-11-05).
-            // (not on a PlayerPuppet stand-in: its in-hand calls above do it the game's way, and with the bit already
-            // set here they never ran; code review, 2026-11-07)
-            if (eq && coop_puppet_mode() && !coop_standin_puppet()) {
+            // On a PlayerPuppet stand-in too, after its in-hand calls above (which read this bit: set before them, they
+            // never ran; code review, 2026-11-07): without it an item made while its slot was empty (both players with
+            // nothing equipped, one equipping first: the test save) stayed on the back, and the stand-in swung an empty
+            // hand though setEquipmentInHand had run (a play session, 2026-11-07, as the old puppet's 2026-11-05).
+            // Off on the stand-in: it did not help there (the cause: coop_spawn.c, main+0x45a460). TOTK_COOP_STANDIN_HANDBIT=1:
+            // on it too (a test).
+            static int handbit = -1;
+            if (handbit < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_HANDBIT"); handbit = e && *e == '1'; }
+            if (eq && ((coop_puppet_mode() && !coop_standin_puppet()) || (coop_standin_puppet() && handbit))) {
                 static const int slot_of[3] = {0, 3, 4};
                 for (int k = 0; k < 3; k++) {
                     uint8_t *f = (uint8_t *)(uintptr_t)(eq + 0x4620 + slot_of[k]);

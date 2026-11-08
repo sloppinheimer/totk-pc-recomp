@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "coop_game.h"
 #include "coop_net.h"
 #include "host.h"
 #include "input.h"
@@ -959,6 +960,78 @@ int coop_hook(Cpu *c, uint64_t addr) {
         addr == MOD_MAIN_BASE + 0x298a20c || addr == MOD_MAIN_BASE + 0x2988330 || addr == MOD_MAIN_BASE + 0x1b13c9c) {
         int coop_ground_hook(Cpu *c, uint64_t off);
         return coop_ground_hook(c, addr - MOD_MAIN_BASE);
+    }
+    // Test (TOTK_COOP_TEST_HELDCALL=1): who calls main+0x45a460 (a held item's component placing it in its holder's
+    // hand; x1 points to the holder actor) and for which holder: the stand-in's sword reached its hand only while this
+    // game's Link had a weapon (the tester, 2026-11-07). Each caller and holder once, at most 40 lines.
+    if (addr == MOD_MAIN_BASE + 0x45a460) {
+        // A held item's component placing it (x0 the component, x1 points to its holder). Before it reads the holder's
+        // in-hand byte (EquipmentUser +0x4620) it follows eq+0x1620, an object every EquipmentUser shares, and with that
+        // object's +0x2cc set asks game data (key 0x90b81999, by slot) for this game's player's own item in that slot;
+        // with none it never reads the byte, and a PlayerPuppet stand-in's sword stayed on its back in its owner's
+        // swings while this game's Link had no weapon (the tester, 2026-11-07: equipped, the stand-in held it). For a
+        // stand-in's item the call runs with the stand-in's eq+0x1620 on a copy of that object with +0x2f4 bit 0 set
+        // (its chain ends there) and +0x2cc clear (no game data asked), so it goes to the byte. A copy, not 0: another
+        // thread read the field during the call and crashed on 0 (main+0xc9ad84, 2026-11-07). TOTK_COOP_STANDIN_HELDFIX=0:
+        // not.
+        static int fix = -1;
+        if (fix < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_HELDFIX"); fix = !(e && *e == '0'); }
+        static __thread int inside_held;
+        if (fix && !inside_held && c->x[1]) {
+            int coop_standin_puppet(void);
+            uint64_t holder = coop_rd_ptr(c->x[1]);
+            char hn[16] = "";
+            if (holder && coop_standin_puppet() && !strcmp(coop_actor_name(holder, hn, sizeof hn), "PlayerPuppet")) {
+                uint64_t eq = coop_rd_ptr(coop_rd_ptr(holder + 0x228) + 0x230);
+                uint64_t saved = eq ? coop_rd_ptr(eq + 0x1620) : 0;
+                static __thread _Alignas(16) uint8_t copy[0x800];
+                if (saved && coop_rd(saved, copy, sizeof copy)) {
+                    copy[0x2f4] |= 1, copy[0x2cc] = 0;
+                    ST64(eq + 0x1620, (uint64_t)(uintptr_t)copy);
+                    inside_held = 1;
+                    c->pc = addr;
+                    rt_dispatch(c);
+                    inside_held = 0;
+                    ST64(eq + 0x1620, saved);
+                    return 1;
+                }
+            }
+        }
+        static int on = -1;
+        if (on < 0) on = cfg_get("TOTK_COOP_TEST_HELDCALL") != NULL;
+        if (on) {
+            static struct { uint64_t lr, holder; } seen[40];
+            static int n;
+            uint64_t lr = c->x[30], holder = c->x[1] ? coop_rd_ptr(c->x[1]) : 0;
+            int dup = 0;
+            for (int i = 0; i < n; i++) dup |= seen[i].lr == lr && seen[i].holder == holder;
+            if (!dup && n < 40) {
+                seen[n].lr = lr, seen[n].holder = holder, n++;
+                char hn[48] = "", wn[48] = "";
+                coop_actor_name(holder, hn, sizeof hn), coop_actor_name(coop_rd_ptr(c->x[0] + 0x18), wn, sizeof wn);
+                rt_log("coop: test: held call from main+%#llx: holder %llx '%s', item '%s', world %.1f s", (unsigned long long)(lr - MOD_MAIN_BASE),
+                       (unsigned long long)holder, hn, wn, frame_step_world_us() / 1e6);
+            }
+        }
+        if (on) {   // the values its branches read, for a PlayerPuppet holder's item (first 6 calls)
+            static int k;
+            uint64_t holder = c->x[1] ? coop_rd_ptr(c->x[1]) : 0;
+            char hn[48] = "";
+            coop_actor_name(holder, hn, sizeof hn);
+            if (!strcmp(hn, "PlayerPuppet") && k++ < 6) {
+                uint64_t comp = c->x[0], wa = coop_rd_ptr(comp + 0x18), eq = coop_rd_ptr(coop_rd_ptr(holder + 0x228) + 0x230);
+                uint32_t af = 0, row = 0, rf = 0;
+                uint8_t b505 = 0, b516 = 0, b1456 = 0;
+                uint64_t f4600 = 0, owner = eq ? coop_rd_ptr(eq + 0x18) : 0, oc = owner ? coop_rd_ptr(coop_rd_ptr(owner + 0x228) + 0x3a8) : 0;
+                if (wa) coop_rd(wa + 0x28, &af, 4);
+                coop_rd(comp + 0x488, &row, 4), coop_rd(comp + 0x505, &b505, 1), coop_rd(comp + 0x516, &b516, 1);
+                if (eq) coop_rd(eq + 0x570 + (uint64_t)(row < 8 ? row : 0) * 0x100 + 0xf0, &rf, 4), coop_rd(eq + 0x4600, &f4600, 8);
+                if (oc) coop_rd(oc + 0x1456, &b1456, 1);
+                rt_log("coop: test: held call state: actor +0x28 %#x, row %u, record +0xf0 %#x, comp +0x505 %u +0x516 %#x, eq +0x4600 %#llx, owner %llx comp+0x3a8 %llx +0x1456 %#x",
+                       af, row, rf, b505, b516, (unsigned long long)f4600, (unsigned long long)owner, (unsigned long long)oc, b1456);
+            }
+        }
+        return 0;
     }
     // the SwordBlur component's update (coop_world.c): a stand-in's runs with its owner's WeaponBlur event
     if (addr == MOD_MAIN_BASE + 0x275954) { int coop_blur_hook(Cpu *c, uint64_t addr); return coop_blur_hook(c, addr); }
