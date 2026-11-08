@@ -831,7 +831,9 @@ int coop_players_phase(Cpu *c, uint64_t addr) {
     // owner's is in a shield surf, and the copies that ride on it (a nocked arrow on its bow, its paraglider), as
     // proxy_drive does for the old co-op Link.
     Slot *ps = slot_of_actor(phase_actor);
-    if (ps && coop_standin_puppet() && addr == MOD_MAIN_BASE + 0x245030 && ps->state == LIVE && ps->source == SRC_NET) {
+    static int pp_on = -1;   // TOTK_COOP_STANDIN_PHASEPLACE=0: none of it (a test, the sword staying on the back)
+    if (pp_on < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_PHASEPLACE"); pp_on = !(e && *e == '0'); }
+    if (pp_on && ps && coop_standin_puppet() && addr == MOD_MAIN_BASE + 0x245030 && ps->state == LIVE && ps->source == SRC_NET) {
         shield_place(c, ps);
         static int said_sh, said_in;
         if (!said_in++) rt_log("coop: stand-in: slot %d: placed after its model phase (shield placed %d)", (int)(ps - slots), ps->shield_placed);
@@ -839,7 +841,11 @@ int coop_players_phase(Cpu *c, uint64_t addr) {
             rt_log("coop: stand-in: slot %d: its shield %llx put where its owner's is (%.2f %.2f %.2f in its frame)", (int)(ps - slots),
                    (unsigned long long)ps->shield_actor, ps->shield_local[0], ps->shield_local[1], ps->shield_local[2]);
         for (int k = 0; k < COOP_OBJS; k++)
-            if (ps->mir[k].state == 3 && ps->mir[k].ticks >= COPY_WARMUP && (ps->mir[k].flags & (COOP_OBJ_LOCAL | COOP_OBJ_ONLINK))) place_copy(c, ps, k);
+            if (ps->mir[k].state == 3 && ps->mir[k].ticks >= COPY_WARMUP && (ps->mir[k].flags & (COOP_OBJ_LOCAL | COOP_OBJ_ONLINK))) {
+                static int said_pc;
+                if (said_pc++ < 20) rt_log("coop: stand-in: slot %d: copy %s placed on it after its model phase", (int)(ps - slots), ps->mir[k].name);
+                place_copy(c, ps, k);
+            }
     }
     return 1;
 }
@@ -5100,7 +5106,9 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 static int mo = -1;
                 if (mo < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_MOTION"); mo = !(e && *e == '0'); }
                 uint64_t body = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(s->actor + 0x228) + 0x50) + 0x20) + 0x150);
-                if (mo && body) coop_guest_call(c, MOD_MAIN_BASE + 0xae4300, body, 0, 0, 0);
+                static int mt = -1;   // TOTK_COOP_STANDIN_MOTION_TYPE=<n>: the type asked for (a test; default 0)
+                if (mt < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_MOTION_TYPE"); mt = e ? atoi(e) : 0; }
+                if (mo && body) coop_guest_call(c, MOD_MAIN_BASE + 0xae4300, body, (uint64_t)mt, 0, 0);
             }
             // ... and its weapon's attack on while its owner's is (flags bit 13), every tick
             if (eq && coop_standin_puppet()) {

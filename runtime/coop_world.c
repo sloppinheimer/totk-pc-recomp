@@ -5274,31 +5274,39 @@ void coop_anim_pack(uint64_t me, CoopAnim *out) {
     AnimSlot s[COOP_ANIM_SLOTS];
     int n = anim_read(anim_player_of(me), s, COOP_ANIM_SLOTS);
     uint64_t g = anim_graph_of(me);
-    static float last_f[COOP_ANIM_SLOTS], last_rate[COOP_ANIM_SLOTS];
-    static uint16_t last_i[COOP_ANIM_SLOTS];
-    static uint64_t last_ns;
-    uint64_t now = plat_now_ns();
-    float dt = last_ns ? (float)((now - last_ns) / 1e9) : 0;
-    last_ns = now;
+    // Each slot's rate (frames a second) from a reference frame at least RATE_SPAN_US of world time back, the last
+    // rate kept in between. Taken from the call before, a second call in the same frame saw no time and no frames
+    // pass and sent 0: every other state stopped the stand-in's clips, and the easing pulled them on again (the tester's
+    // session, "still quite choppy", 2026-11-07). World time: the clips step with the frames.
+    enum { RATE_SPAN_US = 30000 };
+    static float ref_f[COOP_ANIM_SLOTS], last_rate[COOP_ANIM_SLOTS];
+    static int64_t ref_w[COOP_ANIM_SLOTS];
+    static uint16_t ref_i[COOP_ANIM_SLOTS] = {[0 ... COOP_ANIM_SLOTS - 1] = 0xffff};
+    int64_t w = frame_step_world_us();
+    if (w < 0) w = (int64_t)(plat_now_ns() / 1000);
     for (int i = 0; i < COOP_ANIM_SLOTS; i++) {
         CoopAnim a = {.idx = 0xffff};
         if (i < n && s[i].idx != 0xffff && s[i].w == s[i].w && s[i].f == s[i].f) {
-            float w = s[i].w < 0 ? 0 : s[i].w > 1 ? 1 : s[i].w;
-            a.idx = s[i].idx, a.weight = (uint16_t)lroundf(w * 65535), a.frame = s[i].f, a.bind = anim_bind_off(g, s[i].bind);
-            a.rate = last_i[i] == s[i].idx && dt > 0 && dt < 0.5f && s[i].f >= last_f[i] ? (s[i].f - last_f[i]) / dt : 0;
-            if (a.rate > 600) a.rate = 0;
-            // A clip that looped since the last send (its frame went back) keeps the rate it had: with 0 the other
-            // games held the stand-in's frame until the next state, a stop every loop of a walk (a play session,
-            // "all animations choppy", 2026-11-07).
-            if (last_i[i] == s[i].idx && s[i].f < last_f[i]) a.rate = last_rate[i];
-        }
-        last_i[i] = a.idx, last_f[i] = a.frame, last_rate[i] = a.rate;
+            float wt = s[i].w < 0 ? 0 : s[i].w > 1 ? 1 : s[i].w;
+            a.idx = s[i].idx, a.weight = (uint16_t)lroundf(wt * 65535), a.frame = s[i].f, a.bind = anim_bind_off(g, s[i].bind);
+            if (ref_i[i] != s[i].idx || w < ref_w[i]) {   // a new clip: its rate from the next span
+                ref_i[i] = s[i].idx, ref_f[i] = s[i].f, ref_w[i] = w, last_rate[i] = 0;
+            } else if (s[i].f < ref_f[i]) {             // looped: the rate it had, measured again from here
+                ref_f[i] = s[i].f, ref_w[i] = w;
+            } else if (w - ref_w[i] >= RATE_SPAN_US) {
+                float r = (s[i].f - ref_f[i]) / (float)((w - ref_w[i]) / 1e6);
+                last_rate[i] = r > 600 ? last_rate[i] : r;
+                ref_f[i] = s[i].f, ref_w[i] = w;
+            }
+            a.rate = last_rate[i];
+        } else
+            ref_i[i] = 0xffff;
         out[i] = a;
     }
 }
 // The owner's slots (in, age_ns old) played on a stand-in; a slot the owner left empty is played with weight 0 on
 // the clip the stand-in still has there.
-// The stand-in's animation, measured (every 5 s, at most 60 lines): how often slot 0 is set a second, how many of
+// The stand-in's animation, measured (every 5 s, at most 720 lines: an hour): how often slot 0 is set a second, how many of
 // those set the same frame as the one before (a held frame: the "choppy" look), the mean and largest step between
 // sets, how many new states came, and the oldest state age used. To tell a stand-in fed too rarely from one fed
 // unevenly (a play session, 2026-11-07).
@@ -5320,7 +5328,7 @@ static void anim_watch(uint16_t idx, float sent, float fr, float age) {
     last_fr = fr, last_sent = sent, last_idx = idx;
     if (now - t0 >= 5000000000ull) {
         double sec = (now - t0) / 1e9;
-        if (said++ < 60)
+        if (said++ < 720)
             rt_log("coop: stand-in anim: %.0f sets/s, %d held (same frame), step mean %.2f max %.2f frames, %.0f new states/s, oldest state %.0f ms",
                    calls / sec, held, calls > held ? step_sum / (calls - held) : 0, step_max, news / sec, age_max * 1000);
         t0 = now, calls = held = news = 0, step_sum = step_max = age_max = 0;

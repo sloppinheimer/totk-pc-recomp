@@ -101,6 +101,10 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   bumped so the play binds it again (coop_anim_masks_apply). With that, masks are on (`TOTK_COOP_STANDIN_MASKS=0`:
   off): in the sword fight (attack_enemy_3rd.txt) the stand-in stood and held its sword, and walking with the bow
   drawn (bow_walk_3rd.txt) it walked with the bow up (full-size frames, 2026-11-07).
+  **Correction (2026-11-07, late):** "held its sword" here and below was read from still frames. In swings its sword
+  stays on its back and it swings an empty hand: the tester watched sword_swing_3rd.txt live on 21165e1 (the first stand-in),
+  573ebe7 and main, all the same. The game's in-hand state is set (setEquipmentInHand; its in-hand check says so), but
+  nothing moves the weapon to the hand: on a Link that is the Player's own work, and the stand-in has no Player component.
   **Its sword's hits (2026-11-07):** the owner's weapon-attack byte (EquipmentUser +0x660 in 1.4.3 as in 1.2.1, 1 for
   about 0.1 s in each swing: TOTK_COOP_TEST_EQDIFF) goes as NetState flags bit 13 and is written onto the stand-in
   every tick. That alone made no contact from its swing in the owner's game. So, as TotK Online does, the contact of
