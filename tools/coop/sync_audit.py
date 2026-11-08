@@ -14,7 +14,8 @@ lines pair by time (both games on one PC). For each pair, both ways (the owner's
   enemy       each enemy near a Link in both games: its place and life the same (the host is the lower id)
   enemy-only  an enemy within 100 m of the host's Link in one game only (not counted as a failure: it can be the
               other game's streaming)
-  time        the time of day: the guest follows the host's (within 180 game seconds, 3 s of real time)
+  time        the time of day: the guest follows the host's (within 180 game seconds, 3 s of real time); not while
+              the host's clock stands (its map or a menu: the guest keeps its own then) nor for 5 s after
   weather     the same within 300 m of each other
 Nothing is checked in the first 10 s after both games have an id (the Links are being made). A mismatch is counted
 when it holds in two snapshots in a row (one-off timing is not). Places allow for movement:
@@ -129,13 +130,19 @@ def check_way(own, own_prev, view, view_prev, report):
                 report('stale', f'{oid}/{cid}', t, f"player {view['id']}'s game still shows a copy of {c['name']} ({cid:#x}); player {oid} no longer sends it")
 
 
+_clock = {'stood_until': -1.0}
+
+
 def check_pair(a, a_prev, b, b_prev, report):
     check_way(a, a_prev, b, b_prev, report)
     check_way(b, b_prev, a, a_prev, report)
     if a['id'] <= 0 or b['id'] <= 0:
         return
     host, guest = (a, b) if a['id'] < b['id'] else (b, a)
+    host_prev = a_prev if host is a else b_prev
     t = a['t']
+    if host_prev and host['tod'] >= 0 and host['tod'] == host_prev['tod']:
+        _clock['stood_until'] = t + 5   # the host's clock stands (coop_players.c follow_host_time: not followed)
     # enemies
     he = {e['key']: e for e in host.get('enemies', []) if not e.get('dup')}
     ge = {e['key']: e for e in guest.get('enemies', []) if not e.get('dup')}
@@ -153,7 +160,7 @@ def check_pair(a, a_prev, b, b_prev, report):
         where = f"host {host['id']}" if k in he else f"guest {guest['id']}"
         report('enemy-only', f'{k:08x}', t, f"enemy {e['name']} {k:08x} is near a Link in the {where}'s game only")
     # time of day and weather
-    if host['tod'] >= 0 and guest['tod'] >= 0:
+    if host['tod'] >= 0 and guest['tod'] >= 0 and t > _clock['stood_until']:
         dt = abs(host['tod'] - guest['tod'])
         dt = min(dt, 86400 - dt)
         if dt > 180:   # game time runs 60 times as fast: snapshots up to 0.5 s apart and a follower set every few seconds
