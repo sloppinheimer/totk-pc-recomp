@@ -1686,7 +1686,7 @@ static void arrow_copies(Cpu *c, Slot *s) {
         for (int b = 0; b < 16 && !went; b++)
             went = blown[b].key == ((uint64_t)s->net_id << 32 | o->id) && blown[b].until_ms > plat_now_ns() / 1000000;
         if (went) continue;
-        if (!strncmp(o->name, "MergedActor", 11)) continue;   // (never makable: prop_skip; for a sender of before)
+        if (!strncmp(o->name, "MergedActor", 11) || !strncmp(o->name, "UltraHand_Connection_Effect", 27)) continue;   // (prop_skip; a sender of before)
         int k = 0;
         while (k < COOP_OBJS && !(s->mir[k].state && s->mir[k].id == o->id)) k++;
         if (k == COOP_OBJS) {
@@ -2162,10 +2162,13 @@ static int prop_skip(const char *nm) {
                                 // the other, which had not got them (after a fast travel), asked for copies by name, the
                                 // game cannot make one (handle status 4), and the requests asked for again every tick
                                 // took the actor manager down: no actor could be made there (a play session, 2026-11-08)
-                                "MergedActor"};
-    // (UltraHand_Connection_Effect2, an effect Ultrahand makes on a contraption, is copied again: it was left out on
-    // 2026-11-08 morning, and then the tester saw no glue on a hand-glued contraption in the other game; whether it is the
-    // glue's look is not known)
+                                "MergedActor",
+                                // the Link's Ultrahand glue-effect actor (one per Link, made by its effect manager,
+                                // main+0x994048, which it draws every glue joint from): a copy made by name has no
+                                // manager and drew a large green slab between glued parts and a glow in a loose fan in
+                                // the other game (the tester's screenshots, 2026-11-08)
+                                "UltraHand_Connection_Effect"};
+    // (UltraHand_Connection_Effect2: left out again, above)
     // (LightningStrike, a thunderstorm's strike, was left out here for a while; it is sent again, the one that hits
     // this Link, so the others see it struck: the tester's list, 2026-11-06. Its copy runs its own update, copy_place.)   // chests: each player's own
     for (size_t i = 0; i < sizeof pre / sizeof *pre; i++) if (!strncmp(nm, pre[i], strlen(pre[i]))) return 1;

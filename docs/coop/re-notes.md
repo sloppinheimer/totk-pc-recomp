@@ -32,6 +32,29 @@ evidence), guess.
   it from its enter function main+0x231fa58 (`coop_NodeGenericRequestCreateActor_enter`); the strings "Pack/Actor/",
   ".pack", "ActorMgr" inside it. Confidence: likely (not called by us yet).
 
+## Glue by hand in the other game (2026-11-08 evening, the tester's live session)
+- the tester glued fan 3 to fan 1 by hand in game 1 (logs of build143 and build143play, 16:33): game 1 sent bond 1
+  and "a contraption of mine (2 parts)"; its glue entry was "no longer glued here: taken off the list" a few seconds
+  on, and game 2 then "parted here" (removeScotch), which undid coop_bonds' bond: "show no shared group here yet".
+  Game 2 also made "a copy of object 4 (UltraHand_Connection_Effect2)", and the tester saw a large green slab between the
+  glued copies and a green glow in a loose fan's copy.
+- Ultrahand's release makes the lasting bond in main+0x1d67060 (called from main+0x1d61ca0): it takes both parts'
+  SpecialPowerReceiverComponents, checks the two contraptions together stay under 22 parts, sets the target's +0x20 bit
+  0x1000 and ends in the bond maker main+0x1916830, as the Autobuild does; the glue entry (createScotch / doScotch) is
+  only the joint while it is made. So a glue by hand's parts share a group (as an autobuild's), and coop_bonds' bond
+  (main+0x1c05a98 -> main+0x1916830) on the copies is the same kind.
+- UltraHand_Connection_Effect2 is one actor per Link, made by its glue-effect manager (main+0x994048, which keeps it at
+  manager+0x400 and gives its EffectInfo the manager): it draws every glue joint from the manager's data. A copy by
+  name has no manager: hence the slab. It is no longer copied (prop_skip, and ignored if a sender of before sends it).
+- The glue's look of the joint itself: createScotch's tail (main+0x1d61858) copies four vectors into the entry
+  (+0x51c, +0x528, +0x534, +0x540) and sets +0x554 bit 1 when the request's +0x20 answers 1 (Ultrahand's does; ours, the
+  base class, does not). They are now captured with the bond (GlueBond.look, pts) and written into the entry made in the
+  other game.
+- coop_glue now reads a bond as held while its entry is glued or its two objects share one group (same_group), on the
+  maker's side (no removal sent when the entry goes) and on the other side (no glue made again once bonded).
+- Not checked yet: the look with these changes (needs a glue by hand in the tester's next session), and world objects
+  both games have (coop_bonds bonds copies only).
+
 ## A failed create request must be released (fixed 2026-11-08)
 - a play session (main d84dcc4, game 2 from build143play): after a fast travel game 2 made no actor at all
   (copies, its own capsule devices: the item left the inventory and nothing came), and the ground was missing. Its

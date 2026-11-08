@@ -66,12 +66,18 @@ typedef struct {
     GlueObj a, b;                         // a: the actor whose component holds the bond; b: the other
     uint16_t body_a[2], body_b[2];        // where the glued body is from the actor's physics controller (body_ref)
     float ma[12], mb[12];                 // the request's two matrices (argument +0x3c, +0x94)
+    // The glue's look: entry +0x554 bit 1 and the four vectors at +0x51c, +0x528, +0x534, +0x540, which createScotch's
+    // tail (main+0x1d61858) copies from the request's getters (vtable +0x28..+0x40) when its +0x20 answers 1, as
+    // Ultrahand's does. Our request's base class answers 0, and the glue made again here showed as a large green slab
+    // between the parts (the tester's screenshot, 2026-11-08): sent, and written into the entry made here.
+    uint32_t look;                        // 1: the vectors below are the maker's
+    float pts[4][3];
 } GlueBond;
-#define ADD_N 4
+#define ADD_N 3
 typedef struct { uint32_t kind, n, pad[2]; GlueBond b[ADD_N]; } GlueAddPacket;
 #define LIST_N 64
 typedef struct { uint32_t kind, n, pad[2]; uint32_t bond[LIST_N]; } GlueListPacket;
-_Static_assert(sizeof(GlueBond) == 208, "GlueBond wire size");
+_Static_assert(sizeof(GlueBond) == 260, "GlueBond wire size");
 _Static_assert(sizeof(GlueAddPacket) <= COOP_HIT_MAX && sizeof(GlueListPacket) <= COOP_HIT_MAX, "glue packets fit");
 
 static PlatMutex glue_lock = PLAT_MUTEX_INIT;   // never held across a game call
@@ -191,7 +197,7 @@ static uint64_t guest_call7(Cpu *c, uint64_t fn, uint64_t a0, uint64_t a1, uint6
 
 // ---- captured here (doScotch's entry, any thread), sent by the tick
 #define PEND_N 16
-static struct { uint64_t entry, a, b, body_a, body_b; uint32_t ha, hb; uint8_t flag; float ma[12], mb[12]; } pend[PEND_N];
+static struct { uint64_t entry, a, b, body_a, body_b; uint32_t ha, hb; uint8_t flag, look; float ma[12], mb[12], pts[4][3]; } pend[PEND_N];
 static int pend_n;
 #define MINE_N LIST_N
 // remake_until: this game parted a or b for another game (part_here), which parts it from this game's own bonds too:
@@ -242,6 +248,9 @@ static void capture(Cpu *c) {
         p->entry = entry, p->a = a, p->b = b, p->body_a = c->x[3], p->body_b = c->x[4], p->flag = (uint8_t)(c->x[6] & 1);
         coop_rd(entry + 0x438, &p->ha, 4), coop_rd(entry + 0x4a0, &p->hb, 4);
         coop_rd(c->x[1], p->ma, sizeof p->ma), coop_rd(c->x[2], p->mb, sizeof p->mb);
+        uint8_t f554 = 0;   // the glue's look (GlueBond.look)
+        coop_rd(entry + 0x554, &f554, 1);
+        p->look = (f554 & 2) && coop_rd(entry + 0x51c, p->pts, sizeof p->pts);
     }
     plat_mutex_unlock(&glue_lock);
 }
@@ -304,7 +313,7 @@ static int ident(uint64_t a, GlueObj *o) {
 // The request createScotch takes, built here (the argument's base class: its flag call answers 0, so createScotch's
 // tail, main+0x1d61858, reads none of its vectors), then doScotch as main+0x1d61a6c calls it. 1: the entry is glued.
 static int make_bond(Cpu *c, uint64_t a, uint64_t b, uint32_t ha, uint32_t hb, const float ma[12], const float mb[12], int flag,
-                     uint64_t *entry_out) {
+                     uint64_t *entry_out, const float (*pts)[3]) {
     uint64_t comp = scotch_comp(a);
     if (!comp || !scotch_comp(b)) return 0;
     uint64_t e = find_entry(comp, ha, hb);
@@ -323,6 +332,7 @@ static int make_bond(Cpu *c, uint64_t a, uint64_t b, uint32_t ha, uint32_t hb, c
     e = find_entry(comp, ha, hb);
     if (!e) return 0;
     ST32(e + 0x550, 2), ST8(e + 0x554, LD8(e + 0x554) | 8);
+    if (pts) memcpy((void *)(uintptr_t)(e + 0x51c), pts, 48), ST8(e + 0x554, LD8(e + 0x554) | 2);   // the maker's look (GlueBond.look)
     uint64_t ra = coop_guest_call(c, MOD_MAIN_BASE + ENTRY_BODY_A, e, 0, 0, 0), rb = coop_guest_call(c, MOD_MAIN_BASE + ENTRY_BODY_B, e, 0, 0, 0);
     if (!ra || !rb) return 0;
     guest_call7(c, MOD_MAIN_BASE + DO_SCOTCH, e + 0x558, ap + 0x3c, ap + 0x94, ra, rb, e + 0x488, (uint64_t)(flag & 1));
@@ -426,6 +436,7 @@ static void take_pending(void) {
         if (f < 0) { rt_log("coop: glue: more than %d bonds made here; this one is not sent", MINE_N); continue; }
         g.bond = next_bond++, g.flag = p->flag;
         memcpy(g.ma, p->ma, sizeof g.ma), memcpy(g.mb, p->mb, sizeof g.mb);
+        g.look = p->look, memcpy(g.pts, p->pts, sizeof g.pts);
         memset(&mine[f], 0, sizeof mine[f]);
         mine[f].used = 1, mine[f].g = g, mine[f].a = p->a, mine[f].b = p->b, mine[f].ha = p->ha, mine[f].hb = p->hb;
         mine[f].ua = actor_uid(p->a), mine[f].ub = actor_uid(p->b);
@@ -441,6 +452,15 @@ static void take_pending(void) {
         send_list();
     }
 }
+// Two actors in one contraption: their SpecialPowerReceiverComponents share a group (+0x28; coop_bonds.c). A glue by
+// hand gives its two parts a lasting bond (Ultrahand's release, main+0x1d61ca0 -> main+0x1d67060 -> the bond maker
+// main+0x1916830) and drops its glue entry about 2 s on; so "no longer glued" is read as the entry gone and the two
+// no longer in one group. 1 one group, 0 not, -1 not known (the field reads 0 at times).
+static int same_group(uint64_t a, uint64_t b) {
+    uint64_t ca = scotch_comp(a), cb = scotch_comp(b), ga = ca ? coop_rd_ptr(ca + 0x28) : 0, gb = cb ? coop_rd_ptr(cb + 0x28) : 0;
+    if (!ga || !gb) return -1;
+    return ga == gb;
+}
 static void mine_tick(Cpu *c, int64_t now) {
     static int64_t last_us;
     if (now - last_us < 1000000) return;
@@ -454,7 +474,8 @@ static void mine_tick(Cpu *c, int64_t now) {
         if (!gone && !entry_glued(e) && now < mine[i].remake_until) {   // parted with another game's bond: made again
             if (now >= mine[i].remake_from) {
                 in_apply = 1;   // (not captured as a new bond)
-                int ok = make_bond(c, mine[i].a, mine[i].b, mine[i].ha, mine[i].hb, mine[i].g.ma, mine[i].g.mb, mine[i].g.flag, NULL);
+                int ok = make_bond(c, mine[i].a, mine[i].b, mine[i].ha, mine[i].hb, mine[i].g.ma, mine[i].g.mb, mine[i].g.flag, NULL,
+                                   mine[i].g.look ? (const float (*)[3])mine[i].g.pts : NULL);
                 in_apply = 0;
                 rt_log("coop: glue: bond %u (%s to %s), parted here with another game's, %s", mine[i].g.bond, mine[i].g.a.name, mine[i].g.b.name,
                        ok ? "made again" : "not made again yet");
@@ -462,7 +483,8 @@ static void mine_tick(Cpu *c, int64_t now) {
             mine[i].gone_checks = 0;
             continue;
         }
-        mine[i].gone_checks = gone || !entry_glued(e) ? mine[i].gone_checks + 1 : 0;
+        int sg = gone ? 0 : same_group(mine[i].a, mine[i].b);   // (a glue by hand's entry goes; its bond stays: same_group)
+        mine[i].gone_checks = gone || (!entry_glued(e) && sg == 0) ? mine[i].gone_checks + 1 : sg < 0 && !entry_glued(e) ? mine[i].gone_checks : 0;
         if (gone || mine[i].gone_checks >= 2) {
             rt_log("coop: glue: bond %u (%s to %s) is %s here: taken off the list", mine[i].g.bond, mine[i].g.a.name, mine[i].g.b.name,
                    gone ? "on an object gone" : "no longer glued");
@@ -535,11 +557,13 @@ static void theirs_tick(Cpu *c, int64_t now) {
         int glued = 0, tried = 0;
         uint64_t e = 0;
         if (a && b && ha != ~0u && hb != ~0u) {
-            glued = entry_glued(find_entry(scotch_comp(a), ha, hb));
+            // (already one contraption here, by coop_bonds.c's bond or the game's: not glued again; a glue entry made
+            // again would go in seconds, as a glue by hand's does, and be made again and again)
+            glued = entry_glued(find_entry(scotch_comp(a), ha, hb)) || same_group(a, b) == 1;
             if (!glued) {
                 tried = 1;
                 in_apply = 1;
-                glued = make_bond(c, a, b, ha, hb, g.ma, g.mb, g.flag, &e);
+                glued = make_bond(c, a, b, ha, hb, g.ma, g.mb, g.flag, &e, g.look ? (const float (*)[3])g.pts : NULL);
                 in_apply = 0;
             }
         }
@@ -714,7 +738,7 @@ static void glue_test(Cpu *c, uint64_t me) {
             glued_at = now, stage = 3;
             goto bonded;
         }
-        ok = make_bond(c, obj[0], obj[1], ha, hb, ma, mb, 0, &e);   // in_apply 0: captured as glue made here
+        ok = make_bond(c, obj[0], obj[1], ha, hb, ma, mb, 0, &e, NULL);   // in_apply 0: captured as glue made here
         rt_log("coop: test: glue: %s to %s: entry %llx, %s; its constraint object (doScotch's [entry+0x560]) %llx", names[0], names[1],
                (unsigned long long)e, ok ? "glued" : "not glued", (unsigned long long)(e ? coop_rd_ptr(e + 0x560) : 0));
         if (!ok) stage = 9;
@@ -798,7 +822,7 @@ int coop_glue_pair(Cpu *c, uint64_t a, uint64_t b) {
     }
     in_apply = 1;
     uint64_t e = 0;
-    int ok = make_bond(c, a, b, ha, hb, ma, mb, 0, &e);
+    int ok = make_bond(c, a, b, ha, hb, ma, mb, 0, &e, NULL);
     in_apply = 0;
     coop_glue_last_entry = e;
     return ok;
