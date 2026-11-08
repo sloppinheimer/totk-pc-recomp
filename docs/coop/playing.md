@@ -18,13 +18,14 @@ Everyone needs the same build (the packet version must match) and the same game 
 works: `python server/coop_relay.py` on a PC everyone can reach, and `coop_relay = <address>` in `totk.ini` joins
 it at start (the test scripts do this).
 
-What works (2026-11-04): each player's Link appears in the others' games and moves with that player's input (walk,
-run, jump, glide, attack); it is put back at its owner's position when it drifts, and goes away when its player
-leaves. It carries its owner's weapon, bow and shield and wears their head, body and leg armor. Guests follow the
+What works (2026-11-08): each player shows in the others' games as a stand-in (a PlayerPuppet actor, TotK Online's
+kind; docs/coop/proxy-plan.md) that plays its owner's animations and final pose, is placed where its owner is a
+moment behind, and goes away when its player leaves. It holds and carries its owner's weapon, bow and shield, fused
+parts included, wears their armor and dyes, and sparks when lightning is about to strike its owner. Guests follow the
 host's time of day and weather. An enemy near more than one player is run by the game that has had it longest (a
 player who was fighting alone keeps the fight), and goes to another player's game when that player's Link is 5 m
 nearer to it (within 30 m): an enemy fights only the player of the game that runs it; in the other games its copy runs its own AI and plays the owner's actions (TotK Online's way), and enemies made at run time are made there too; the others show its moves, weapons, life and death; their sword hits,
-arrows and bombs count on it, and its hits on them count, knock-back included: the hit player's own game builds the hit from the contact (a raised shield does not block them yet). The host's HUD prompts stay on the host's screen. Not yet: fused weapon parts and armor dyes, menus for remote players. Chests stay each player's own.
+arrows and bombs count on it, and its hits on them count, knock-back included: the hit player's own game builds the hit from the contact (a raised shield does not block them yet). The host's HUD prompts stay on the host's screen. Not yet: menus for remote players, arrow trails on the others' arrows; riding is untested. Chests stay each player's own.
 ## One PC, two games, two gamepads (online co-op without a second PC)
 Double-click `Play co-op (two pads).vbs` in the repo folder (or run `tools\coop\play_two.ps1`): it starts the relay and two game windows with no console windows; window 1
 reads the first connected gamepad, window 2 the second (the log lists the gamepads it sees: "input: gamepad 0 of 2").

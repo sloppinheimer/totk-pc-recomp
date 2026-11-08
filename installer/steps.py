@@ -7,7 +7,8 @@ recomp/gen.py, tools/build_game.py, tools/make_romfs_patches.py and tools/prepar
 with the bundled clang (hostcheck.c).
 
 Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, shared-fonts/ (Chinese and Korean text), totk.exe
-and its DLLs, nvngx_dlss.dll (with --dlss), romfs-index.bin, romfs-patches/, romfs-patches-xbox/, romfs-patches-xbox-label/, totk_xlate.exe, the
+and its DLLs, nvngx_dlss.dll (with --dlss), romfs-index.bin, romfs-patches/, romfs-patches-xbox/,
+romfs-patches-xbox-label/, romfs-patches-pc/, totk_xlate.exe, the
 shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json.
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), unpacked/ (the NSP of an NSZ
 or XCZ input until the extraction is done), gen/ (C), build/ (objects), logs/. The cleanup keeps gen/, build/ and
@@ -15,9 +16,10 @@ logs/: the next run lifts into the same gen/, where recomp/gen.py rewrites only 
 in build/ recompiles only those. A change of the mods' code cheats then costs the lift (about a minute) and the chunks
 it touches, not a full compile.
 
-Install folder build-cache/: cheats.status (tools/cheats.py), exefs.status (tools/exefs_patches.py) and rebuild.txt, the command that starts this setup in
-its rebuild mode on the install folder (installer/gui.py --rebuild), one argument per line; totk.exe runs it at start
-when an enabled mod has code cheats the build lacks (runtime/cheats.c).
+Install folder build-cache/: cheats.status (tools/cheats.py), exefs.status and exefs.data (tools/exefs_patches.py) and
+rebuild.txt, the command that starts this setup in its rebuild mode on the install folder (installer/gui.py --rebuild),
+one argument per line; totk.exe runs it at start when an enabled mod has code cheats the build lacks
+(runtime/cheats.c).
 """
 import hashlib
 import http.client
@@ -854,6 +856,12 @@ def exefs_status(ctx):
     return ctx.dest / 'build-cache' / 'exefs.status'
 
 
+def exefs_data(ctx):
+    """The data writes of the mods' ExeFS patch files (tools/exefs_patches.py --data), which runtime/mods.c stores into
+    main before the game runs."""
+    return ctx.dest / 'build-cache' / 'exefs.data'
+
+
 def cheats_status(ctx):
     """The build's cheat status file (tools/cheats.py --status), which runtime/cheats.c reads: in build-cache, not in a
     mod's own cheats folder, which the player (or TKMM's merge) may empty."""
@@ -868,7 +876,7 @@ class Lift(Step):
         # fingerprint takes a file's name and content only; the paths under mods/ go in too, because tools/cheats.py
         # and tools/exefs_patches.py name each patch set after its mod folder, so a renamed folder needs a lift
         files = cheat_files(ctx) + exefs_files(ctx)
-        return fingerprint('lift-4', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)),
+        return fingerprint('lift-5', ctx.keys['extract'], ctx.layout.recomp, ctx.layout.patches(game_version(ctx)),
                            ctx.layout.tools / 'cheats.py', ctx.layout.tools / 'exefs_patches.py', *files,
                            *(f.relative_to(ctx.dest / 'mods').as_posix() for f in files))
 
@@ -889,36 +897,54 @@ class Lift(Step):
             if m:
                 rep.progress('lift', 'emit', int(m.group(1)), int(m.group(2)), 'chunks')
 
-        # The code cheats of the mods' cheat files and the mods' ExeFS patch files become patch sets (tools/cheats.py,
-        # tools/exefs_patches.py); their status files tell the runtime what the build has. Both are the player's
-        # downloads, so files the tools refuse cost those cheats or patches, not the install: the game is built
-        # without them and the setup warns.
+        # The code cheats of the mods' cheat files and the mods' ExeFS patch files become patch sets and data writes
+        # (tools/cheats.py, tools/exefs_patches.py); their status files tell the runtime what the build has. Both are
+        # the player's downloads, so files the tools refuse cost those cheats or patches, not the install: the game is
+        # built without them and the setup warns.
         plain = layout.patches(game_version(ctx))
-        stages = [('cheats.py', 'patches-cheats.txt', cheats_status(ctx), cheat_files(ctx), 'warn.cheats_skipped'),
-                  ('exefs_patches.py', 'patches-exefs.txt', exefs_status(ctx), exefs_files(ctx), 'warn.exefs_skipped')]
+        # (tool, patch file it writes, its outputs for the runtime: the status first, then the data file, the files it
+        # reads, the warning when it fails)
+        stages = [('cheats.py', 'patches-cheats.txt', [cheats_status(ctx)], cheat_files(ctx), 'warn.cheats_skipped'),
+                  ('exefs_patches.py', 'patches-exefs.txt', [exefs_status(ctx), exefs_data(ctx)], exefs_files(ctx),
+                   'warn.exefs_skipped')]
         patches, skipped = plain, {}
-        for tool, out, status, inputs, warn in stages:
-            status.unlink(missing_ok=True)   # no status: the runtime treats every such file as not built
+
+        def drop(outputs):   # no status: the runtime treats every such file as not built
+            for f in outputs:
+                f.unlink(missing_ok=True)
+
+        for tool, out, outputs, inputs, warn in stages:
+            drop(outputs)
             if not inputs:
                 continue
             code, log = run_tool(ctx, 'lift', layout.tools / tool,
                                  ['--exefs', ctx.dest / 'exefs', '--mods', ctx.dest / 'mods', '--patches', patches,
-                                  '--out', ctx.temp / out, '--status', status])
+                                  '--out', ctx.temp / out, '--status', outputs[0],
+                                  *(['--data', outputs[1]] if len(outputs) > 1 else [])])
             if code:
-                status.unlink(missing_ok=True)
+                drop(outputs)
                 skipped[warn] = log
             else:
                 patches = ctx.temp / out
         args = ['--exefs', ctx.dest / 'exefs', '--out', gen]
         code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args + ['--patches', patches], parse)
         if code and patches != plain:
-            for tool, out, status, inputs, warn in stages:
+            for tool, out, outputs, inputs, warn in stages:
                 if inputs and warn not in skipped:
-                    status.unlink(missing_ok=True)
+                    drop(outputs)
                     skipped[warn] = log
             code, log = run_tool(ctx, 'lift', layout.recomp / 'gen.py', args + ['--patches', plain], parse)
         if code:
             raise InstallError('lift.failed', code=code, log=str(log))
+        # The mods' data writes must stay off the bytes the lifted code reads as constants (its jump tables), which only
+        # the lift knows: gen.py lists them in folded.txt, and a file that writes them becomes unsupported
+        if exefs_data(ctx).is_file():
+            code, log = run_tool(ctx, 'lift', layout.tools / 'exefs_patches.py',
+                                 ['--exefs', ctx.dest / 'exefs', '--status', exefs_status(ctx), '--data',
+                                  exefs_data(ctx), '--folded', gen / 'main' / 'folded.txt'])
+            if code:
+                drop([exefs_status(ctx), exefs_data(ctx)])
+                skipped.setdefault('warn.exefs_skipped', log)
         for warn, log in skipped.items():
             rep.warning(warn, log=str(log))
         (gen / STAMP).write_text(ctx.keys['lift'] + '\n')
@@ -944,7 +970,8 @@ class Compile(Step):
     id = 'compile'
 
     def key(self, ctx):
-        return fingerprint('compile-3', ctx.keys['lift'], runtime_key(ctx))
+        return fingerprint('compile-3', ctx.keys['lift'], runtime_key(ctx),
+                           ctx.layout.pgo(game_version(ctx)) or 'no profile')
 
     def current(self, ctx, record):
         exe = ctx.dest / ('totk' + EXE)
@@ -970,10 +997,12 @@ class Compile(Step):
         rep.progress('compile', 'compile', force=True)
         cpu = getattr(ctx, 'cpu', 'v3')
         lib = layout.runtime_lib_for(cpu)
+        pgo = layout.pgo(game_version(ctx))
         code, log = run_tool(ctx, 'compile', layout.tools / 'build_game.py', [
             '--gen', ctx.temp / 'gen', '--out', build, '--toolchain', layout.llvm, '--cpu', cpu,
             *(['--deps', layout.deps] if layout.deps else []), *(['--sysroot', layout.sysroot] if layout.sysroot else []),
-            '--runtime', layout.runtime, *(['--runtime-lib', lib] if lib else ()), '--ninja', layout.ninja,
+            '--runtime', layout.runtime, *(['--runtime-lib', lib] if lib else ()), *(['--pgo', pgo] if pgo else ()),
+            '--ninja', layout.ninja,
             '--version', version_tag(game_version(ctx)), '--expected', layout.expected(game_version(ctx)),
             '--exefs', dest / 'exefs', '--romfs', dest / 'romfs',
             '--profile', dest / 'profile'], parse)
@@ -1067,9 +1096,10 @@ class Prepare(Step):
         # romfs-patches-xbox for the Nintendo pad layout, romfs-patches-xbox-label for xbox and auto (runtime/input_map.c
         # input_prompts_folder). Both are written on every install, so the menu choices work without another run of
         # the setup. Optional: when one fails, the game keeps the Switch prompts with that layout and the menu says the
-        # files are missing, so the setup warns once and goes on.
+        # files are missing, so the setup warns once and goes on. romfs-patches-pc likewise, with keyboard and mouse
+        # prompts for prompts = pc (16:9 only: another shape takes make_romfs_patches.py --prompts pc --aspect).
         failed = None
-        for style in ('xbox', 'xbox-label'):
+        for style in ('xbox', 'xbox-label', 'pc'):
             out = dest / f'romfs-patches-{style}'
             remove(out)
             code, log = run_tool(ctx, f'prepare-{style}', layout.tools / 'make_romfs_patches.py',

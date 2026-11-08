@@ -73,6 +73,9 @@ Bisection (sandbox bisect.ps1 / autobisect.ps1, a second copy C:\Dev\totk-sandbo
   compares each member with the game's pack and raises the changed ones (restbl_grow over the game's entry, else
   restbl_estimate). The plain mod as downloaded (no table, no RSDB renames) then loads into the world as Riju: "2380
   changed files inside 76 packs". Combat, menus, the Scimitars and Gerudo Town are untested.
+  Since the merge of upstream 0.3.13 (2026-11-08) that code is upstream's own fix for the same failure
+  (romfs.c restbl_packs, restbl.c restbl_pack_raise, b672c64), which replaced pack_members_raise; the Riju mod has not
+  been tried on it.
 - Earlier leads, now moot: why new references fail on 1.4.3. Leads: the 94 MB animation estimate against the heap; a 1.4.3 change in
   how AIInfo/light params are read; the port's reading of mod files that sit inside packs. A 1.2.1 test would split
   "the mod on 1.4.3" from "the port" but needs a 1.2.1 dump (only v0 and v143 are extracted). Ideas: the mod's 1.2.1 build on a

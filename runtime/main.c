@@ -2,10 +2,12 @@
 //
 //   totk.exe [--exefs DIR] [--romfs DIR] [--profile DIR] <mode>
 //     --selftest        layout, dispatch table and host-function registry; needs no game files
-//     --probe-mods      the mods folder scan, order and switches (mods.c); needs no game files
+//     --probe-mods      the mods folder scan, order and switches (mods.c), the size table entries of the members of
+//                       mods' packs (restbl_probe.c); needs no game files
 //     --probe-loader    load and relocate the modules, check them against the measured 1.2.1 values
 //     --probe-kernel, --probe-ipc, --probe-services, --probe-fs    host probes
 //     --probe-discord  the Rich Presence IPC exchange; skips without a Discord client; no game files
+//     --probe-playtime  the play time file, its ticks and saves (playtime.c); needs no game files
 //     --probe-dpi       the process DPI awareness (per-monitor v2) and the primary monitor's size; no game files
 //     --probe-gfx-abi   NVN object layouts against nvn.h's reserved sizes; needs no game files
 //     --probe-nvn, --probe-nvn-tex, --probe-window, --probe-shader, --probe-vkmem, --probe-vkexec    graphics probes
@@ -230,23 +232,34 @@ static void crash_handler(const PlatCrash *x) {
         rt_logf(", %s address %#llx", x->access == 1 ? "writing" : x->access == 8 ? "executing" : "reading",
                 (unsigned long long)x->addr);
     rt_log_raw("\n", 1);
+    if (x->cxx_type)
+        rt_logf("  C++ type %s%s%s\n", x->cxx_type, x->cxx_what ? ", what(): " : "", x->cxx_what ? x->cxx_what : "");
     uint64_t f = x->module ? 0 : lifted_function(rip);
     if (f) rt_logf("  in lifted function f_%llx = %s\n", (unsigned long long)f, ldr_describe(f, d, sizeof d));
-    // abort and invalid parameter: where the host code called it; a fault in another module: the host calls that led
-    // into it
+    // abort and invalid parameter: where the host code called it; a fault in another module: the driver code and the
+    // host calls that led into it
     uintptr_t exe = plat_exe_base();
     for (int i = 0; i < x->nframes; i++) {
+        const char *m = x->frame_module[i];
+        if (m) {
+            rt_logf("  host frame %2d: %s+%#llx\n", i, *m ? m : "outside every module",
+                    (unsigned long long)x->frame_offset[i]);
+            continue;
+        }
         uint64_t g = lifted_function(x->frames[i]);
         rt_logf("  host frame %2d: totk+%#llx", i, (unsigned long long)(x->frames[i] - exe));
         if (g) rt_logf(" in lifted function f_%llx", (unsigned long long)g);
         rt_log_raw("\n", 1);
     }
+    if (x->frames_left_out) rt_logf("  (%d frames in other modules left out)\n", x->frames_left_out);
     Cpu *c = kern_cpu();
     if (c) {
         for (int i = 0; i < 31; i++)
             rt_logf("  x%-2d %016llx%s", i, (unsigned long long)c->x[i], i % 4 == 3 ? "\n" : "");
-        rt_logf("  sp  %016llx\n  pc  %016llx  lr %s\n", (unsigned long long)c->sp, (unsigned long long)c->pc,
-                ldr_describe(c->x[30], d, sizeof d));
+        // pc: the guest code running, or the host function a guest call entered (its name tells the host call apart)
+        rt_logf("  sp  %016llx\n  pc  %016llx", (unsigned long long)c->sp, (unsigned long long)c->pc);
+        if (hostfn_name(c->pc)) rt_logf(" (%s)", ldr_describe(c->pc, d, sizeof d));
+        rt_logf("  lr %s\n", ldr_describe(c->x[30], d, sizeof d));
         uint64_t fp = c->x[29];
         for (int n = 0; n < 32 && fp && !(fp & 7) && readable(fp, 16); n++) {
             uint64_t next = LD64(fp), lr = LD64(fp + 8);
@@ -399,7 +412,9 @@ static void check_memory(void) {
     CHECK(q.state == 0 && q.base == g->alias.base && q.size == g->alias.size, "QueryMemory on the free alias region");
     CHECK(mem_map_physical(a, 0x1000) == 0 && LD64(a + 0x10) == 0 && mem_unmap_physical(a, 0x1000) == 0,
           "remapped physical memory is not zeroed");
-    CHECK(mem_map_physical(a, 0x100000000ull) == 0x10801, "MapPhysicalMemory beyond the pool is not LimitReached");
+    // past the pool whatever its size (TOTK_APP_POOL, TOTK_TEX_HEAP_EXTRA_MB): 4 GiB fits a grown one
+    CHECK(mem_map_physical(a, (g->pool + 0x100000) & ~0xfffffull) == 0x10801,
+          "MapPhysicalMemory beyond the pool is not LimitReached");
     mem_query(RT_HOSTFN_BASE + 0x40, &q);
     CHECK(q.state == 0x10 && q.base == RT_HOSTFN_BASE, "QueryMemory on the host-function window");
     mem_query(g->alias.base + g->alias.size + 0x1000, &q);
@@ -466,7 +481,7 @@ static int probe_crash(int null) {
 
 static int usage(const char *argv0) {
     fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | "
-                    "--probe-cfg | --probe-dpi | --probe-mods | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
+                    "--probe-cfg | --probe-dpi | --probe-mods | --probe-playtime | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
                     "--probe-vkexec | --probe-astc | --probe-movie | --probe-crash-call | --probe-crash-null | --probe-discord | "
                     "--prepare-shaders | --warm-shaders | --boot |--seconds S [--shot PNG]]\n", argv0);
@@ -512,6 +527,9 @@ int main(int argc, char **argv) {
         const char *e = cfg_get("TOTK_COOP_HIDE_CONSOLE");
         if (e && *e == '1') coop_hide_console();
     }
+    // The build that wrote the log, at its top: an attached log from another install or version shows at a glance.
+    rt_log("version: TotK Recomp %s, game %d.%d.%d", rt_port_version, rt_game_version / 100, rt_game_version / 10 % 10,
+           rt_game_version % 10);
     // A restart from the settings menu (gfx_present.c gfx_window_closed) starts this process while the one it replaces
     // is still exiting: its log, RomFS and saves are free once it is gone.
     if (plat_restart_wait(30000) < 0) rt_log("restart: the previous process still runs after 30 s; starting anyway");
@@ -558,6 +576,7 @@ int main(int argc, char **argv) {
     if (!mode) {
         cfg.boot = cfg.seconds > 0;   // --seconds starts the game like --boot, with its checkpoints
         discord_init();   // the Rich Presence thread (discord_rpc.c); it reads totk.ini itself and idles while off
+        playtime_init();  // the play time thread (playtime.c): the Game tab's play time across runs
         rt_boot();
         return 0;
     }
@@ -571,6 +590,7 @@ int main(int argc, char **argv) {
 #endif
     if (!strcmp(mode, "--probe-mods")) return probe_mods();
     if (!strcmp(mode, "--probe-discord")) return probe_discord();
+    if (!strcmp(mode, "--probe-playtime")) return probe_playtime();
     if (!strcmp(mode, "--probe-kernel")) return probe_kernel();
     if (!strcmp(mode, "--probe-ipc")) return probe_ipc();
     if (!strcmp(mode, "--probe-services")) return probe_services();
