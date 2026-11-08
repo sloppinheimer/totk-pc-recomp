@@ -4,10 +4,11 @@
 # again from the real profile. (Made fresh each start, a session's saves were lost at the next one, a play session,
 # 2026-11-06.) Close either window (or this console) to end the session.
 #   powershell -ExecutionPolicy Bypass -File tools\coop\play_two.ps1 [-Fresh] [-TwoPads] [-Online]   (or double-click "Play co-op (two pads).vbs")
-# -Online: the TotK Online ways that are still opt-in: the other player shown as a PlayerPuppet (TOTK_COOP_STANDIN=puppet;
-# its pack made by tools/coop/make_puppet_pack.py) and world progress shared (TOTK_COOP_SHARE_WORLD=1). Horses stay off.
+# -Online: the other player shown as a PlayerPuppet, TotK Online's stand-in (TOTK_COOP_STANDIN=puppet; its pack made by
+# tools/coop/make_puppet_pack.py). Horses stay off. -ShareWorld adds shared world progress (TOTK_COOP_SHARE_WORLD=1),
+# not yet for play: on two saves each game's own load was taken as changes and sent to the other (2026-11-07).
 param([string]$Name1 = "Player 1", [string]$Name2 = "Player 2", [string]$Size = "1904x1071", [switch]$Fresh, [switch]$TwoPads,
-      [switch]$Online)
+      [switch]$Online, [switch]$ShareWorld)
 # One gamepad (the first) moves both games; Minus with the right stick click, or F9, switches to only the game in
 # focus and back (input.c, pad_focus_gate). -TwoPads: game 1 reads the first gamepad, game 2 the second, as before.
 $ErrorActionPreference = 'Stop'
@@ -51,7 +52,8 @@ foreach ($g in @(@{dir = $a; n = 1; name = $Name1; pad = '0'}, @{dir = $b; n = 2
     $env:TOTK_MOUSE_SENS = '0'          # no mouse camera, no cursor capture: the mouse moves between the windows
     $env:TOTK_COOP_HIDE_CONSOLE = '1'
     Remove-Item Env:TOTK_INPUT_SCRIPT, Env:TOTK_INPUT, Env:TOTK_COOP_AUTOSPAWN -ErrorAction SilentlyContinue
-    if ($Online) { $env:TOTK_COOP_STANDIN = 'puppet'; $env:TOTK_COOP_SHARE_WORLD = '1' }
+    if ($Online) { $env:TOTK_COOP_STANDIN = 'puppet' }
+    if ($ShareWorld) { $env:TOTK_COOP_SHARE_WORLD = '1' } else { Remove-Item Env:TOTK_COOP_SHARE_WORLD -ErrorAction SilentlyContinue }
     $games += Start-NoConsole (Join-Path $g.dir 'totk.exe') '' $g.dir
     Start-Sleep 3
 }
