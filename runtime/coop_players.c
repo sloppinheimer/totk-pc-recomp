@@ -4908,6 +4908,7 @@ void coop_players_tick(Cpu *c) {
     if (!me) return;
     coop_world_tick(c, me);
 
+    coop_chars_tick();   // the character fetch's job and prompt (coop_chars.c), in a session or not
     // This player's state out, when on a relay.
     if (coop_net_on()) {
         coop_notices_tick(c, me);   // a fast travel of this Link, told to the others (coop_notices.c)

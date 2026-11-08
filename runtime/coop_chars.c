@@ -119,7 +119,9 @@ void coop_chars_seen(int id, const char *key, uint32_t mod_id) {
 
 const char *coop_chars_of(int id) { return id >= 1 && id <= COOP_MAX_PLAYERS ? party[id].key : ""; }
 
-// ---- jobs: charmod.py, detached, writing key<TAB>value lines to a status file (its --status) as it goes
+// ---- jobs: charmod.py, detached, writing key<TAB>value lines to a status file (its --status) as it goes. The job, the
+// ask and the declined list are under lock: coop_chars_tick (the game thread) polls the job every frame, the Co-op tab
+// (the menu) reads and answers.
 static CoopJob job;
 static char job_status[2300];
 static uint64_t job_read_ns;
@@ -143,30 +145,27 @@ static int root_dir(char *out, size_t cap) {   // the checkout: build/<version>/
     return snprintf(out, cap, "%s", exe) < (int)cap;
 }
 
-static int job_start(const char *what, const char *const *args) {
-    if (job.state == COOP_JOB_RUNNING) return 0;
-    char root[2048], py[2300], tool[2300], romfs[2300] = "", logs[2300];
-    if (!root_dir(root, sizeof root)) return 0;
-    const char *e = cfg_get("TOTK_COOP_PYTHON");
-    snprintf(py, sizeof py, "%s", e && *e ? e : "");
-    if (!py[0]) snprintf(py, sizeof py, "%s/.venv/Scripts/python.exe", root);
-    e = cfg_get("TOTK_COOP_CHARTOOL");
-    snprintf(tool, sizeof tool, "%s", e && *e ? e : "");
-    if (!tool[0]) snprintf(tool, sizeof tool, "%s/tools/coop/charmod.py", root);
-    const char *img = romfs_image_path();
-    if (img && *img) {
-        snprintf(romfs, sizeof romfs, "%s", img);
-        char *a = strrchr(romfs, '/'), *b = strrchr(romfs, '\\');
-        if (b > a) a = b;
-        if (a) *a = 0;
-    }
-    char exe[2048];
-    if (!plat_exe_path(exe, sizeof exe)) return 0;
-    char *a = strrchr(exe, '/'), *b = strrchr(exe, '\\');
+static void cut_name(char *path) {   // path without its last part
+    char *a = strrchr(path, '/'), *b = strrchr(path, '\\');
     if (b > a) a = b;
     if (a) *a = 0;
-    snprintf(logs, sizeof logs, "%s/logs", exe);
-    snprintf(job_status, sizeof job_status, "%s/charmod-status.txt", logs);
+}
+
+static int job_start(const char *what, const char *const *args) {
+    if (job.state == COOP_JOB_RUNNING) return 0;
+    static char root[2048], py[2300], tool[2300], romfs[2300], exe[2048];
+    if (!root_dir(root, sizeof root) || !plat_exe_path(exe, sizeof exe)) return 0;
+    const char *e = cfg_get("TOTK_COOP_PYTHON");
+    if (e && *e) snprintf(py, sizeof py, "%s", e);
+    else snprintf(py, sizeof py, "%s/.venv/Scripts/python.exe", root);
+    e = cfg_get("TOTK_COOP_CHARTOOL");
+    if (e && *e) snprintf(tool, sizeof tool, "%s", e);
+    else snprintf(tool, sizeof tool, "%s/tools/coop/charmod.py", root);
+    const char *img = romfs_image_path();
+    romfs[0] = 0;
+    if (img && *img) snprintf(romfs, sizeof romfs, "%s", img), cut_name(romfs);
+    cut_name(exe);
+    snprintf(job_status, sizeof job_status, "%s/logs/charmod-status.txt", exe);
     remove(job_status);
     const char *argv[24];
     int n = 0;
@@ -174,6 +173,11 @@ static int job_start(const char *what, const char *const *args) {
     for (int i = 0; args[i] && n < 16; i++) argv[n++] = args[i];
     argv[n++] = "--status", argv[n++] = job_status, argv[n++] = "--mods", argv[n++] = mods_dir();
     if (romfs[0]) argv[n++] = "--romfs", argv[n++] = romfs;
+    // The RomFS overlay next to totk.exe: the actor tables with PlayerPuppet's row, which the sets build on (the mods
+    // folder may be elsewhere, TOTK_MODS_DIR).
+    static char overlay[2300];
+    snprintf(overlay, sizeof overlay, "%s/romfs-patches", exe);
+    if (plat_dir_exists(overlay)) argv[n++] = "--overlay", argv[n++] = overlay;
     argv[n] = NULL;
     memset(&job, 0, sizeof job);
     snprintf(job.what, sizeof job.what, "%s", what);
@@ -217,20 +221,7 @@ static void job_poll(void) {
     if (!strcmp(st, "done")) job.state = COOP_JOB_DONE;
     else if (!strcmp(st, "failed")) job.state = COOP_JOB_FAILED;
     if (job.state != COOP_JOB_RUNNING) rt_log("coop: characters: %s %s: %s", job.what, st, job.text);
-    // A fetched character is another player's: its folder off, or the next start would make it this PC's Link's (a
-    // folder the mods list has not seen comes on).
-    const char *folder = kv("folder");
-    if (job.state == COOP_JOB_DONE && !strcmp(job.what, "fetch") && folder[0]) {
-        const char *was = cfg_get("TOTK_MODS_DISABLED");
-        char list[4096];
-        snprintf(list, sizeof list, "%s%s%s", was && *was ? was : "", was && *was ? "|" : "", folder);
-        cfg_set("TOTK_MODS_DISABLED", list);
-        cfg_save();
-        rt_log("coop: characters: %s is off (another player's character)", folder);
-    }
 }
-
-const CoopJob *coop_chars_job(void) { job_poll(); return &job; }
 
 // ---- asking
 static CoopCharAsk ask;
@@ -243,6 +234,9 @@ static int is_declined(const char *key) {
     for (int i = 0; i < ndeclined; i++) if (!strcmp(declined[i], key)) return 1;
     return 0;
 }
+static void decline(const char *key) {
+    if (key[0] && ndeclined < 16 && !is_declined(key)) snprintf(declined[ndeclined++], COOP_CHAR_KEY, "%s", key);
+}
 
 static void info_for(uint32_t mod_id, uint32_t file_id) {
     char m[16], f[16];
@@ -252,60 +246,28 @@ static void info_for(uint32_t mod_id, uint32_t file_id) {
     job_start("info", args);
 }
 
-int coop_chars_ask(CoopCharAsk *out) {
-    coop_chars_init();
-    job_poll();
-    if (!asking) {   // a party member's character missing here, not declined, from GameBanana
-        take();
-        for (int id = 1; id <= COOP_MAX_PLAYERS && !asking; id++) {
-            const char *key = party[id].key;
-            if (strncmp(key, "gb:", 3) || coop_char_find(key) || is_declined(key) || !party[id].mod_id) continue;
-            if (job.state == COOP_JOB_RUNNING) break;
-            memset(&ask, 0, sizeof ask);
-            ask.player_id = id, ask.mod_id = party[id].mod_id, ask.file_id = (uint32_t)strtoul(key + 3, NULL, 10);
-            snprintf(asked_for, sizeof asked_for, "%s", key);
-            snprintf(ask.page, sizeof ask.page, "https://gamebanana.com/mods/%u", ask.mod_id);
-            asking = 1;
-            info_for(ask.mod_id, ask.file_id);
-        }
-        give();
-    }
-    if (!asking) return 0;
-    if (!ask.ready && !strcmp(job.what, "info") && job.state != COOP_JOB_RUNNING) {
-        if (job.state == COOP_JOB_FAILED) {   // GameBanana said no (or no network): not asked again this run
-            if (asked_for[0] && ndeclined < 16) snprintf(declined[ndeclined++], COOP_CHAR_KEY, "%s", asked_for);
-            asking = 0;
-            return 0;
-        }
-        snprintf(ask.name, sizeof ask.name, "%s", kv("name"));
-        snprintf(ask.page, sizeof ask.page, "%s", kv("page"));
-        snprintf(ask.file, sizeof ask.file, "%s", kv("file"));
-        ask.size = strtoull(kv("size"), NULL, 10);
-        ask.file_id = (uint32_t)strtoul(kv("file_id"), NULL, 10);
-        ask.mod_id = (uint32_t)strtoul(kv("mod_id"), NULL, 10);
-        ask.ready = 1;
-    }
-    *out = ask;
-    return 1;
-}
-
-void coop_chars_answer(int yes) {
+static void answer(int yes) {   // under lock
     if (!asking) return;
     asking = 0;
     if (!yes || !ask.ready) {
-        if (asked_for[0] && ndeclined < 16) snprintf(declined[ndeclined++], COOP_CHAR_KEY, "%s", asked_for);
+        decline(asked_for);
         rt_log("coop: characters: %s not downloaded (the player said no)", ask.name[0] ? ask.name : asked_for);
         return;
     }
     char m[16], f[16];
     snprintf(m, sizeof m, "%u", ask.mod_id);
     snprintf(f, sizeof f, "%u", ask.file_id);
-    const char *args[] = {"fetch", f, "--mod", m, "--yes", "--sets", NULL};
-    rt_log("coop: characters: downloading %s (%s, %s)", ask.name, ask.file, ask.page);
+    // TOTK_COOP_CHARFETCH_FILE (a test): that file on disk in place of GameBanana's download, its MD5 checked the same
+    // way (charmod.py fetch --from-file); no download is made.
+    const char *local = cfg_get("TOTK_COOP_CHARFETCH_FILE");
+    const char *args[] = {"fetch", f, "--mod", m, "--yes", "--sets", local && *local ? "--from-file" : NULL, local, NULL};
+    rt_log("coop: characters: %s %s (%s, %s)", local && *local ? "fetching from a local copy" : "downloading", ask.name,
+           ask.file, ask.page);
+    decline(asked_for);   // asked once this run: a failed fetch is not offered again until the next start
     if (job_start("fetch", args)) restart_needed = 1;
 }
 
-void coop_chars_lookup(const char *link) {
+static void lookup(const char *link) {   // under lock
     if (job.state == COOP_JOB_RUNNING || asking) return;
     const char *p = strstr(link, "mods/");
     p = p ? p + 5 : link;
@@ -323,7 +285,66 @@ void coop_chars_lookup(const char *link) {
     snprintf(ask.page, sizeof ask.page, "https://gamebanana.com/mods/%u", id);
     asked_for[0] = 0;
     asking = 1;
+    rt_log("coop: characters: looking up GameBanana mod %u", id);
     info_for(id, 0);
 }
 
-int coop_chars_restart_needed(void) { return restart_needed && job.state == COOP_JOB_DONE && !strcmp(job.what, "fetch"); }
+// Every frame (coop_players.c): the job read, a party member's missing character asked about, the details filled in.
+void coop_chars_tick(void) {
+    coop_chars_init();
+    take();
+    job_poll();
+    {   // TOTK_COOP_TEST_CHARLOOKUP=<link or id> (a test): that lookup once, as the Co-op tab's button does
+        static int done;
+        const char *t = done ? NULL : cfg_get("TOTK_COOP_TEST_CHARLOOKUP");
+        if (t && *t && job.state != COOP_JOB_RUNNING && !asking) done = 1, lookup(t);
+    }
+    for (int id = 1; id <= COOP_MAX_PLAYERS && !asking && job.state != COOP_JOB_RUNNING; id++) {
+        const char *key = party[id].key;
+        if (strncmp(key, "gb:", 3) || coop_char_find(key) || is_declined(key) || !party[id].mod_id) continue;
+        memset(&ask, 0, sizeof ask);
+        ask.player_id = id, ask.mod_id = party[id].mod_id, ask.file_id = (uint32_t)strtoul(key + 3, NULL, 10);
+        snprintf(asked_for, sizeof asked_for, "%s", key);
+        snprintf(ask.page, sizeof ask.page, "https://gamebanana.com/mods/%u", ask.mod_id);
+        asking = 1;
+        info_for(ask.mod_id, ask.file_id);
+    }
+    if (asking && !ask.ready && !strcmp(job.what, "info") && job.state != COOP_JOB_RUNNING) {
+        if (job.state == COOP_JOB_FAILED) decline(asked_for), asking = 0;   // GameBanana said no, or no network
+        else {
+            snprintf(ask.name, sizeof ask.name, "%s", kv("name"));
+            snprintf(ask.page, sizeof ask.page, "%s", kv("page"));
+            snprintf(ask.file, sizeof ask.file, "%s", kv("file"));
+            ask.size = strtoull(kv("size"), NULL, 10);
+            ask.file_id = (uint32_t)strtoul(kv("file_id"), NULL, 10);
+            ask.mod_id = (uint32_t)strtoul(kv("mod_id"), NULL, 10);
+            ask.ready = 1;
+            rt_log("coop: characters: asking whether to download %s (%s, %llu bytes, %s)", ask.name, ask.file,
+                   (unsigned long long)ask.size, ask.page);
+            // TOTK_COOP_TEST_CHARYES=1 (a test): yes, as if the player pressed Download
+            const char *y = cfg_get("TOTK_COOP_TEST_CHARYES");
+            if (y && *y == '1') rt_log("coop: characters: test: answered yes"), answer(1);
+        }
+    }
+    give();
+}
+
+void coop_chars_job(CoopJob *out) { take(); *out = job; give(); }
+
+int coop_chars_ask(CoopCharAsk *out) {
+    take();
+    int a = asking;
+    if (a) *out = ask;
+    give();
+    return a;
+}
+
+void coop_chars_answer(int yes) { take(); answer(yes); give(); }
+void coop_chars_lookup(const char *link) { take(); lookup(link); give(); }
+
+int coop_chars_restart_needed(void) {
+    take();
+    int r = restart_needed && job.state == COOP_JOB_DONE && !strcmp(job.what, "fetch");
+    give();
+    return r;
+}

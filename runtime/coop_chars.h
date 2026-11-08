@@ -37,7 +37,8 @@ typedef struct {
     char text[512];           // the last status line (an error, or the result's JSON)
     uint64_t got, size;       // fetch progress, bytes
 } CoopJob;
-const CoopJob *coop_chars_job(void);
+void coop_chars_job(CoopJob *out);   // a copy of the current job's state
+void coop_chars_tick(void);          // every frame, the game thread (coop_players.c): polls the job, starts asks
 // What to ask the player for: a party member's character this PC has no set for, with GameBanana's details of it once
 // an info job got them (the prompt shows name, page, file and size). Returns 0 when nothing is to be asked.
 typedef struct {

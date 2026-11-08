@@ -346,6 +346,15 @@ static int scan_cb(const char *name, int kind, uint64_t size, void *ctx) {
                : m->kind & MOD_EXEFS                                        ? MOD_EXEFS_OTHER
                                                                             : MOD_EMPTY;
     m->enabled = !listed(disabled, m->name);
+    // A character mod fetched for another player (tools/coop/charmod.py fetch writes coop-character-off in it) starts
+    // off until the list names it: on, it would make this PC's Link that player's character (coop_chars.c). Once the
+    // menu has switched it, the order names it and the switch decides as for any folder.
+    char off[2200];
+    if (m->enabled && snprintf(off, sizeof off, "%s/coop-character-off", path) < (int)sizeof off && plat_file_exists(off) &&
+        !listed(cfg_get("TOTK_MODS_ORDER"), m->name)) {
+        m->enabled = 0;
+        rt_log("mods: %s: off (a character mod fetched for another player; the Co-op tab switches it on)", m->name);
+    }
     nmods++;
     return 1;
 }

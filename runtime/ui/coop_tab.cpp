@@ -188,7 +188,9 @@ static void characters_section(float scale) {
             if (action("##coop_char_no", UI_MENU_COOP_CHAR_NO, UI_MENU_COOP_CHAR_NO_DESC, scale, true)) coop_chars_answer(0);
         }
     }
-    const CoopJob *job = coop_chars_job();
+    CoopJob jobv;
+    coop_chars_job(&jobv);
+    const CoopJob *job = &jobv;
     if (job->state == COOP_JOB_RUNNING && !strcmp(job->what, "fetch")) {
         snprintf(line, sizeof line, menu_text(UI_MENU_COOP_CHAR_PROGRESS), (double)job->got / 1e6, (double)job->size / 1e6);
         opt_text_str(line);

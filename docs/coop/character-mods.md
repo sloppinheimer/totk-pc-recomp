@@ -39,10 +39,14 @@ one PC (`tools\coop\run_pair.ps1`).
   downloaded before a yes. On a yes, `charmod.py fetch` downloads that file, checks its MD5 against GameBanana's, and
   refuses an archive with code patches or cheats (`exefs`, `.ips`, `.pchtxt`, `.nso`, `.npdm`, `subsdk*`, `main`,
   `cheats`) or with a path that would leave the mod folder (absolute, a drive, `..`). It unpacks only what is under the
-  archive's `romfs` folder (zip in Python, 7z and rar through Windows' `tar`) and makes the sets again. The game then
-  switches the new folder off, so it stays the other player's character. A GameBanana link or mod id typed into the tab
-  goes the same way. `charmod.py info --file auto` picks the mod's file for game 1.4 and skips TKMM packages.
-- The new set shows after a restart: the RomFS overlay is read at start.
+  archive's `romfs` folder (zip in Python, 7z and rar through Windows' `tar`) and makes the sets again. The folder gets a
+  `coop-character-off` file, and `runtime/mods.c` keeps such a folder off until the mods order names it (the menu writes
+  the order when the folder is switched): so it stays the other player's character. A GameBanana link or mod id typed
+  into the tab goes the same way and lands off too; its row under Characters switches it on as this PC's character.
+  `charmod.py info --file auto` picks the mod's file for game 1.4 and skips TKMM packages. The job runs detached and the
+  game polls its status file every frame (`coop_chars_tick`), so it finishes with the menu closed.
+- The new set shows after a restart: the RomFS overlay is read at start. A character made this PC's from the tab needs
+  that restart too.
 
 ### What does not work, and why
 
@@ -95,6 +99,21 @@ With the Riju mod as `mods\Riju`, game A plays Riju and game B plays Link. The l
 `slot 0: PlayerPuppet_<tag> requested`. `TOTK_COOP_TEST_SPAWN=a+b+c@18` spawns several actors 4 s apart (a set's actors
 on their own). `TOTK_MODS_DIR` gives game B a mods folder without the mod and without its set, to see the download
 prompt (`TOTK_MENU_TEST=3600:150` shoots the menu's tabs, the Co-op tab last).
+
+The fetch without a download: `TOTK_COOP_TEST_CHARYES=1` answers the prompt yes, `TOTK_COOP_CHARFETCH_FILE=<zip>` takes
+that file in place of GameBanana's (`charmod.py fetch --from-file`; its MD5 is still checked against GameBanana's), and
+`TOTK_COOP_TEST_CHARLOOKUP=<link>` looks a link up as the tab's button does. Tested on 2026-11-08 with the Riju zip
+already on disk, game B on a mods folder with only Link's set:
+
+| Run | Result |
+|---|---|
+| A plays Riju; B is asked, says yes, takes the local zip | MD5 matched, 7824 RomFS files unpacked into `Playable Riju Mod`, sets made again with `PlayerPuppet_WWN4` |
+| B again (restart) | the fetched mod off ("a character mod fetched for another player"); B's Link stays Link; A's stand-in is `PlayerPuppet_WWN4` (Riju's shape) |
+| B with the lookup of `gamebanana.com/mods/627813`, yes, the local zip | the same fetch, the mod off |
+| B with the order naming the fetched folder (as the tab's switch writes it) | B's Link is Riju; with A Riju too, each stand-in wears its owner's armor with Riju's own textures |
+
+Not tested: a real download from GameBanana (each needs the tester's yes), a 7z or rar archive, the tab's switch pressed in
+the menu (the run above sets what it writes), three or more players.
 
 ## Research (2026-11-04)
 

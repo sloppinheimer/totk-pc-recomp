@@ -28,8 +28,8 @@ inserted in name order in both.
 
 fetch downloads one file of a GameBanana mod, checks its MD5 against GameBanana's, refuses archives with code patches
 (exefs, .ips, .pchtxt, subsdk, main.npdm) or with a path that would leave the mod folder, and unpacks only the files under
-romfs into mods/<name>/romfs. The game that asked for it switches it off (runtime/coop_chars.c), so it is only another
-player's character until the Co-op tab makes it this PC's. Without
+romfs into mods/<name>/romfs, with a coop-character-off file: runtime/mods.c keeps such a folder off until the menu
+switches it, so it is only another player's character until the Co-op tab makes it this PC's. Without
 --yes it asks on the console first; the game's menu asks the player and passes --yes.
 """
 import argparse
@@ -41,6 +41,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 from pathlib import Path, PurePosixPath
 
@@ -286,6 +287,9 @@ def table_rows(rom, overlay, table, rows, field_source):
     by = {r['__RowId']: r for r in data}
     for name, base, project, fmdb in rows:
         if name in by: continue
+        if base not in by:
+            raise SystemExit(f'the actor tables have no {base} row: pass --overlay with the build\'s romfs-patches '
+                             '(tools/coop/make_puppet_pack.py adds PlayerPuppet there)')
         row = dict(by[base])
         row['__RowId'] = name
         if 'ModelProjectName' in row and field_source: row['ModelProjectName'], row['FmdbName'] = project, fmdb
@@ -375,6 +379,12 @@ class Status:
         if not self.path: return
         tmp = Path(str(self.path) + '.tmp')
         tmp.write_text(''.join(f'{k}\t{v}\n' for k, v in self.kv.items()), encoding='utf-8')
+        for _ in range(40):   # the game may have the file open for reading at that moment (a sharing violation)
+            try:
+                tmp.replace(self.path)
+                return
+            except PermissionError:
+                time.sleep(0.05)
         tmp.replace(self.path)
 
 
@@ -480,10 +490,14 @@ def cmd_fetch(args):
     with tempfile.TemporaryDirectory(dir=mods) as tmp:
         arc = Path(tmp) / ('download' + Path(f['file']).suffix)
         md5 = hashlib.md5()
-        req = urllib.request.Request(f'https://gamebanana.com/dl/{f["file_id"]}', headers={'User-Agent': UA})
         got = status_at = 0
         status.set(text=f'downloading {f["file"]}', got=0, size=f['size'])
-        with urllib.request.urlopen(req, timeout=60) as r, open(arc, 'wb') as g:
+        if args.from_file:   # (a test) a copy of GameBanana's file on disk in place of the download, checked the same way
+            src_stream = open(args.from_file, 'rb')
+        else:
+            req = urllib.request.Request(f'https://gamebanana.com/dl/{f["file_id"]}', headers={'User-Agent': UA})
+            src_stream = urllib.request.urlopen(req, timeout=60)
+        with src_stream as r, open(arc, 'wb') as g:
             while chunk := r.read(1 << 20):
                 g.write(chunk), md5.update(chunk)
                 got += len(chunk)
@@ -496,6 +510,8 @@ def cmd_fetch(args):
         n = unpack(arc, stage)
         if not is_character(stage / 'romfs'):
             print(json.dumps(dict(note='not a character mod (no Player.pack or Link body model)')), file=sys.stderr)
+        # Off until this PC's player switches it on (runtime/mods.c): it was fetched as another player's character.
+        (stage / 'coop-character-off').write_text('tools/coop/charmod.py fetch\n', encoding='utf-8')
         (stage / INFO).write_text(json.dumps(dict(name=mi['name'], mod_id=mi['mod_id'], file_id=f['file_id'],
                                                   file=f['file'], page=mi['page'], md5=f['md5'])), encoding='utf-8')
         shutil.move(str(stage), str(dest))
@@ -527,6 +543,7 @@ def main():
     s.add_argument('--name')
     s.add_argument('--yes', action='store_true')
     s.add_argument('--sets', action='store_true', help='then make the character sets again')
+    s.add_argument('--from-file', type=Path, help='(a test) this file in place of the download (its MD5 is still checked)')
     common(s)
     args = ap.parse_args()
     global status
