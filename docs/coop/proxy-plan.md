@@ -518,7 +518,8 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
    proxy-contact relay test (`contact_send`, `contact_add`, CONTACT_KIND, `contact_on`). Keep: `contacts_filter`,
    the CE packets (`ce_queue`/`ce_take`/`ce_add`). The lost-life HitPacket stays until the stand-in shoots its own
    arrows (it carries arrow and bomb damage now).
-3. **The co-op Link as a second Player** (replaced by the PlayerPuppet stand-in once it is the default): the
+3. **Done 2026-11-08 (737b775, lightning back in cbc8d61).** **The co-op Link as a second Player** (replaced by the
+   PlayerPuppet stand-in once it is the default): the
    controller swap and input (`coop_players_calc`'s controller part, `set_input`, `coop_fill_controller`), what
    kept a second Player from changing this game (the HUD guide, tips and game-data setters skipped inside its
    update, coop_spawn.c), proxy mode (`proxy_drive`, `proxied`, thaws and attack thaws, `PROXY_THAW_TICKS`, the
@@ -654,6 +655,16 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
   streaks, in one opening of many, on main 99d3fa4. Not reproduced: one game at his resolution with a name tag
   drawn in the frame opened the weapon row, the ability wheel and the material row cleanly. If it shows again, open
   that menu with `TOTK_COOP_TAGS_INFRAME=0`: if it is still garbled, the in-frame tags (vk_tags.c) are not the cause.
+
+- **Fixed 2026-11-08, not yet seen in play:**
+  - A Frox knocked down in one game only (fee39c5). Its eyes (Enemy_Mogurudo_WeakPoint) are actors of their own and
+    were handed over apart from its body (Enemy_Mogurudo_Junior); a part (`_WeakPoint`, `_Eye`, a Stalkoblin's
+    `_Head`) is now run by the game that runs its body (coop_world.c part_body).
+  - Arrows from the other game lost (78eb168): one slot held the contact that waited for its enemy's hit update, and
+    every packet that came meanwhile was dropped unlogged (a Stalkoblin shot ten times took no arrow). ce_in has 16
+    slots now; "contact from a stand-in dropped" lines show any that still go.
+  - The guest's clock 5 game minutes behind the host's in the Depths (aec285e): the host's clock counted as standing
+    after 0.9 s unchanged, and there it moved in steps about a second apart. 2 s now.
 
 ## What is proven (usable as is)
 - **Body pose:** main+0x283c750 (x0 the input pose, x1 the SkeletonObj) builds the body's local matrices.
