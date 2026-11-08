@@ -103,10 +103,23 @@ Tested in a pair: game B (Link) asked about player 1's Riju, the test answered y
 and 780 table entries were added and the stand-in became Riju, in the same run. `TOTK_COOP_TEST_CHARLIVE=<mod folder>`
 fills a slot from a character mod already on disk, without the fetch.
 
-**This PC's own character needs a restart.** `Pack/Actor/Player.pack.zs`, `Model/Link.Link_RaulSkin.bfres.mc` and
-`AS/Player.root.asb.zs` were opened once, 3.2 s after start, and never again: loading another save from the menu
-(`tools/coop/load_3rd.txt`) read the armor packs again, not those. The Player's resources stay loaded for the run, so a
-save reload cannot change them. Return to the title screen was not tried separately.
+**A second change, and back to Link.** A player's character as their states say is followed while the stand-in lives:
+a new key (they switched character mods and came back) or a new set for the same key remakes the stand-in. Tested in
+one run (`TOTK_COOP_TEST_CHARLIVE_AGAIN=1`, `TOTK_COOP_TEST_CHARKEY=Link@70` on the other game): Riju in slot JS01 at
+10 s, Riju again in slot KS02 at 40 s (90 files added: the mod's own 647 were in already), Link at 70 s; each old
+stand-in went away before the new one was made. A slot is used once a run and not freed (the game may keep what it
+loaded under its name); the files added stay in the RomFS and the entries in the table until the game closes
+(908 of the 16384 spare entries after the three changes). With all four slots used, the next character waits for a
+restart.
+
+**This PC's own character needs a restart.** The Player actor is made once, before the title screen: its pack
+(`Pack/Actor/Player.pack.zs`), body model (`Model/Link.Link_RaulSkin.bfres.mc`), animation set
+(`AS/Player.root.asb.zs`) and skin texture were opened 3.3 s after start. Loading another save from the menu
+(`tools/coop/load_3rd.txt`) kept the same Player (its address unchanged, `coop: this PC's Link is the Player at ...`
+logged once) and moved it 5061 m; only the armor packs were opened again. TotK has no return to the title screen, so
+nothing in a run makes the Player again or reads its files again, and its resources stay loaded as long as it exists.
+Serving other files under those names (the live overlay) would therefore not show either. What could work instead is
+not tried: this PC's Link hidden, with a stand-in of its own character driven from its own state as the others' are.
 
 ### What does not work, and why
 

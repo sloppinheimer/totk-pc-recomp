@@ -490,13 +490,19 @@ void coop_chars_tick(void) {
     }
     if (asking && asked_for[0] && coop_char_find(asked_for)) asking = 0;   // that character came in another way
     {   // TOTK_COOP_TEST_CHARLIVE=<character mod folder> (a test): 10 s into the world, that mod's set made in a free
-        // slot (charmod.py slot) and added while the game runs, as after a fetch
-        static int done;
-        const char *t = done || ticks < 600 ? NULL : cfg_get("TOTK_COOP_TEST_CHARLIVE");
+        // slot (charmod.py slot) and added while the game runs, as after a fetch; TOTK_COOP_TEST_CHARLIVE_AGAIN=1: again
+        // into the next slot 40 s in (a second change of the same character)
+        static int runs;
+        const char *again = cfg_get("TOTK_COOP_TEST_CHARLIVE_AGAIN");
+        int due = runs == 0 ? ticks >= 600 : runs == 1 && again && *again == '1' && ticks >= 2400;
+        const char *t = due ? cfg_get("TOTK_COOP_TEST_CHARLIVE") : NULL;
         char tag[8];
-        if (t && *t && job.state != COOP_JOB_RUNNING && (done = 1) && slot_next(tag, sizeof tag, live_dir, sizeof live_dir)) {
-            const char *args[] = {"slot", t, "--tag", tag, "--out", live_dir, NULL};
-            if (job_start("slot", args)) live_pending = 1;
+        if (t && *t && job.state != COOP_JOB_RUNNING) {
+            runs++;
+            if (slot_next(tag, sizeof tag, live_dir, sizeof live_dir)) {
+                const char *args[] = {"slot", t, "--tag", tag, "--out", live_dir, NULL};
+                if (job_start("slot", args)) live_pending = 1;
+            } else rt_log("coop: characters: no stand-in slot left this run (each is used once); a restart frees them");
         }
     }
     {   // TOTK_COOP_TEST_CHARLOOKUP=<link or id> (a test): that lookup once, as the Co-op tab's button does
