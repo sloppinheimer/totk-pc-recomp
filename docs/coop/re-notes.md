@@ -1122,6 +1122,10 @@ the tester's idea: the other game builds the owner's blueprint itself, so the pa
 - Verdict: a second build is made and drawn from code, but neither green nor one unit; the confirm, which most likely
   gives both, needs the ability job's own tasks. Driving it means running it from the ability's job (main+0x9a2c00's
   state, ability+0x52c8 and +0x1f5) rather than from our tick: not done. Not tried in B; cost and Link ties open.
+- Ghidra (project totk143, 2026-11-08 evening): no function is defined at main+0x9a2c00, main+0x9a7260 or
+  main+0x1d3c0d4 in its program, so it does not decompile them; cross-references work: main+0x9a2c00's only reference
+  is a vtable slot at main+0x3695238 (the slots around it: main+0x8a28d0, 0x92d864, 0x18b321c.., 0xe45b94, 0x1d5391c),
+  so it is a virtual update, called by whoever holds that object (the Link's Autobuild, it seems).
 
 ## The green tint of autobuilt parts (open, 2026-11-08 afternoon)
 - What the autobuild passes when it makes a part (TOTK_COOP_TEST_CREATEDUMP=1, coop_spawn.c create_dump on
