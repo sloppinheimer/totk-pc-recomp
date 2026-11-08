@@ -642,6 +642,10 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
 - **Clothing after loading another save:** neither game logs its own gear again after a save load, so the other
   game keeps showing the old outfit. The fix in 075576d (`match_my_eq`) never ran. The new Link's gear is not built
   the way that fix assumed. No test script loads a second save yet.
+- **Garbled quick-menu background (2026-11-08):** the tester once saw one quick menu's background as vertical colour
+  streaks, in one opening of many, on main 99d3fa4. Not reproduced: one game at his resolution with a name tag
+  drawn in the frame opened the weapon row, the ability wheel and the material row cleanly. If it shows again, open
+  that menu with `TOTK_COOP_TAGS_INFRAME=0`: if it is still garbled, the in-frame tags (vk_tags.c) are not the cause.
 
 ## What is proven (usable as is)
 - **Body pose:** main+0x283c750 (x0 the input pose, x1 the SkeletonObj) builds the body's local matrices.
