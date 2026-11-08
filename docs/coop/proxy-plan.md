@@ -292,7 +292,9 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     other (the glue shows green), A to let go: they stick. Game A logs "coop: glue: made here: bond 1, ..." and the
     matrices line; game B "bond 1 from player N made again here". Then take the pair with Ultrahand and shake the
     right stick quickly left and right until they part: A logs "bond 1 ... is no longer glued here: taken off the
-    list" within 2 s and B "... is gone there: parted here". Also try it the other way (the person at B). The packets
+    list" within 2 s and B "... is gone there: parted here". Also try it the other way (the person at B). Review fixes (2026-11-07, not run yet): a game parting an actor for another game's bond makes its own bonds on
+    that actor again for 5 s (removeScotch parts all of them); a break whose other side is not known is let through;
+    the objects are checked by their actor id ([actor+0x10]) as well as state and name; full tables are logged. The packets
     need no protocol version change (old builds drop them);
   - rotating ground: written, the sync not seen working yet (coop_world.c, rotating ground; `TOTK_COOP_GROUND=0`
     off). What turns it in 1.4.3, by code: a turn helper (main+0x298a20c; +8 top speed, +0xc acceleration, +0x10 speed
