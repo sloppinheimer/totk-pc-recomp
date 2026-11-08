@@ -1053,6 +1053,22 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
                        (int)(s - slots), (top - s->top_last) * 100, frame_step_world_us() / 1e6, s->since_snap);
             if (frames % 1800 == 0) rt_log("coop: puppet: slot %d: %d body jumps over 3 cm in %d frames", (int)(s - slots), jumps, frames);
             s->top_last = top;
+            // Whether the drawn body follows the placement: the root bone's record (its own origin, metres off) less
+            // the placed position, frame to frame. Steady: the mesh is where it is placed; changing: it is drawn from
+            // somewhere else (its physics), the stutter. Logged every 60 frames: mean and largest change.
+            static __thread float off_last[3], ch_sum, ch_max;
+            static __thread int off_have, ch_n;
+            float off[3] = {rec[0][12] - pos[0], rec[0][13] - pos[1], rec[0][14] - pos[2]};
+            if (off_have) {
+                float dx = off[0] - off_last[0], dy = off[1] - off_last[1], dz = off[2] - off_last[2], d = sqrtf(dx * dx + dy * dy + dz * dz);
+                if (d < 5) { ch_sum += d, ch_n++; if (d > ch_max) ch_max = d; }   // (a teleport of its own origin: not counted)
+            }
+            memcpy(off_last, off, 12), off_have = 1;
+            if (ch_n >= 60) {
+                rt_log("coop: puppet: slot %d drawn root against placed: change per frame mean %.1f mm, max %.1f mm", (int)(s - slots),
+                       ch_sum / ch_n * 1000, ch_max * 1000);
+                ch_sum = ch_max = 0, ch_n = 0;
+            }
         }
     }
     // Jerk: how far each frame's placed position is from the straight line through the two frames before it.
@@ -5602,8 +5618,13 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 const float *bp = s->have_body ? s->body_pos : s->phys_pos;
                 float dx = bp[0] - om[3], dy = bp[1] - om[7], dz = bp[2] - om[11];
 
-                static float lim = -1;   // TOTK_COOP_PUPPET_SNAP_M: that distance in m (default 0.1; 0 every tick)
-                if (lim < 0) { const char *e = cfg_get("TOTK_COOP_PUPPET_SNAP_M"); lim = e ? (float)atof(e) : 0.1f; }
+                // TOTK_COOP_PUPPET_SNAP_M: that distance in m (default 0.1; 0 every tick). A PlayerPuppet stand-in's
+                // body every tick: its own root motion moved it 15-67 mm a frame, its mesh was drawn from that body,
+                // and snapped back at 10 cm it went in a sawtooth, the drawn root's offset from its placing changing
+                // by 20 mm a frame and up to 148 (the tester: choppy on slow walks and jumps); every tick 8 mm, worst 17
+                // (the suite's tour walk, stairs included, 2026-11-08).
+                static float lim = -1;
+                if (lim < 0) { const char *e = cfg_get("TOTK_COOP_PUPPET_SNAP_M"); lim = e ? (float)atof(e) : coop_standin_puppet() ? 0.0f : 0.1f; }
                 // ... or once it faces another way: the step writes the body's rotation before placement goes over
                 // it, and a body left turned 12 degrees away flickered between the two (a play session, 2026-11-05).
                 float rd = 0;
