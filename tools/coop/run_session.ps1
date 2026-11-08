@@ -30,7 +30,7 @@ foreach ($g in @(@{dir = $a; prof = 'build\prof-coop-a'; script = $ScriptA; name
     $env:TOTK_PROFILE_DIR = $p
     $env:TOTK_INPUT_SCRIPT = (Resolve-Path $g.script).Path
     $env:TOTK_FULLSCREEN = '0'; $env:TOTK_WINDOW_SIZE = '960x540'
-    $env:TOTK_COOP_NAME = "Player $($g.name)"; $env:TOTK_COOP_P2 = 'off'
+    $env:TOTK_COOP_NAME = "Player $($g.name)"
     if ($g.input) { $env:TOTK_INPUT = $g.input } else { Remove-Item Env:TOTK_INPUT -ErrorAction SilentlyContinue }
     if ($g.name -eq 'A') { $env:TOTK_COOP_TEST_HOST = "$HostAt"; if ($HostLeaveAt) { $env:TOTK_COOP_TEST_LEAVE = "$HostLeaveAt" } else { Remove-Item Env:TOTK_COOP_TEST_LEAVE -ErrorAction SilentlyContinue } }
     else {

@@ -48,7 +48,7 @@ foreach ($g in @(@{dir = $a; prof = 'build\prof-coop-a'; script = $ScriptA; name
     $env:TOTK_PROFILE_DIR = $p
     $env:TOTK_INPUT_SCRIPT = (Resolve-Path $g.script).Path
     $env:TOTK_ASSUME_FOCUS = '1'; $env:TOTK_FULLSCREEN = '0'; $env:TOTK_WINDOW_SIZE = '960x540'
-    $env:TOTK_COOP_RELAY = "127.0.0.1:$Port"; $env:TOTK_COOP_NAME = $g.name; $env:TOTK_COOP_P2 = 'off'
+    $env:TOTK_COOP_RELAY = "127.0.0.1:$Port"; $env:TOTK_COOP_NAME = $g.name
     if ($g.input) { $env:TOTK_INPUT = $g.input } else { Remove-Item Env:TOTK_INPUT -ErrorAction SilentlyContinue }
     if ($g.name -eq 'A' -and $FakeGearA) { $env:TOTK_COOP_FAKEGEAR = $FakeGearA } else { Remove-Item Env:TOTK_COOP_FAKEGEAR -ErrorAction SilentlyContinue }
     if ($g.name -eq 'A' -and $FakeDyeA) { $env:TOTK_COOP_FAKEDYE = $FakeDyeA } else { Remove-Item Env:TOTK_COOP_FAKEDYE -ErrorAction SilentlyContinue }

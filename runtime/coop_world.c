@@ -888,7 +888,7 @@ int coop_pose_after_writer(const uint64_t *args, int nargs) {
         }
     return 0;
 }
-// ---- puppet mode (TOTK_COOP_PUPPET=1): each player's body pose goes to the others as a POSE packet and is put on
+// ---- body poses: each player's body pose goes to the others as a POSE packet and is put on
 // their copy of that player's Link right after main+0x283c750 (the world-matrix writer); that copy gets no input
 // (coop_players.c), so it does nothing in this game (2026-11-05).
 // Packet: u16 bone count, u16 0, then per bone 12 bytes: the rotation as the smallest three of its quaternion
@@ -909,20 +909,6 @@ void coop_puppet_dump_input(uint64_t pose, uint64_t skel) {
         rt_log("coop: puppet input %d: %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f", b,
                f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11], f[12], f[13], f[14], f[15], f[16], f[17], f[18], f[19]);
     }
-}
-// Proxy mode, the default (TOTK_COOP_PROXY=0 turns it off: the co-op Links then follow their owners' buttons, or
-// with TOTK_COOP_PUPPET=1 are puppets): a display-only co-op Link. Its own update does not run at all; coop_players.c
-// drives its model transform and body pose every frame (docs/coop/proxy-plan.md). It uses puppet mode's pose packets
-// and gives no input, so it counts as puppet mode too.
-int coop_proxy_mode(void) {
-    static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_PROXY"); on = !(e && *e == '0'); }
-    return on;
-}
-int coop_puppet_mode(void) {
-    static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_PUPPET"); on = (e && *e == '1') || coop_proxy_mode(); }
-    return on;
 }
 static int16_t q16(float v, float scale) {
     float x = v * scale;
@@ -974,34 +960,6 @@ static int pose_pack_input(uint64_t pose, uint8_t *out, int max) {
     memcpy(out + 2, &ns, 2);
     return at;
 }
-static int pose_unpack_input(const uint8_t *in, int len, uint64_t pose) {
-    uint16_t n = 0, have = 0, nsc = 0;
-    uint64_t arr = coop_rd_ptr(pose);
-    if (len < 4 || !arr) return 0;
-    memcpy(&n, in, 2), memcpy(&nsc, in + 2, 2);
-    if (!coop_rd(pose + 0xa, &have, 2) || have != n || n > 600 || 4 + n * POSE_BONE > len) return 0;
-    for (int b = 0; b < n; b++) {
-        int16_t v[6];
-        memcpy(v, in + 4 + b * POSE_BONE, POSE_BONE);
-        int big = v[0] & 3;
-        float q[4], sum = 0;
-        for (int k = 0, j = 0; k < 4; k++) if (k != big) { q[k] = v[j++] / 32767.0f; sum += q[k] * q[k]; }
-        q[big] = sum < 1 ? sqrtf(1 - sum) : 0;
-        float x = q[0], y = q[1], z = q[2], w = q[3];
-        float e[16] = {1, 1, 1, 0, v[3] / 4096.0f, v[4] / 4096.0f, v[5] / 4096.0f, 0,
-                       1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w), 0,
-                       2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w), 0};
-        memcpy((void *)(uintptr_t)(arr + b * POSE_IN_STRIDE), e, sizeof e);
-    }
-    for (int k = 0; k < nsc; k++) {
-        int at = 4 + n * POSE_BONE + k * 14;
-        if (at + 14 > len) break;
-        uint16_t bi = 0;
-        memcpy(&bi, in + at, 2);
-        if (bi < n) memcpy((void *)(uintptr_t)(arr + bi * POSE_IN_STRIDE), in + at + 2, 12);
-    }
-    return 1;
-}
 // This Link's latest packed pose (from the hook, any thread) and the tick that sends it.
 static uint8_t pose_latest[COOP_POSE_MAX];
 static _Atomic int pose_latest_len;
@@ -1019,7 +977,6 @@ uint64_t coop_puppet_pose_obj(uint64_t skel) {
 }
 static _Atomic uint64_t my_body_skel;
 static void puppet_tick(uint64_t me) {
-    if (!coop_puppet_mode()) return;
     uint64_t s0 = me;
     for (int i = 0; i < 8 && s0; i++) s0 = coop_rd_ptr(s0 + skel_path[i]);
     atomic_store(&my_body_skel, s0 && is_skeleton(s0) ? s0 : 0);
@@ -1248,8 +1205,7 @@ static void find_parents(int n, const float (*w)[16], const float (*rec)[24]) {
                parents_n ? "found" : "not yet", good, n - 1, worst);
 }
 void coop_proxy_pack_mine(uint64_t me) {
-    int coop_proxy_mode(void);
-    if (!coop_proxy_mode() || !proxy_records_on()) return;
+    if (!proxy_records_on()) return;
     uint64_t sk = me;
     for (int i = 0; i < 8 && sk; i++) sk = coop_rd_ptr(sk + skel_path[i]);
     uint16_t n = 0;
@@ -1402,11 +1358,10 @@ void coop_test_ikdiff(uint64_t me) {
     nb_rot = nb_tr = 0, worst = 0;
     memset(seen, 0, sizeof seen);
 }
-int coop_proxy_mode(void);
 int coop_puppet_before_writer(uint64_t pose, uint64_t skel) {
     if (skel && skel == atomic_load_explicit(&my_body_skel, memory_order_relaxed)) {
         static __thread uint8_t tmp[COOP_POSE_MAX];
-        if (coop_proxy_mode() && proxy_records_on()) return 0;   // coop_proxy_pack_mine sends the records instead
+        if (proxy_records_on()) return 0;   // coop_proxy_pack_mine sends the records instead
         int len = pose_pack_input(pose, tmp, sizeof tmp);
         pose_log("out", pose);
         if (len) {
@@ -1426,10 +1381,10 @@ int coop_puppet_before_writer(uint64_t pose, uint64_t skel) {
         uint64_t age = 0;
         int len = coop_net_pose(atomic_load(&puppet_id[i]), in, sizeof in, &age);
         int ok = 0;
-        if (coop_proxy_mode()) {   // the pose from the same moment as the proxy's position
+        {   // the pose from the same moment as the stand-in's position
             if (len && age < 2000000000ull) pose_hist_take(atomic_load(&puppet_id[i]), in, len, age);
             ok = len && age < 2000000000ull && pose_put_delayed(atomic_load(&puppet_id[i]), pose, 0);
-        } else ok = len && age < 2000000000ull ? pose_unpack_input(in, len, pose) : 0;
+        }
         if (ok) pose_log("on", pose);
         static _Atomic int said_u, said_f;
         uint16_t have = 0, n2 = 0;
@@ -2762,7 +2717,7 @@ static void ground_take(const GroundPacket *p, int n) {
     }
 }
 
-// ---- contacts sent to the enemy's owner (TOTK_COOP_STANDIN=puppet). TotK Online records, in the game whose Link
+// ---- contacts sent to the enemy's owner. TotK Online records, in the game whose Link
 // made it, a contact with an actor another game owns, takes it out there and puts it into the owner's game, where the
 // game builds the hit from it (read for behaviour only). The PlayerPuppet's swing in the owner's game makes no hit
 // of its own (its attack byte on, no contact came: pair test, 2026-11-07), so this Link's sword contact on a copy goes
@@ -2773,7 +2728,6 @@ static void ground_take(const GroundPacket *p, int n) {
 // plays its hit there. Kept on the copy, an arrow only took life off the copy, sent on as lost life, which played no
 // hit: a Stalkoblin never fell apart and its life came back (a play session, 2026-11-07).
 #define ECONTACT_ARROW 0x4541  // "AE"
-int coop_standin_puppet(void);   // coop_players.c
 // The contacts sent go in a packet of each hit update's own (hit updates run on several threads at once). The one
 // received waits in ce_in, under ce_lock (taken on the game thread, added on a hit update's), until its enemy's next
 // hit update, or CE_WAIT_NS: an enemy that died or went to sleep has no hit update, and the next packet would wait
@@ -2872,7 +2826,7 @@ static void contacts_filter(uint64_t dc) {
     // owns): its owner's game has the attack on the real Link from its copy of the enemy. Hit here, it played its own
     // reaction, ended in a T pose and put its sword on its back (pair test, attack_enemy_3rd.txt, 2026-11-07).
 
-    if (coop_standin_puppet() && ct_is_link(a) == 2) {
+    if (ct_is_link(a) == 2) {
         int32_t zero = 0;
         memcpy((void *)(uintptr_t)(l + 0x18), &zero, 4);
         static _Atomic int said_s;
@@ -2890,14 +2844,14 @@ static void contacts_filter(uint64_t dc) {
         if (w) coop_actor_name(w, wn, sizeof wn);
         size_t wl = strlen(wn);
         int arrow = wl >= 5 && !strcmp(wn + wl - 5, "Arrow");   // NormalArrow, FireArrow, ...
-        int who = ct_is_link(by), drop = who && (!strncmp(wn, "Weapon_", 7) || (arrow && who == 1 && coop_standin_puppet()));
+        int who = ct_is_link(by), drop = who && (!strncmp(wn, "Weapon_", 7) || (arrow && who == 1));
         static _Atomic int said;
         if (atomic_fetch_add(&said, 1) < 40)
             rt_log("coop: contact on the copy of %s by %s with %s (kind %u): %s", coop_actor_name(a, an, sizeof an),
                    who == 1 ? "this Link" : who == 2 ? "a co-op Link" : "something else", wn[0] ? wn : "-", LD8(e + 0x90),
                    drop ? "taken out (its owner's game counts it)" : "kept");
         if (drop) {
-            if (who == 1 && coop_standin_puppet()) ce_queue(arrow ? &ce_arrows : &ce_out, a, e, arrow ? ECONTACT_ARROW : ECONTACT_KIND);
+            if (who == 1) ce_queue(arrow ? &ce_arrows : &ce_out, a, e, arrow ? ECONTACT_ARROW : ECONTACT_KIND);
             out++;
             continue;
         }
@@ -5296,7 +5250,7 @@ void coop_anim_copy_test(Cpu *c, uint64_t me) {
     }
 }
 
-// ---- the stand-in's animation (TOTK_COOP_STANDIN=puppet; TotK Online's ActorAnimationSync, read for behaviour only).
+// ---- the stand-in's animation (TotK Online's ActorAnimationSync, read for behaviour only).
 // The owner sends its Link's first seven animation slots with its state (NetState.anim): clip, weight, frame and the
 // frames a second it moved since the last send. Each other game plays them on its PlayerPuppet every tick, the frame
 // carried on by that rate for the state's age, so the stand-in moves with its owner's own clips and nothing of its

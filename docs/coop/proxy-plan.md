@@ -4,6 +4,14 @@ the tester decided on 2026-11-05 to replace the live puppet with a proxy: a disp
 as co-op games build them. This note is the handover. It says what is proven, what is not, and how to work.
 `docs/coop/re-notes.md` has the full findings (sections from "Puppet spike" onward).
 
+**2026-11-08: the PlayerPuppet stand-in is the only one.** the tester's call after playing it: the stand-in described under
+"the stand-in as TotK Online's" below is what every game shows of the others, with no switch (`TOTK_COOP_STANDIN`
+is gone). The second Player actor it replaced is removed from the code, and with it everything only that one used:
+the proxy driver and its thaws, button mirroring (`TOTK_COOP_PROXY=0`) and the old puppet (`TOTK_COOP_PUPPET=1`),
+the owner's input fed to it, and the extra Link on this PC driven by a second gamepad (Numpad 3, `TOTK_COOP_AUTOSPAWN`,
+`TOTK_COOP_P2`) with the camera following it (Numpad 4). The notes below on those modes are history; the env
+switches they name no longer exist.
+
 ## Why
 Puppet mode (`TOTK_COOP_PUPPET=1`, off by default) shows a real Player actor that gets no input. We pose it from the
 network and pin it to its owner. Its own systems keep running and fight those overrides:

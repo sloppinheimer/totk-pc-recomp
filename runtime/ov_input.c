@@ -78,7 +78,6 @@ static void ov_style_set(Cpu *c) {
     uint32_t id = *need_id(c, 0, "GetNpadStyleSet");
     plat_mutex_lock_shared(&lock);
     uint32_t v = enabled && allowed && id == pad_id() ? styles & pad_style() : 0;
-    if (enabled && id == 1 && coop_p2_npad()) v = styles & STYLE_FULL_KEY;   // co-op player 2 (coop_spawn.c)
     plat_mutex_unlock_shared(&lock);
     ret_x(c, v);
 }
@@ -100,8 +99,7 @@ static void npad_states(Cpu *c, uint32_t want) {
         s.attributes = ATTR_CONNECTED;
         input_poll(&s.buttons, &s.lx, &s.ly, &s.rx, &s.ry);
         coop_local_input(s.buttons, s.lx, s.ly, s.rx, s.ry);   // this player's input for the co-op relay
-    } else if (want == STYLE_FULL_KEY && id == 1 && enabled && coop_p2_npad() && coop_p2_poll(&s.buttons, &s.lx, &s.ly, &s.rx, &s.ry))
-        s.attributes = ATTR_CONNECTED;   // co-op player 2: Npad id 1, read by controller 1 (coop_spawn.c)
+    }
     *out = s;
     ret_x(c, 1);
 }

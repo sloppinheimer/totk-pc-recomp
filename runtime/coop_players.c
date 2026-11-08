@@ -1,13 +1,9 @@
-// Co-op players: up to COOP_MAX_PLAYERS - 1 extra Links in this PC's world, each a spawned Player actor with a
-// controller of its own (docs/coop/design.md "Sessions").
-//
-// A slot's input comes from a second gamepad on this PC (couch test; Numpad 3 or TOTK_COOP_AUTOSPAWN) or from a remote
-// player over the relay (coop_net.c): it appears when the player's first state arrives and is let go when they leave.
-// While a slot's Player updates (actor calc, wrapped through the entry hook), the controller manager hands out the
-// slot's controller as controller 0: a copy of the real one with the slot's buttons and sticks (the real one is
-// rewritten by the game while actors update; this one is not). The first Player, this PC's Link, keeps the real one.
-// A remote Link follows its owner's input (sticks turned from the owner's camera into this PC's camera) and is put
-// back at the owner's position when it drifts (COOP_SNAP_MOVING_M, COOP_SNAP_IDLE_M; at most every 10 polls).
+// Co-op players: up to COOP_MAX_PLAYERS - 1 other players' Links in this PC's world, each shown by a stand-in, a
+// PlayerPuppet actor (docs/coop/proxy-plan.md). A slot is a remote player over the relay (coop_net.c): its stand-in
+// appears when the player's first state arrives and is let go when they leave. It plays its owner's animation and
+// pose, is put where its owner is (owner_smoothed) and holds its owner's gear. While its update runs (actor calc,
+// wrapped through the entry hook), the controller manager hands out an empty controller as controller 0, so nothing
+// in it reads this PC's pad.
 
 #include <math.h>
 #include <stdatomic.h>
@@ -26,11 +22,8 @@
 #include "layout.h"
 #include "platform/platform.h"
 
-#define COOP_SNAP_MOVING_M 1.5f   // a remote Link is put back past this while its owner moves
-#define COOP_SNAP_IDLE_M 0.25f    // ... and past this once its owner stands still (no stick, no buttons)
-
 enum { FREE, WANTED, REQUESTED, LIVE, LET_GO };
-enum { SRC_PAD, SRC_NET };
+enum { SRC_NET = 1 };
 typedef struct {
     int state, source, net_id;
     int leaving;                       // its player left while its Player was being made: deleted once it is there
@@ -39,8 +32,6 @@ typedef struct {
     _Alignas(16) uint8_t ctl[0x400];   // the slot's controller (a copy of controller 0 each frame, then its input)
     uint32_t prev;
     float held[32];
-    uint64_t buttons;                  // this frame's input, set by coop_players_tick
-    float stick[4];
     float want_pos[3], want_rot[9];    // net: the owner's reported transform
     float vel[3];                      // the owner's velocity from the last two reports (puppet mode's prediction)
     uint32_t last_seq;
@@ -59,8 +50,7 @@ typedef struct {
     int nseen;
     float err_max, err_sum;
     int err_n;
-    int have_want, idle, snap_wait;
-    unsigned snaps;
+    int have_want, idle;
     char gear_want[COOP_GEAR_SLOTS][32], gear_have[COOP_GEAR_SLOTS][32];   // the owner's gear; what this Link was given
     int ride_owner;                    // the owner's Link rides that player's object ride_id at ride_off (proxy_drive)
     uint32_t ride_id;
@@ -97,14 +87,7 @@ typedef struct {
     int have_body;
     float top_last;                    // its highest body bone last frame (jitter watch)
     int have_phys;
-    int live_ticks;
-    int thaw;                          // proxy mode: frames of its own update still to run (a gear change)
-    int atk_thaw;                      // proxy mode: of those, frames the owner's attack button is let through                    // ticks since it went LIVE (proxy mode freezes it after PROXY_WARMUP_TICKS)
-    uint64_t yq_ns[8];                 // proxy mode: the owner's attack button changes, when they arrived (y_delayed)
-    uint8_t yq_v[8];
-    int yq_len, y_now, y_late;         // queued changes; the button as it arrived and as of the pose shown
-    float px_top, px_y, px_root;              // proxy mode: its body top and world height last frame (jump watch)
-    int px_have;
+    int live_ticks;                    // ticks since it went LIVE
     _Alignas(16) uint8_t gear_str[COOP_GEAR_SLOTS][0x60];   // the names handed to the creates, kept while they run
 } Slot;
 static Slot slots[COOP_MAX_PLAYERS];
@@ -120,8 +103,6 @@ void coop_local_input(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int3
     local_buttons = buttons, local_sticks[0] = lx, local_sticks[1] = ly, local_sticks[2] = rx, local_sticks[3] = ry;
 }
 
-int coop_p2_connected(void);
-int coop_p2_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
 
 // The camera's horizontal forward and right (PlayerCamera's rotation: it looks along -Z, X is its right; 2026-11-04).
 static int camera_frame(float fwd[2], float right[2]) {
@@ -575,8 +556,8 @@ static Slot *slot_new(int source, int net_id) {
             memset(s->objs_want, 0, sizeof s->objs_want), memset(s->mir, 0, sizeof s->mir);
             memset(s->dye_want, -1, sizeof s->dye_want), memset(s->dye_have, -1, sizeof s->dye_have);
             s->out_want = 0, s->out_have = -1, s->have_phys = 0, s->top_last = -1e9f, s->have_body = 0, s->shield_actor = 0, s->shield_placed = 0;
-            s->live_ticks = 0, s->px_have = 0, s->thaw = 0;
-            s->atk_thaw = 0, s->leaving = 0, s->ride_owner = 0;   // (left from the slot's last player, code review)
+            s->live_ticks = 0;
+            s->leaving = 0, s->ride_owner = 0;   // (left from the slot's last player, code review)
             s->state = WANTED;
             rt_log("coop: player slot %d for %s %d", i, source == SRC_NET ? "remote player" : "local pad", net_id);
             return s;
@@ -660,22 +641,13 @@ static int frozen(void) {
     if (at == -2) { const char *e = cfg_get("TOTK_COOP_TEST_FREEZE"); at = e ? atof(e) : -1; }
     return at >= 0 && frame_step_world_us() / 1e6 >= at;
 }
-// ---- proxy mode (the default; TOTK_COOP_PROXY=0 off, docs/coop/proxy-plan.md stage 1): after PROXY_WARMUP_TICKS of normal updates
-// (its gear and its input pose object are made then) a remote player's Link runs none of its own update: its calc and
-// update phases are skipped (but for a short thaw after the owner changes gear or takes out or puts away an item:
-// that is the update's own work). In place of its update phase main+0x245030 the driver below puts it where its owner is
-// (actor transform, model world matrix +0x1f8 with the dirty bit), poses its body (main+0x283c750 with the input pose
-// object kept from before; the hook on it puts the owner's pose in) and pushes the model matrix to the model units
-// (main+0x24cc30 (model), which also places parts hung on body bones).
-#define PROXY_WARMUP_TICKS 180
-#define PROXY_THAW_TICKS 30   // a thaw: about half a second of its own update (a gear or held-item change)
+// The model push: main+0x24cc30 (model) makes the body bones' world matrices from the pose and the model's world
+// matrix (+0x1f8, with its dirty bit) and puts the parts hung on body bones (items) on them.
 #define PROXY_MODEL_PUSH 0x24cc30
-#define PROXY_POSE_WRITER 0x283c750
 static void owner_matrix(Slot *s, float m[12]);
 static float body_top(uint64_t actor);
 static float body_top_root(uint64_t actor, float *root_y);
 static void top_log(const char *who, uint64_t actor);
-int coop_proxy_mode(void);   // coop_world.c
 uint64_t coop_puppet_pose_obj(uint64_t skel);   // coop_world.c
 static uint64_t body_skeleton(uint64_t actor) {
     static const uint32_t path[8] = {0x48, 0x2a8, 0x20, 0x20, 0, 0xf8, 0x58, 0xb0};
@@ -714,12 +686,7 @@ static void skel_find(uint64_t actor) {
     }
     if (!found) rt_log("coop: test: no 127-bone skeleton within 3 levels of the stand-in");
 }
-int coop_standin_puppet(void);
 static uint64_t model_of(uint64_t a);
-static int proxied(const Slot *s) {   // (never a PlayerPuppet stand-in: its gear is made once, nothing thaws it)
-    return coop_proxy_mode() && !coop_standin_puppet() && s->source == SRC_NET && s->state == LIVE && s->have_want && s->live_ticks > PROXY_WARMUP_TICKS &&
-           coop_puppet_pose_obj(body_skeleton(s->actor));
-}
 static int ride_place(const Slot *s, float out[3]);   // the owner rides an object: where, here
 static void shield_place(Cpu *c, Slot *s);
 static void hold_place(Cpu *c, Slot *s);
@@ -746,66 +713,6 @@ static int bow_frame(uint64_t link, float rot[9], float pos[3]) {
         pos[i] = w[i * 4 + 3];
     }
     return 1;
-}
-static void proxy_drive(Cpu *c, Slot *s) {
-    uint64_t actor = s->actor;
-    float m[12], pos[3], rot[9];
-    owner_matrix(s, m);
-    {   // its owner rides an object: put where it stands on this game's one of it, not at the delayed place
-        float rp[3];
-        if (ride_place(s, rp)) m[3] = rp[0], m[7] = rp[1], m[11] = rp[2];
-    }
-    for (int r = 0; r < 3; r++) {
-        pos[r] = m[r * 4 + 3];
-        for (int k = 0; k < 3; k++) rot[r * 3 + k] = m[r * 4 + k];
-    }
-    memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_POS), pos, 12);
-    memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_ROT), rot, 36);
-    uint64_t model = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x8) + 0x28);
-    if (model) {
-        memcpy((void *)(uintptr_t)(model + 0x1f8), m, sizeof m);
-        ST8(model + 0x240, LD8(model + 0x240) | 1);
-    }
-    uint64_t sk = body_skeleton(actor), pose = coop_puppet_pose_obj(sk);
-    static int no_pose = -1;   // TOTK_COOP_PROXY_NOPOSE=1: the body pose is not driven (control)
-    if (no_pose < 0) no_pose = cfg_get("TOTK_COOP_PROXY_NOPOSE") != NULL;
-    int coop_proxy_put_records(uint64_t skel);   // coop_world.c
-    if (sk && !no_pose && !coop_proxy_put_records(sk) && pose) coop_guest_call(c, MOD_MAIN_BASE + PROXY_POSE_WRITER, pose, sk, 0, 0);
-    if (model) coop_guest_call(c, MOD_MAIN_BASE + PROXY_MODEL_PUSH, model, 0, 0, 0);
-    // A shield surf: the shield where the owner's is. After the push, which puts items on their body bones (on the
-    // back for a shield out of hand): put there from the tick, it was back there every other frame (surf.txt).
-    shield_place(c, s);
-    for (int k = 0; k < COOP_OBJS; k++)   // nocked arrows' copies on the bow the push just put on the hand; the paraglider
-        if (s->mir[k].state == 3 && s->mir[k].ticks >= COPY_WARMUP && (s->mir[k].flags & (COOP_OBJ_LOCAL | COOP_OBJ_ONLINK))) place_copy(c, s, k);
-    // Jump watch: its body top (model space, skeleton +0x20) and its world height, frame to frame; standing = the
-    // owner's reported velocity under 5 cm/s with no stick or buttons held. Summary every 600 frames, each standing jump over 1 cm logged.
-    float root_y = 0, top = body_top_root(actor, &root_y);
-    float v2 = s->vel[0] * s->vel[0] + s->vel[1] * s->vel[1] + s->vel[2] * s->vel[2];
-    int standing = v2 < 0.05f * 0.05f && s->idle;   // and no stick or buttons (running into a wall keeps it in place)
-    static int frames, stand_frames, stand_jumps, top_changed, said;
-    static float stand_max;
-    frames++;
-    if (s->px_have) {
-        float dt = fabsf(top - s->px_top), dy = fabsf(pos[1] - s->px_y), dr = fabsf(root_y - s->px_root), d = dt > dy ? dt : dy;
-        if (dr > d) d = dr;
-        if (top != s->px_top) top_changed++;
-        if (standing) {
-            stand_frames++;
-            if (d > stand_max) stand_max = d;
-            if (d > 0.01f && ++stand_jumps <= 100)
-                rt_log("coop: proxy: slot %d standing jump at %.3f s: body top %+.1f cm, root bone %+.1f cm, height %+.1f cm", (int)(s - slots),
-                       frame_step_world_us() / 1e6, (top - s->px_top) * 100, (root_y - s->px_root) * 100, (pos[1] - s->px_y) * 100);
-        }
-    }
-    s->px_top = top, s->px_y = pos[1], s->px_root = root_y, s->px_have = 1;
-    if (frames % 600 == 0) {
-        rt_log("coop: proxy: slot %d: %d frames, body top changed in %d; standing %d frames, %d jumps over 1 cm, largest %.2f cm",
-               (int)(s - slots), frames, top_changed, stand_frames, stand_jumps, stand_max * 100);
-        top_changed = 0, stand_frames = 0, stand_max = 0;
-    }
-    if (!said++) rt_log("coop: proxy: slot %d is driven from %.3f s (its update no longer runs; pose object %llx, model %llx)", (int)(s - slots), frame_step_world_us() / 1e6,
-                        (unsigned long long)pose, (unsigned long long)model);
-    top_log("puppet", actor);
 }
 static void keep_player_eq(uint64_t me, uint64_t my_eq);
 static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc);
@@ -846,22 +753,6 @@ int coop_players_phase(Cpu *c, uint64_t addr) {
         uint64_t me = coop_player_actor();
         if (me) keep_player_eq(me, eq_of_actor(me));
     }
-    {
-        Slot *ps = slot_of_actor(c->x[0]);
-        if (proxied(ps)) {
-            if (ps->thaw > 0) {   // a gear change: its own update phase runs, then the driver as always
-                inside = 1;
-                c->pc = addr;
-                rt_dispatch(c);
-                inside = 0;
-                // Counted down here, in frames its update ran: counted per tick, a change that came while this game
-                // was in a menu (no updates) ran out unseen and the proxy kept its old armor (menu_3rd.txt, 2026-11-05).
-                if (addr == MOD_MAIN_BASE + 0x245030) ps->thaw--, ps->atk_thaw -= ps->atk_thaw > 0;
-            }
-            if (addr == MOD_MAIN_BASE + 0x245030) proxy_drive(c, ps);
-            return 1;
-        }
-    }
     // TOTK_COOP_TEST_FREEZE_PHASES=0: the freeze stops the calc only; these phases (model, physics) still run
     static int keep_phases = -1;
     if (keep_phases < 0) { const char *e = cfg_get("TOTK_COOP_TEST_FREEZE_PHASES"); keep_phases = e && *e == '0'; }
@@ -875,11 +766,11 @@ int coop_players_phase(Cpu *c, uint64_t addr) {
     inside = 0;
     // A PlayerPuppet stand-in, after its model phase (the push that puts items on their bones): its shield where its
     // owner's is in a shield surf, and the copies that ride on it (a nocked arrow on its bow, its paraglider), as
-    // proxy_drive does for the old co-op Link.
+    // the stand-in's owner shows them.
     Slot *ps = slot_of_actor(phase_actor);
     static int pp_on = -1;   // TOTK_COOP_STANDIN_PHASEPLACE=0: none of it (a test, the sword staying on the back)
     if (pp_on < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_PHASEPLACE"); pp_on = !(e && *e == '0'); }
-    if (pp_on && ps && coop_standin_puppet() && addr == MOD_MAIN_BASE + 0x245030 && ps->state == LIVE && ps->source == SRC_NET) {
+    if (pp_on && ps && addr == MOD_MAIN_BASE + 0x245030 && ps->state == LIVE && ps->source == SRC_NET) {
         // its owner's final pose (TOTK_COOP_STANDIN_POSE=0: only the clips it plays), then the push that makes its
         // bones' world matrices from it and puts its items on them
         static int pose_on = -1;
@@ -910,7 +801,6 @@ int coop_players_phase(Cpu *c, uint64_t addr) {
 // snap() every tick. Returns 1 when it ran the step.
 static void owner_matrix(Slot *s, float m[12]);
 static int puppet_delay_ms(void);
-static int y_delayed(Slot *s);
 // The highest body bone of an actor's body skeleton, above its root bone (bone 0); -1e9 unknown. The skeleton's
 // +0x20 matrices (0x40 a bone, translation in row 3) are world-space but from an origin of the game's own (the
 // numbers differ from the actor position by metres, and by different amounts in two games), so only differences
@@ -974,8 +864,7 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
         coop_proxy_pack_mine(c->x[0]);
     }
     Slot *s = slot_of_actor(c->x[0]);
-    int coop_puppet_mode(void);   // coop_world.c
-    if (!s || s->state != LIVE || s->source != SRC_NET || !s->have_want || !coop_puppet_mode()) return 0;
+    if (!s || s->state != LIVE || s->source != SRC_NET || !s->have_want) return 0;
     static int place = -1;   // TOTK_COOP_PUPPET_PLACE: bit 0 the actor's transform, bit 1 the model's (default 3; 0 off)
     if (place < 0) { const char *e = cfg_get("TOTK_COOP_PUPPET_PLACE"); place = e ? atoi(e) : 3; }
     if (!place) return 0;
@@ -1003,7 +892,7 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
     }
     float m[12], pos[3] = {0}, rot[9];
     owner_matrix(s, m);
-    if (coop_standin_puppet()) {   // its owner rides an object: on this game's one of it (as proxy_drive)
+    {   // its owner rides an object: on this game's one of it
         float rp[3];
         if (ride_place(s, rp)) {
             m[3] = rp[0], m[7] = rp[1], m[11] = rp[2];
@@ -1118,7 +1007,6 @@ int coop_players_calc(Cpu *c, uint64_t addr) {
         uint64_t me = coop_player_actor();
         if (me) keep_player_eq(me, eq_of_actor(me));
     }
-    if (proxied(s) && s->thaw <= 0) return 1;   // proxy mode: its calc never runs (proxy_drive), but in a thaw
     if (frozen()) {
         static int said;
         if (!said++) rt_log("coop: test: the co-op Links' updates no longer run");
@@ -1132,19 +1020,10 @@ int coop_players_calc(Cpu *c, uint64_t addr) {
     uint64_t real = LD64(mgr + 0xa0), own = (uint64_t)(uintptr_t)s->ctl;
     if (!real) { coop_ctl_leave(); return 0; }   // no controller yet (early in a load): copying from it read address 0 (code review, 2026-11-06)
     memcpy(s->ctl, (void *)(uintptr_t)real, sizeof s->ctl);
-    plat_mutex_lock(&lock);
-    uint64_t buttons = s->buttons;
-    if (coop_proxy_mode()) buttons = (buttons & ~(1ull << 3)) | (uint64_t)y_delayed(s) << 3;
-    float stick[4];
-    memcpy(stick, s->stick, sizeof stick);
-    plat_mutex_unlock(&lock);
-    // Test (TOTK_COOP_TEST_NOINPUT): the co-op Link gets no buttons and no stick (the idle body for a copied pose)
-    static int noinput = -1;
-    int coop_puppet_mode(void);   // coop_world.c: puppet mode gives no input either
-    if (noinput < 0) noinput = cfg_get("TOTK_COOP_TEST_NOINPUT") != NULL || coop_puppet_mode();
-    // Proxy mode: no input, except the owner's attack button in an attack thaw, so its sword really swings here and
-    // what it hits (a Zonai device's copy) gets the game's own hit (the tester: "try the proxy's sword", 2026-11-05).
-    if (noinput) buttons = s->atk_thaw > 0 ? buttons & (1ull << 3) : 0, memset(stick, 0, sizeof stick);
+    // The stand-in gets no input: an empty controller in place of this PC's while its update runs, so nothing in it
+    // reads this PC's pad.
+    uint64_t buttons = 0;
+    float stick[4] = {0, 0, 0, 0};
     coop_fill_controller(own, buttons, stick, &s->prev, s->held);
     ST64(mgr + 0xa0, own);
     static int diff_on = -1;   // TOTK_COOP_TRACE=diff: main's writable data the co-op Link's calc changes
@@ -1160,14 +1039,9 @@ int coop_players_calc(Cpu *c, uint64_t addr) {
     return 1;
 }
 
-// The other player's stand-in: TOTK_COOP_STANDIN=puppet makes it TotK Online's kind (read for behaviour only), an
-// actor of its own, PlayerPuppet (tools/coop/make_puppet_pack.py: Link's model, animations, equipment user and body,
-// no Player component, so nothing of its own moves it or its gear); else a second Player (a co-op Link).
-int coop_standin_puppet(void) {
-    static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN"); on = e && !strcmp(e, "puppet"); }
-    return on;
-}
+// The other player's stand-in is TotK Online's kind (read for behaviour only), an actor of its own, PlayerPuppet
+// (tools/coop/make_puppet_pack.py: Link's model, animations, equipment user and body, no Player component, so nothing
+// of its own moves it or its gear).
 static void spawn_slot(Cpu *c, Slot *s) {
     uint64_t me = coop_player_actor();
     float pos[3], rot[9];
@@ -1175,7 +1049,7 @@ static void spawn_slot(Cpu *c, Slot *s) {
     if (s->have_want) memcpy(pos, s->want_pos, 12), memcpy(rot, s->want_rot, 36);
     else pos[0] += 2 * rot[2], pos[2] += 2 * rot[8];   // 2 m in front of this PC's Link
     pos[1] += 0.5f;
-    const char *player = coop_standin_puppet() ? "PlayerPuppet" : "Player";
+    const char *player = "PlayerPuppet";
     if (coop_request_create(c, player, pos, rot, s->handle)) {
         s->state = REQUESTED;
         rt_log("coop: slot %d: %s requested at %.1f %.1f %.1f", (int)(s - slots), player, pos[0], pos[1], pos[2]);
@@ -1212,8 +1086,7 @@ static int puppet_delay_ms(void) {
     return d;
 }
 static int owner_smoothed(Slot *s, float m[12]) {
-    int coop_puppet_mode(void);   // coop_world.c
-    if (!coop_puppet_mode() || puppet_delay_ms() <= 0) return 0;
+    if (puppet_delay_ms() <= 0) return 0;
     float pos[3], q[4];
     int ok = 0;
     plat_mutex_lock(&lock);
@@ -1288,10 +1161,9 @@ int coop_player_riding_mount(uint32_t key) {
 static void owner_matrix_raw(Slot *s, float m[12]) {
     if (owner_smoothed(s, m)) return;
     float ahead = 0;
-    int coop_puppet_mode(void);   // coop_world.c
     static int predict = -1;   // TOTK_COOP_PUPPET_PREDICT=0: no prediction (for comparing)
     if (predict < 0) { const char *e = cfg_get("TOTK_COOP_PUPPET_PREDICT"); predict = !e || *e != '0'; }
-    if (predict && coop_puppet_mode() && s->last_ns) {
+    if (predict && s->last_ns) {
         double a = (double)(plat_now_ns() - s->last_ns) / 1e9 + 1.0 / 30;
         ahead = a > 0.25 ? 0.25f : (float)a;
     }
@@ -1306,36 +1178,6 @@ static void snap(Cpu *c, Slot *s) {
     coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, s->actor, (uint64_t)(uintptr_t)m, 0, 0);
 }
 
-static int attack_thaw_on(void) {   // TOTK_COOP_PROXY_SWING=0: the proxy does not swing here when its owner attacks
-    static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_PROXY_SWING"); on = !(e && *e == '0'); }
-    return on;
-}
-// Proxy mode: the owner's attack button as of the pose this game shows for them, which is the one that arrived
-// TOTK_COOP_PUPPET_DELAY_MS ago (pose_put_delayed, coop_world.c). Taken as it arrived, the proxy's own swing (what
-// makes its hits, and the sword trail its game draws) ran that much ahead of the swing seen, the trail apart from
-// the blade (the tester: "the sword trails are delayed on the puppet", 2026-11-06). Called with lock held.
-static int y_delayed(Slot *s) {
-    static int sync = -1;   // TOTK_COOP_PROXY_SWING_SYNC=0: the button as it arrives (the swing ahead of the pose)
-    if (sync < 0) { const char *e = cfg_get("TOTK_COOP_PROXY_SWING_SYNC"); sync = !(e && *e == '0'); }
-    uint64_t t = plat_now_ns() - (sync ? (uint64_t)puppet_delay_ms() * 1000000ull : 0);
-    int k = 0;
-    while (k < s->yq_len && s->yq_ns[k] <= t) s->y_late = s->yq_v[k++];
-    if (k) memmove(s->yq_ns, s->yq_ns + k, (s->yq_len - k) * sizeof s->yq_ns[0]),
-           memmove(s->yq_v, s->yq_v + k, (size_t)(s->yq_len - k)), s->yq_len -= k;
-    return s->y_late;
-}
-static void set_input(Slot *s, uint64_t buttons, const int32_t sticks[4]) {
-    plat_mutex_lock(&lock);
-    s->buttons = buttons;
-    for (int k = 0; k < 4; k++) s->stick[k] = sticks[k] / 32767.0f;
-    int y = (int)(buttons >> 3 & 1);
-    if (y != s->y_now) {
-        if (s->yq_len == 8) s->y_late = s->yq_v[0], memmove(s->yq_ns, s->yq_ns + 1, 7 * sizeof s->yq_ns[0]), memmove(s->yq_v, s->yq_v + 1, 7), s->yq_len = 7;
-        s->yq_ns[s->yq_len] = plat_now_ns(), s->yq_v[s->yq_len++] = (uint8_t)y, s->y_now = y;
-    }
-    plat_mutex_unlock(&lock);
-}
 // Autobuild. The game labels each device it makes for an autobuild with the string "ImaginaryAutoBuildedActor" at
 // actor +0x18 (where other actors carry their own name) and sets actor +0x668 bit 0x10000000, both when it creates
 // it (main+0x6898dc); its code tests the label by name (main+0x9e6af0, main+0x1b37958; the AI query
@@ -2375,11 +2217,6 @@ static void regive_gear(Cpu *c, uint64_t eq, int k, const char *name, int dye, i
 // (2026-11-07); TotK Online's stand-in has no AI and replays its owner's animation clips, which this needs as well.
 #define GEAR_SET_IN_HAND 0x4f5700
 #define GEAR_REMOVE_IN_HAND 0x4f5194
-static int gear_inhand_on(void) {
-    static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_GEAR_INHAND"); on = e && *e == '1'; }
-    return on;
-}
 // Test (TOTK_COOP_TEST_INHAND=1): before each in-hand call, what setEquipmentInHand (main+0x4f5700) reads: the object
 // at eq+0x1620 that its chain starts from, that object's +0x325 bit 0, its [+0x10], [+0x18] and the byte +0x2d2 that
 // gates the hand attach; and the same for this game's own Link (the stand-in held its sword only while this Link had
@@ -5058,7 +4895,7 @@ static void audit_tick(Cpu *c, uint64_t me, const CoopObj *sent, int n_sent, con
     fputs("}\n", f);
     fflush(f);
 }
-void coop_players_tick(Cpu *c, int numpad3) {
+void coop_players_tick(Cpu *c) {
     if (frame_step_world_us() <= 0) return;   // not in the world yet
     coop_session_tests(frame_step_world_us());
     uint64_t me = coop_player_actor();
@@ -5135,8 +4972,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 int o = snprintf(buf, sizeof buf, "coop: %.2f s: my life %d -> %d", frame_step_world_us() / 1e6, was, l);
                 for (int i = 0; i < COOP_MAX_PLAYERS && o < (int)sizeof buf; i++)
                     if (slots[i].actor)
-                        o += snprintf(buf + o, sizeof buf - o, "; slot %d's proxy %d, thaw %d, attack thaw %d", i, coop_life_of(slots[i].actor),
-                                      slots[i].thaw, slots[i].atk_thaw);
+                        o += snprintf(buf + o, sizeof buf - o, "; slot %d's stand-in %d", i, coop_life_of(slots[i].actor));
                 rt_log("%s", buf);
             }
             was = l;
@@ -5200,14 +5036,14 @@ void coop_players_tick(Cpu *c, int numpad3) {
         }
         const char *fw = cfg_get("TOTK_COOP_FAKEWEATHER");   // test: report this weather type instead
         if (fw && *fw) st.weather = atoi(fw);
-        void coop_anim_pack(uint64_t me, CoopAnim *out);   // coop_world.c: the stand-in's animation (TOTK_COOP_STANDIN=puppet)
+        void coop_anim_pack(uint64_t me, CoopAnim *out);   // coop_world.c: the stand-in's animation
         coop_anim_pack(me, st.anim);
         void coop_anim_masks_pack(uint64_t me, const CoopAnim *anim, CoopMask *out);   // coop_world.c
         coop_anim_masks_pack(me, st.anim, st.mask);
         void coop_blur_pack(Cpu *c, uint64_t me, NetState *st);   // coop_world.c: the sword trail
         coop_blur_pack(c, me, &st);
         coop_net_publish(&st);
-        if (coop_proxy_mode()) props_receive(c), ride_carry(c, me), destroy_watch(me), old_items_tick(c);   // placed objects co-op players move; riding them; destroyed
+        props_receive(c), ride_carry(c, me), destroy_watch(me), old_items_tick(c);   // placed objects co-op players move; riding them; destroyed
         props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test(), bone_arrow_test(me), impact_test(), glide_log(me), newnear_test(me), beam_test(me), beam_end_tick(), link_hit_test(me);
     }
     armor_probe(me);
@@ -5225,8 +5061,6 @@ void coop_players_tick(Cpu *c, int numpad3) {
     uint64_t my_eq = eq_of_actor(me);
     keep_player_eq(me, my_eq);
     if (my_eq) read_my_gear(my_eq);
-    float fwd[2], right[2];
-    int have_cam = camera_frame(fwd, right);
 
     // The host's world (for now the player with the lowest id): its time of day, seen below.
     int host_id = coop_net_on() && coop_net_id() ? coop_net_id() : 0;
@@ -5244,7 +5078,6 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 // Their Link goes: the game's own delete request (as AI node OneShotGenericDeleteThisActor makes it).
                 // The slot stays LET_GO, driven with no input, until the actor reads as going away.
                 s->state = LET_GO;
-                set_input(s, 0, (const int32_t[4]){0, 0, 0, 0});
                 if (s->actor) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->actor, COOP_DELETE_REASON, 0, 0);
                 for (int k = 0; k < COOP_OBJS; k++)   // their arrows' copies too (each still that copy)
                     if (s->mir[k].state == 3 && copy_alive(s, k)) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0);
@@ -5266,7 +5099,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         }
         if (!s && !(s = slot_new(SRC_NET, id))) continue;
         int32_t ast = 0;   // (a live actor: one going away, or another at its address, gets no call; code review)
-        if (coop_standin_puppet() && s->state == LIVE && s->actor && age < 2000000000ull && coop_rd(s->actor + COOP_ACTOR_STATE, &ast, 4) &&
+        if (s->state == LIVE && s->actor && age < 2000000000ull && coop_rd(s->actor + COOP_ACTOR_STATE, &ast, 4) &&
             ast >= 2 && ast <= 6 && actor_is(s->actor, "PlayerPuppet")) {   // (the name too: another actor at a freed one's address)
             void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, int64_t age_ns);   // coop_world.c
             static uint64_t y_was[COOP_MAX_PLAYERS];   // its owner's attack button down: logged (the suite's tour case)
@@ -5349,37 +5182,6 @@ void coop_players_tick(Cpu *c, int numpad3) {
         }
         s->shield_placed = (st.flags >> 11) & 1;
         memcpy(s->hold_bone, st.hold_bone, sizeof s->hold_bone), memcpy(s->hold, st.hold, sizeof s->hold);
-        {   // its owner's lightning wait (flags bit 12) on the proxy's EquipmentUser, with its own update running while
-            // it lasts so its sparks play (a frozen proxy shows none)
-            int want_l = (st.flags >> 12) & 1;
-            uint64_t peq = s->actor ? eq_of_actor(s->actor) : 0;
-            if (proxied(s) && peq && eq_points_to(peq, s->actor)) {
-                uint64_t f = LD64(peq + 0x4600);
-                int has_l = (int)(f >> 16 & 1);
-                if (want_l != has_l) {
-                    if (want_l) __atomic_fetch_or((uint64_t *)(uintptr_t)(peq + 0x4600), 1ull << 16, __ATOMIC_SEQ_CST), ST32(peq + 0x3f14, 0);
-                    else __atomic_fetch_and((uint64_t *)(uintptr_t)(peq + 0x4600), ~(1ull << 16), __ATOMIC_SEQ_CST);
-                    rt_log("coop: proxy: slot %d: lightning %s its owner", (int)(s - slots), want_l ? "about to strike" : "no longer after");
-                }
-                if (want_l && s->thaw < 10) s->thaw = 10;
-            }
-        }
-        if (proxied(s) && st.shield_fuse_scale[0] > 0) {   // its shield's fused actor at its owner's scale (see shield_fuse_scale)
-            void proxy_fuse_scale(Slot *s, const float sc[3]);
-            proxy_fuse_scale(s, st.shield_fuse_scale);
-        }
-        if (proxied(s) && st.life > 0 && st.life_max > 0) {   // proxy attacks: its life and most life as its owner's
-            int coop_life_of(uint64_t a), coop_life_max_of(uint64_t a);
-            void coop_set_life(uint64_t a, int v), coop_set_life_max(uint64_t a, int v);
-            if (coop_life_max_of(s->actor) != st.life_max) coop_set_life_max(s->actor, st.life_max);
-            if (coop_life_of(s->actor) != st.life) {
-                static int said;
-                if (said++ < 6 || (cfg_get("TOTK_COOP_TEST_LIFELOG") && said < 60))
-                    rt_log("coop: proxy: slot %d life %d -> %d of %d, as its owner's (%.2f s, thaw %d, attack thaw %d)", (int)(s - slots),
-                           coop_life_of(s->actor), st.life, st.life_max, frame_step_world_us() / 1e6, s->thaw, s->atk_thaw);
-                coop_set_life(s->actor, st.life);
-            }
-        }
         if (s->shield_placed) memcpy(s->shield_local, st.shield_pos, 12), quat_mat(st.shield_q, s->shield_rot);
         for (int k = 0; k < COOP_GEAR_SLOTS; k++) {
             memcpy(s->gear_want[k], st.gear[k], 32);
@@ -5388,36 +5190,6 @@ void coop_players_tick(Cpu *c, int numpad3) {
             if (k < 3) memcpy(s->fuse_want[k], st.fuse[k], 32), s->fuse_want[k][31] = 0;
             if (k < 3) s->out_want = (s->out_want & ~(1 << k)) | (int)((st.flags >> (8 + k)) & 1) << k;
             if (k == 0) s->attack_want = (int)(st.flags >> 13 & 1);
-        }
-        // The owner's stick in world space (their camera), then in this PC's camera frame.
-        int32_t sticks[4];
-        for (int k = 0; k < 4; k += 2) {
-            float x = st.sticks[k] / 32767.0f, y = st.sticks[k + 1] / 32767.0f;
-            float wx = y * st.cam_fwd[0] + x * st.cam_right[0], wz = y * st.cam_fwd[1] + x * st.cam_right[1];
-            float lx = have_cam ? wx * right[0] + wz * right[1] : x, ly = have_cam ? wx * fwd[0] + wz * fwd[1] : y;
-            if (k == 2) lx = x, ly = y;   // the right stick turns the owner's camera, not a direction: as is
-            sticks[k] = (int32_t)(lx * 32767.0f), sticks[k + 1] = (int32_t)(ly * 32767.0f);
-        }
-        set_input(s, st.buttons, sticks);
-        {   // the owner presses attack (Y): its proxy runs its own update with Y let through, while the owner holds it
-            // and for 40 frames after (the Earthwake Technique charges while it is held and bursts on the release)
-            static uint64_t was[COOP_MAX_PLAYERS];
-            int k = (int)(s - slots);
-            int ride_on(void);
-            plat_mutex_lock(&lock);
-            int y_late = y_delayed(s);
-            plat_mutex_unlock(&lock);
-            // Test (TOTK_COOP_TEST_PROXY_LIVE=1): the proxy's own update always runs (no input but the attack and guard
-            // buttons, its pose still driven): is a frozen proxy what enemies do not notice?
-            static int live = -1;
-            if (live < 0) { const char *e = cfg_get("TOTK_COOP_TEST_PROXY_LIVE"); live = e && *e == '1'; }
-            if (live && proxied(s) && s->thaw < 4) s->thaw = 4;
-            if (proxied(s) && y_late && attack_thaw_on()) {
-                if (s->thaw < 40) s->thaw = 40;
-                s->atk_thaw = 40;
-                if (!was[k]) rt_log("coop: proxy: slot %d swings (its own update while Y is held and 40 frames after, Y through; Y as of the pose shown)", k);
-            }
-            was[k] = (uint64_t)y_late;
         }
         s->idle = !st.buttons && abs(st.sticks[0]) < 3000 && abs(st.sticks[1]) < 3000;
     }
@@ -5432,15 +5204,6 @@ void coop_players_tick(Cpu *c, int numpad3) {
     // the sync audit, 2026-11-06)
     else if (weather_forced >= 0 && (!have_host || host_far)) follow_host_weather(c, -1);
 
-    // A second gamepad on this PC drives one more Link (Numpad 3 spawns it; the pad alone does not).
-    Slot *pad = slot_for(SRC_PAD, 0);
-    if (numpad3 && !pad) pad = slot_new(SRC_PAD, 0);
-    if (pad) {
-        uint64_t b = 0;
-        int32_t sticks[4] = {0, 0, 0, 0};
-        if (!coop_p2_poll(&b, &sticks[0], &sticks[1], &sticks[2], &sticks[3])) b = 0;
-        set_input(pad, b, sticks);
-    }
 
     for (int i = 0; i < COOP_MAX_PLAYERS; i++) {
         Slot *s = &slots[i];
@@ -5483,7 +5246,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
             // equipping one at load). The gear code below then makes it the owner's, or empties it.
             // Off: it did not help (the cause was this Link's own equipment read for the stand-in's item: coop_spawn.c,
             // main+0x45a460). TOTK_COOP_STANDIN_PRIME=1: done (a test).
-            if (eq && coop_standin_puppet() && !s->primed) {
+            if (eq && !s->primed) {
                 static int prime = -1;
                 if (prime < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_PRIME"); prime = e && *e == '1'; }
                 static const char *const first[3] = {"Weapon_Sword_001", "Weapon_Bow_001", "Weapon_Shield_001"};
@@ -5495,10 +5258,6 @@ void coop_players_tick(Cpu *c, int numpad3) {
                     }
                 s->primed = 1;
             }
-            // Proxy mode: no gear is made while this game is in a menu; it waits until the game runs again. Made
-            // then, armor did not show on the proxy after the menu closed, also when made again later (menu_3rd.txt,
-            // a play session, 2026-11-05).
-            if (this_paused && proxied(s)) eq = 0;
             char held[COOP_GEAR_SLOTS][32];
             if (eq) eq_gear(eq, held);
             for (int k = 0; eq && k < COOP_GEAR_SLOTS; k++)
@@ -5513,18 +5272,15 @@ void coop_players_tick(Cpu *c, int numpad3) {
                            k <= 2 && s->fuse_want[k][0] ? ", fused with " : "", k <= 2 ? s->fuse_want[k] : "");
                     regive_gear(c, eq, k, none ? "" : s->gear_want[k], s->dye_want[k], -1, s->gear_str[k], k <= 2 ? s->fuse_want[k] : NULL,
                                 s->att_str[k < 3 ? k : 0]);
-                    // Proxy mode: armor made on the frozen proxy did not show (the hood and tunic stayed as they
-                    // were; the default mode shows them, 2026-11-05). Its own update runs for a while to take it.
-                    if (proxied(s)) s->thaw = PROXY_THAW_TICKS, rt_log("coop: proxy: slot %d runs its own update for %d ticks (gear)", i, PROXY_THAW_TICKS);
                 }
             if (s->state == LIVE) s->live_ticks++;
-            // The PlayerPuppet stand-in (TOTK_COOP_STANDIN=puppet): its items, made once, are taken out and put away
+            // The PlayerPuppet stand-in: its items, made once, are taken out and put away
             // with the game's in-hand calls as its owner holds them (TotK Online's way, read for behaviour only):
             // nothing of the stand-in's own puts them back. Checked every 6 ticks.
             // Its main body asked for motion type 0 every tick (phive RigidBodyBase::requestChangeMotionType, 1.4.3
             // main+0xae4300 from 1.2.1's 0xe8be30, the same code; TotK Online does it, read for behaviour only), so
             // the physics does not push it about. TOTK_COOP_STANDIN_MOTION=0: not.
-            if (coop_standin_puppet() && s->state == LIVE && s->actor) {
+            if (s->state == LIVE && s->actor) {
                 static int mo = -1;
                 if (mo < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_MOTION"); mo = !(e && *e == '0'); }
                 uint64_t body = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(s->actor + 0x228) + 0x50) + 0x20) + 0x150);
@@ -5533,7 +5289,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 if (mo && body) coop_guest_call(c, MOD_MAIN_BASE + 0xae4300, body, (uint64_t)mt, 0, 0);
             }
             // ... and its weapon's attack on while its owner's is (flags bit 13), every tick
-            if (eq && coop_standin_puppet()) {
+            if (eq) {
                 uint8_t att = (uint8_t)s->attack_want;
                 static int also = -1;   // TOTK_COOP_TEST_ATK598=1: +0x598 too (it flips with +0x660 in a swing)
                 if (also < 0) also = cfg_get("TOTK_COOP_TEST_ATK598") != NULL;
@@ -5544,7 +5300,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
                     if (att && said_a++ < 10) rt_log("coop: stand-in: slot %d: its weapon's attack on, as its owner's", i);
                 }
             }
-            if (eq && coop_standin_puppet() && s->live_ticks % 6 == 0) {
+            if (eq && s->live_ticks % 6 == 0) {
                 static const uint64_t row[3] = {0, 3, 4};
                 for (int k = 0; k < 3; k++) {
                     // An item its owner does not have: a new PlayerPuppet's EquipmentUser starts with this game's
@@ -5565,141 +5321,43 @@ void coop_players_tick(Cpu *c, int numpad3) {
                     if (said++ < 40) rt_log("coop: stand-in: slot %d: %s %s", i, s->gear_want[k], want ? "taken out" : "put away");
                 }
             }
-            int coop_puppet_mode(void);   // coop_world.c
-            // Puppet mode: it gets no input, so it never draws an item itself. The EquipmentUser's per-slot byte
-            // +0x4620 (0 weapon, 3 bow, 4 shield) bit 1 is what main+0x3e322c also reads as "in hand"; set while the
-            // owner holds that item, the item goes to the puppet's hand (checked with the sword, 2026-11-05).
-            // On a PlayerPuppet stand-in too, after its in-hand calls above (which read this bit: set before them, they
-            // never ran; code review, 2026-11-07): without it an item made while its slot was empty (both players with
-            // nothing equipped, one equipping first: the test save) stayed on the back, and the stand-in swung an empty
-            // hand though setEquipmentInHand had run (a play session, 2026-11-07, as the old puppet's 2026-11-05).
-            // Off on the stand-in: it did not help there (the cause: coop_spawn.c, main+0x45a460). TOTK_COOP_STANDIN_HANDBIT=1:
-            // on it too (a test).
+            // Test (TOTK_COOP_STANDIN_HANDBIT=1): the EquipmentUser's per-slot byte +0x4620 (0 weapon, 3 bow, 4 shield)
+            // bit 1, which main+0x3e322c reads as "in hand", set while the owner holds that item. It did not keep an item
+            // made into an empty slot in hand (the cause: coop_spawn.c, main+0x45a460).
             static int handbit = -1;
             if (handbit < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_HANDBIT"); handbit = e && *e == '1'; }
-            if (eq && ((coop_puppet_mode() && !coop_standin_puppet()) || (coop_standin_puppet() && handbit))) {
+            if (eq && handbit) {
                 static const int slot_of[3] = {0, 3, 4};
                 for (int k = 0; k < 3; k++) {
                     uint8_t *f = (uint8_t *)(uintptr_t)(eq + 0x4620 + slot_of[k]);
                     if ((s->out_want >> k) & 1) *f |= 2; else *f &= (uint8_t)~2;
                 }
             }
-            // Proxy mode: taking an item out or putting it away is the Link's own update's work: with the flag alone
-            // a lowered shield stayed in the frozen proxy's hand and then was gone from hand and back; making it
-            // again (in either state) did not help (2026-11-05). Its update runs for a while on each change.
-            if (eq && proxied(s)) {
-                static int skip_putaway = -1;   // TOTK_COOP_TEST_NOTHAW_PUTAWAY=1: no thaw when an item is put away (test)
-                if (skip_putaway < 0) skip_putaway = cfg_get("TOTK_COOP_TEST_NOTHAW_PUTAWAY") != NULL;
-                if (s->out_have >= 0 && s->out_have != s->out_want && !(skip_putaway && (s->out_want & ~s->out_have) == 0)) {
-                    s->thaw = PROXY_THAW_TICKS;
-                    rt_log("coop: proxy: slot %d runs its own update for %d ticks (in hand %#x -> %#x)", i, PROXY_THAW_TICKS, s->out_have, s->out_want);
-                    // An item taken out is also made again in hand (the weapon create's "1 in hand"): with the flag and
-                    // the thaw alone a sword made on the back stayed there while the proxy swung with an empty hand
-                    // (a play session; equip_draw_3rd.txt, 2026-11-05). Made in hand it is held (stage 1's test).
-                    static int no_remake = -1;   // TOTK_COOP_TEST_NODRAWREMAKE=1: not done (test)
-                    if (no_remake < 0) no_remake = cfg_get("TOTK_COOP_TEST_NODRAWREMAKE") != NULL;
-                    for (int k = 0; k < 3 && !no_remake; k++)
-                        if ((s->out_want & ~s->out_have) >> k & 1 && s->gear_want[k][0] && strcmp(s->gear_want[k], GEAR_NONE)) {
-                            if (gear_inhand_on()) {
-                                gear_hand(c, eq, k, 1);
-                                rt_log("coop: proxy: slot %d: %s taken out", i, s->gear_want[k]);
-                                continue;
-                            }
-                            regive_gear(c, eq, k, s->gear_want[k], -1, 1, s->gear_str[k], s->fuse_want[k], s->att_str[k]);
-                            rt_log("coop: proxy: slot %d: %s made again in hand", i, s->gear_want[k]);
-                        }
-                    // ... and one put away is made again put away (the create's "2"): made in hand, the thaw no longer
-                    // took it out of the hand ("holds 0x5, owner 0" through four retries; the next item drawn was held
-                    // with it, a play session, 2026-11-05).
-                    for (int k = 0; k < 3 && !no_remake; k++)
-                        if ((s->out_have & ~s->out_want) >> k & 1 && s->gear_want[k][0] && strcmp(s->gear_want[k], GEAR_NONE)) {
-                            if (gear_inhand_on()) {
-                                gear_hand(c, eq, k, 0);
-                                rt_log("coop: proxy: slot %d: %s put away", i, s->gear_want[k]);
-                                continue;
-                            }
-                            regive_gear(c, eq, k, s->gear_want[k], -1, 0, s->gear_str[k], s->fuse_want[k], s->att_str[k]);
-                            rt_log("coop: proxy: slot %d: %s made again put away", i, s->gear_want[k]);
-                        }
-                }
-                s->out_have = s->out_want;
-            }
             // Per slot: shared, the count went up once per slot each tick, so with two co-op Links only one ever came to
             // a multiple of 30, and one slot's tries used up or reset another's (code review, 2026-11-06).
             static int hand_ticks[COOP_MAX_PLAYERS], hand_said[COOP_MAX_PLAYERS] = {[0 ... COOP_MAX_PLAYERS - 1] = -1};
-            if (eq && coop_puppet_mode() && ++hand_ticks[i] % 30 == 0) {
+            if (eq && ++hand_ticks[i] % 30 == 0) {
                 static const uint64_t hand_of[3] = {0, 3, 4};
                 int now = 0;
                 for (int k = 0; k < 3; k++) now |= (int)(coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, eq, hand_of[k], 0, 0) & 1) << k;
                 if ((now | s->out_want << 4) != hand_said[i])
                     rt_log("coop: puppet: slot %d holds %#x, owner %#x", i, now, s->out_want), hand_said[i] = now | s->out_want << 4;
-                // Proxy mode: a put-away that did not take (a play session: "holds 0x4, owner 0" stayed after sword and
-                // shield were put away together, and the shield was then held with the bow, 2026-11-05). Once a thaw is
-                // over and the proxy still holds something else than its owner, its own update runs again (at most 4
-                // times for one mismatch).
-                // Proxy mode, gear by state: what the proxy's EquipmentUser holds against what its owner reports,
-                // each slot, and any that differs made again with a thaw (at most 4 times in a row). A change made
-                // while this game sat in a menu stayed unseen (menu_3rd.txt, a play session, 2026-11-05).
-                static int gear_fixes_[COOP_MAX_PLAYERS];
-                int *gear_fixes = &gear_fixes_[i];
-                if (proxied(s) && s->thaw <= 0 && *gear_fixes < 4) {
-                    char held2[COOP_GEAR_SLOTS][32];
-                    eq_gear(eq, held2);
-                    int fixed = 0;
-                    for (int k = 0; k < COOP_GEAR_SLOTS; k++) {
-                        if (!s->gear_want[k][0] || (k > 2 && !strcmp(s->gear_want[k], GEAR_NONE))) continue;
-                        if (!strcmp(held2[k], s->gear_want[k])) continue;
-                        rt_log("coop: proxy: slot %d gear slot %d holds %s, owner %s: made again", i, coop_gear_slot[k], held2[k], s->gear_want[k]);
-                        int none = !strcmp(s->gear_want[k], GEAR_NONE);
-                        regive_gear(c, eq, k, none ? "" : s->gear_want[k], s->dye_want[k], k <= 2 ? (s->out_want >> k & 1) : -1, s->gear_str[k],
-                                    k <= 2 ? s->fuse_want[k] : NULL, s->att_str[k < 3 ? k : 0]);
-                        fixed = 1;
-                    }
-                    if (fixed) s->thaw = PROXY_THAW_TICKS, ++*gear_fixes;
-                    else *gear_fixes = 0;
-                }
-                static int retries_[COOP_MAX_PLAYERS];
-                int *retries = &retries_[i];
-                if (proxied(s) && s->thaw <= 0 && now != s->out_want && *retries < 4 && !cfg_get("TOTK_COOP_TEST_NORETRY")) {
-                    s->thaw = PROXY_THAW_TICKS, ++*retries;
-                    rt_log("coop: proxy: slot %d holds %#x, owner %#x: its own update runs again (%d)", i, now, s->out_want, *retries);
-                    // ... and each item held otherwise than its owner holds it made again that way (in hand or put
-                    // away): the update alone, with no input, never put an item away, and after the four tries the
-                    // proxy kept its sword and shield out for minutes after its owner had put them away (the sync audit,
-                    // link-hands, every session of 2026-11-06).
-                    for (int k = 0; k < 3; k++)
-                        if (((now ^ s->out_want) >> k & 1) && s->gear_want[k][0] && strcmp(s->gear_want[k], GEAR_NONE)) {
-                            if (gear_inhand_on()) {
-                                gear_hand(c, eq, k, s->out_want >> k & 1);
-                                rt_log("coop: proxy: slot %d: %s %s again", i, s->gear_want[k], s->out_want >> k & 1 ? "taken out" : "put away");
-                                continue;
-                            }
-                            regive_gear(c, eq, k, s->gear_want[k], -1, s->out_want >> k & 1, s->gear_str[k], s->fuse_want[k], s->att_str[k]);
-                            rt_log("coop: proxy: slot %d: %s made again %s", i, s->gear_want[k], s->out_want >> k & 1 ? "in hand" : "put away");
-                        }
-                } else if (now == s->out_want) *retries = 0;
             }
-            if (s->state == LIVE && s->source == SRC_NET && coop_proxy_mode()) arrow_copies(c, s);
-            if (proxied(s)) {   // proxy mode: placed by proxy_drive, no teleports
-                int k = s->nseen++ % 32;
-                if (coop_rd(s->actor + COOP_ACTOR_POS, s->seen[k].pos, 12)) s->seen[k].ns = plat_now_ns();
-                else s->seen[k].ns = 0;
-            } else if (s->state == LIVE && s->source == SRC_NET && s->have_want && coop_puppet_mode()) {
-                // Puppet mode: it gets no input, so its body is moved to its owner, but only once it is 10 cm off:
-                // a teleport every tick makes it lose and find the ground on alternate frames, and the foot
-                // placement then drops its hips (the jitter seen on stairs, 2026-11-05).
+            if (s->state == LIVE && s->source == SRC_NET) arrow_copies(c, s);
+            if (s->state == LIVE && s->source == SRC_NET && s->have_want) {
+                // Its body is moved to its owner: every tick (below), or once it is that far off.
                 float om[12];
                 owner_matrix(s, om);
                 const float *bp = s->have_body ? s->body_pos : s->phys_pos;
                 float dx = bp[0] - om[3], dy = bp[1] - om[7], dz = bp[2] - om[11];
 
-                // TOTK_COOP_PUPPET_SNAP_M: that distance in m (default 0.1; 0 every tick). A PlayerPuppet stand-in's
-                // body every tick: its own root motion moved it 15-67 mm a frame, its mesh was drawn from that body,
-                // and snapped back at 10 cm it went in a sawtooth, the drawn root's offset from its placing changing
+                // TOTK_COOP_PUPPET_SNAP_M: that distance in m (default 0: every tick). Its body every tick: its own
+                // root motion moved it 15-67 mm a frame, its mesh was drawn from that body, and snapped back at 10 cm
+                // it went in a sawtooth, the drawn root's offset from its placing changing
                 // by 20 mm a frame and up to 148 (the tester: choppy on slow walks and jumps); every tick 8 mm, worst 17
                 // (the suite's tour walk, stairs included, 2026-11-08).
                 static float lim = -1;
-                if (lim < 0) { const char *e = cfg_get("TOTK_COOP_PUPPET_SNAP_M"); lim = e ? (float)atof(e) : coop_standin_puppet() ? 0.0f : 0.1f; }
+                if (lim < 0) { const char *e = cfg_get("TOTK_COOP_PUPPET_SNAP_M"); lim = e ? (float)atof(e) : 0.0f; }
                 // ... or once it faces another way: the step writes the body's rotation before placement goes over
                 // it, and a body left turned 12 degrees away flickered between the two (a play session, 2026-11-05).
                 float rd = 0;
@@ -5716,20 +5374,6 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 int k = s->nseen++ % 32;
                 if (coop_rd(s->actor + COOP_ACTOR_POS, s->seen[k].pos, 12)) s->seen[k].ns = plat_now_ns();
                 else s->seen[k].ns = 0;
-            } else if (s->state == LIVE && s->source == SRC_NET && s->have_want) {
-                float p[3];
-                float lim = s->idle ? COOP_SNAP_IDLE_M : COOP_SNAP_MOVING_M;
-                if (s->snap_wait) s->snap_wait--;
-                else if (coop_rd(s->actor + COOP_ACTOR_POS, p, 12)) {
-                    float dx = p[0] - s->want_pos[0], dy = p[1] - s->want_pos[1], dz = p[2] - s->want_pos[2];
-                    float d2 = dx * dx + dy * dy + dz * dz;
-                    if (d2 > lim * lim) {
-                        snap(c, s);
-                        s->snap_wait = 10;
-                        if (++s->snaps <= 20 || s->snaps % 50 == 0)
-                            rt_log("coop: slot %d: put back %.2f m (%s); %u so far", i, sqrtf(d2), s->idle ? "idle" : "moving", s->snaps);
-                    }
-                }
             }
         }
     }
