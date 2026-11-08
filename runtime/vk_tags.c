@@ -11,7 +11,7 @@
 // the RGBA8 sRGB window texture the game presents. With a scene as large as the output the scene's last draw goes into
 // the HUD target the same way (vk_dlaa.c, "where DLAA runs in TotK's frame": the game's FXAA draws back over it). So:
 // - the HUD target is learned from the copy: a pass into an 8-bit sRGB target right after a pass into a float target of
-//   its size. That copy decodes nothing, so the HUD target holds linear colour, and the tags' sRGB colours are decoded.
+//   its size (not a plain RGBA8 one: the game copies other float pictures into those mid-frame). That copy decodes nothing, so the HUD target holds linear colour, and the tags' sRGB colours are decoded.
 // - after the bloom chain, a pass at least half the HUD target's width into other targets arms the frame; the tags go
 //   in front of the second draw into the HUD target after it: the first is the scene's own (the scaling, or the FXAA
 //   draw back), the second the HUD's first.
@@ -182,8 +182,9 @@ static VkPipeline pipeline(VkCtx *c, VkFormat fmt) {
                                                .vertexAttributeDescriptionCount = 3, .pVertexAttributeDescriptions = va};
     VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                                                  .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
-    VkPipelineViewportStateCreateInfo vp = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-                                            .viewportCount = 1, .scissorCount = 1};
+    // the counts are dynamic too: the recorder (vk_rec.h) has packets for vkCmdSetViewportWithCount and
+    // vkCmdSetScissorWithCount, not for vkCmdSetViewport and vkCmdSetScissor
+    VkPipelineViewportStateCreateInfo vp = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
                                                  .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE,
                                                  .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE, .lineWidth = 1};
@@ -198,7 +199,7 @@ static VkPipeline pipeline(VkCtx *c, VkFormat fmt) {
                           (fmt == VK_FORMAT_B10G11R11_UFLOAT_PACK32 ? 0 : VK_COLOR_COMPONENT_A_BIT)};
     VkPipelineColorBlendStateCreateInfo cb = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .attachmentCount = 1, .pAttachments = &ba};
-    VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT, VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT};
     VkPipelineDynamicStateCreateInfo ds = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                            .dynamicStateCount = 2, .pDynamicStates = dyn};
     VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
@@ -295,7 +296,6 @@ static int font_up(VkCtx *c, VkExec *ex, uint32_t gen) {
 
 static int is_float(VkFormat f) { return f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || f == VK_FORMAT_R16G16B16A16_SFLOAT; }
 static int is_srgb8(VkFormat f) { return f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_B8G8R8A8_SRGB; }
-static int is_8bit(VkFormat f) { return is_srgb8(f) || f == VK_FORMAT_R8G8B8A8_UNORM || f == VK_FORMAT_B8G8R8A8_UNORM; }
 
 static int targets(const VkExec *ex, const VkTexImage *img) {
     for (uint32_t i = 0; i < ex->pass_ncolor && i < 8; i++)
@@ -319,13 +319,16 @@ void vk_tags_pass_begin(VkExec *ex) {
     if (T.phase == 1 && ex->pass_w * 4 < T.gbuf_w) T.phase = 2;   // the bloom chain
     const VkExecTarget *c0 = ex->pass_ncolor ? &ex->color[0] : NULL;
     if (!c0 || !c0->image || !c0->img) return;
-    // the copy into the window texture: the pass before it drew into the HUD target
-    if (ex->pass_ncolor == 1 && is_8bit(c0->format) && T.prev && T.prev != c0->img && is_float(T.prev_fmt) &&
+    // the copy into the window texture: the pass before it drew into the HUD target. Only an sRGB target: the game also
+    // copies float pictures into plain RGBA8 ones of other sizes in the middle of a frame (1636x920 and 2048x1152 at a
+    // 3840x2160 output, 2026-11-07), and taking those for the HUD target flipped it from frame to frame.
+    if (ex->pass_ncolor == 1 && is_srgb8(c0->format) && T.prev && T.prev != c0->img && is_float(T.prev_fmt) &&
         T.prev_w == c0->width && T.prev_h == c0->height) {
         if (T.hud != T.prev || T.hud_fmt != T.prev_fmt) {
-            T.hud = T.prev, T.hud_fmt = T.prev_fmt, T.hud_w = T.prev_w, T.hud_h = T.prev_h, T.hud_linear = is_srgb8(c0->format);
-            rt_log("vk: co-op name tags: the HUD target is %ux%u (format %d), copied into %s", T.hud_w, T.hud_h,
-                   (int)T.hud_fmt, T.hud_linear ? "an sRGB window texture" : "an 8-bit window texture");
+            T.hud = T.prev, T.hud_fmt = T.prev_fmt, T.hud_w = T.prev_w, T.hud_h = T.prev_h, T.hud_linear = 1;
+            static int logs;
+            if (logs < 8) logs++, rt_log("vk: co-op name tags: the HUD target is %ux%u (format %d), copied into an sRGB "
+                                         "window texture", T.hud_w, T.hud_h, (int)T.hud_fmt);
         }
     }
     if (T.phase == 2 && T.hud && !targets(ex, T.hud) && ex->pass_w * 2 >= T.hud_w) T.armed = 1, T.count = 0;
@@ -359,6 +362,10 @@ static const float *block(uint64_t addr, uint64_t off, uint64_t n) {
     return p ? p : (const float *)(uintptr_t)(addr + off);   // guest memory, as vk_contact.c reads it
 }
 
+// Every vkCmd* here goes through the recorder thread's wrappers (vk_rec.h): a command without one is made at once on
+// this thread, ahead of the recorder's queue, into the command buffer the recorder is filling. vkCmdSetViewport,
+// vkCmdSetScissor and vkCmdBindVertexBuffers did that (2026-11-07: a GPU fault and device lost in both games right
+// after the first tags were drawn), so the *WithCount and *2 forms are used.
 static void record(VkExec *ex) {
     VkCtx *c = vk_ctx();
     if (!c || (!T.tried && !init(c)) || !T.ok) return;
@@ -417,8 +424,8 @@ static void record(VkExec *ex) {
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
         VkViewport vpt = {0, 0, W, H, 0, 1};
         VkRect2D sc = {{0, 0}, {T.hud_w, T.hud_h}};
-        vkCmdSetViewport(cb, 0, 1, &vpt);
-        vkCmdSetScissor(cb, 0, 1, &sc);
+        vkCmdSetViewportWithCount(cb, 1, &vpt);
+        vkCmdSetScissorWithCount(cb, 1, &sc);
         VkDescriptorImageInfo fi = {T.lin, T.font_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo di = dv ? (VkDescriptorImageInfo){T.near, dv, VK_IMAGE_LAYOUT_GENERAL} : fi;   // unread without depth
         VkWriteDescriptorSet w[2] = {
@@ -428,7 +435,7 @@ static void record(VkExec *ex) {
              .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &di}};
         rec_push(T.push, cb, VK_PIPELINE_BIND_POINT_GRAPHICS, T.layout, 0, 2, w);
         VkDeviceSize zero = 0;
-        vkCmdBindVertexBuffers(cb, 0, 1, &buf, &zero);
+        vkCmdBindVertexBuffers2(cb, 0, 1, &buf, &zero, NULL, NULL);
         vkCmdBindIndexBuffer(cb, buf, ioff, VK_INDEX_TYPE_UINT16);
         int occlude = dv && zfar > 1;
         for (int i = 0; i < n; i++) {

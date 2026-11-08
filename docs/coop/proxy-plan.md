@@ -512,6 +512,12 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
     then "vk: co-op name tags drawn in the frame: HUD target ..., far <f>, hidden by the scene depth" at the first
     tag drawn. "nothing drawn (...)" says what was missing. With TOTK_COOP_TEST_TAGSELF the "coop: tag ..." lines end
     in "(in the frame)" or "(overlay)".
+  - First run (a play session, 3840x2160, 2026-11-07): both games hit a GPU fault and device lost right after the
+    first tags were drawn. vk_tags.c called vkCmdSetViewport, vkCmdSetScissor and vkCmdBindVertexBuffers, which the
+    recorder thread has no packets for, so they ran at once, out of order and racing the recorder on the same command
+    buffer. Fixed on `claude/coop-tags-recorder` with the *WithCount and *2 forms. The HUD target also flipped
+    between frames to mid-frame copies into plain RGBA8 targets (1636x920, 2048x1152); only an sRGB copy counts now.
+    Compile check only.
   - Not run with tags yet (the frame structure was read from one dump at a 4096x2304 scene and 3840x2160 output). To
     check: a tag over a player in the open; the same player behind a wall (the tag fades out); the inventory or the
     map opened over a tag (the tag is under it); a dialogue box over a tag; the far plane in the log above 1. Not
