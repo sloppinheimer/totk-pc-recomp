@@ -776,7 +776,8 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
   runs it, and the owner's contraption follows as one body (TotK Online's ownership claim). Pair test: a steering
   stick held in game B steers the contraption in both; its devices run in B only (device state is not sent: re-notes
   "Device state on the copies").
-- **Zonai devices** on the other screens: copies of devices run their own logic, and a player's attack makes their
+- **Zonai devices** on the other screens (on and off of a contraption now synced, both ways and through claims:
+  coop_bonds.c dev_follow, re-notes "Device state on the copies"): copies of devices run their own logic, and a player's attack makes their
   proxy swing in the other games, so a hit turns the copy on there too (a fan in the pair test). Effects are the
   copies' own (not yet looked at on screen). Not covered: devices turned on other ways (arrows, a steering stick,
   contact for rockets), the copy drawing the other player's battery, the swing hitting other things there.

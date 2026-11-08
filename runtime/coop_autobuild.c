@@ -407,7 +407,7 @@ static void hit_test(Cpu *c, uint64_t me, int n) {
                        coop_request_create(c, "SpObj_WindGenerator_A_01", at, rot, lh));
             }
         }
-        msg_from_us = (int64_t)((now + 3.5) * 1e6), msg_to_us = (int64_t)((now + 6) * 1e6);
+        if (msg_from_us == INT64_MAX) msg_from_us = (int64_t)((now + 3.5) * 1e6), msg_to_us = (int64_t)((now + 6) * 1e6);   // (unless ABTRACE gave a time)
         {   // TOTK_COOP_TEST_FANHIT (coop_spawn.c) on the build's second fan, which the hit does not touch: the
             // functions entered with it as an argument just after the hit, not just before (the switch's path)
             extern uint64_t coop_fan_actor;
@@ -647,11 +647,26 @@ static void devhit_test(int n) {
         const char *bits = cfg_get("TOTK_COOP_TEST_DEV8D");   // =<hex>: instead, those bits set in its component 166 +0x8d
         if (pick >= 0 && bits) {
             devhit_pick = pick;
-            uint64_t a = atomic_load(&tracked[pick]), t = coop_rd_ptr(a + 0x228), c166 = t ? coop_rd_ptr(t + 0x530) : 0;
-            uint8_t b = 0, b60 = 0;
-            if (c166 && coop_rd(c166 + 0x8d, &b, 1) && coop_rd(c166 + 0x60, &b60, 1)) {
+            // (TOTK_COOP_TEST_DEV8DALL=1: every live tracked device of its contraption that is on as it is, at once)
+            uint64_t pa = atomic_load(&tracked[pick]), pt = coop_rd_ptr(pa + 0x228), pc = pt ? coop_rd_ptr(pt + 0x480) : 0;
+            uint64_t pg = pc ? coop_rd_ptr(pc + 0x28) : 0, done_a[TRACK_N];
+            uint32_t pon, pe;
+            dev_on(pa, &pon, &pe);
+            int nd = 0, all = cfg_get("TOTK_COOP_TEST_DEV8DALL") != NULL;
+            for (int i = 0; i < n; i++) {
+                if (i != pick && (!all || !live_device(i, nm, sizeof nm))) continue;
+                uint64_t a = atomic_load(&tracked[i]), t = coop_rd_ptr(a + 0x228), c166 = t ? coop_rd_ptr(t + 0x530) : 0;
+                uint64_t gc = t ? coop_rd_ptr(t + 0x480) : 0;
+                uint32_t on, e;
+                dev_on(a, &on, &e);
+                if (i != pick && (!pg || !gc || coop_rd_ptr(gc + 0x28) != pg || on != pon)) continue;
+                int dup = 0;
+                for (int j = 0; j < nd; j++) dup |= done_a[j] == a;
+                uint8_t b = 0, b60 = 0;
+                if (dup || !c166 || !coop_rd(c166 + 0x8d, &b, 1) || !coop_rd(c166 + 0x60, &b60, 1)) continue;
+                done_a[nd++] = a;
                 ST8(c166 + 0x8d, (uint8_t)(b | strtoul(bits, NULL, 16)));
-                rt_log("coop: test: dev8d: %.2f s: device %d's component 166 +0x8d %02x -> %02x (+0x60 %02x)", now, pick, b,
+                rt_log("coop: test: dev8d: %.2f s: device %d's component 166 +0x8d %02x -> %02x (+0x60 %02x)", now, i, b,
                        (unsigned)(b | strtoul(bits, NULL, 16)), b60);
             }
         } else if (pick >= 0) {
@@ -667,8 +682,72 @@ static void devhit_test(int n) {
 }
 
 // Every 2 s while any device is tracked (for 60 s): each one's name, state, flags and glue entries.
+// TOTK_COOP_TEST_DEVSWEEP=<s> (with ABLOG, any idle script): from then, every 10 s, one Zonai device kind made loose 3 m
+// in front of this Link (each 2.5 m to the side of the last); 3 s on, component 166's switch (+0x8d bit 3) set, again
+// at 6 s, its state logged before each and at 9 s: which kinds the switch turns on and off (re-notes table).
+static const char *const sweep_kind[] = {
+    "SpObj_WindGenerator_A_01", "SpObj_FastWheel_A_01", "SpObj_Rocket_A_01", "SpObj_FlameThrower_A_01", "SpObj_SnowMachine_A_01",
+    "SpObj_ElectricBoxGenerator", "SpObj_Beamos_A_01", "SpObj_FlashLight_A_01", "SpObj_Cannon_A_01", "SpObj_BalloonEnvelope_A_01",
+    "SpObj_SpringPiston_A_01", "SpObj_SlipBoard_A_01", "SpObj_ControlStick_A_01", "SpObj_EnergyBank_A_01", "SpObj_Cart_A_01",
+    "SpObj_LiftGeneratorWing_A_01", "SpObj_WaterPump_A_01", "SpObj_TimerBomb_A_01"};
+#define SWEEP_N (int)(sizeof sweep_kind / sizeof *sweep_kind)
+static void sweep_log(uint64_t a, const char *kind, const char *when) {
+    uint64_t t = a ? coop_rd_ptr(a + 0x228) : 0, c166 = t ? coop_rd_ptr(t + 0x530) : 0, c11 = t ? coop_rd_ptr(t + 8 * 11) : 0;
+    uint8_t b60 = 0, b8d = 0;
+    uint32_t on11 = 0, e28 = 0, s64 = 0;
+    int32_t st = 0;
+    if (c166) coop_rd(c166 + 0x60, &b60, 1), coop_rd(c166 + 0x8d, &b8d, 1), coop_rd(c166 + 0x64, &s64, 4);
+    dev_on(a, &on11, &e28);
+    coop_rd(a + COOP_ACTOR_STATE, &st, 4);
+    uint64_t fl = a ? on_flag(a) : 0;
+    rt_log("coop: test: devsweep: %s %s: state %d, component 166 %s (+0x60 %02x, +0x64 %u, +0x8d %02x), component 11 %s, on %#x, energy %u, on bool %d",
+           kind, when, st, c166 ? "yes" : "none", b60, s64, b8d, c11 ? "yes" : "none", on11, e28, fl ? LD8(fl) : -1);
+}
+static void sweep_test(Cpu *c, uint64_t me) {
+    static double at = -1;
+    if (at < 0) { const char *e = cfg_get("TOTK_COOP_TEST_DEVSWEEP"); at = e ? atof(e) : 0; }
+    if (at <= 0) return;
+    double now = frame_step_world_us() / 1e6;
+    static int k = 0, phase = 0;
+    static uint64_t a;
+    static _Alignas(16) uint8_t h[0x40], link[0x40];
+    if (k >= SWEEP_N || now < at + 10 * k) return;
+    double t = now - (at + 10 * k);
+    if (phase == 0) {
+        float p[3], r[9], rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        if (!coop_rd(me + COOP_ACTOR_POS, p, 12) || !coop_rd(me + COOP_ACTOR_ROT, r, 36)) return;
+        float fx = r[2], fz = r[8], side = (float)(k % 6 - 3) * 2.2f, fwd = 3 + (float)(k / 6) * 2.5f;   // three rows of six
+        float pos[3] = {p[0] + fwd * fx + side * fz, p[1] + 0.3f, p[2] + fwd * fz - side * fx};
+        memset(h, 0, sizeof h);
+        rt_log("coop: test: devsweep: %s asked for at %.2f %.2f %.2f: %d", sweep_kind[k], pos[0], pos[1], pos[2], coop_request_create(c, sweep_kind[k], pos, rot, h));
+        a = 0, phase = 1;
+    } else if (phase == 1) {
+        if (coop_handle_status(h) == 3) {
+            uint64_t ref;
+            a = coop_claim(c, h, link, &ref), phase = 2;
+        } else if (t > 3) {
+            rt_log("coop: test: devsweep: %s not made (status %d)", sweep_kind[k], coop_handle_status(h));
+            k++, phase = 0;
+        }
+    } else if (phase >= 2 && phase <= 3 && t >= 3 * (phase - 1)) {
+        sweep_log(a, sweep_kind[k], phase == 2 ? "made, before the switch" : "3 s after the switch, before the second");
+        uint64_t tt = a ? coop_rd_ptr(a + 0x228) : 0, c166 = tt ? coop_rd_ptr(tt + 0x530) : 0;
+        float ap[3], ar[9], q[4];   // (TOTK_COOP_TEST_DEVSWEEPNUDGE=1: first moved up 5 cm by speed, to wake it)
+        void coop_obj_force(Cpu *c, uint64_t a, const float pos[3], const float q[4]);
+        void coop_mat_quat(const float r[9], float q[4]);
+        if (cfg_get("TOTK_COOP_TEST_DEVSWEEPNUDGE") && a && coop_rd(a + COOP_ACTOR_POS, ap, 12) && coop_rd(a + COOP_ACTOR_ROT, ar, 36))
+            ap[1] += 0.05f, coop_mat_quat(ar, q), coop_obj_force(c, a, ap, q);
+        if (c166) ST8(c166 + 0x8d, (uint8_t)(LD8(c166 + 0x8d) | 0x08));
+        phase++;
+    } else if (phase == 4 && t >= 9) {
+        sweep_log(a, sweep_kind[k], "3 s after the second switch");
+        k++, phase = 0;
+    }
+}
+
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
     if (!ablog_on()) return;
+    sweep_test(c, me);
     static int64_t last, first;
     int64_t now = frame_step_world_us();
     {   // TOTK_COOP_TEST_ABPLACE=<s>: game A's Link put on the flat ground of the fan tests (coop_players.c fanset_test),
