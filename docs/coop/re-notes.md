@@ -1126,6 +1126,11 @@ the tester's idea: the other game builds the owner's blueprint itself, so the pa
   main+0x1d3c0d4 in its program, so it does not decompile them; cross-references work: main+0x9a2c00's only reference
   is a vtable slot at main+0x3695238 (the slots around it: main+0x8a28d0, 0x92d864, 0x18b321c.., 0xe45b94, 0x1d5391c),
   so it is a virtual update, called by whoever holds that object (the Link's Autobuild, it seems).
+- The confirm block in main+0x9a2c00 (generated C, from main+0x9a7164): it reads the build object's byte +0x3c71, the
+  object at ability+0x5130 (its +0x68 bits 10 and 11 pick the branch), byte +0x1f5 of the object in x26, and runs the
+  confirm once the task at ability+0x52c8 is done. All of it is the ability's own state while the Link is in Autobuild:
+  after the first build the update no longer reaches it, and in game B it would need B's Link in its Autobuild (the
+  screen, the hologram, the ability's state) with A's blueprint loaded, and the build's cost would be B's. Not tried.
 
 ## The green tint of autobuilt parts (open, 2026-11-08 afternoon)
 - What the autobuild passes when it makes a part (TOTK_COOP_TEST_CREATEDUMP=1, coop_spawn.c create_dump on
