@@ -116,9 +116,20 @@ restart.
 (`Pack/Actor/Player.pack.zs`), body model (`Model/Link.Link_RaulSkin.bfres.mc`), animation set
 (`AS/Player.root.asb.zs`) and skin texture were opened 3.3 s after start. Loading another save from the menu
 (`tools/coop/load_3rd.txt`) kept the same Player (its address unchanged, `coop: this PC's Link is the Player at ...`
-logged once) and moved it 5061 m; only the armor packs were opened again. A return to the title screen was not tried
-(the test scripts have none). So a save load does not make the Player again or read its files again, and its resources
-stay loaded as long as it exists.
+logged once) and moved it 5061 m; only the armor packs were opened again. The System tab's **To Title Screen** and
+Continue (`tools/coop/to_title_3rd.txt`) did not make it again either: the same address, and the four files opened
+only at 3.1 s. So nothing in a run makes the Player again or reads its files again, and its resources stay loaded as
+long as it exists.
+
+**Hiding this PC's Link behind a stand-in of its own character** (its model only) was not prototyped: the actor's scale
+(+0x2e4, which shrinks a Zonai beam's copy) set to 0.02 every tick left the Player drawn at full size, and the switch
+that hides a model is not known yet (it needs the game's model or material visibility code found, e.g. in Ghidra).
+
+**Slots are not freed.** A stand-in made again under an actor name the game loaded before opens none of its files
+again: after Riju (slot JS01) → Link → Riju in one run (`TOTK_COOP_TEST_CHARKEY=Link@40,gb:1600822@70`), the second
+`PlayerPuppet_JS01` read no pack, model, animation set or texture, and showed Riju from what the game kept. A deleted
+stand-in's resources stay cached, so a slot refilled with another character's files would show the old one; each slot
+is used once a run, and switching back to a character already loaded costs nothing.
 Serving other files under those names (the live overlay) would therefore not show either. What could work instead is
 not tried: this PC's Link hidden, with a stand-in of its own character driven from its own state as the others' are.
 

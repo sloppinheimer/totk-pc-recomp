@@ -5014,12 +5014,19 @@ void coop_players_tick(Cpu *c) {
         const CoopChar *me_char = coop_char_local();
         snprintf(st.character, sizeof st.character, "%s", me_char->key);
         st.char_mod = me_char->mod_id;
-        {   // TOTK_COOP_TEST_CHARKEY=<key>@<s> (a test): from s world seconds this PC says its character is key, as a
-            // player who switched character mods and came back would (the others remake its stand-in)
-            const char *e = cfg_get("TOTK_COOP_TEST_CHARKEY"), *at = e ? strchr(e, '@') : NULL;
-            if (at && frame_step_world_us() / 1e6 >= atof(at + 1)) {
-                snprintf(st.character, sizeof st.character, "%.*s", (int)(at - e) < 23 ? (int)(at - e) : 23, e);
-                st.char_mod = 0;
+        {   // TOTK_COOP_TEST_CHARKEY=<key>@<s>[,<key>@<s>...] (a test): from s world seconds this PC says its character
+            // is key (the last one due wins), as a player who switched character mods and came back would (the others
+            // remake its stand-in); "Link" or a key like gb:<file id>
+            const char *e = cfg_get("TOTK_COOP_TEST_CHARKEY");
+            double now_s = frame_step_world_us() / 1e6;
+            for (const char *p = e; p && *p;) {
+                const char *at = strchr(p, '@'), *comma = strchr(p, ',');
+                if (!at || (comma && comma < at)) break;
+                if (now_s >= atof(at + 1)) {
+                    snprintf(st.character, sizeof st.character, "%.*s", (int)(at - p) < 23 ? (int)(at - p) : 23, p);
+                    st.char_mod = 0;
+                }
+                p = comma ? comma + 1 : NULL;
             }
         }
         static CoopObj cur[COOP_OBJS];
