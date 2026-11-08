@@ -4790,8 +4790,10 @@ int coop_runs_for_ms(void) { return runs_since_ns ? (int)((plat_now_ns() - runs_
 // create's attachment, coop_players_gear); a shield is not: the material is attached to the shield there is, and its
 // create says nothing (TOTK_COOP_TEST_EQLOG, a play session, 2026-11-06: a wheel and a plank fused to a shield went
 // to the other game as loose objects). Taken here as the actor that stays within 0.8 m of the shield for 5 looks in a
-// row (every 10 ticks), not a Link's, a weapon or armor; none for 3 looks, the shield has none.
-typedef struct { float at[3]; uint64_t best; float best_d2; uint64_t shield; } ShieldScan;
+// row (every 10 ticks), not a Link's, a weapon or armor; none for 3 looks, the shield has none. An actor nearer to the
+// Link's weapon or bow than to its shield is that item's fused part: with the sword put away on the back, its rock lay
+// within 0.8 m of the shield and was taken and sent as the shield's (a play session, 2026-11-08).
+typedef struct { float at[3]; uint64_t best; float best_d2; uint64_t shield, others[2]; } ShieldScan;
 static void shield_fuse_fn(uint64_t a, void *arg) {
     ShieldScan *ss = arg;
     if (a == ss->shield) return;
@@ -4799,6 +4801,11 @@ static void shield_fuse_fn(uint64_t a, void *arg) {
     if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
     float d2 = (p[0] - ss->at[0]) * (p[0] - ss->at[0]) + (p[1] - ss->at[1]) * (p[1] - ss->at[1]) + (p[2] - ss->at[2]) * (p[2] - ss->at[2]);
     if (d2 > 0.64f || d2 >= ss->best_d2) return;
+    for (int k = 0; k < 2; k++) {
+        float q[3];
+        if (!ss->others[k] || ss->others[k] == a || !coop_rd(ss->others[k] + COOP_ACTOR_POS, q, 12)) continue;
+        if ((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]) < d2) return;
+    }
     char nm[48];
     coop_actor_name(a, nm, sizeof nm);
     if (!nm[0] || !strncmp(nm, "Player", 6) || !strncmp(nm, "Weapon_", 7) || !strncmp(nm, "Armor_", 6) || !strncmp(nm, "Accessory_", 10) ||
@@ -4867,7 +4874,7 @@ void proxy_fuse_scale(Slot *s, const float sc[3]) {
     uint64_t shield = eq_item(eq, 2);
     if (!shield) return;
     if (!found[i] || ++t[i] % 10 == 0) {
-        ShieldScan ss = {.best_d2 = 2.25f, .shield = shield};   // (1.5 m: the full-size device's centre is farther out)
+        ShieldScan ss = {.best_d2 = 2.25f, .shield = shield, .others = {eq_item(eq, 0), eq_item(eq, 1)}};   // (1.5 m: the full-size device's centre is farther out)
         if (!coop_rd(shield + COOP_ACTOR_POS, ss.at, 12)) return;
         void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
         coop_actors_live(shield_fuse_fn, &ss);
@@ -4886,7 +4893,7 @@ static void shield_fuse_tick(uint64_t me, uint64_t my_eq) {
     static uint64_t last;
     if (++t % 10 || !my_eq || !eq_points_to(my_eq, me)) return;
     uint64_t shield = eq_item(my_eq, 2);
-    ShieldScan ss = {.best_d2 = 1e9f, .shield = shield};
+    ShieldScan ss = {.best_d2 = 1e9f, .shield = shield, .others = {eq_item(my_eq, 0), eq_item(my_eq, 1)}};
     if (!shield || !coop_rd(shield + COOP_ACTOR_POS, ss.at, 12)) { last = 0, same = 0; return; }
     void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
     coop_actors_live(shield_fuse_fn, &ss);
