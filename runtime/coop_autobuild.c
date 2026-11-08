@@ -705,32 +705,45 @@ static void sweep_log(uint64_t a, const char *kind, const char *when) {
 }
 static void sweep_test(Cpu *c, uint64_t me) {
     static double at = -1;
+    static const char *kinds[32];   // TOTK_COOP_TEST_DEVSWEEPKINDS=<name>,<name>...: those instead, each 3 m ahead
+    static int kinds_n = -1;
+    static char kbuf[512];
+    if (kinds_n < 0) {
+        kinds_n = 0;
+        const char *e = cfg_get("TOTK_COOP_TEST_DEVSWEEPKINDS");
+        if (e) {
+            snprintf(kbuf, sizeof kbuf, "%s", e);
+            for (char *t = strtok(kbuf, ","); t && kinds_n < 32; t = strtok(NULL, ",")) kinds[kinds_n++] = t;
+        }
+    }
+    const char *const *kind = kinds_n ? kinds : sweep_kind;
+    int kind_n = kinds_n ? kinds_n : SWEEP_N;
     if (at < 0) { const char *e = cfg_get("TOTK_COOP_TEST_DEVSWEEP"); at = e ? atof(e) : 0; }
     if (at <= 0) return;
     double now = frame_step_world_us() / 1e6;
     static int k = 0, phase = 0;
     static uint64_t a;
     static _Alignas(16) uint8_t h[0x40], link[0x40];
-    if (k >= SWEEP_N || now < at + 10 * k) return;
+    if (k >= kind_n || now < at + 10 * k) return;
     double t = now - (at + 10 * k);
     if (phase == 0) {
         float p[3], r[9], rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
         if (!coop_rd(me + COOP_ACTOR_POS, p, 12) || !coop_rd(me + COOP_ACTOR_ROT, r, 36)) return;
-        float fx = r[2], fz = r[8], side = (float)(k % 6 - 3) * 2.2f, fwd = 3 + (float)(k / 6) * 2.5f;   // three rows of six
+        float fx = r[2], fz = r[8], side = kinds_n ? (float)(k - kind_n / 2) * 1.8f : (float)(k % 6 - 3) * 2.2f, fwd = kinds_n ? 3 : 3 + (float)(k / 6) * 2.5f;
         float pos[3] = {p[0] + fwd * fx + side * fz, p[1] + 0.3f, p[2] + fwd * fz - side * fx};
         memset(h, 0, sizeof h);
-        rt_log("coop: test: devsweep: %s asked for at %.2f %.2f %.2f: %d", sweep_kind[k], pos[0], pos[1], pos[2], coop_request_create(c, sweep_kind[k], pos, rot, h));
+        rt_log("coop: test: devsweep: %s asked for at %.2f %.2f %.2f: %d", kind[k], pos[0], pos[1], pos[2], coop_request_create(c, kind[k], pos, rot, h));
         a = 0, phase = 1;
     } else if (phase == 1) {
         if (coop_handle_status(h) == 3) {
             uint64_t ref;
             a = coop_claim(c, h, link, &ref), phase = 2;
         } else if (t > 3) {
-            rt_log("coop: test: devsweep: %s not made (status %d)", sweep_kind[k], coop_handle_status(h));
+            rt_log("coop: test: devsweep: %s not made (status %d)", kind[k], coop_handle_status(h));
             k++, phase = 0;
         }
     } else if (phase >= 2 && phase <= 3 && t >= 3 * (phase - 1)) {
-        sweep_log(a, sweep_kind[k], phase == 2 ? "made, before the switch" : "3 s after the switch, before the second");
+        sweep_log(a, kind[k], phase == 2 ? "made, before the switch" : "3 s after the switch, before the second");
         uint64_t tt = a ? coop_rd_ptr(a + 0x228) : 0, c166 = tt ? coop_rd_ptr(tt + 0x530) : 0;
         float ap[3], ar[9], q[4];   // (TOTK_COOP_TEST_DEVSWEEPNUDGE=1: first moved up 5 cm by speed, to wake it)
         void coop_obj_force(Cpu *c, uint64_t a, const float pos[3], const float q[4]);
@@ -740,14 +753,40 @@ static void sweep_test(Cpu *c, uint64_t me) {
         if (c166) ST8(c166 + 0x8d, (uint8_t)(LD8(c166 + 0x8d) | 0x08));
         phase++;
     } else if (phase == 4 && t >= 9) {
-        sweep_log(a, sweep_kind[k], "3 s after the second switch");
+        sweep_log(a, kind[k], "3 s after the second switch");
         k++, phase = 0;
     }
+}
+
+// TOTK_COOP_TEST_GLUENEAR=<s>[,<m>] (with autobuild_glue_3rd.txt-style scripts, which hold the build with Ultrahand from
+// 40.5 s and press A at 43.5 s): at that time a loose fan is made <m> (1.0) beyond the tracked device farthest to this
+// Link's right, at its height: something for the held build to be glued to by hand (the release's own glue).
+static void gluenear_test(Cpu *c, uint64_t me, int n) {
+    static double at = -1, gap = 1.0;
+    static _Alignas(16) uint8_t h[0x40];
+    if (at < 0) { const char *e = cfg_get("TOTK_COOP_TEST_GLUENEAR"); at = 0; if (e && sscanf(e, "%lf,%lf", &at, &gap) < 1) at = 0; }
+    if (at <= 0 || frame_step_world_us() / 1e6 < at) return;
+    at = 0;
+    float lp[3], r[9];
+    if (!coop_rd(me + COOP_ACTOR_POS, lp, 12) || !coop_rd(me + COOP_ACTOR_ROT, r, 36)) return;
+    float rx = r[0], rz = r[6], best = -1e9f, bp[3] = {0};
+    char nm[48];
+    for (int i = 0; i < n; i++) {
+        float p[3];
+        if (!live_device(i, nm, sizeof nm) || strncmp(nm, "SpObj_", 6) || !coop_rd(atomic_load(&tracked[i]) + COOP_ACTOR_POS, p, 12)) continue;
+        float d = (p[0] - lp[0]) * rx + (p[2] - lp[2]) * rz;
+        if (d > best) best = d, memcpy(bp, p, 12);
+    }
+    if (best < -1e8f) return;
+    float pos[3] = {bp[0] + rx * (float)gap, bp[1], bp[2] + rz * (float)gap}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    rt_log("coop: test: gluenear: a loose fan asked for at %.2f %.2f %.2f (%.1f m right of the build's right-most part): %d", pos[0], pos[1],
+           pos[2], gap, coop_request_create(c, "SpObj_WindGenerator_A_01", pos, rot, h));
 }
 
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
     if (!ablog_on()) return;
     sweep_test(c, me);
+    gluenear_test(c, me, atomic_load(&tracked_n));
     static int64_t last, first;
     int64_t now = frame_step_world_us();
     {   // TOTK_COOP_TEST_ABPLACE=<s>: game A's Link put on the flat ground of the fan tests (coop_players.c fanset_test),
