@@ -4992,6 +4992,11 @@ void coop_players_tick(Cpu *c) {
     coop_session_tests(frame_step_world_us());
     uint64_t me = coop_player_actor();
     if (!me) return;
+    {   // which Player actor this PC's Link is: a load that makes it again shows here (docs/coop/character-mods.md)
+        static uint64_t me_was;
+        if (me != me_was) rt_log("coop: this PC's Link is the Player at %llx%s", (unsigned long long)me, me_was ? " (a new one)" : "");
+        me_was = me;
+    }
     coop_world_tick(c, me);
 
     coop_chars_tick();   // the character fetch's job and prompt (coop_chars.c), in a session or not
@@ -5009,6 +5014,14 @@ void coop_players_tick(Cpu *c) {
         const CoopChar *me_char = coop_char_local();
         snprintf(st.character, sizeof st.character, "%s", me_char->key);
         st.char_mod = me_char->mod_id;
+        {   // TOTK_COOP_TEST_CHARKEY=<key>@<s> (a test): from s world seconds this PC says its character is key, as a
+            // player who switched character mods and came back would (the others remake its stand-in)
+            const char *e = cfg_get("TOTK_COOP_TEST_CHARKEY"), *at = e ? strchr(e, '@') : NULL;
+            if (at && frame_step_world_us() / 1e6 >= atof(at + 1)) {
+                snprintf(st.character, sizeof st.character, "%.*s", (int)(at - e) < 23 ? (int)(at - e) : 23, e);
+                st.char_mod = 0;
+            }
+        }
         static CoopObj cur[COOP_OBJS];
         int n_objs = report_arrows(c, me, cur);
         n_objs += report_props(me, cur + n_objs, COOP_OBJS - n_objs);
@@ -5194,9 +5207,14 @@ void coop_players_tick(Cpu *c) {
                 host_weather = -1, host_far = 1;
         }
         if (!s && !(s = slot_new(SRC_NET, id))) continue;
-        if (s->state == WANTED || !s->character[0]) {   // its character, as it was when the stand-in was asked for
-            memcpy(s->character, st.character, sizeof s->character);
-            s->character[sizeof s->character - 1] = 0;
+        {   // its character: a change (its player switched mods and came back, a test) remakes the stand-in below
+            char key[COOP_CHAR_KEY];
+            memcpy(key, st.character, sizeof key);
+            key[sizeof key - 1] = 0;
+            if (strcmp(key, s->character)) {
+                if (s->character[0]) rt_log("coop: slot %d: its owner's character is now %s (was %s)", (int)(s - slots), key[0] ? key : "Link", s->character);
+                memcpy(s->character, key, sizeof key);
+            }
         }
         coop_chars_seen(id, st.character[sizeof st.character - 1] ? "" : st.character, st.char_mod);
         int32_t ast = 0;   // (a live actor: one going away, or another at its address, gets no call; code review)
