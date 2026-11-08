@@ -425,6 +425,13 @@ def safe_member(name):
     return parts
 
 
+def bsdtar():
+    """Windows' own tar (bsdtar, libarchive: zip, 7z, rar). Not the first tar on PATH: Git's and MSYS2's are GNU tar,
+    which reads none of those (the 7z test of 2026-11-08 failed through it)."""
+    own = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'tar.exe'
+    return str(own) if own.is_file() else shutil.which('bsdtar') or shutil.which('tar') or 'tar'
+
+
 def unpack(archive, dest):
     """Lists the archive (zip in Python; 7z and rar through Windows' tar), checks every path, refuses code, then
     unpacks the files under the first romfs folder into dest/romfs. Returns the number of files."""
@@ -434,8 +441,8 @@ def unpack(archive, dest):
         z = zipfile.ZipFile(archive)
         names = [(i.filename, i) for i in z.infolist() if not i.is_dir()]
     else:
-        tar = shutil.which('tar') or r'C:\Windows\System32\tar.exe'
-        r = subprocess.run([tar, '-tf', str(archive)], capture_output=True, text=True)
+        r = subprocess.run([bsdtar(), '-tf', str(archive)], capture_output=True, text=True, encoding='utf-8',
+                           errors='replace')
         if r.returncode: raise SystemExit(f'cannot read the archive: {r.stderr.strip()[:300]}')
         names = [(n, None) for n in r.stdout.splitlines() if n and not n.endswith('/')]
     picked, bad = [], []
@@ -460,9 +467,10 @@ def unpack(archive, dest):
             with z.open(i) as f, open(t, 'wb') as g: shutil.copyfileobj(f, g)
     else:
         with tempfile.TemporaryDirectory(dir=dest.parent) as tmp:
-            tar = shutil.which('tar') or r'C:\Windows\System32\tar.exe'
-            r = subprocess.run([tar, '-xf', str(archive), '-C', tmp] + [n for n, _, _ in picked], capture_output=True,
-                               text=True)
+            # The whole archive: every path in it was checked above (a list of members on the command line would pass
+            # Windows' 32 KiB limit for a mod of thousands of files); only the RomFS files are moved on.
+            r = subprocess.run([bsdtar(), '-xf', str(archive), '-C', tmp], capture_output=True, text=True,
+                               encoding='utf-8', errors='replace')
             if r.returncode: raise SystemExit(f'cannot unpack: {r.stderr.strip()[:300]}')
             for n, _, rel in picked:
                 s, t = Path(tmp).joinpath(*safe_member(n)), out.joinpath(*rel)
