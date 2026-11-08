@@ -1782,6 +1782,39 @@ static int near_other(const PeerScan *s, const float p[3], float *d2_out) {
     if (d2_out) *d2_out = best;
     return best < SYNC_M * SYNC_M;
 }
+// An enemy's part that is an actor of its own: a Frox's eyes (Enemy_Mogurudo_WeakPoint beside Enemy_Mogurudo_Junior),
+// a Stone Talus's ore (Enemy_Golem_WeakPoint), a Stalnox's eye (Enemy_Giant_Bone_Eye), a Stalkoblin's head. Each was
+// handed over as an enemy of its own: a Frox's eyes went to one game and its body stayed with the other, so an arrow
+// in the eye knocked it down in the eyes' game only (a play session, 2026-11-08). A part is run by the game that runs
+// its body: the nearest enemy within PART_BODY_M whose name starts as the part's does before its suffix (and is no
+// part), as last scanned; never handed over by itself.
+#define PART_BODY_M 25.0f
+static int part_prefix(const char *nm, char *out, size_t n) {
+    static const char *const suffix[] = {"_WeakPoint", "_Eye", "_Head"};
+    for (int i = 0; i < 3; i++) {
+        const char *at = strstr(nm, suffix[i]);
+        if (at && at > nm) {
+            snprintf(out, n, "%.*s", (int)(at - nm), nm);
+            return 1;
+        }
+    }
+    return 0;
+}
+typedef struct { uint64_t a; float p[3]; char nm[48]; int owner; } PartBody;
+static PartBody bodies[2][128];
+static int nbodies[2], bodies_cur;   // [bodies_cur] fills in this scan; the other is the last scan's
+static const PartBody *part_body(const char *prefix, const float at[3]) {
+    const PartBody *best = NULL;
+    float bd = PART_BODY_M;
+    size_t pl = strlen(prefix);
+    const PartBody *b = bodies[!bodies_cur];
+    for (int i = 0; i < nbodies[!bodies_cur]; i++) {
+        float d = dist3(b[i].p, at);
+        // (not a Baby Frox, whose name starts the same)
+        if (d < bd && !strncmp(b[i].nm, prefix, pl) && !strstr(b[i].nm, "_Baby")) bd = d, best = &b[i];
+    }
+    return best;
+}
 static void peer_one(int cell, uint64_t a, void *arg) {
     PeerScan *s = arg;
     char nm[64];
@@ -1845,6 +1878,19 @@ static void peer_one(int cell, uint64_t a, void *arg) {
         f->owner = want, f->handed = 0, f->moved_us = wnow;
         keep = 1;
     }
+    // An enemy's part: run where its body is.
+    char pfx[48];
+    float part_at[3];
+    int is_part = part_prefix(nm, pfx, sizeof pfx) && coop_rd(a + COOP_ACTOR_POS, part_at, 12);
+    const PartBody *body = is_part ? part_body(pfx, part_at) : NULL;
+    if (body && !rider) {
+        if (f->owner != body->owner || f->handed) {
+            rt_log("coop: %s %s %08x is a part of %s: run %s", kw, nm, key, body->nm, body->owner ? "by its body's game" : "here, with its body");
+            if (body->owner) f->last = -1;
+        }
+        f->owner = body->owner, f->handed = 0, f->moved_us = wnow;
+        keep = 1;
+    }
     if (keep && f->handed == f->owner) f->handed = 0;   // they run it now
     // Handed to another game a moment ago: theirs while that game takes it up.
     if (!keep && f->handed && f->owner == f->handed && wnow - f->handed_us < HANDOVER_WAIT_US) keep = 1;
@@ -1888,7 +1934,11 @@ static void peer_one(int cell, uint64_t a, void *arg) {
                    my_age / 1e3, f->owner ? "" : was ? "; its owner let it go" : "");
         if (f->owner) f->last = -1;
     }
-    if (!rider && !f->owner && life > 0 && wnow - f->moved_us > HANDOVER_HOLD_US) {   // this game's: to a nearer player's?
+    if (!is_part && nbodies[bodies_cur] < 128) {   // a body its parts can follow (next scan)
+        PartBody *pb = &bodies[bodies_cur][nbodies[bodies_cur]];
+        if (coop_rd(a + COOP_ACTOR_POS, pb->p, 12)) pb->a = a, snprintf(pb->nm, sizeof pb->nm, "%s", nm), pb->owner = f->owner, nbodies[bodies_cur]++;
+    }
+    if (!rider && !body && !f->owner && life > 0 && wnow - f->moved_us > HANDOVER_HOLD_US) {   // this game's: to a nearer player's?
         float p[3], dm = 0, dt = 0;
         int to = coop_rd(a + COOP_ACTOR_POS, p, 12) ? handover_to(s, p, &dm, &dt) : 0;
         if (to) {
@@ -3545,6 +3595,7 @@ static void peer_tick(Cpu *c, uint64_t me) {
     nweaps = 0;
     each_live(weap_collect, NULL);
     dup_count();
+    bodies_cur = !bodies_cur, nbodies[bodies_cur] = 0;   // (part_body reads the last scan's)
     each_live(peer_one, &s);
     // Enemies this game ran that are no longer seen: gone; those whose life was 0 when last seen died here.
     for (int i = 0; i < KNOWN_N; i++) {
