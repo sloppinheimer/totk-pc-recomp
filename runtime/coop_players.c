@@ -4997,6 +4997,82 @@ void coop_players_tick(Cpu *c) {
         if (me != me_was) rt_log("coop: this PC's Link is the Player at %llx%s", (unsigned long long)me, me_was ? " (a new one)" : "");
         me_was = me;
     }
+    {   // TOTK_COOP_TEST_HIDEBYTE=<actor offset>,<object offset>,<value>[,<from s>] (a test): the byte at
+        // [actor + a] + o set to value every tick (the scope's model flag, docs/coop/character-mods.md)
+        // (several separated by ';')
+        for (const char *e = cfg_get("TOTK_COOP_TEST_HIDEBYTE"); e && *e;) {
+            unsigned ao = 0, bo = 0xffff, oo = 0, v = 0;   // <a>[/<b>],<o>,<v>[,<from>]: [[actor + a] + b] + o
+            double from = 0;
+            int got = sscanf(e, "%x/%x,%x,%x,%lf", &ao, &bo, &oo, &v, &from);
+            if (got < 4) bo = 0xffff, got = 1 + sscanf(e, "%x,%x,%x,%lf", &ao, &oo, &v, &from);
+            if (got >= 4 && frame_step_world_us() / 1e6 >= from) {
+                uint64_t obj = coop_rd_ptr(me + ao);
+                if (obj && bo != 0xffff) obj = coop_rd_ptr(obj + bo);
+                uint8_t b = (uint8_t)v;
+                if (obj) memcpy((void *)(uintptr_t)(obj + oo), &b, 1);
+            }
+            e = strchr(e, ';');
+            if (e) e++;
+        }
+    }
+    {   // TOTK_COOP_TEST_MODELDIFF=<t1>,<t2> (a test): this PC's Link's actor, the heap objects its first 0x800 bytes
+        // point to, and the ones their first 0x200 bytes point to, read at t1 and t2 world seconds; at t2 each byte that
+        // changed by one bit is logged with its path (a visibility flag the scope sets shows here)
+        enum { PN = 3072, PS = 0x400 };
+        static uint64_t ptr[PN];
+        static uint16_t via1[PN], via2[PN];
+        static uint8_t (*snap)[PS];
+        static int np, phase;
+        const char *e = cfg_get("TOTK_COOP_TEST_MODELDIFF");
+        double t1 = e ? atof(e) : 0, t2 = e && strchr(e, ',') ? atof(strchr(e, ',') + 1) : 0, now = frame_step_world_us() / 1e6;
+        const RtGuestLayout *L = mem_layout();
+        #define HEAPP(q) ((((q) >= L->heap.base && (q) < L->heap.base + L->heap.size) || ((q) >= L->alias.base && (q) < L->alias.base + L->alias.size)) && !((q) & 7))
+        if (e && phase == 0 && now >= t1 && (snap = malloc(sizeof *snap * PN))) {
+            phase = 1, np = 0;
+            uint8_t act[0x800];
+            coop_rd(me, act, sizeof act);
+            for (int pass = 0; pass < 2; pass++) {
+                int n0 = np;
+                for (int src = pass ? 0 : -1; src < (pass ? n0 : 0); src++) {
+                    const uint8_t *from = src < 0 ? act : snap[src];
+                    int lim = src < 0 ? 0x800 : 0x200;
+                    for (int o = 0; o < lim && np < PN; o += 8) {
+                        uint64_t q;
+                        memcpy(&q, from + o, 8);
+                        if (!HEAPP(q)) continue;
+                        int dup = q == me;
+                        for (int k = 0; k < np && !dup; k++) dup = ptr[k] == q;
+                        if (dup || !plat_mem_read(q, snap[np], PS)) continue;
+                        ptr[np] = q, via1[np] = src < 0 ? (uint16_t)o : via1[src], via2[np] = src < 0 ? 0xffff : (uint16_t)o;
+                        np++;
+                    }
+                }
+            }
+            rt_log("coop: test: modeldiff: %d objects read at %.1f s", np, now);
+        } else if (e && phase == 1 && now >= t2) {
+            phase = 2;
+            uint8_t b[PS];
+            int lines = 0;
+            for (int k = 0; k < np; k++) {
+                if (!plat_mem_read(ptr[k], b, PS)) continue;
+                for (int o = 0; o < PS; o++)
+                    if (snap[k][o] != b[o] && __builtin_popcount(snap[k][o] ^ b[o]) == 1 && (b[o] == 0 || snap[k][o] == 0) && lines++ < 600)
+                        rt_log("coop: test: modeldiff: %x/%x +%#x %02x -> %02x", via1[k], via2[k], o, snap[k][o], b[o]);
+            }
+            rt_log("coop: test: modeldiff: %d one-bit changes to or from 0", lines);
+            int fl = 0;   // and each float that was 1 and is now in [0, 1) (a fade)
+            for (int k = 0; k < np; k++) {
+                if (!plat_mem_read(ptr[k], b, PS)) continue;
+                for (int o = 0; o + 4 <= PS; o += 4) {
+                    float x, y;
+                    memcpy(&x, snap[k] + o, 4), memcpy(&y, b + o, 4);
+                    if (x == 1.0f && y >= 0.0f && y < 1.0f && fl++ < 100)
+                        rt_log("coop: test: modeldiff: float %x/%x +%#x 1 -> %g", via1[k], via2[k], o, y);
+                }
+            }
+        }
+        #undef HEAPP
+    }
     coop_world_tick(c, me);
 
     coop_chars_tick();   // the character fetch's job and prompt (coop_chars.c), in a session or not
