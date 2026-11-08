@@ -5096,7 +5096,9 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 static int mo = -1;
                 if (mo < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_MOTION"); mo = !(e && *e == '0'); }
                 uint64_t body = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(s->actor + 0x228) + 0x50) + 0x20) + 0x150);
-                if (mo && body) coop_guest_call(c, MOD_MAIN_BASE + 0xae4300, body, 0, 0, 0);
+                static int mt = -1;   // TOTK_COOP_STANDIN_MOTION_TYPE=<n>: the type asked for (a test; default 0)
+                if (mt < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_MOTION_TYPE"); mt = e ? atoi(e) : 0; }
+                if (mo && body) coop_guest_call(c, MOD_MAIN_BASE + 0xae4300, body, (uint64_t)mt, 0, 0);
             }
             // ... and its weapon's attack on while its owner's is (flags bit 13), every tick
             if (eq && coop_standin_puppet()) {
