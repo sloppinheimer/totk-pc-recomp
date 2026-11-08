@@ -302,6 +302,12 @@ static uint64_t on_flag(uint64_t actor) {   // a device's on bool (coop_players.
         if (i == start) return 0;
     }
 }
+// TOTK_COOP_TEST_FANHITC166=1: FANHIT looks for the device's component 166 (its state at +0x28) as x0 / x1 instead
+static uint64_t fanhit_target(uint64_t a) {
+    uint64_t t = cfg_get("TOTK_COOP_TEST_FANHITC166") ? coop_rd_ptr(a + 0x228) : 0;
+    return t ? coop_rd_ptr(t + 0x530) : a;
+}
+static int devhit_pick = -1;   // the device devhit_test gave a contact (TOTK_COOP_TEST_ABTRACE=devhit,<s> traces it)
 static void trace_tick(int n) {
     // (TOTK_COOP_TEST_ABTRACE=<name>,<from s>: the first live tracked device of that name, from that time)
     const char *te = cfg_get("TOTK_COOP_TEST_ABTRACE");
@@ -317,7 +323,8 @@ static void trace_tick(int n) {
     if (tr_dev < 0) {
         int fans = 0;
         for (int i = 0; i < n && tr_dev < 0; i++)
-            if (live_device(i, nm, sizeof nm) && (want[0] ? !strcmp(nm, want) : !strcmp(nm, "SpObj_WindGenerator_A_01") && ++fans == 2)) tr_dev = i;
+            if (!strcmp(want, "devhit") ? i == devhit_pick
+                : live_device(i, nm, sizeof nm) && (want[0] ? !strcmp(nm, want) : !strcmp(nm, "SpObj_WindGenerator_A_01") && ++fans == 2)) tr_dev = i;
         if (tr_dev < 0) return;
         tr_snap = calloc(TR_N, sizeof *tr_snap);
         if (!tr_snap) { tr_n = -1; return; }
@@ -408,7 +415,7 @@ static void hit_test(Cpu *c, uint64_t me, int n) {
             // (TOTK_COOP_TEST_FANHITDEV=1: the hit fan itself instead)
             int want = cfg_get("TOTK_COOP_TEST_FANHITDEV") ? 1 : 2;
             for (int i = 0; i < n; i++)
-                if (live_device(i, nm, sizeof nm) && !strcmp(nm, "SpObj_WindGenerator_A_01") && ++fans == want) coop_fan_actor = atomic_load(&tracked[i]);
+                if (live_device(i, nm, sizeof nm) && !strcmp(nm, "SpObj_WindGenerator_A_01") && ++fans == want) coop_fan_actor = fanhit_target(atomic_load(&tracked[i]));
         }
         rt_log("coop: test: abhit: this Link put 1 m from device %d (a fan at %.2f %.2f %.2f), facing it", fan, f[0], f[1], f[2]);
     }
@@ -559,6 +566,13 @@ static void stick_test(Cpu *c, uint64_t me, int n) {
         if (strstr(nm, "Stick") && coop_rd(atomic_load(&tracked[i]) + COOP_ACTOR_POS, sp, 12))
             k += snprintf(line + k, sizeof line - (size_t)k, " (bool %d) at %.2f %.2f %.2f", sf ? LD8(sf) : -1, sp[0], sp[1], sp[2]);
     }
+    {   // where the other players' stand-ins are here (in the game that does not hold the stick: at its copy?)
+        int coop_player_positions(float (*out)[3], int max);   // coop_players.c
+        float pp[4][3];
+        int np = coop_player_positions(pp, 4);
+        for (int j = 0; j < np && k < (int)sizeof line - 40; j++)
+            k += snprintf(line + k, sizeof line - (size_t)k, " | stand-in %d at %.2f %.2f %.2f", j, pp[j][0], pp[j][1], pp[j][2]);
+    }
     rt_log("%s", line);
 }
 
@@ -630,7 +644,20 @@ static void devhit_test(int n) {
             if (pick < 0) pick = i;
             if (!on11 && comp && coop_rd_ptr(comp + 0x28)) pick = i;   // (the last such: the second contraption's)
         }
-        if (pick >= 0) {
+        const char *bits = cfg_get("TOTK_COOP_TEST_DEV8D");   // =<hex>: instead, those bits set in its component 166 +0x8d
+        if (pick >= 0 && bits) {
+            devhit_pick = pick;
+            uint64_t a = atomic_load(&tracked[pick]), t = coop_rd_ptr(a + 0x228), c166 = t ? coop_rd_ptr(t + 0x530) : 0;
+            uint8_t b = 0, b60 = 0;
+            if (c166 && coop_rd(c166 + 0x8d, &b, 1) && coop_rd(c166 + 0x60, &b60, 1)) {
+                ST8(c166 + 0x8d, (uint8_t)(b | strtoul(bits, NULL, 16)));
+                rt_log("coop: test: dev8d: %.2f s: device %d's component 166 +0x8d %02x -> %02x (+0x60 %02x)", now, pick, b,
+                       (unsigned)(b | strtoul(bits, NULL, 16)), b60);
+            }
+        } else if (pick >= 0) {
+            devhit_pick = pick;
+            extern uint64_t coop_fan_actor;   // coop_spawn.c (TOTK_COOP_TEST_FANHIT)
+            if (cfg_get("TOTK_COOP_TEST_FANHIT")) coop_fan_actor = fanhit_target(atomic_load(&tracked[pick]));
             uint32_t on11, e28;
             dev_on(atomic_load(&tracked[pick]), &on11, &e28);
             rt_log("coop: test: devhit: %.2f s: device %d (on %#x) %s", now, pick, on11,
@@ -676,6 +703,16 @@ void coop_autobuild_tick(Cpu *c, uint64_t me) {
         static unsigned long long at, len;
         const char *e = cfg_get("TOTK_COOP_TEST_ABWATCH");
         if (e && st == 0 && sscanf(e, "%llx,%llx,%lf,%lf", &at, &len, &from, &to) == 4) st = 1;
+        // (=c166,<from s>,<to s>: the first live fan's component 166 +0x28, its state, which a hit sets 8 -> 4)
+        if (e && st == 0 && !strncmp(e, "c166,", 5) && sscanf(e + 5, "%lf,%lf", &from, &to) == 2) st = 4;
+        if (st == 4 && now / 1e6 >= from) {
+            char nm[48];
+            for (int i = 0; i < n && st == 4; i++) {
+                if (!live_device(i, nm, sizeof nm) || strcmp(nm, "SpObj_WindGenerator_A_01")) continue;
+                uint64_t t = coop_rd_ptr(atomic_load(&tracked[i]) + 0x228), c166 = t ? coop_rd_ptr(t + 0x530) : 0;
+                if (c166) at = c166 + 0x28, len = 8, st = 1, rt_log("coop: test: abwatch: device %d's component 166 +0x28 (%llx)", i, at);
+            }
+        }
         int coop_watch_arm(uint64_t addr, uint64_t len);   // coop_watch_win.c
         void coop_watch_disarm(void);
         extern int coop_watch_writes;
