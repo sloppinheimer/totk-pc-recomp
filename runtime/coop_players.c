@@ -4878,6 +4878,19 @@ void coop_players_tick(Cpu *c, int numpad3) {
         }
         memcpy(s->want_pos, st.pos, 12), memcpy(s->want_rot, st.rot, 36), s->have_want = 1;
         s->ride_owner = st.ride_owner, s->ride_id = st.ride_id, memcpy(s->ride_off, st.ride_off, 12);
+        if (s->ride_owner) {   // a ride offset that is not a number, or a horse rider over 4 m from the horse's origin
+            // (a saddle sits about 1 m from it), rides nothing: it would go into the stand-in's matrix as is, and a
+            // horse ride also hands that horse to the sender's game (coop_world.c peer_one, coop_mount_rider)
+            float mx = 0;
+            int ok = 1;
+            for (int j = 0; j < 3; j++) ok &= isfinite(s->ride_off[j]), mx = fmaxf(mx, fabsf(s->ride_off[j]));
+            if (!ok || (s->ride_owner == COOP_RIDE_MOUNT && mx > 4.0f)) {
+                static int said;
+                if (!said++) rt_log("coop: slot %d: ride (owner %d, id %08x) with offset %g %g %g ignored", (int)(s - slots),
+                                    s->ride_owner, s->ride_id, s->ride_off[0], s->ride_off[1], s->ride_off[2]);
+                s->ride_owner = 0;
+            }
+        }
         s->shield_placed = (st.flags >> 11) & 1;
         {   // its owner's lightning wait (flags bit 12) on the proxy's EquipmentUser, with its own update running while
             // it lasts so its sparks play (a frozen proxy shows none)
