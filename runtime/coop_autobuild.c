@@ -783,8 +783,40 @@ static void gluenear_test(Cpu *c, uint64_t me, int n) {
            pos[2], gap, coop_request_create(c, "SpObj_WindGenerator_A_01", pos, rot, h));
 }
 
+// TOTK_COOP_TEST_COMPDUMP=<s>,<comp>,<comp>...: at that time, those components (0x200 bytes each, by index in
+// [actor+0x228]) of the first live tracked fan, as words, for a diff between an autobuilt fan and its copy
+static void compdump_test(int n) {
+    const char *e = cfg_get("TOTK_COOP_TEST_COMPDUMP");
+    static int done;
+    if (!e || done) return;
+    double at = atof(e);
+    if (frame_step_world_us() / 1e6 < at) return;
+    char nm[48];
+    for (int i = 0; i < n; i++) {
+        if (!live_device(i, nm, sizeof nm) || strcmp(nm, "SpObj_WindGenerator_A_01")) continue;
+        uint64_t a = atomic_load(&tracked[i]), t = coop_rd_ptr(a + 0x228);
+        done = 1;
+        for (int ci = 0; ci < 256 && t; ci++) {   // each component's name ([comp+8], a string)
+            uint64_t comp = coop_rd_ptr(t + 8 * (uint64_t)ci);
+            char nm2[64] = "";
+            if (comp && coop_rd(coop_rd_ptr(comp + 8), nm2, 63) && nm2[0] > 0x20 && nm2[0] < 0x7f) rt_log("coop: test: compname %d %s", ci, nm2);
+        }
+        for (const char *p = strchr(e, ','); p && t; p = strchr(p + 1, ',')) {
+            int ci = atoi(p + 1);
+            uint64_t comp = coop_rd_ptr(t + 8 * (uint64_t)ci), w[64] = {0};
+            if (!comp || !coop_rd(comp, w, sizeof w)) { rt_log("coop: test: compdump comp %d none", ci); continue; }
+            for (int r = 0; r < 64; r += 8)
+                rt_log("coop: test: compdump comp %d +%03x: %016llx %016llx %016llx %016llx %016llx %016llx %016llx %016llx", ci, r * 8,
+                       (unsigned long long)w[r], (unsigned long long)w[r + 1], (unsigned long long)w[r + 2], (unsigned long long)w[r + 3],
+                       (unsigned long long)w[r + 4], (unsigned long long)w[r + 5], (unsigned long long)w[r + 6], (unsigned long long)w[r + 7]);
+        }
+        return;
+    }
+}
+
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
     if (!ablog_on()) return;
+    compdump_test(atomic_load(&tracked_n) < TRACK_N ? atomic_load(&tracked_n) : TRACK_N);
     sweep_test(c, me);
     gluenear_test(c, me, atomic_load(&tracked_n));
     static int64_t last, first;

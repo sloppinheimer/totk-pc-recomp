@@ -1064,6 +1064,30 @@ other game reaching the owner's devices, both wait on one. A hit does it (the pr
 - Not done: the glue's look in the other game (createScotch's request with Ultrahand's attachment points; no
   decoding of them found), and bonding world objects the other game has itself (coop_bonds bonds copies only: a
   plank from the map glued by hand would stay loose in the other game).
+- Glue by hand by script, a fifth and sixth run (glue_near4-style, B's Link asked to stand aside with
+  TOTK_COOP_TEST_ABPLACE in B, which did not move it): held, pushed and let go, the loose fan beside the build; no
+  glue. Both the glue's look and B's own world objects need a real glue by hand first: one by the tester in a logged
+  session (the "(N parts)" line and coop_glue's "made here") is the way to get it.
+
+## The green tint of autobuilt parts (open, 2026-11-08 afternoon)
+- What the autobuild passes when it makes a part (TOTK_COOP_TEST_CREATEDUMP=1, coop_spawn.c create_dump on
+  requestCreateActor; the autobuild's call is main+0x1d3bb98 in main+0x1d3b470) against coop_game.c request_create:
+  the create argument's +0x48 0x0101010100000001 (ours 0), +0x58 a parameter list (only "SpecialParts_InitOn", for
+  spring pistons), +0x80 the autobuild type object (we pass it with TOTK_COOP_AUTOBUILT=1), +0x90 7 (ours 3), x4 0
+  (ours 1), and x7 a creation callback: an object of vtable main+0x3694e18 with a pointer to a byte, whose call
+  (main+0x1d43dc8) writes that byte to the new actor's init values 0x11 and 0x13 (main+0x63336c on x1+0x14). The byte
+  was 0 for the first four parts made and 1 for six more on another thread (the schematic previews, it seems), and the
+  built Fanplane is green, so it is not the tint.
+- Passing all of it on B's copies (TOTK_COOP_AUTOBUILT=1 with TOTK_COOP_TEST_ABFLAG=1 and TOTK_COOP_TEST_ABARGS=1, in
+  coop_game.c): B's copies are not green (game screenshots at 38-40 s, B against A at 36 s).
+- A tick trace of an autobuilt fan through the build's confirm (TOTK_COOP_TEST_ABTRACE=SpObj_WindGenerator_A_01,29.9):
+  at 30.02 s words in components 14, 57, 75, 80 and 83 go 0.6 -> 1.0 together, a flag word 0x11249 -> 0x10009: the
+  preview's see-through look going solid. Nothing there stays green-only. A dump of all components at 38 s in both games
+  (TOTK_COOP_TEST_COMPDUMP=38[,<comp>...], with each component's resource name, compname) is mostly pointers; the
+  names are the same on both sides (ModelInfo twice, ELink, XLink, ...), and component slots 96, 107, 111, 116, 133,
+  144, 194 and 197 were filled on A's fan and empty on B's copy in one run. Next: what those slots are (their vtables
+  main+0x3675850, 0x3677088, 0x3677508, 0x3678550, 0x367c398, 0x367d4d0), and the model's material parameters, which
+  no dump here reaches.
 - A PlayerPuppet cannot take a steering stick: it has no Player component (make_puppet_pack.py), and the Link takes
   the stick by its A button in its own state machine, not by a call. In the stick pair (autobuild_stick_3rd.txt,
   `TOTK_COOP_TEST_ABSTICK=50,1`, game B idle) A's stand-in in B stands 0.7 m behind the copy stick, where A's Link
