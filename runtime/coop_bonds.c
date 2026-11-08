@@ -216,7 +216,7 @@ static void send_groups(int64_t now) {
 // ---- the others' groups: copies bonded here
 #define PAIR_N 128
 static struct {
-    int used, from, tries, done;
+    int used, from, tries, done, marked;
     uint32_t group;
     BondObj m, root;               // the member, and the member it is bonded to (its group's first found here)
     uint64_t ma, ra;               // their copies here
@@ -406,6 +406,13 @@ static void bond_pairs(Cpu *c, int64_t now) {
         uint64_t comp = comp_of(pair[k].ma), mb = main_body(pair[k].ma), rb = main_body(pair[k].ra);
         if (!comp || !mb || !rb) continue;
         if (pair[k].tries) {   // bonded once: a second bond would be a second edge. 3 s on, whether the graph joined them (logged)
+            // Marked autobuilt (green) only once the two share a group: marked as soon as the bond was asked for, a
+            // copy was taken by the game for an autobuilt part broken off its contraption and destroyed itself before
+            // the graph had joined it, and the owner then deleted its own (autobuild_part_3rd.txt pair test).
+            if (!pair[k].marked && now - pair[k].tried_us > 500000) {
+                uint64_t mg = coop_rd_ptr(comp + SPR_GROUP), rg = coop_rd_ptr(comp_of(pair[k].ra) + SPR_GROUP);
+                if (mg && mg == rg) pair[k].marked = 1, mark_autobuilt(c, pair[k].ma), mark_autobuilt(c, pair[k].ra);
+            }
             if (!pair[k].done && now - pair[k].tried_us > 3000000) {
                 uint64_t mg = coop_rd_ptr(comp + SPR_GROUP), rg = coop_rd_ptr(comp_of(pair[k].ra) + SPR_GROUP);
                 pair[k].done = 1;
@@ -421,7 +428,6 @@ static void bond_pairs(Cpu *c, int64_t now) {
         if (!coop_rd(mb + 0x98, wm, sizeof wm) || !coop_rd(rb + 0x98, wr, sizeof wr)) continue;
         call5(c, MOD_MAIN_BASE + BOND_BODIES, comp, 0, rb, (uint64_t)(uintptr_t)wm, (uint64_t)(uintptr_t)wr);
         pair[k].tries++, pair[k].tried_us = now;
-        mark_autobuilt(c, pair[k].ma), mark_autobuilt(c, pair[k].ra);
         if (said < 40) said++, rt_log("coop: bonds: %s bonded to %s (player %u's contraption)", pair[k].m.name, pair[k].root.name, pair[k].m.owner);
     }
 }

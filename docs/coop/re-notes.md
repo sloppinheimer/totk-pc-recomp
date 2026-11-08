@@ -1187,8 +1187,15 @@ the tester's idea: the other game builds the owner's blueprint itself, so the pa
   coop_players.c coop_copy_autobuilt) when the copy is bonded. Pair test (autobuild_noy_3rd.txt in A, idle B, game
   screenshots in B at 40-44 s): B's copy Fanplane is green, as A's; the hit pair (autobuild_3rd.txt with Y at 48 and
   50 s) still shows B's copies on, off and on with A. TOTK_COOP_TEST_GREEN=0 leaves it out, =all marks every bonded copy.
-- Not tested: the mod's side effect, autobuilt parts destroyed when broken apart, on a copy taken apart in the other
-  game (an owner's autobuilt part taken off is deleted by the game already: autobuild_part_3rd.txt).
+- Taking a part off (2026-11-08 evening). An autobuilt contraption is meant to come apart whole when a piece is taken
+  off (the tester), whoever takes it. Marked as soon as their bond was asked for, a copy was destroyed by the game before
+  the graph had joined it (a fan copy gone in B with nobody near it; then the owner deleted its own): copies are now
+  marked only once they share a group. Pair tests: B pulls the wing off its copy (autobuild_part_b_3rd.txt with
+  `TOTK_COOP_TEST_ABHIT_B=46`): B's copy goes, B's other copies follow, the owner deletes its wing and its fans go too:
+  both games empty. A shakes a fan off its own (autobuild_part_3rd.txt, `TOTK_COOP_TEST_ABHIT=36`): A destroys the fan,
+  B drops its copy, B's other copies come apart (state 7) and tell A, which deletes the rest: both games empty. (A's own
+  game had not destroyed its rest by then; the notices did.) The Ultrahand grab in autobuild_part_3rd.txt does not take
+  every run (the Link ends up facing away).
 
 ### Earlier research (before the lead)
 - What the autobuild passes when it makes a part (TOTK_COOP_TEST_CREATEDUMP=1, coop_spawn.c create_dump on
