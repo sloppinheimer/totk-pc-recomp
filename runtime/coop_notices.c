@@ -26,6 +26,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <string.h>
 #include <zstd.h>
 
@@ -51,25 +52,40 @@ int coop_notices_on(void) {
 // ---- the notices shown
 #define NOTICES 8
 static PlatMutex lock = PLAT_MUTEX_INIT;
-static struct { char text[160]; uint64_t at_ns; uint32_t id; } shown[NOTICES];   // lock; oldest first
+static struct { char text[160]; uint64_t at_ns; uint32_t id; int who, name_at, name_len; } shown[NOTICES];   // lock; oldest first
 static int nshown;   // lock
 static uint32_t told;   // lock
 
-// fmt: a catalog text (menu_text) with %s for the names.
-static void notice(const char *fmt, ...) {
+// fmt: a catalog text (menu_text) with %s for the names; the first %s is the player's name (no catalog text reorders
+// its arguments), `who` that player's id: the overlay draws the name in the player's colour (ui/coop_colour.h).
+static void notice(int who, const char *fmt, ...) {
     char t[160];
     va_list ap;
     va_start(ap, fmt);
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wformat-nonliteral"
+#pragma clang diagnostic ignored "-Wformat-security"
     vsnprintf(t, sizeof t, fmt, ap);
+    va_end(ap);
+    // where the name went: the length of the text before the first %s, and the name's own length
+    va_start(ap, fmt);
+    const char *first = strstr(fmt, "%s"), *name = first ? va_arg(ap, const char *) : NULL;
+    char pre[160] = "";
+    if (first && first - fmt < (ptrdiff_t)sizeof pre) {
+        char pf[160];
+        memcpy(pf, fmt, (size_t)(first - fmt)), pf[first - fmt] = 0;
+        snprintf(pre, sizeof pre, pf);
+    }
 #pragma clang diagnostic pop
     va_end(ap);
+    int at = (int)strlen(pre), len = name ? (int)strlen(name) : 0;
+    if (at + len > (int)strlen(t)) len = 0;   // cut off by the text's size: nothing coloured
     rt_log("coop: notice: %s", t);
     plat_mutex_lock(&lock);
     if (nshown == NOTICES) memmove(shown, shown + 1, (NOTICES - 1) * sizeof shown[0]), nshown--;
     snprintf(shown[nshown].text, sizeof shown[nshown].text, "%s", t);
     shown[nshown].id = ++told;
+    shown[nshown].who = who, shown[nshown].name_at = at, shown[nshown].name_len = len;
     shown[nshown++].at_ns = plat_now_ns();
     plat_mutex_unlock(&lock);
 }
@@ -85,6 +101,7 @@ int coop_notices_get(CoopNotice *out, int max) {
         if (age >= COOP_NOTICE_SECONDS || skip-- > 0) continue;
         snprintf(out[n].text, sizeof out[n].text, "%s", shown[i].text);
         out[n].id = shown[i].id;
+        out[n].who = shown[i].who, out[n].name_at = shown[i].name_at, out[n].name_len = shown[i].name_len;
         out[n++].age_s = age;
     }
     plat_mutex_unlock(&lock);
@@ -127,13 +144,13 @@ static void roster_tick(void) {
             roster[id].told = 1;
             const char *nm = name_or(roster[id].name, id, buf, sizeof buf);
             // in the first 5 s of this game's own seat the others were here before it
-            if (roster[id].since_ns - joined_ns < 5000000000ull) notice(menu_text(UI_MENU_COOP_NOTICE_HERE), nm);
-            else notice(menu_text(UI_MENU_COOP_NOTICE_JOINED), nm);
+            if (roster[id].since_ns - joined_ns < 5000000000ull) notice(id, menu_text(UI_MENU_COOP_NOTICE_HERE), nm);
+            else notice(id, menu_text(UI_MENU_COOP_NOTICE_JOINED), nm);
         }
     }
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++)
         if (roster[id].here && !seen[id]) {
-            if (roster[id].told) notice(menu_text(UI_MENU_COOP_NOTICE_LEFT), name_or(roster[id].name, id, buf, sizeof buf));
+            if (roster[id].told) notice(id, menu_text(UI_MENU_COOP_NOTICE_LEFT), name_or(roster[id].name, id, buf, sizeof buf));
             memset(&roster[id], 0, sizeof roster[id]);
         }
 }
@@ -564,6 +581,6 @@ void coop_notice_travel_take(const CoopTravelPacket *p, int len, int from) {
     for (int k = 0; k < n; k++)
         if (ids[k] == from) who = names[k];
     who = name_or(who, from, buf, sizeof buf);
-    if (!where) notice(menu_text(UI_MENU_COOP_NOTICE_TRAVELLED_SOMEWHERE), who);
-    else notice(menu_text(p->near ? UI_MENU_COOP_NOTICE_NEAR : UI_MENU_COOP_NOTICE_TRAVELLED), who, where);
+    if (!where) notice(from, menu_text(UI_MENU_COOP_NOTICE_TRAVELLED_SOMEWHERE), who);
+    else notice(from, menu_text(p->near ? UI_MENU_COOP_NOTICE_NEAR : UI_MENU_COOP_NOTICE_TRAVELLED), who, where);
 }

@@ -130,7 +130,9 @@ static int camera_frame(float fwd[2], float right[2]) {
 // ---- name tags over the other players' Links (drawn by ui/coop_tags.cpp with the overlay).
 // The camera: PlayerCamera's position is the eye, its rotation's columns right, up and back (it looks along -Z);
 // the vertical field of view is TOTK_COOP_TAG_FOV degrees (50 until it is found in the game).
-typedef struct { float x, y, dist; char name[17]; } CoopTag;   // x, y: 0..1 of the screen
+// x, y: 0..1 of the screen (the overlay's guess, TOTK_COOP_TAG_FOV); world: the anchor (vk_tags.c projects it with the
+// frame's own camera); id: 0 the self test
+typedef struct { float x, y, dist, world[3]; int id; char name[17]; } CoopTag;
 int coop_name_tags(CoopTag *out, int max, float aspect) {
     uint64_t cam = coop_resident_named("PlayerCamera", NULL);
     float cp[3], r[9];
@@ -144,13 +146,14 @@ int coop_name_tags(CoopTag *out, int max, float aspect) {
     for (int i = 0; i <= COOP_MAX_PLAYERS && n < max; i++) {
         uint64_t a;
         const char *nm = "";
+        int id = 0;
         if (i == COOP_MAX_PLAYERS) {
             if (!self_test) break;
             a = self_test, nm = "(you)";
         } else {
             Slot *s = &slots[i];
             if (s->state != LIVE || s->source != SRC_NET || !s->actor) continue;
-            a = s->actor;
+            a = s->actor, id = s->net_id;
             for (int k = 0; k < nn; k++) if (ids[k] == s->net_id) nm = names[k];
         }
         float p[3];
@@ -162,7 +165,8 @@ int coop_name_tags(CoopTag *out, int max, float aspect) {
         float dist = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
         if (z < 0.3f || dist > 150.0f) continue;
         CoopTag *t = &out[n++];
-        t->x = 0.5f + 0.5f * x / (z * tx), t->y = 0.5f - 0.5f * y / (z * ty), t->dist = dist;
+        t->x = 0.5f + 0.5f * x / (z * tx), t->y = 0.5f - 0.5f * y / (z * ty), t->dist = dist, t->id = id;
+        t->world[0] = p[0], t->world[1] = p[1], t->world[2] = p[2];
         snprintf(t->name, sizeof t->name, "%s", nm[0] ? nm : "Player");
     }
     return n;

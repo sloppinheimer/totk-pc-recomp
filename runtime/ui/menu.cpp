@@ -47,6 +47,7 @@ extern "C" {
 #include "sysinfo.h"
 #include "ui/menu.h"
 #include "ui_text.h"
+#include "vk_tags.h"
 // host.h and vk.h pull in cpu.h, which is C only: the functions the menu needs from them, as declared there.
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void vk_queue_lock(void);
@@ -196,6 +197,8 @@ static int g_failed_flag() { return g_failed.load(std::memory_order_relaxed); }
 static int g_vk_ok;               // back end initialised for g_vk_fmt
 static VkFormat g_vk_fmt;
 static float g_font_scale;        // the scale of the uploaded font atlas; 0 when none is uploaded
+static uint32_t g_font_gen;       // vk_tags_font's generation of that atlas
+extern "C" uint32_t menu_font_gen(void) { return g_font_gen; }
 static float g_style_scale;       // the scale the style was last sized for
 static ImGuiStyle g_base_style;   // the menu's style at 1080 lines
 static uint64_t g_last_ns;
@@ -375,6 +378,12 @@ static int fonts_up(float scale) {
     vk_queue_lock();   // the upload submits on the queue and waits for it
     int ok = ImGui_ImplVulkan_CreateFontsTexture();
     vk_queue_unlock();
+    if (ok) {   // a copy for the name tags the replay draws into the frame (vk_tags.c)
+        unsigned char *px = nullptr;
+        int fw = 0, fh = 0;
+        fa->GetTexDataAsRGBA32(&px, &fw, &fh);
+        g_font_gen = vk_tags_font(px, fw, fh);
+    }
     fa->ClearInputData();   // the glyphs are in the texture: the font files and the pixels are not needed again
     fa->ClearTexData();
     for (uint8_t *d : data) free(d);

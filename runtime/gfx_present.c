@@ -26,6 +26,7 @@
 #include "platform/platform.h"
 #include "ui/menu.h"
 #include "vk.h"
+#include "vk_tags.h"
 
 #define FRAMES 2
 #define MAX_IMAGES 16
@@ -766,6 +767,7 @@ void gfx_window_release_vk(void) {
         vk_color_release();
         vk_hdr_release();
         vk_contact_release();
+        vk_tags_release();
         free_capture();
         free_thumbs();
         for (int i = 0; i < FRAMES; i++) {
