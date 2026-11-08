@@ -513,6 +513,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_COOP_NOTICE_TRAVELLED] = "%s travelled to %s",
     [UI_MENU_COOP_NOTICE_NEAR] = "%s is now near %s",
     [UI_MENU_COOP_NOTICE_TRAVELLED_SOMEWHERE] = "%s fast travelled",
+    [UI_MENU_COOP_NOTICE_ENTERED] = "%s has entered %s",
     [UI_MENU_CHEATS_REBUILD] = "Rebuild the game now",
     [UI_MENU_CHEATS_REBUILD_DESC] = "Some cheats change the game's code and are not built into it: they are new or "
                                     "edited, or their last rebuild failed or was cancelled. Closes the game; the setup "
@@ -1009,6 +1010,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_COOP_NOTICE_TRAVELLED] = "%s перемещается: %s",
     [UI_MENU_COOP_NOTICE_NEAR] = "%s теперь рядом: %s",
     [UI_MENU_COOP_NOTICE_TRAVELLED_SOMEWHERE] = "%s перемещается",
+    [UI_MENU_COOP_NOTICE_ENTERED] = "%s входит: %s",
     [UI_MENU_CHEATS_REBUILD] = "Пересобрать игру сейчас",
     [UI_MENU_CHEATS_REBUILD_DESC] = "Некоторые читы меняют код игры и ещё не собраны в неё: они новые или изменены, "
                                     "либо прошлая пересборка не удалась или была отменена. Закрывает игру; установщик "
@@ -1531,6 +1533,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_COOP_NOTICE_TRAVELLED] = "%s viajou para %s",
     [UI_MENU_COOP_NOTICE_NEAR] = "%s agora está perto de %s",
     [UI_MENU_COOP_NOTICE_TRAVELLED_SOMEWHERE] = "%s viajou",
+    [UI_MENU_COOP_NOTICE_ENTERED] = "%s entrou em %s",
     [UI_MENU_CHEATS_REBUILD] = "Recompilar o jogo agora",
     [UI_MENU_CHEATS_REBUILD_DESC] = "Alguns cheats alteram o código do jogo e ainda não foram compilados nele: são "
                                     "novos ou editados, ou a última recompilação falhou ou foi cancelada. Fecha o "
@@ -2145,6 +2148,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_COOP_NOTICE_TRAVELLED] = "%s 传送到了%s",
     [UI_MENU_COOP_NOTICE_NEAR] = "%s 现在在%s附近",
     [UI_MENU_COOP_NOTICE_TRAVELLED_SOMEWHERE] = "%s 传送了",
+    [UI_MENU_COOP_NOTICE_ENTERED] = "%s 进入了%s",
     [UI_MENU_CHEATS_REBUILD] = "立即重新构建游戏",
     [UI_MENU_CHEATS_REBUILD_DESC] = "有些金手指会修改游戏代码，但尚未构建进游戏：它们是新增或修改的，或上次重新构建失败或被取消。将关闭游戏；安装程序会把它们构建进去（几分钟）并重新启动游戏。上次存档之后的进度会丢失。",
     [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "此模组修改游戏代码（exefs）的方式本移植无法应用，因此整个模组保持关闭。%s",

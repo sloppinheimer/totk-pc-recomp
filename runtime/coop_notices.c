@@ -22,6 +22,12 @@
 // LocationMsg/Dungeon.msbt. Every shrine, tower and lightroot of 1.4.3 has its name there (checked with the files).
 // The label goes to the others (a CoopTravelPacket in a HIT packet, kind "TR"), and each game names the place in its
 // own language.
+//
+// Entering a shrine is a jump too: the elevator takes this Link to the shrine's inside, which has no travel point
+// near it (the tester saw "A is now near Mabe Village Ruins" on entering one, 2026-11-07). So a jump that lands on no
+// travel point but leaves from within SHRINE_ENTRY_M of a shrine is "has entered <shrine>" (near = 2 in the packet; a
+// game without this reads it as "is now near <shrine>"). The jump back out lands at that shrine's own travel point
+// and tells nothing.
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -497,6 +503,21 @@ static const char *place_name(const char *label) {
 #define TRAVEL_POINT_M 40.0f
 #define TRAVEL_NEAR_M 600.0f
 #define TRAVEL_SETTLE_US 1500000
+#define SHRINE_ENTRY_M 60.0f
+
+static int is_shrine(const Place *pl) { return pl && !strncmp(pl->label, "Dungeon", 7) && strlen(pl->label) == 10; }
+
+// The nearest shrine within r m of p, or NULL.
+static const Place *nearest_shrine(const float p[3], float r) {
+    const Place *best = NULL;
+    float bd = r * r;
+    for (int i = 0; i < nplaces; i++) {
+        if (!is_shrine(&places[i])) continue;
+        float d = dist2(p, places[i].p);
+        if (d < bd) bd = d, best = &places[i];
+    }
+    return best;
+}
 
 static struct { CoopTravelPacket p; int left; int64_t next_us; } out;   // the last travel, sent three times
 
@@ -540,15 +561,20 @@ void coop_notices_tick(Cpu *c, uint64_t me) {
         settle_us = -1;
         memcpy(last_p, p, 12);
         places_up();
-        const Place *at = nearest(p, 1, TRAVEL_POINT_M), *nr = at ? NULL : nearest(p, 0, TRAVEL_NEAR_M);
+        static char inside[sizeof out.p.label];   // the shrine this Link entered, "" none
+        const Place *at = nearest(p, 1, TRAVEL_POINT_M), *in = at ? NULL : nearest_shrine(from_p, SHRINE_ENTRY_M);
+        const Place *nr = at || in ? NULL : nearest(p, 0, TRAVEL_NEAR_M);
+        int back_out = at && inside[0] && !strcmp(at->label, inside);
         rt_log("coop: notices: this Link moved %.0f m in a tick to %.1f %.1f %.1f: %s %s", sqrtf(dist2(p, from_p)), p[0], p[1],
-               p[2], at ? "travel point" : nr ? "near" : "no place", at ? at->label : nr ? nr->label : "");
-        if (!at && !nr) return;
+               p[2], back_out ? "out of the shrine" : at ? "travel point" : in ? "into the shrine" : nr ? "near" : "no place",
+               at ? at->label : in ? in->label : nr ? nr->label : "");
+        snprintf(inside, sizeof inside, "%s", in ? in->label : "");
+        if (back_out || (!at && !in && !nr)) return;
         static uint32_t seq;
         memset(&out.p, 0, sizeof out.p);
-        out.p.kind = COOP_TRAVEL_KIND, out.p.seq = ++seq, out.p.near = !at;
+        out.p.kind = COOP_TRAVEL_KIND, out.p.seq = ++seq, out.p.near = at ? 0 : in ? 2 : 1;
         memcpy(out.p.pos, p, 12);
-        snprintf(out.p.label, sizeof out.p.label, "%s", at ? at->label : nr->label);
+        snprintf(out.p.label, sizeof out.p.label, "%s", at ? at->label : in ? in->label : nr->label);
         out.left = 3, out.next_us = now;
         return;
     }
@@ -582,5 +608,6 @@ void coop_notice_travel_take(const CoopTravelPacket *p, int len, int from) {
         if (ids[k] == from) who = names[k];
     who = name_or(who, from, buf, sizeof buf);
     if (!where) notice(from, menu_text(UI_MENU_COOP_NOTICE_TRAVELLED_SOMEWHERE), who);
-    else notice(from, menu_text(p->near ? UI_MENU_COOP_NOTICE_NEAR : UI_MENU_COOP_NOTICE_TRAVELLED), who, where);
+    else notice(from, menu_text(p->near == 2 ? UI_MENU_COOP_NOTICE_ENTERED : p->near ? UI_MENU_COOP_NOTICE_NEAR
+                                                                          : UI_MENU_COOP_NOTICE_TRAVELLED), who, where);
 }
