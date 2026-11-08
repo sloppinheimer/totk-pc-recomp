@@ -2266,6 +2266,8 @@ static int copy_pending_near(const float *p) {
 static struct { uint64_t actor, eq; int k, until, since, remade; uint32_t id; char name[48], fuse[32]; } old_items[16];
 #define OLD_ITEM_ID 0x380   // an actor's own id (coop_glue.c ACTOR_ID): one made at a freed one's address has another
 static char old_item_fuse[32];   // the next old item's fused material: the gear code sets it before regive_gear
+static uint64_t dkilled[64];   // set off here for another game's notice, or deleted here by this code: not told as destroyed
+static int dkilled_n, dtick;
 int old_fuse_name(const char *nm) {   // (a loose one is not sent: old_items_tick deletes it)
     for (int i = 0; i < 16; i++) if (old_items[i].actor && old_items[i].fuse[0] && !strcmp(nm, old_items[i].fuse)) return 1;
     return 0;
@@ -2344,9 +2346,11 @@ static void delete_old_item(Cpu *c, int i) {
         coop_actors_all(fuse_find_fn, &ff);
     }
     coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, old_items[i].actor, COOP_DELETE_REASON, 0, 0);
+    dkilled[dkilled_n++ % 64] = old_items[i].actor;   // (this code's own delete: no destroy notice for it)
     for (int k = 0; k < ff.n; k++) {
         if (fuse_on_held(ff.found[k])) continue;   // (gear of a Link, or of a name a Link's gear has)
         coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, ff.found[k], COOP_DELETE_REASON, 0, 0);
+        dkilled[dkilled_n++ % 64] = ff.found[k];
         rt_log("coop: proxy: its old %s's fused %s is deleted with it", old_items[i].name, old_items[i].fuse);
     }
 }
@@ -2455,6 +2459,7 @@ static void old_items_tick(Cpu *c) {
                 for (int k = 0; k < ff.n; k++) {
                     if (fuse_on_held(ff.found[k])) continue;
                     coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, ff.found[k], COOP_DELETE_REASON, 0, 0);
+                    dkilled[dkilled_n++ % 64] = ff.found[k];
                     rt_log("coop: proxy: the %s come off its old %s is deleted", old_items[i].fuse, old_items[i].name);
                 }
             }
@@ -2780,8 +2785,7 @@ static int my_report(uint64_t a) {   // this game sends a as moved
 // going away (a fast travel, a save load): not told. Objects this game set off for another's notice are not told
 // back. Links, people, animals, enemies, arrows, chests and the like are left out (prop_skip), and copies.
 static struct { uint64_t actor; uint32_t key; char name[48]; int seen; } dwatch[512];
-static uint64_t dkilled[64];   // set off here for another game's notice
-static int dkilled_n, dtick;
+
 static void dwatch_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
     const float *me = arg;
     float p[3];
@@ -2860,7 +2864,9 @@ static void destroy_apply(Cpu *c, const CoopObj *o, int from) {
     coop_actors_all(keyfind_fn, &kf);
     uint64_t a = kf.actor[0];
     char nm[48];
-    if (!a || strcmp(coop_actor_name(a, nm, sizeof nm), o->name) || coop_is_resident(a) || !strncmp(nm, "Parasail", 8)) {
+    // (never a Link's gear or a stand-in's, nor one of a name their gear has: a fused stick deleted in the other game
+    // was told as destroyed, and the stand-in's held stick of that name broke here; a play session, 2026-11-08)
+    if (!a || strcmp(coop_actor_name(a, nm, sizeof nm), o->name) || coop_is_resident(a) || !strncmp(nm, "Parasail", 8) || fuse_on_held(a)) {
         rt_log("coop: player %d destroyed %s (key %08x): not here (or one not to destroy)", from, o->name, o->id & ~COOP_OBJ_KEYED);
         return;
     }
