@@ -2072,7 +2072,10 @@ static int prop_skip(const char *nm) {
                                 // the pooled helper actor the game gives each combined contraption (an autobuild's):
                                 // the idle ones wait at the origin, so the other game took one of its own idle ones for
                                 // it by key and moved it to the owner's build (autobuild_3rd.txt pair test, 2026-11-08)
-                                "CombinedActorIntegrator"};
+                                "CombinedActorIntegrator",
+                                // Ultrahand's glue effect between two parts: sent as made, it was copied in the other
+                                // game (autobuild_part_3rd.txt pair test, 2026-11-08)
+                                "UltraHand_"};
     // (LightningStrike, a thunderstorm's strike, was left out here for a while; it is sent again, the one that hits
     // this Link, so the others see it struck: the tester's list, 2026-11-06. Its copy runs its own update, copy_place.)   // chests: each player's own
     for (size_t i = 0; i < sizeof pre / sizeof *pre; i++) if (!strncmp(nm, pre[i], strlen(pre[i]))) return 1;

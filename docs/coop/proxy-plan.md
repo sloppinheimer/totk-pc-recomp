@@ -757,7 +757,9 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
   builder's game, so one hit turns on every fan; the other games' copies had none (one hit, one copy fan). The owner
   sends its objects' groups ("CB" packets, once a second); the others bond their copies with the game's bond call
   (main+0x1c05a98), and the copies get a group of their own. Pair test: a hit in either game turns every fan of the
-  contraption on (or off) in both. Not tested: Ultrahand-made contraptions, taking one apart, two at once, flying one.
+  contraption on (or off) in both. Also tested: a part taken off with Ultrahand (the game deletes it; the rest stays
+  one unit in both), two contraptions (a hit turns on only the one hit). Not tested: contraptions glued by hand,
+  flying one.
   TOTK_COOP_BONDS=0 off. Re-notes "Autobuild copies".
 - **Zonai devices** on the other screens: copies of devices run their own logic, and a player's attack makes their
   proxy swing in the other games, so a hit turns the copy on there too (a fan in the pair test). Effects are the

@@ -12,7 +12,9 @@
 // field (or, with TOTK_COOP_TEST_ABWATCH=<hex address>,<length>,<from s>,<to s>, on that range).
 // TOTK_COOP_TEST_ABHIT=<s> (and TOTK_COOP_TEST_ABHIT_B=<s>): sword hits on the build's fans in each game (hit_test);
 // TOTK_COOP_TEST_ABGLUE=1: the game that did not build glues its copies with Ultrahand glue (glue_try);
-// TOTK_COOP_TEST_ABDUMP=1: a fan's actor and components logged for a diff (fan_dump). tools/coop/autobuild_3rd.txt
+// TOTK_COOP_TEST_ABDUMP=1: a fan's model, actor and components logged for a diff (fan_dump);
+// TOTK_COOP_TEST_ABPART=<s>: a fan taken off with removeScotch (part_test); TOTK_COOP_TEST_ABPLACE=<s>: game A's Link
+// put on flat ground. tools/coop/autobuild_3rd.txt
 // plays the build, tools/coop/autobuild_b_3rd.txt game B's swing.
 #include <math.h>
 #include <stdatomic.h>
@@ -142,6 +144,17 @@ static void fan_dump(int n) {
         if (!live_device(i, nm, sizeof nm) || strcmp(nm, "SpObj_WindGenerator_A_01")) continue;
         uint64_t a = atomic_load(&tracked[i]), t = coop_rd_ptr(a + 0x228);
         static uint64_t w[0x1000 / 8];
+        {   // its model ([[actor+0x228]+8]+0x28) and the objects that model points to, as "abmodel" lines
+            uint64_t m = coop_rd_ptr(coop_rd_ptr(t + 8) + 0x28);
+            if (m && coop_rd(m, w, 0x800))
+                for (int k = 0; k < 0x800 / 8; k++) {
+                    if (w[k]) rt_log("coop: abmodel -1 %x %016llx", k * 8, (unsigned long long)w[k]);
+                    static uint64_t v[0x200 / 8];
+                    if (k < 0x100 / 8 && w[k] >= 0x100000000ull && w[k] < 0x8000000000ull && !(w[k] & 7) && coop_rd(w[k], v, sizeof v))
+                        for (int j = 0; j < 0x200 / 8; j++)
+                            if (v[j]) rt_log("coop: abmodel %d %x %016llx", k * 8, j * 8, (unsigned long long)v[j]);
+                }
+        }
         for (int j = -1; j < 256; j++) {
             uint64_t base = j < 0 ? a : coop_rd_ptr(t + 8 * (uint64_t)j);
             int len = j < 0 ? 0x1000 : 0x200;
@@ -283,9 +296,11 @@ static void hit_test(Cpu *c, uint64_t me, int n) {
             if (wing < 0 && !strcmp(nm, "SpObj_LiftGeneratorWing_A_01")) wing = i;
         }
         float f[3], w[3];
-        if (fan < 0 || wing < 0 || !coop_rd(atomic_load(&tracked[fan]) + COOP_ACTOR_POS, f, 12) ||
-            !coop_rd(atomic_load(&tracked[wing]) + COOP_ACTOR_POS, w, 12))
-            return;
+        if (fan < 0 || !coop_rd(atomic_load(&tracked[fan]) + COOP_ACTOR_POS, f, 12)) return;
+        if (wing < 0 || !coop_rd(atomic_load(&tracked[wing]) + COOP_ACTOR_POS, w, 12)) {   // no wing: from this Link's side
+            if (!coop_rd(me + COOP_ACTOR_POS, w, 12)) return;
+            for (int i = 0; i < 3; i++) w[i] = 2 * f[i] - w[i];
+        }
         float ux = f[0] - w[0], uz = f[2] - w[2], l = sqrtf(ux * ux + uz * uz);
         if (l < 0.1f) ux = 1, uz = 0, l = 1;
         ux /= l, uz /= l;
@@ -339,15 +354,46 @@ static void glue_try(Cpu *c, int n, int64_t since) {
         }
 }
 
+// TOTK_COOP_TEST_ABPART=<s> (game A, the first joined): at that world time the build's last fan is taken off its
+// contraption as Ultrahand's shake does: removeScotch (main+0x1c042bc: the fan's glue component, its id
+// [actor+0x380], 0x2051000a), whose message makes every actor bonded to it break its bonds with it (main+0x1c0aefc).
+static void part_test(Cpu *c, int n) {
+    static double at = -1;
+    static int done;
+    if (at < 0) { const char *e = cfg_get("TOTK_COOP_TEST_ABPART"); at = e ? atof(e) : 0; }
+    if (done || at <= 0 || coop_net_id() != 1 || frame_step_world_us() / 1e6 < at) return;
+    done = 1;
+    char nm[48];
+    int fan = -1;
+    for (int i = 0; i < n; i++) if (live_device(i, nm, sizeof nm) && !strcmp(nm, "SpObj_WindGenerator_A_01")) fan = i;
+    if (fan < 0) { rt_log("coop: test: abpart: no fan"); return; }
+    uint64_t a = atomic_load(&tracked[fan]), t = coop_rd_ptr(a + 0x228), comp = t ? coop_rd_ptr(t + 0x480) : 0;
+    uint32_t id = 0;
+    coop_rd(a + 0x380, &id, 4);
+    if (comp) coop_guest_call(c, MOD_MAIN_BASE + 0x1c042bc, comp, id, 0x2051000a, 0);
+    rt_log("coop: test: abpart: device %d (a fan) taken off its contraption (component %llx, group %llx before)", fan,
+           (unsigned long long)comp, (unsigned long long)(comp ? coop_rd_ptr(comp + 0x28) : 0));
+}
+
 // Every 2 s while any device is tracked (for 60 s): each one's name, state, flags and glue entries.
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
     if (!ablog_on()) return;
     static int64_t last, first;
     int64_t now = frame_step_world_us();
+    {   // TOTK_COOP_TEST_ABPLACE=<s>: game A's Link put on the flat ground of the fan tests (coop_players.c fanset_test),
+        // facing -x, at that world time: things made in front of it there stay put (on the stairs they rolled away)
+        static int done;
+        const char *e = cfg_get("TOTK_COOP_TEST_ABPLACE");
+        if (e && !done && coop_net_id() == 1 && now / 1e6 >= atof(e)) {
+            float m9[12] = {0, 0, -1, 31.3f, 0, 1, 0, 1514.8f, 1, 0, 0, 1510.7f};
+            coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m9, 0, 0);
+            done = 1;
+        }
+    }
     int n = atomic_load(&tracked_n);
     if (n > TRACK_N) n = TRACK_N;
-    if (n) hit_test(c, me, n);
-    else if (cfg_get("TOTK_COOP_TEST_ABHIT") && coop_net_id() != 1 && now > 20000000) {   // (near_dev_fn)
+    if (n) hit_test(c, me, n), part_test(c, n);
+    else if (cfg_get("TOTK_COOP_TEST_ABHIT") && now > 20000000) {   // (near_dev_fn)
         static NearDev d;
         static int64_t last_scan;
         if (now - last_scan > 1000000) {

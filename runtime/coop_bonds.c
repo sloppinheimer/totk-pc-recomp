@@ -20,8 +20,9 @@
 //   as main+0x1c05b84). A body whose +0x68 has bit 24 set is skipped by a bond (main+0xa2d39c; every copy's is set
 //   here and no original's, cause not found): cleared on both first. The graph then gives the copies one group of
 //   their own (autobuild_3rd.txt pair test: the proxy's hit turned on all three copy fans).
-// - a bonded copy no longer in its group in the owner's list for 5 s is made again (coop_copy_remake): no call to undo
-//   such a bond is known.
+// - a bonded copy in no group of the owner's list for 5 s is made again (coop_copy_remake): no call to undo such a
+//   bond is known. A part taken off an autobuilt contraption with Ultrahand is deleted by the game itself (state 11;
+//   autobuild_part_3rd.txt), and its copy with it.
 // Only copies are bonded (a game's own objects are left as they are). TOTK_COOP_BONDS=0 turns it off.
 #include <stddef.h>
 #include <stdio.h>
@@ -162,13 +163,15 @@ static void take_group(int from, uint32_t group, BondEntry *e, int n, int64_t no
         if (i == r) continue;
         uint64_t a = coop_obj_find((int)e[i].o.owner, e[i].o.id, e[i].o.name);
         if (!a || !coop_is_copy(a)) continue;
+        // By member, not by group: the owner's group object changes when its contraption is made again (a part taken
+        // off, autobuild_part_3rd.txt), and the members still bonded here are not parted for that.
         int f = -1, free = -1;
         for (int k = 0; k < PAIR_N && f < 0; k++) {
-            if (pair[k].used && pair[k].from == from && pair[k].group == group && pair[k].ma == a && pair[k].mu == actor_uid(a)) f = k;
+            if (pair[k].used && pair[k].from == from && pair[k].ma == a && pair[k].mu == actor_uid(a)) f = k;
             else if (!pair[k].used && free < 0) free = k;
         }
-        if (f >= 0 && (pair[f].ra != root || pair[f].ru != actor_uid(root))) {   // its group's first copy is another now
-            pair[f].used = 0;
+        if (f >= 0 && (pair[f].ra != root || pair[f].ru != actor_uid(root))) {   // its group's first copy is another now:
+            pair[f].used = 0;                                                     // bonded to that one too (no bond is undone)
             f = -1;
         }
         if (f < 0) {
@@ -177,7 +180,7 @@ static void take_group(int from, uint32_t group, BondEntry *e, int n, int64_t no
             pair[f].used = 1, pair[f].from = from, pair[f].group = group, pair[f].m = e[i].o, pair[f].root = e[r].o;
             pair[f].ma = a, pair[f].mu = actor_uid(a), pair[f].ra = root, pair[f].ru = actor_uid(root), pair[f].first_us = now;
         }
-        pair[f].heard_us = now;
+        pair[f].heard_us = now, pair[f].group = group;
     }
 }
 int coop_bonds_take(const void *data, int n, int from) {   // coop_world.c peer_tick: 1 if it was a bond packet
@@ -242,4 +245,13 @@ void coop_bonds_tick(Cpu *c) {   // coop_world.c peer_tick
     static int64_t last;
     if (now - last >= 1000000) last = now, send_groups(now);
     bond_pairs(c, now);
+    static const char *ta = (const char *)1;   // test (TOTK_COOP_TEST_ABACTOR=<hex offset>,<hex mask>): ORed into each bonded copy's actor
+    if (ta == (const char *)1) ta = cfg_get("TOTK_COOP_TEST_ABACTOR");
+    unsigned long long off = 0, mask = 0;
+    if (ta && sscanf(ta, "%llx,%llx", &off, &mask) == 2)
+        for (int k = 0; k < PAIR_N; k++)
+            if (pair[k].used && pair[k].tries) {
+                __atomic_fetch_or((uint32_t *)(uintptr_t)(pair[k].ma + off), (uint32_t)mask, __ATOMIC_SEQ_CST);
+                __atomic_fetch_or((uint32_t *)(uintptr_t)(pair[k].ra + off), (uint32_t)mask, __ATOMIC_SEQ_CST);
+            }
 }
