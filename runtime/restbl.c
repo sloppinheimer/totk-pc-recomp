@@ -27,6 +27,8 @@ static void wr32(uint8_t *p, uint32_t v) {
     for (int i = 0; i < 4; i++) p[i] = (uint8_t)(v >> 8 * i);
 }
 
+static uint32_t crc32_of(const char *s);
+uint32_t restbl_hash(const char *key) { return crc32_of(key); }
 static uint32_t crc32_of(const char *s) {
     uint32_t c = ~0u;
     for (; *s; s++) {
@@ -332,4 +334,21 @@ done:
     free(m.m);
     free(o.m);
     return raised;
+}
+
+void restbl_each(const Restbl *t, void (*each)(uint32_t hash, uint32_t size, void *ctx), void *ctx) {
+    for (size_t i = 0; i < t->nhashed; i++) each(t->hashed[i].hash, t->hashed[i].size, ctx);
+    for (size_t i = 0; i < t->nnamed; i++) {
+        const uint8_t *e = t->named + i * (t->name_len + 4);
+        char key[256];
+        size_t n = t->name_len < sizeof key - 1 ? t->name_len : sizeof key - 1;
+        memcpy(key, e, n), key[n] = 0;
+        each(crc32_of(key), rd32(e + t->name_len), ctx);
+    }
+}
+
+Restbl *restbl_empty(void) {
+    uint8_t h[22] = "RESTBL";
+    h[6] = 1, h[10] = 160;   // version 1, name length 160, no entries
+    return restbl_parse(h, sizeof h);
 }

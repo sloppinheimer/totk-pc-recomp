@@ -74,6 +74,14 @@ static size_t noverlay, overlay_cap;
 static char **added;                 // RomFS paths of the added files, sorted; added[k] is index file_count + k
 static size_t nadded;
 static int patches_loaded;           // a romfs-patches manifest gave a file (romfs_patches_loaded)
+// Files added while the game runs (romfs_live_add): RomFS index file_count + nadded + j for live[j]. Appended under
+// live_lock and published by nlive (release); never moved or removed, so readers need no lock.
+#define LIVE_CAP 65536
+#define LIVE_OV 0x80000000u          // handle_ovl of a live file: LIVE_OV | j
+typedef struct { char *name, *path; uint64_t size; Identity id; } Live;
+static Live *live;
+static size_t nlive;
+static PlatMutex live_lock = PLAT_MUTEX_INIT;
 
 static void need(int c, const char *m) {
     if (!c) rt_fatal("RomFS: %s", m);
@@ -191,12 +199,16 @@ static size_t added_lower(const char *p) {
     return lo;
 }
 
-// The index of RomFS path p (an added file: file_count + k), or UINT64_MAX.
+// The index of RomFS path p (an added file: file_count + k; a live one: file_count + nadded + j), or UINT64_MAX.
 static uint64_t file_index(const char *p) {
     uint64_t i = lower(p);
     if (i < file_count && !strcmp(p, entry_name(entry(i)))) return i;
     size_t k = added_lower(p);
-    return k < nadded && !strcmp(added[k], p) ? file_count + k : UINT64_MAX;
+    if (k < nadded && !strcmp(added[k], p)) return file_count + k;
+    size_t n = __atomic_load_n(&nlive, __ATOMIC_ACQUIRE);
+    for (size_t j = 0; j < n; j++)
+        if (live[j].name[0] == p[0] && !strcmp(live[j].name, p)) return file_count + nadded + j;
+    return UINT64_MAX;
 }
 
 // 1 when a RomFS file or an added one lies under folder (a path ending in '/').
@@ -720,13 +732,20 @@ static void pack_note(const char *key, uint32_t was, uint32_t now, void *ctx) {
 
 // The entries of the members of every pack a mod serves, raised in out against the game's table base; the number
 // raised, *packs the number of packs with one.
+// TOTK_TEST_RESTBL_SKIP=<mod folder> (a test): that mod's files get no entries of their own (as a file added while the
+// game runs, which the table read at start cannot know).
+static int restbl_skipped(const Overlay *o) {
+    const char *e = cfg_get("TOTK_TEST_RESTBL_SKIP");
+    return e && *e && o->mod && (o->index == ADDED || o->index >= file_count) && !strcmp(mods_at(o->mod - 1)->name, e);
+}
+
 static int restbl_packs(Restbl *out, const Restbl *base, int *packs, int *lines) {
     Packs ps = {0};
     int raised = 0, opened = 0, bad = 0;
     *packs = 0;
     for (size_t k = 0; k < noverlay; k++) {
         const Overlay *o = &overlays[k];
-        if ((!o->mod && o->prio != 1) || !ends_with(o->name, ".pack.zs")) continue;
+        if ((!o->mod && o->prio != 1) || !ends_with(o->name, ".pack.zs") || restbl_skipped(o)) continue;
         if (!opened++ && !packs_open(&ps)) {
             rt_log("RomFS: no zstd dictionary in Pack/ZsDic.pack.zs; the members of mods' packs keep their entries");
             break;
@@ -754,6 +773,27 @@ static int restbl_packs(Restbl *out, const Restbl *base, int *packs, int *lines)
 // has, restbl_estimate for an added one), the members of the packs mods serve too (restbl_packs). Never lowers the
 // game's entries. A file the port's own overlay adds (the co-op stand-in's actor pack, tools/coop/make_puppet_pack.py)
 // gets an entry the same way.
+// The decompressed table raw[0..*n) with ROMFS_RESTBL_SPARES hashed entries {0xffffffff, 0} after its hashed ones: room
+// for the entries of files added while the game runs, which coop_chars.c writes into the game's copy of the table (the
+// hashed entries stay sorted, the spares last). raw is freed; NULL when out of memory.
+static uint8_t *restbl_spares(uint8_t *raw, size_t *n) {
+    if (!raw || *n < 22) return raw;
+    uint32_t nh = raw[14] | raw[15] << 8 | raw[16] << 16 | (uint32_t)raw[17] << 24;
+    size_t at = 22 + (size_t)nh * 8, add = (size_t)ROMFS_RESTBL_SPARES * 8;
+    if (at > *n) return raw;
+    uint8_t *g = malloc(*n + add);
+    if (!g) { free(raw); return NULL; }
+    memcpy(g, raw, at);
+    memset(g + at, 0xff, add);
+    for (size_t k = 0; k < (size_t)ROMFS_RESTBL_SPARES; k++) memset(g + at + k * 8 + 4, 0, 4);
+    memcpy(g + at + add, raw + at, *n - at);
+    nh += ROMFS_RESTBL_SPARES;
+    for (int b = 0; b < 4; b++) g[14 + b] = (uint8_t)(nh >> 8 * b);
+    free(raw);
+    *n += add;
+    return g;
+}
+
 static void restbl_overlay(void) {
     int player = 0;
     for (size_t k = 0; k < noverlay; k++) player |= overlays[k].mod || overlays[k].prio == 1 || overlays[k].index == ADDED;
@@ -801,7 +841,7 @@ static void restbl_overlay(void) {
     for (size_t k = 0; k < noverlay; k++) {
         Overlay *o = &overlays[k];
         if (o->index == gi) served = o;
-        if ((!o->mod && o->prio != 1 && o->index != ADDED) || o->index == gi) continue;
+        if ((!o->mod && o->prio != 1 && o->index != ADDED) || o->index == gi || restbl_skipped(o)) continue;
         char key[4200];
         restbl_key(o->name, key, sizeof key);
         int mc = ends_with(o->name, ".mc");
@@ -831,6 +871,7 @@ static void restbl_overlay(void) {
     size_t rn = 0, zn = 0;
     uint8_t *raw = restbl_write(out, &rn);
     restbl_free(out);
+    raw = restbl_spares(raw, &rn);
     size_t cap = raw ? ZSTD_compressBound(rn) : 0;
     void *z = raw ? malloc(cap) : NULL;
     if (z) zn = ZSTD_compress(z, cap, raw, rn, 3);
@@ -1237,15 +1278,16 @@ uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
     if (!p) return FS_R_PATH_NOT_FOUND;
     uint64_t i = file_index(p);
     if (i == UINT64_MAX) return FS_R_PATH_NOT_FOUND;
-    uint32_t ov = overlay_slot(i);
+    uint32_t ov = i >= file_count + nadded ? LIVE_OV | (uint32_t)(i - file_count - nadded) : overlay_slot(i);
     PlatFile *f = NULL;
     if (ov) {
-        const Overlay *o = &overlays[ov - 1];
-        f = open_read(o->path);
+        const char *opath = ov & LIVE_OV ? live[ov & ~LIVE_OV].path : overlays[ov - 1].path;
+        const Identity *want = ov & LIVE_OV ? &live[ov & ~LIVE_OV].id : &overlays[ov - 1].id;
+        f = open_read(opath);
         Identity id;
         if (f) id = identity_of(f);
-        if (!f || memcmp(&id, &o->id, sizeof id))
-            rt_fatal("RomFS overlay %s is missing or changed since the start check (restart the game)", o->path);
+        if (!f || memcmp(&id, want, sizeof id))
+            rt_fatal("RomFS overlay %s is missing or changed since the start check (restart the game)", opath);
     }
     plat_mutex_lock(&lock);
     for (unsigned j = 1; j < NH; j++)
@@ -1275,7 +1317,7 @@ static int handle_source(uint64_t h, PlatFile **f, uint64_t *base, uint64_t *siz
     if (ov) {
         *f = of;
         *base = 0;
-        *size = overlays[ov - 1].size;
+        *size = ov & LIVE_OV ? live[ov & ~LIVE_OV].size : overlays[ov - 1].size;
     } else {
         Entry e = entry(i - 1);
         *f = image;
@@ -1343,6 +1385,95 @@ uint32_t romfs_entry_type(int *out, const char *path) {
         return 0;
     }
     return FS_R_PATH_NOT_FOUND;
+}
+
+// ---- files added while the game runs (fs.h romfs_live_add)
+typedef struct {
+    void (*entry)(uint32_t hash, uint32_t size, void *ctx);
+    void *ctx;
+    Restbl *members, *base;
+    Packs ps;
+    int packs_ok, added, full;
+} LiveAdd;
+typedef struct { LiveAdd *a; const char *dir, *rel; } LiveWalk;
+
+static void live_walk(LiveAdd *a, const char *dir, const char *rel);
+
+static int live_cb(const char *leaf, int kind, uint64_t size, void *ctx) {
+    (void)size;
+    const LiveWalk *w = ctx;
+    LiveAdd *a = w->a;
+    char file[4200], path[4200];
+    if (snprintf(file, sizeof file, "%s/%s", w->dir, leaf) >= (int)sizeof file ||
+        snprintf(path, sizeof path, "%s%s%s", w->rel, *w->rel ? "/" : "", leaf) >= (int)sizeof path)
+        return 1;
+    if (kind == PLAT_FS_DIR) {
+        live_walk(a, file, path);
+        return 1;
+    }
+    if (kind != PLAT_FS_FILE || !romfs_path_valid_relative(path) || file_index(path) != UINT64_MAX) return 1;
+    PlatFile *f = open_read(file);
+    if (!f) return 1;
+    Identity id = identity_of(f);
+    char key[4200];
+    restbl_key(path, key, sizeof key);
+    int mc = ends_with(path, ".mc");
+    uint64_t content = mc ? id.size * 8 : content_size(f, 0, id.size, path);   // a mesh codec file unpacks larger
+    plat_file_close(f);
+    plat_mutex_lock(&live_lock);
+    if (!live) live = calloc(LIVE_CAP, sizeof *live);
+    if (!live || nlive == LIVE_CAP) {
+        plat_mutex_unlock(&live_lock);
+        a->full = 1;
+        return 0;
+    }
+    Live *l = &live[nlive];
+    l->name = strdup(path), l->path = strdup(file), l->size = id.size, l->id = id;
+    need(l->name && l->path, "live file path");
+    __atomic_store_n(&nlive, nlive + 1, __ATOMIC_RELEASE);
+    plat_mutex_unlock(&live_lock);
+    a->added++;
+    uint32_t want = restbl_estimate(key, content);
+    if (want) a->entry(restbl_hash(key), want, a->ctx);
+    if (ends_with(path, ".pack.zs") && a->packs_ok) {   // its members: each a resource of its own (restbl_packs)
+        uint64_t zn = 0;
+        void *z = plat_file_read(file, &zn);
+        size_t n = 0;
+        uint8_t *raw = z ? pack_unpack(&a->ps, z, (size_t)zn, &n) : NULL;
+        free(z);
+        if (raw) restbl_pack_raise(a->members, a->base, raw, n, NULL, 0, NULL, NULL);
+        free(raw);
+    }
+    return 1;
+}
+
+static void live_walk(LiveAdd *a, const char *dir, const char *rel) {
+    LiveWalk w = {a, dir, rel};
+    plat_fs_list(dir, live_cb, &w);
+}
+
+static void live_member(uint32_t hash, uint32_t size, void *ctx) {
+    LiveAdd *a = ctx;
+    a->entry(hash, size, a->ctx);
+}
+
+int romfs_live_add(const char *dir, void (*entry)(uint32_t hash, uint32_t size, void *ctx), void *ctx) {
+    fs_init();
+    LiveAdd a = {entry, ctx, restbl_empty(), NULL, {0}, 0, 0, 0};
+    size_t gn = 0;
+    void *gz = restbl_rel[0] ? read_original(restbl_rel, &gn, "the members of the added packs get estimates") : NULL;
+    a.base = gz ? restbl_unpack(gz, gn) : NULL;
+    free(gz);
+    if (!a.base) a.base = restbl_empty();
+    a.packs_ok = a.members && a.base && packs_open(&a.ps);
+    live_walk(&a, dir, "");
+    if (a.members) restbl_each(a.members, live_member, &a);
+    if (a.packs_ok) packs_close(&a.ps);
+    restbl_free(a.members);
+    restbl_free(a.base);
+    rt_log("RomFS: %d files added from %s while the game runs (%zu in all)%s", a.added, dir,
+           __atomic_load_n(&nlive, __ATOMIC_ACQUIRE), a.full ? "; the table of added files is full" : "");
+    return a.full ? -1 : a.added;
 }
 
 // ---- overrides

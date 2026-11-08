@@ -52,4 +52,5 @@ int coop_chars_ask(CoopCharAsk *out);
 void coop_chars_answer(int yes);             // the player's answer to the current ask: yes fetches it, no skips it
 // A GameBanana link or mod id typed into the menu: its info job, then the same ask (player_id 0: for this PC).
 void coop_chars_lookup(const char *link);
-int coop_chars_restart_needed(void);         // a set was rebuilt: it is served after the next start
+int coop_chars_restart_needed(void);         // a set was rebuilt and not added while the game runs: it needs a restart
+int coop_chars_live_loaded(void);            // a character was added while the game runs (coop_chars.c live_load)

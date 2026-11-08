@@ -75,6 +75,39 @@ stand-in; what it takes:
 Tested in a pair: game B (Link) shows the Riju stand-in with her own hair, skin and crown, game A (Riju) shows the Link
 stand-in with Link's hair and skin.
 
+### Loading a party member's character while the game runs (2026-11-08)
+
+A character fetched in a session shows on its player's stand-in at once, with no restart:
+
+- **Slots.** `charmod.py sets` reserves four stand-in slots (`SLOT_TAGS`: `JS01`, `KS02`, `XS03`, `ZS04`): rows for
+  `PlayerPuppet_<slot>` and its bare pieces in the actor tables from the start (the game reads those tables once), and
+  `slots.tsv`. The fetch then also builds the character's set under the next free slot's tag (`charmod.py slot`) into
+  `coop-live/<slot>` next to `totk.exe`. Each slot is used once a run.
+- **Files.** `romfs.c romfs_live_add` adds every file of that folder the RomFS lacks as a file of its own, numbered after
+  all the files known at start (nothing is renumbered, open handles stay valid), in an append-only table that readers
+  use without a lock.
+- **Sizes.** The game loads a file into a buffer sized from its resource size table entry, and a file with no entry
+  crashed it on load (the stand-in's model, `TOTK_TEST_RESTBL_SKIP`). The game keeps the table in its heap exactly as
+  the file is laid out (one `RESTBL` header found in the heap) and reads it on every load: an entry set too small there
+  made it refuse the stand-in. So the served table has 16384 spare entries (hash `0xffffffff`, size 0) after its hashed
+  ones (`romfs.c restbl_spares`), and `coop_chars.c restbl_guest_add` merges the new files' entries (estimates, pack
+  members included) into the game's copy in one write: a hash it has is raised, a new one takes a spare, the entries
+  stay sorted.
+- **The stand-in.** The character is added to the list; `coop_players.c` sees that its player's stand-in is now another
+  actor, deletes the old one, and the existing "went away" path makes the new one. A remade stand-in starts with none
+  of the gear its slot gave the last one, so it gets its character's bare pieces again (without that the new Riju
+  stand-in wore this save's armor and Link's head over her body).
+
+Tested in a pair: game B (Link) asked about player 1's Riju, the test answered yes and took the Riju zip on disk
+(`TOTK_COOP_TEST_CHARYES`, `TOTK_COOP_CHARFETCH_FILE`), the job unpacked it, built the sets and slot `JS01`; 737 files
+and 780 table entries were added and the stand-in became Riju, in the same run. `TOTK_COOP_TEST_CHARLIVE=<mod folder>`
+fills a slot from a character mod already on disk, without the fetch.
+
+**This PC's own character needs a restart.** `Pack/Actor/Player.pack.zs`, `Model/Link.Link_RaulSkin.bfres.mc` and
+`AS/Player.root.asb.zs` were opened once, 3.2 s after start, and never again: loading another save from the menu
+(`tools/coop/load_3rd.txt`) read the armor packs again, not those. The Player's resources stay loaded for the run, so a
+save reload cannot change them. Return to the title screen was not tried separately.
+
 ### What does not work, and why
 
 - **Armor fitted to another character** is not shown. A stand-in of another character than this game's wears its bare

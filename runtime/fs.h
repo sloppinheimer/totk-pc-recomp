@@ -53,6 +53,12 @@ int romfs_prompts_ready(const char *folder);
 int romfs_prompts_off(const char *folder);
 const char *romfs_overlay(size_t k, const char **file, uint64_t *size, int *is_added);   // RomFS path of overlay k
 void fs_trace(const char *what, const char *path);         // TOTK_TRACE=fs: one line per open
+// Files added while the game runs (a party member's character fetched in a session, coop_chars.c): every file under
+// dir that the RomFS does not have becomes RomFS path <its path under dir>, served from there, after all the files
+// known at start (nothing is renumbered). entry(hash, size, ctx) for each resource size table entry they need: the
+// files, and the members of the packs among them. The number of files added; -1 when the table of them is full.
+int romfs_live_add(const char *dir, void (*entry)(uint32_t hash, uint32_t size, void *ctx), void *ctx);
+#define ROMFS_RESTBL_SPARES 16384   // spare entries (hash 0xffffffff, size 0) at the end of the served table's hashed ones
 
 // ---- fs_host.c
 void fs_host_set_profile(const char *dir);                 // profile directory; before the first storage mount only
