@@ -1084,6 +1084,13 @@ static int copy_wait(const Slot *s, int k) {   // 1: a copy that failed is not a
     return i >= 0 && plat_now_ns() / 1000000 < fails_tab[i].retry_ms;
 }
 
+int coop_copy_autobuilt(uint64_t actor) {   // a copy here of a device the owner's autobuild made (coop_bonds.c mark_autobuilt)
+    for (int i = 0; actor && i < COOP_MAX_PLAYERS; i++)
+        for (int k = 0; k < COOP_OBJS; k++)
+            if (slots[i].mir[k].state == 3 && slots[i].mir[k].actor == actor) return (slots[i].mir[k].flags & COOP_OBJ_AUTOBUILT) != 0;
+    return 0;
+}
+
 static void spawn_slot(Cpu *c, Slot *s) {
     uint64_t me = coop_player_actor();
     float pos[3], rot[9];

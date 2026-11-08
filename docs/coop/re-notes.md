@@ -1153,7 +1153,21 @@ the tester's idea: the other game builds the owner's blueprint itself, so the pa
   after the first build the update no longer reaches it, and in game B it would need B's Link in its Autobuild (the
   screen, the hologram, the ability's state) with A's blueprint loaded, and the build's cost would be B's. Not tried.
 
-## The green tint of autobuilt parts (open, 2026-11-08 afternoon)
+## The green tint of autobuilt parts (done, 2026-11-08 evening)
+- The lead (the tester's find, the "green_begone" mod, no licence: behaviour only; shared notes green-tint-lead.md): the
+  mod blanks an atomic OR of bit 0 into +0x150 of its argument; in 1.4.3 the function is main+0x1c07114. The Autobuild's
+  confirm calls it (main+0x1d3c0d4 at main+0x1d3c4e0) on [[actor+0x228]+0x480], each part's
+  SpecialPowerReceiverComponent (main+0x194f69c returns it: read in the generated C; Ghidra headless decompiled
+  main+0x1c07114 itself). It also ORs bit 0 into +0x27c, sets +0x264 / +0x268 and the +0x20 flags, clears bit 2 of the
+  actor's +0x5ac and touches the actor's component +0x280.
+- coop_bonds.c mark_autobuilt calls it once on each copy of an autobuilt part (the owner's COOP_OBJ_AUTOBUILT flag,
+  coop_players.c coop_copy_autobuilt) when the copy is bonded. Pair test (autobuild_noy_3rd.txt in A, idle B, game
+  screenshots in B at 40-44 s): B's copy Fanplane is green, as A's; the hit pair (autobuild_3rd.txt with Y at 48 and
+  50 s) still shows B's copies on, off and on with A. TOTK_COOP_TEST_GREEN=0 leaves it out, =all marks every bonded copy.
+- Not tested: the mod's side effect, autobuilt parts destroyed when broken apart, on a copy taken apart in the other
+  game (an owner's autobuilt part taken off is deleted by the game already: autobuild_part_3rd.txt).
+
+### Earlier research (before the lead)
 - What the autobuild passes when it makes a part (TOTK_COOP_TEST_CREATEDUMP=1, coop_spawn.c create_dump on
   requestCreateActor; the autobuild's call is main+0x1d3bb98 in main+0x1d3b470) against coop_game.c request_create:
   the create argument's +0x48 0x0101010100000001 (ours 0), +0x58 a parameter list (only "SpecialParts_InitOn", for
