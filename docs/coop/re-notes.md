@@ -951,6 +951,20 @@ other game reaching the owner's devices, both wait on one. A hit does it (the pr
   166 +0x90 0 -> 3 (TOTK_COOP_TEST_ABTRACE=SpObj_ControlStick_A_01,51.8 in game B). Holding the bool at 1 on the
   owner's stick with nobody on it (TOTK_COOP_TEST_ABSTICKON) turns nothing on: the bool is an effect of the Link
   holding it.
+- A hit's contact replayed on a device (TOTK_COOP_TEST_DEVHIT=<s>,..., coop_world.c dev_contact / coop_dev_hit): the
+  first contact a sword hit leaves on a device's damage component (its contact list, as coop_world.c replays a
+  stand-in's hits on enemies: kind 2, power 30, by Weapon_Sword_070 / Player) is kept and copied, at a later hit
+  update, onto another device's list, with the id bumped and the body moved to the one the real hit landed on (a
+  fan's hit body is its main body + 0x330; the main body took the contact and nothing ran). The device then runs the
+  whole hit reaction a real hit runs (TOTK_COOP_TEST_FANHIT: main+0x42a23c -> main+0x1b914e8 -> main+0x1b91b84 ->
+  main+0x1b92cb0 / 0x1b93160 / 0x1b9326c, the same 13 functions), but its behaviour graph does not turn it on: of a
+  real hit's functions only the graph's main+0x2489xxx nodes (main+0x62e368, main+0x4dc9f8: a light ramp, an effect of
+  turning on) are missing. Tried in autobuild_two_3rd.txt (`TOTK_COOP_TEST_ABPLACE=34 TOTK_COOP_TEST_ABHIT=50`) on
+  the second, unhit contraption's fan, 6 s and 14 s after the hit, and one frame after it while the swing is live
+  (DEVHIT=53.5): it stays off; on the hit contraption's fan, already on, it does not turn it off either. So the
+  contact plus the hit reaction is not what decides; the graph reads something else the real attack sets (the
+  attacker's side, not the contact), not found. Steps after this one (turning off, sending the owner's on state in
+  "CB", the sweep over device kinds) wait for a switch that works (2026-11-08).
 
 ## Proxy hair and clothes stay blown after a fan (open)
 the tester (2026-11-05): after a fan's wind hits the proxy, its hair and clothes keep flapping as if in wind, on that
