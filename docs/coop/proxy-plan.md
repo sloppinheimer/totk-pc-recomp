@@ -467,8 +467,8 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
   where the minimap's terrain puts A.
   - What it does: runtime/coop_markers.c finds the game's map screen (AppMap_00, which is also the HUD minimap) and
     reads the global matrix of its ground pane, then ui/coop_markers.cpp draws a coloured dot and the player's name
-    for each other player with the overlay, clipped to the map's area; a player off the view is a ring on its edge
-    (no name on the minimap). The name tags over the Links are hidden while the full map shows. Nothing is written
+    for each other player with the overlay, clipped to the map's area; a player off the view is a ring on its edge.
+    The minimap shows the dots alone, no names (the tester, 2026-11-07: the dot's colour says who it is). The name tags over the Links are hidden while the full map shows. Nothing is written
     to the game or the save: no pin, no stamp, no pane. `TOTK_COOP_MARKERS=0` turns it off. Evidence and offsets:
     re-notes.md "Map and minimap markers".
   - New hook: main+0x96c1ac (the map screen's set-up) in COOP_HOOKED, so the generated code rebuilds.
@@ -488,6 +488,26 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
     ground ..." (none 0), "the minimap shows (... layer), N_Cut_00 at (765, -360) 249x249 ... off <small>" and "the
     map shows ..." after 40 s. A large "off" on the minimap means the transform is wrong; a "no map shows" while the
     minimap is on screen means a pane check fails.
+- **One colour per player, and name tags inside the frame.** Written 2026-11-07 (the tester's ask), branch
+  `claude/coop-player-colours`.
+  - Colours: ui/coop_colour.h, one colour per player id (the relay gives ids lowest free first, so a player has the
+    same colour on every screen): the name tag, the name in a notice, the map dot and name, the minimap dot, and the
+    names in the Co-op tab's "Here:" line.
+  - Tags in the frame (runtime/vk_tags.c, shaders/coop_tag_vs.vert, coop_tag_fs.frag): the replay draws the tags into
+    the game's HUD target right before the HUD's first draw, so the HUD, the map and the game's menus cover them, and
+    each tag fades out where the scene's linear depth around its anchor is nearer than the player (behind walls and
+    hills). The anchor is projected with the frame's own camera block, not the overlay's 50-degree guess. Where the HUD
+    starts was read from a frame dump (vk_tags.c's header). While the replay finds no HUD start for 30 frames the
+    overlay draws the tags over everything as before; `TOTK_COOP_TAGS_INFRAME=0` keeps it that way.
+  - Logs: "vk: co-op name tags: the HUD target is 3840x2160 (format 122), copied into an sRGB window texture" once,
+    then "vk: co-op name tags drawn in the frame: HUD target ..., far <f>, hidden by the scene depth" at the first
+    tag drawn. "nothing drawn (...)" says what was missing. With TOTK_COOP_TEST_TAGSELF the "coop: tag ..." lines end
+    in "(in the frame)" or "(overlay)".
+  - Not run with tags yet (the frame structure was read from one dump at a 4096x2304 scene and 3840x2160 output). To
+    check: a tag over a player in the open; the same player behind a wall (the tag fades out); the inventory or the
+    map opened over a tag (the tag is under it); a dialogue box over a tag; the far plane in the log above 1. Not
+    checked: a scene as large as the output (the tags go after the game's FXAA draw-back, from vk_dlaa.c's notes,
+    not a dump), DLSS modes, HDR (the HUD target is read as linear colour there too).
 - **Notices** when a player joins or leaves, and when one fast travels, with the place's name. Written 2026-11-07
   (runtime/coop_notices.c, ui/coop_notices.cpp; `TOTK_COOP_NOTICES=0` turns them off). **Not run in the game yet**:
   compiled with clang, and the place loading and naming ran on the real 1.4.3 files in a host test (below).
