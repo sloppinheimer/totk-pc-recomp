@@ -1412,7 +1412,8 @@ void coop_tick(struct Cpu *c) {
         }
     }
     if (fanhit_at == -2) fanhit_at = cfg_get("TOTK_COOP_TEST_FANHIT") ? atof(cfg_get("TOTK_COOP_TEST_FANHIT")) : -1;
-    if (fanhit_at > 0 && frame_step_world_us() > 0) g_fnprof = 1;
+    // (from 3.5 s before the hit only: on from the world's start, it slowed the game too much for a scripted autobuild)
+    if (fanhit_at > 0 && frame_step_world_us() / 1e6 > fanhit_at - 3.5) g_fnprof = 1;
     fanhit_report();
     if (flagcaller < 0) flagcaller = cfg_get("TOTK_COOP_TEST_FLAGCALLER") != NULL;
     if (flagcaller > 0 && frame_step_world_us() > 0) g_fnprof = 1;

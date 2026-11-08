@@ -926,6 +926,24 @@ other game reaching the owner's devices, both wait on one. A hit does it (the pr
   (autobuild_part_3rd.txt) but not on loose fans (glue_hand_3rd.txt: the grab only flashes; with the fans 2.5 m ahead
   of the camera, TOTK_COOP_TEST_GLUE=...,far, too: the camera turns after the Link is put and again in Ultrahand, so the
   reticle is not on them).
+- Who calls into a device at a hit (TOTK_COOP_TEST_FANHIT, coop_spawn.c, now with the profiler on only from 3.5 s
+  before the hit; aimed by hit_test at the build's second fan, or with TOTK_COOP_TEST_FANHITDEV=1 at the hit one):
+  for a neighbouring fan only its own behaviour graph (main+0x1066bb8, from its update): the on bool's writer node
+  main+0x9f97d0/0x9f97dc and its calls main+0x1d38db0 (a check: the device's component 166 state at +0x28, a named
+  bool of hash 0xb835f400, the device's contraption via main+0x1861a1c), main+0x1952fb0 / main+0x1951350 (component
+  getters, [actor+0x228]+0x530 and +0x120) and main+0x245c3c4 (in main+0x245c114, which also takes the 0x6b510001..3
+  messages), and nodes main+0x2489xxx calling main+0x4dc9f8 / main+0x62e368. For the hit fan, the same plus its hit
+  handling from its update (main+0x42a23c -> main+0x1b914e8 -> main+0x1b91b84 -> main+0x1b92cb0 / 0x1b93160 /
+  0x1b9326c). Traced every tick, nothing in the neighbour (actor, components' first 0x200 bytes, component 166 to
+  0xa00) changes before the tick it turns on: a device pulls its state from its contraption in its own update, and
+  a hit is what starts it in one device. So a copy contraption needs one device started, not each; what starts one is
+  the hit's reaction (main+0x1b914e8 on the damage record), which writing the record by hand does not (2026-11-05).
+- Glue by hand, again: grabbing the Fanplane with Ultrahand works from beside it (autobuild_glue_3rd.txt with
+  `TOTK_COOP_TEST_ABHIT=36 TOTK_COOP_TEST_ABLOOSE=1`: a loose fan made 1.6 m to the Link's right, the Fanplane grabbed
+  and walked right), but it did not reach the loose fan, and A's group kept its four parts: still no glue by hand.
+  On hand-glued copies and coop_bonds: it bonds only copies (coop_is_copy), so a world object glued by hand (a plank
+  the other game has itself) is never bonded there, only devices made from capsules; and it sends a group only if
+  the owner's game gives the glued parts one, which is not checked for glue by hand.
 - The stick's own state: its on bool goes 0 -> 1 when a Link takes it, with actor +0x1d0 = 0x79_00000001 and component
   166 +0x90 0 -> 3 (TOTK_COOP_TEST_ABTRACE=SpObj_ControlStick_A_01,51.8 in game B). Holding the bool at 1 on the
   owner's stick with nobody on it (TOTK_COOP_TEST_ABSTICKON) turns nothing on: the bool is an effect of the Link
