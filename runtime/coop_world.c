@@ -5028,6 +5028,10 @@ void coop_world_tick(Cpu *c, uint64_t me) {
     coop_binds_test(me);
     void coop_blur_test(uint64_t me);   // (below)
     coop_blur_test(me);
+    void coop_eqcmp_test(uint64_t me);   // (below)
+    coop_eqcmp_test(me);
+    void coop_weaplog_test(uint64_t me);   // (below)
+    coop_weaplog_test(me);
     if (coop_world_role()) ground_tick(c, me);
 }
 
@@ -5736,4 +5740,79 @@ int coop_blur_hook(Cpu *c, uint64_t addr) {
         rt_log("coop: stand-in: its SwordBlur update ran with its owner's WeaponBlur event (hand %u, frame %.1f from %.1f, event %u)",
                b.hand, b.frame, b.start, b.serial);
     return 1;
+}
+
+// Test (TOTK_COOP_TEST_EQCMP=<s>[,<s2>...]): at those world seconds, this Link's EquipmentUser ([+0x228]+0x230) and each
+// stand-in's side by side: the weapon slot's record (+0x20, 0x18 bytes), its attach record (+0x570, 0x100 bytes) and
+// the in-hand bytes (+0x4620, 8), the words that differ (to find why a stand-in's sword "in hand" stays on its back).
+void coop_eqcmp_test(uint64_t me) {
+    static double at[8];
+    static int n = -1, next;
+    if (n < 0) {
+        n = 0;
+        const char *e = cfg_get("TOTK_COOP_TEST_EQCMP");
+        for (const char *p = e; p && *p && n < 8; ) { at[n++] = atof(p); p = strchr(p, ','); if (p) p++; }
+    }
+    if (next >= n || frame_step_world_us() / 1e6 < at[next]) return;
+    next++;
+    uint64_t co[COOP_MAX_PLAYERS];
+    int ids[COOP_MAX_PLAYERS], nc = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
+    uint64_t e0 = coop_rd_ptr(coop_rd_ptr(me + 0x228) + 0x230);
+    static const struct { unsigned off, len; } part[] = {{0x20, 0x18}, {0x570, 0x100}, {0x4620, 8}, {0x4600, 0x20}};
+    for (int w = 0; w < nc; w++) {
+        uint64_t e1 = coop_rd_ptr(coop_rd_ptr(co[w] + 0x228) + 0x230);
+        if (!e0 || !e1) continue;
+        for (unsigned p = 0; p < sizeof part / sizeof part[0]; p++) {
+            uint32_t a[64], b[64];
+            unsigned nw = part[p].len / 4;
+            if (!coop_rd(e0 + part[p].off, a, part[p].len) || !coop_rd(e1 + part[p].off, b, part[p].len)) continue;
+            char line[1500];
+            int m = snprintf(line, sizeof line, "coop: test: eqcmp %.1f s +%#x (this Link / stand-in):", frame_step_world_us() / 1e6, part[p].off);
+            for (unsigned i = 0; i < nw && m < 1400; i++)
+                if (a[i] != b[i]) m += snprintf(line + m, sizeof line - m, " +%#x %x/%x", part[p].off + i * 4, a[i], b[i]);
+            rt_log("%s", line);
+        }
+        // The two weapons (row 0's reference +0x40): each component of their +0x228 tables, 0x400 bytes, the words
+        // that differ where neither is an address
+        uint64_t w0 = coop_rd_ptr(coop_rd_ptr(e0 + 0x28) + 0x40), w1 = coop_rd_ptr(coop_rd_ptr(e1 + 0x28) + 0x40);
+        uint64_t t0 = w0 ? coop_rd_ptr(w0 + 0x228) : 0, t1 = w1 ? coop_rd_ptr(w1 + 0x228) : 0;
+        for (int k = -1; t0 && t1 && k < 128; k++) {
+            uint64_t c0 = k < 0 ? w0 : coop_rd_ptr(t0 + 8ull * k), c1 = k < 0 ? w1 : coop_rd_ptr(t1 + 8ull * k);
+            static uint32_t a[0x400 / 4], b[0x400 / 4];
+            if (!c0 || !c1 || !coop_rd(c0, a, sizeof a) || !coop_rd(c1, b, sizeof b)) continue;
+            char line[1500];
+            int m = snprintf(line, sizeof line, "coop: test: eqcmp weapon %s+%#x (vt main+%#llx):", k < 0 ? "actor" : "comp ", k < 0 ? 0 : k * 8,
+                             (unsigned long long)(coop_rd_ptr(c0) - MOD_MAIN_BASE)), any = 0;
+            for (unsigned i = 0; i < 0x400 / 4 && m < 1400; i++) {
+                uint32_t hi0 = i & 1 ? a[i] : a[i + 1 < 0x100 ? i + 1 : i], hi1 = i & 1 ? b[i] : b[i + 1 < 0x100 ? i + 1 : i];
+                int ptr = (hi0 >= 1 && hi0 < 0x80) || (hi1 >= 1 && hi1 < 0x80);   // (the high half of an address)
+                if (a[i] != b[i] && !ptr) m += snprintf(line + m, sizeof line - m, " +%#x %x/%x", i * 4, a[i], b[i]), any = 1;
+            }
+            if (any) rt_log("%s", line);
+        }
+    }
+}
+// Test (TOTK_COOP_TEST_WEAPLOG=1): twice a second, this Link's and each stand-in's weapon (EquipmentUser row 0's
+// reference +0x40): its actor's place, its model's world matrix place (model +0x1f8) and its holder's place.
+void coop_weaplog_test(uint64_t me) {
+    static int on = -1;
+    static uint64_t last;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_WEAPLOG") != NULL;
+    uint64_t now = plat_now_ns();
+    if (!on || now - last < 500000000ull) return;
+    last = now;
+    uint64_t co[COOP_MAX_PLAYERS];
+    int ids[COOP_MAX_PLAYERS], nc = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
+    for (int w = 0; w <= nc; w++) {
+        uint64_t a = w ? co[w - 1] : me, eq = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x230);
+        uint64_t wp = eq ? coop_rd_ptr(coop_rd_ptr(eq + 0x28) + 0x40) : 0;
+        uint64_t model = wp ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(wp + 0x228) + 0x8) + 0x28) : 0;
+        float ap[3] = {0}, hp[3] = {0}, m[12] = {0};
+        if (!wp) continue;
+        coop_rd(wp + COOP_ACTOR_POS, ap, 12), coop_rd(a + COOP_ACTOR_POS, hp, 12);
+        if (model) coop_rd(model + 0x1f8, m, sizeof m);
+        uint8_t dirty = model ? LD8(model + 0x240) : 0;
+        rt_log("coop: test: weap %s %.2f s: actor %.2f %.2f %.2f, model %.2f %.2f %.2f (flags %02x), holder %.2f %.2f %.2f",
+               w ? "stand-in" : "this Link", frame_step_world_us() / 1e6, ap[0], ap[1], ap[2], m[3], m[7], m[11], dirty, hp[0], hp[1], hp[2]);
+    }
 }

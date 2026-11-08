@@ -14,14 +14,16 @@
 #   -MarkShotsA / -MarkShotsB 30-60:2: that game saves the swapchain image, the overlay's map markers included, at those
 #    world seconds as <ShotsDir>\A-overlay\mark-<s>.png (TOTK_COOP_TEST_MARKSHOTS; -ShotsA/-ShotsB save the picture
 #    before the overlay); -MarkSelf: both games also mark their own Link and log the map transform every 2 s
+#   -Port 41950: the relay on that UDP port (41900 may be taken by a game hosting on this PC)
 #   -EnvA / -EnvB "TOTK_COOP_TEST_TRAVEL=40;TOTK_COOP_TEST_NOTICESHOT=1": these settings for that game only
 param([int]$Seconds = 90, [string]$ScriptA = "tools\coop\walk.txt", [string]$ScriptB = "tools\coop\idle.txt", [string]$FakeGearA = "", [string]$FakeDyeA = "", [string]$FakeHandA = "",
       [string]$ShotsA = "", [string]$ShotsB = "", [string]$ShotsDir = "", [int]$QuitBAfter = 0, [string]$FakeAtA = "", [string]$SpawnA = "", [string]$SpawnB = "", [string]$Profile = "build\profile-v143", [switch]$ShotsSmall, [string]$BDir = "build\v143b",
-      [string]$MarkShotsA = "", [string]$MarkShotsB = "", [switch]$MarkSelf, [string]$EnvA = "", [string]$EnvB = "")
+      [string]$MarkShotsA = "", [string]$MarkShotsB = "", [switch]$MarkSelf, [string]$EnvA = "", [string]$EnvB = "", [int]$Port = 41900)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
-Get-Process totk -ErrorAction SilentlyContinue | Stop-Process -Force
+# Only this checkout's games (from its build folder): a game of another checkout may be someone playing.
+Get-Process totk -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith((Join-Path $root 'build\'), [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force
 Start-Sleep 2
 
 # build\v143b: hard links to build\v143's files, junctions to its folders, a logs folder of its own.
@@ -36,7 +38,7 @@ foreach ($f in Get-ChildItem $a -Force) {
 }
 
 . (Join-Path $PSScriptRoot 'quiet.ps1')   # no consoles, no mouse capture, the windows stay behind
-$relay = Start-Quiet (Join-Path $root '.venv\Scripts\pythonw.exe') "server\coop_relay.py --log build\relay.log" $root
+$relay = Start-Quiet (Join-Path $root '.venv\Scripts\pythonw.exe') "server\coop_relay.py --port $Port --log build\relay.log" $root
 $games = @()
 foreach ($g in @(@{dir = $a; prof = 'build\prof-coop-a'; script = $ScriptA; name = 'A'; input = $null},
                  @{dir = $b; prof = 'build\prof-coop-b'; script = $ScriptB; name = 'B'; input = 'none'})) {
@@ -46,7 +48,7 @@ foreach ($g in @(@{dir = $a; prof = 'build\prof-coop-a'; script = $ScriptA; name
     $env:TOTK_PROFILE_DIR = $p
     $env:TOTK_INPUT_SCRIPT = (Resolve-Path $g.script).Path
     $env:TOTK_ASSUME_FOCUS = '1'; $env:TOTK_FULLSCREEN = '0'; $env:TOTK_WINDOW_SIZE = '960x540'
-    $env:TOTK_COOP_RELAY = '127.0.0.1'; $env:TOTK_COOP_NAME = $g.name; $env:TOTK_COOP_P2 = 'off'
+    $env:TOTK_COOP_RELAY = "127.0.0.1:$Port"; $env:TOTK_COOP_NAME = $g.name; $env:TOTK_COOP_P2 = 'off'
     if ($g.input) { $env:TOTK_INPUT = $g.input } else { Remove-Item Env:TOTK_INPUT -ErrorAction SilentlyContinue }
     if ($g.name -eq 'A' -and $FakeGearA) { $env:TOTK_COOP_FAKEGEAR = $FakeGearA } else { Remove-Item Env:TOTK_COOP_FAKEGEAR -ErrorAction SilentlyContinue }
     if ($g.name -eq 'A' -and $FakeDyeA) { $env:TOTK_COOP_FAKEDYE = $FakeDyeA } else { Remove-Item Env:TOTK_COOP_FAKEDYE -ErrorAction SilentlyContinue }
