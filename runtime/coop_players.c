@@ -278,11 +278,13 @@ static void follow_host_time(Cpu *c, float host) {
     if (!clock_runs) return;
     // ... nor while the host's stands (its map or a menu open): this game's clock ran a minute ahead each second and
     // was set back, and the sky, light and weather jumped with it, the frame rate dropping at each (a play session,
-    // 2026-11-08: the map open in both games, then closed in one). Its time unchanged for 0.9 s: it stands.
+    // 2026-11-08: the map open in both games, then closed in one). Its time unchanged for 2 s: it stands. (0.9 s was
+    // too short: in the Depths at a low frame rate the clock moved in steps about a second apart, the host's clock read
+    // as standing most of the time, and this game fell 5 game minutes behind it; a play session, 2026-11-08.)
     static float last_host = -1;
     static uint64_t host_at;
     if (host != last_host) last_host = host, host_at = t;
-    if (t - host_at > 900000000ull) return;
+    if (t - host_at > 2000000000ull) return;
     float d = host - mine;
     if (d > 43200.0f) d -= 86400.0f;
     if (d < -43200.0f) d += 86400.0f;
