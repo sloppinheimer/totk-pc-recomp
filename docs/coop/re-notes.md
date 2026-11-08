@@ -938,6 +938,9 @@ other game reaching the owner's devices, both wait on one. A hit does it (the pr
   0xa00) changes before the tick it turns on: a device pulls its state from its contraption in its own update, and
   a hit is what starts it in one device. So a copy contraption needs one device started, not each; what starts one is
   the hit's reaction (main+0x1b914e8 on the damage record), which writing the record by hand does not (2026-11-05).
+- Messages: 0x6b510001..0x6b510008 sent to each of the Fanplane's fans as the stick's node sends 0x6b510003
+  (main+0x2b76c34 to actor +0x378, the sender this Link; TOTK_COOP_TEST_ABMSG, build/ab_noy.txt-style script with no
+  hit) turned none on.
 - Glue by hand, again: grabbing the Fanplane with Ultrahand works from beside it (autobuild_glue_3rd.txt with
   `TOTK_COOP_TEST_ABHIT=36 TOTK_COOP_TEST_ABLOOSE=1`: a loose fan made 1.6 m to the Link's right, the Fanplane grabbed
   and walked right), but it did not reach the loose fan, and A's group kept its four parts: still no glue by hand.

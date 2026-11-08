@@ -562,6 +562,43 @@ static void stick_test(Cpu *c, uint64_t me, int n) {
     rt_log("%s", line);
 }
 
+// TOTK_COOP_TEST_ABMSG=<s>,<hex type>[,<s2>,<hex type2>...]: at each time, a message of that type sent to every live
+// tracked fan, as the steering stick's AI node sends 0x6b510003 (main+0x2b76c34 (actor +0x378, {sender id, type, 0},
+// 0)), the sender this Link: whether a message switches a device.
+static void msg_test(Cpu *c, uint64_t me, int n) {
+    const char *e = cfg_get("TOTK_COOP_TEST_ABMSG");
+    static double at[8];
+    static uint32_t type[8];
+    static int k_n = -1, done[8];
+    if (!e) return;
+    if (k_n < 0) {
+        k_n = 0;
+        const char *p = e;
+        while (k_n < 8 && sscanf(p, "%lf,%x", &at[k_n], &type[k_n]) == 2) {
+            k_n++;
+            for (int commas = 0; *p && commas < 2; p++) commas += *p == ',';
+        }
+    }
+    double now = frame_step_world_us() / 1e6;
+    char nm[48];
+    for (int k = 0; k < k_n; k++) {
+        if (done[k] || now < at[k]) continue;
+        done[k] = 1;
+        uint32_t sender = 0;
+        coop_rd(me + 0x380, &sender, 4);
+        int sent = 0;
+        for (int i = 0; i < n; i++) {
+            if (!live_device(i, nm, sizeof nm) || strcmp(nm, "SpObj_WindGenerator_A_01")) continue;
+            static _Alignas(16) uint8_t msg[16];
+            memset(msg, 0, sizeof msg);
+            memcpy(msg, &sender, 4), memcpy(msg + 4, &type[k], 4);
+            coop_guest_call(c, MOD_MAIN_BASE + 0x2b76c34, atomic_load(&tracked[i]) + 0x378, (uint64_t)(uintptr_t)msg, 0, 0);
+            sent++;
+        }
+        rt_log("coop: test: abmsg: message %08x sent to %d fans at %.2f s", type[k], sent, now);
+    }
+}
+
 // Every 2 s while any device is tracked (for 60 s): each one's name, state, flags and glue entries.
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
     if (!ablog_on()) return;
@@ -579,7 +616,7 @@ void coop_autobuild_tick(Cpu *c, uint64_t me) {
     }
     int n = atomic_load(&tracked_n);
     if (n > TRACK_N) n = TRACK_N;
-    if (n) hit_test(c, me, n), part_test(c, n), trace_tick(n), stick_test(c, me, n);
+    if (n) hit_test(c, me, n), part_test(c, n), trace_tick(n), stick_test(c, me, n), msg_test(c, me, n);
     else if ((cfg_get("TOTK_COOP_TEST_ABHIT") || cfg_get("TOTK_COOP_TEST_ABSTICK")) && now > 20000000) {   // (near_dev_fn)
         static NearDev d;
         static int64_t last_scan;
