@@ -6,12 +6,13 @@
 #include <string.h>
 
 #include "imgui.h"
+#include "coop_colour.h"
 
 extern "C" {
 #include "cfg.h"
 #include "coop_net.h"
 #include "host.h"
-typedef struct { float x, y, dist; char name[17]; } CoopTag;
+typedef struct { float x, y, dist; int id; char name[17]; } CoopTag;
 int coop_name_tags(CoopTag *out, int max, float aspect);
 int coop_markers_map_open(void);   // coop_markers.c: the game's full map shows
 }
@@ -47,6 +48,6 @@ extern "C" void coop_tags_draw(float w, float h, float scale, bool menu_open) {
         if (b.x < 0 || a.x > w || b.y < 0 || a.y > h) continue;
         int alpha = (int)(255 * k);
         dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, alpha * 140 / 255), 4 * scale);
-        dl->AddText(f, size, ImVec2(a.x + pad, a.y + pad), IM_COL32(255, 240, 200, alpha), tags[i].name);
+        dl->AddText(f, size, ImVec2(a.x + pad, a.y + pad), coop_colour(tags[i].id, alpha), tags[i].name);
     }
 }

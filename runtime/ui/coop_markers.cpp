@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "imgui.h"
+#include "coop_colour.h"
 
 extern "C" {
 #include "cfg.h"
@@ -28,14 +29,6 @@ extern "C" bool coop_markers_wanted(void) {
     return *coop_net_target() && coop_net_players(ids, names, COOP_MAX_PLAYERS) > 0;
 }
 
-// One colour per player id (0, the self test, is white), bright enough on the map's parchment and the minimap's dark.
-static ImU32 colour(int id, int alpha) {
-    static const unsigned char c[8][3] = {{80, 200, 255}, {255, 120, 80}, {120, 230, 110}, {255, 210, 70},
-                                          {220, 120, 255}, {255, 110, 170}, {90, 240, 220}, {250, 250, 250}};
-    const unsigned char *p = id ? c[(id - 1) & 7] : c[7];
-    return IM_COL32(p[0], p[1], p[2], alpha);
-}
-
 extern "C" void coop_markers_draw(float w, float h, float scale, bool menu_open) {
     if (menu_open || !coop_markers_wanted()) return;
     CoopMarker mk[COOP_MAX_PLAYERS + 1];
@@ -53,15 +46,15 @@ extern "C" void coop_markers_draw(float w, float h, float scale, bool menu_open)
         ImVec2 c(mk[i].x, mk[i].y);
         // a filled disc with a dark ring; held at the edge (the player is off this view): a ring only
         dl->AddCircleFilled(c, r + 2 * k, IM_COL32(0, 0, 0, alpha * 200 / 255), 20);
-        if (mk[i].edge) dl->AddCircle(c, r - 1 * k, colour(mk[i].id, alpha), 20, 3 * k);
-        else dl->AddCircleFilled(c, r, colour(mk[i].id, alpha), 20);
-        if (mini && mk[i].edge) continue;   // the minimap is small: a name only for a player inside it
+        if (mk[i].edge) dl->AddCircle(c, r - 1 * k, coop_colour(mk[i].id, alpha), 20, 3 * k);
+        else dl->AddCircleFilled(c, r, coop_colour(mk[i].id, alpha), 20);
+        if (mini) continue;   // the minimap shows the dot alone; its colour says who it is
         ImVec2 sz = f->CalcTextSizeA(fs, FLT_MAX, 0, mk[i].name);
         float pad = 3 * scale;
         ImVec2 a(c.x + r + 4 * k, c.y - sz.y / 2 - pad);
         if (a.x + sz.x + 2 * pad > v.x1) a.x = c.x - r - 4 * k - sz.x - 2 * pad;   // no room on the right: the left
         dl->AddRectFilled(a, ImVec2(a.x + sz.x + 2 * pad, a.y + sz.y + 2 * pad), IM_COL32(0, 0, 0, alpha * 150 / 255), 3 * scale);
-        dl->AddText(f, fs, ImVec2(a.x + pad, a.y + pad), IM_COL32(255, 240, 200, alpha), mk[i].name);
+        dl->AddText(f, fs, ImVec2(a.x + pad, a.y + pad), coop_colour(mk[i].id, alpha), mk[i].name);
     }
     dl->PopClipRect();
 }

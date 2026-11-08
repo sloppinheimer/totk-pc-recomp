@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "imgui.h"
+#include "ui/coop_colour.h"
 #include "ui/option_rows.h"
 
 extern "C" {
@@ -198,13 +199,18 @@ extern "C" void tab_coop(float scale) {
         int n = coop_net_players(ids, names, COOP_MAX_PLAYERS);
         if (!n) opt_text(UI_MENU_COOP_ALONE);
         else {
-            char list[256] = "";
+            // "Here: %s" with each name in its player's colour (ui/coop_colour.h): the catalog text before and after
+            // the %s, and between them the names, one piece of text each on the same line
+            const char *fmt = menu_text(UI_MENU_COOP_PLAYERS), *at = strstr(fmt, "%s");
+            const char *after = at ? at + 2 : "";
+            if (!at) ImGui::TextUnformatted(fmt), ImGui::SameLine();
+            else if (at > fmt) ImGui::TextUnformatted(fmt, at), ImGui::SameLine(0, 0);
             for (int i = 0; i < n; i++) {
-                size_t l = strlen(list);
-                snprintf(list + l, sizeof list - l, "%s%s (%d)", i ? ", " : "", names[i][0] ? names[i] : "?", ids[i]);
+                if (i) ImGui::TextUnformatted(", "), ImGui::SameLine(0, 0);
+                ImGui::TextColored(coop_colour_v4(ids[i]), "%s (%d)", names[i][0] ? names[i] : "?", ids[i]);
+                if (i + 1 < n || *after) ImGui::SameLine(0, 0);
             }
-            snprintf(line, sizeof line, menu_text(UI_MENU_COOP_PLAYERS), list);
-            opt_text_str(line);
+            if (*after) ImGui::TextUnformatted(after);
         }
         if (action("##coop_leave", UI_MENU_COOP_LEAVE, UI_MENU_COOP_LEAVE_DESC, scale, true)) coop_end();
     } else {

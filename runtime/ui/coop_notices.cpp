@@ -5,8 +5,10 @@
 #include <float.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "imgui.h"
+#include "coop_colour.h"
 
 extern "C" {
 #include "coop_notices.h"
@@ -26,7 +28,13 @@ extern "C" void coop_notices_draw(float w, float h, float scale, bool menu_open)
         ImVec2 sz = f->CalcTextSizeA(size, FLT_MAX, 0, ns[i].text);
         ImVec2 p0(x, y - sz.y - pad * 2), p1(x + sz.x + pad * 4, y);
         dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, (int)(110 * k)), 5 * scale);
-        dl->AddText(f, size, ImVec2(p0.x + pad * 2, p0.y + pad), IM_COL32(255, 240, 200, (int)(230 * k)), ns[i].text);
+        // the text in three pieces: before the name, the name in the player's colour, after it
+        const char *t = ns[i].text, *n0 = t + ns[i].name_at, *n1 = n0 + ns[i].name_len, *end = t + strlen(t);
+        ImU32 plain = IM_COL32(255, 240, 200, (int)(230 * k));
+        ImVec2 at(p0.x + pad * 2, p0.y + pad);
+        if (n0 > t) dl->AddText(f, size, at, plain, t, n0), at.x += f->CalcTextSizeA(size, FLT_MAX, 0, t, n0).x;
+        if (n1 > n0) dl->AddText(f, size, at, coop_colour(ns[i].who, (int)(230 * k)), n0, n1), at.x += f->CalcTextSizeA(size, FLT_MAX, 0, n0, n1).x;
+        if (end > n1) dl->AddText(f, size, at, plain, n1, end);
         y = p0.y - pad;
     }
 }

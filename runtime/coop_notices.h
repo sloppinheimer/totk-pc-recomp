@@ -20,7 +20,8 @@ void coop_notice_travel_take(const CoopTravelPacket *p, int len, int from);   //
 
 // The overlay (render thread): the notices to show now, newest last, with their age; and the joins and leaves, found
 // by comparing the player list with the last frame's (coop_notices_wanted does it each overlay frame).
-typedef struct { char text[160]; float age_s; uint32_t id; } CoopNotice;   // id: 1, 2, ... in the order told
+// id: 1, 2, ... in the order told; who: the player's id; name_at, name_len: the bytes of text that are their name
+typedef struct { char text[160]; float age_s; uint32_t id; int who, name_at, name_len; } CoopNotice;
 int coop_notices_wanted(void);                                         // 1: something to draw now
 int coop_notices_get(CoopNotice *out, int max);                         // the newest max live ones, oldest first
 #define COOP_NOTICE_SECONDS 6.0f
