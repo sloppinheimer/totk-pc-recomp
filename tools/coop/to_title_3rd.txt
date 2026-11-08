@@ -1,0 +1,26 @@
+# The 100% save (third in the Continue list), then in the world (about tick 1400): the pause menu (PLUS), R five times
+# to the System tab, DOWN four times to To Title Screen, A; the dialog's cursor starts on Cancel: UP, A. At the title
+# screen A until Continue loads the latest save. Ticks throughout: the world clock stops at the title.
+480 A 4
+700 DOWN 4
+760 DOWN 4
+820 A 4
+980 A 4
+2400 PLUS 8
+2480 R 8
+2540 R 8
+2600 R 8
+2660 R 8
+2720 R 8
+2800 DOWN 8
+2860 DOWN 8
+2920 DOWN 8
+2980 DOWN 8
+3060 A 8
+3200 UP 8
+3260 A 8
+4400 A 8
+4700 A 8
+5000 A 8
+5300 A 8
+5600 A 8
