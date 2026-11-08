@@ -2230,7 +2230,8 @@ static int copy_pending_near(const float *p) {
 // game (a play session, 2026-11-05: "holds Weapon_Shield_030, owner -" four times, then "I move Weapon_Shield_030").
 // It is watched for 30 s; once it is out of the proxy's gear it is deleted, and it is never sent meanwhile.
 // remade: one only watched after its item was made again (deleted once out of the gear, kept while held).
-static struct { uint64_t actor, eq; int k, until, since, remade; char name[48]; } old_items[16];
+static struct { uint64_t actor, eq; int k, until, since, remade; char name[48], fuse[32]; } old_items[16];
+static char old_item_fuse[32];   // the next old item's fused material: the gear code sets it before regive_gear
 static void watch_old_item(uint64_t eq, int k, uint64_t old, int remade) {
     int f = -1;
     for (int i = 0; i < 16; i++) {
@@ -2245,6 +2246,34 @@ static void watch_old_item(uint64_t eq, int k, uint64_t old, int remade) {
     old_items[f].actor = old, old_items[f].eq = eq, old_items[f].k = k, old_items[f].until = prop_tick + 900, old_items[f].since = prop_tick;
     old_items[f].remade = remade;
     coop_actor_name(old, old_items[f].name, sizeof old_items[f].name);
+    memcpy(old_items[f].fuse, old_item_fuse, sizeof old_items[f].fuse);   // the material fused to it (set by the caller)
+    old_item_fuse[0] = 0;
+}
+// An old item deleted, and the material fused to it: an actor of its own stuck to the item, which a delete of the item
+// alone left lying in the world, where it could be picked up in that game only (a Silver Moblin Horn off a stand-in's
+// stick when its owner went unarmed; a play session, 2026-11-08). Its fused part is the actor of that material's name
+// within 1 m of the item.
+typedef struct { float at[3]; const char *name; uint64_t found[4]; int n; } FuseFind;
+static void fuse_find_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
+    (void)key;
+    FuseFind *f = arg;
+    float q[3];
+    if (f->n >= 4 || strcmp(nm, f->name) || !coop_rd(a + COOP_ACTOR_POS, q, 12)) return;
+    float dx = q[0] - f->at[0], dy = q[1] - f->at[1], dz = q[2] - f->at[2];
+    if (dx * dx + dy * dy + dz * dz < 1.0f) f->found[f->n++] = a;
+}
+static void delete_old_item(Cpu *c, int i) {
+    FuseFind ff = {.name = old_items[i].fuse};
+    int have = old_items[i].fuse[0] && coop_rd(old_items[i].actor + COOP_ACTOR_POS, ff.at, 12);
+    if (have) {
+        void coop_actors_all(void (*fn)(uint64_t, const char *, uint32_t, void *), void *arg);   // coop_world.c
+        coop_actors_all(fuse_find_fn, &ff);
+    }
+    coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, old_items[i].actor, COOP_DELETE_REASON, 0, 0);
+    for (int k = 0; k < ff.n; k++) {
+        coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, ff.found[k], COOP_DELETE_REASON, 0, 0);
+        rt_log("coop: proxy: its old %s's fused %s is deleted with it", old_items[i].name, old_items[i].fuse);
+    }
 }
 // give_gear on a co-op Link, and its weapon, bow or shield as it was before watched as an old item (deleted once out
 // of its gear, never sent meanwhile). Each item made again (taken out, put away, its gear fixed) is a new actor; the
@@ -2257,6 +2286,7 @@ static void regive_gear(Cpu *c, uint64_t eq, int k, const char *name, int dye, i
     // (the create's new item takes the slot later: the old one is watched until it is out of the gear, and kept while
     // it is held; an emptied slot's is let go of after 2 s even if still held, as before)
     if (old) watch_old_item(eq, k, old, name[0] != 0);
+    old_item_fuse[0] = 0;   // (none taken: not left for another item)
 }
 // An item of a co-op Link taken out or put away the game's way (TotK Online's, read for behaviour only): its
 // EquipmentUser's setEquipmentInHand (eq, row) and removeEquipmentInHand (eq, row, 0), rows 0 weapon, 3 bow, 4 shield
@@ -2343,7 +2373,7 @@ static void old_items_tick(Cpu *c) {
         if (old_items[i].until < prop_tick) {   // watched 30 s: deleted unless still held (sent as a world object else)
             if (eq_item(old_items[i].eq, old_items[i].k) != old_items[i].actor) {
                 rt_log("coop: proxy: its old %s, unheld 30 s on, is deleted", old_items[i].name);
-                coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, old_items[i].actor, COOP_DELETE_REASON, 0, 0);
+                delete_old_item(c, i);
             }
             old_items[i].actor = 0;
             continue;
@@ -2358,7 +2388,7 @@ static void old_items_tick(Cpu *c) {
         if (old_items[i].remade && !cur) continue;
         char nm[48];
         rt_log("coop: proxy: its old %s, %s, is deleted", coop_actor_name(old_items[i].actor, nm, sizeof nm), held ? "still in its gear" : "out of its gear");
-        coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, old_items[i].actor, COOP_DELETE_REASON, 0, 0);
+        delete_old_item(c, i);
         old_items[i].actor = 0;
     }
 }
@@ -5342,7 +5372,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
                                            (k <= 2 && strcmp(s->fuse_want[k], s->fuse_have[k])))) {
                     int redye = (k > 2 && s->dye_want[k] != s->dye_have[k]) || (k <= 2 && strcmp(s->fuse_want[k], s->fuse_have[k]));
                     memcpy(s->gear_have[k], s->gear_want[k], 32), s->dye_have[k] = s->dye_want[k];
-                    if (k <= 2) memcpy(s->fuse_have[k], s->fuse_want[k], 32);
+                    if (k <= 2) memcpy(old_item_fuse, s->fuse_have[k], 32), memcpy(s->fuse_have[k], s->fuse_want[k], 32);
                     int none = !strcmp(s->gear_want[k], GEAR_NONE);
                     if ((none && k > 2) || (!strcmp(held[k], s->gear_want[k]) && !redye)) continue;   // nothing to change
                     rt_log("coop: slot %d: owner's gear slot %d is %s (dye %d%s%s)", i, coop_gear_slot[k], s->gear_want[k], s->dye_want[k],
