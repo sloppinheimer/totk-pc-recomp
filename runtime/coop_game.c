@@ -71,7 +71,19 @@ uint64_t coop_guest_call(Cpu *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t
 // The frame the AI node "ExecuteGenericRequestCreateActor" builds (main+0x231fa58): stack arguments at sp, the name
 // pointer at sp+0x20, the create argument at sp+0x28 (+0 position, +0xc rotation, +0x30 scale, +0x40 a string the
 // manager reads without a null check, +0x90 flags: bit 0 position, bit 1 rotation given).
+static int request_create(Cpu *c, const char *name, const float pos[3], const float rot[9], uint8_t *handle, uint64_t tag);
 int coop_request_create(Cpu *c, const char *name, const float pos[3], const float rot[9], uint8_t *handle) {
+    return request_create(c, name, pos, rot, handle, 0);
+}
+// An autobuild's devices: requestCreateActor (main+0x599670) copies its create argument's +0x80 into the create
+// information's +0x78, and the device class's constructor (main+0x6898dc) labels an actor made with the autobuild's
+// type object there (main+0x3a4e008, the object whose vtable main+0x361d910 answers its own type check) as an
+// autobuild device. Logged on the devices of a scripted autobuild (TOTK_COOP_TEST_ABLOG, coop_autobuild.c).
+#define AUTOBUILD_TYPE 0x3a4e008
+int coop_request_create_autobuilt(Cpu *c, const char *name, const float pos[3], const float rot[9], uint8_t *handle) {
+    return request_create(c, name, pos, rot, handle, MOD_MAIN_BASE + AUTOBUILD_TYPE);
+}
+static int request_create(Cpu *c, const char *name, const float pos[3], const float rot[9], uint8_t *handle, uint64_t tag) {
     uint64_t mgr = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + COOP_ACTOR_MGR_SLOT));
     if (!mgr) return 0;
     uint64_t saved_x[31], sp0 = c->sp, sp = (sp0 - 0x200) & ~0xfull;
@@ -85,6 +97,7 @@ int coop_request_create(Cpu *c, const char *name, const float pos[3], const floa
     memcpy(arg + 0x0c, rot, 36);
     memcpy(arg + 0x30, one, 12);
     ST64(sp + 0x28 + 0x40, (uint64_t)(uintptr_t)empty);
+    if (tag) ST64(sp + 0x28 + 0x80, tag);
     arg[0x90] = 3;
     memset(handle, 0, 0x40);
     c->sp = sp;

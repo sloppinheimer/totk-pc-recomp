@@ -3517,7 +3517,11 @@ static void peer_tick(Cpu *c, uint64_t me) {
     hit_watch_test(me);
     link_hit_check(me);
     void coop_glue_tick(Cpu *c, uint64_t me);   // coop_glue.c: Ultrahand glue made here sent, the others' made again
+    void coop_autobuild_tick(Cpu *c, uint64_t me);   // coop_autobuild.c
+    coop_autobuild_tick(c, me);
     coop_glue_tick(c, me);
+    void coop_bonds_tick(Cpu *c);   // coop_bonds.c: contraptions made one unit in the other games too
+    coop_bonds_tick(c);
     int my_id = coop_net_id();
     // Hits from the others on the enemies this game runs: the damage taken from this game's one.
     HitPacket hp;
@@ -3534,6 +3538,8 @@ static void peer_tick(Cpu *c, uint64_t me) {
             }
             int coop_glue_take(const void *p, int n, int from);   // coop_glue.c: "GA" and "GL" packets (Ultrahand glue)
             if (coop_glue_take(&lhp, n, from)) continue;
+            int coop_bonds_take(const void *p, int n, int from);   // coop_bonds.c: "CB" packets (contraptions)
+            if (coop_bonds_take(&lhp, n, from)) continue;
             if (n >= (int)offsetof(ContactPacket, e) && (cp->kind == ECONTACT_KIND || cp->kind == ECONTACT_ARROW) && (int)cp->to == my_id && cp->n <= CONTACT_MAX &&
                 n == (int)(offsetof(ContactPacket, e) + cp->n * CONTACT_SZ)) {
                 ce_take(cp, from);

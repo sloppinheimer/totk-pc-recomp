@@ -34,6 +34,9 @@ uint64_t coop_guest_call(Cpu *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t
 // Spawning: a request fills handle (0x40 bytes, kept alive until claimed); coop_handle_status reads 3 when the actor
 // exists; coop_claim puts it in the world and returns its actor, with its reference object in *ref.
 int coop_request_create(Cpu *c, const char *name, const float pos[3], const float rot[9], uint8_t *handle);
+// The same, made as an autobuild makes its devices: the create argument's +0x80 (the create information's +0x78 the
+// actor's constructor reads) holds the autobuild's type object (coop_game.c).
+int coop_request_create_autobuilt(Cpu *c, const char *name, const float pos[3], const float rot[9], uint8_t *handle);
 int coop_handle_status(const uint8_t *handle);
 uint64_t coop_claim(Cpu *c, uint8_t *handle, uint8_t *link, uint64_t *ref);
 // Gives a new Player the first Player's update links to the resident helpers (ThrowBox, CarryBox, ...).
