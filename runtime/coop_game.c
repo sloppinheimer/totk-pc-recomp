@@ -103,6 +103,7 @@ static int request_create(Cpu *c, const char *name, const float pos[3], const fl
     // TOTK_COOP_TEST_ABARGS=1 (with the tag): the autobuild's other create argument fields too, +0x48
     // 0x0101010100000001 and +0x90 7 (TOTK_COOP_TEST_CREATEDUMP: what main+0x1d3b470 passes), for the green tint
     if (tag && cfg_get("TOTK_COOP_TEST_ABARGS")) ST64(sp + 0x28 + 0x48, 0x0101010100000001ull), arg[0x90] = 7;
+    coop_handle_release(c, handle);   // (a request still held there, failed or pending, would be lost: released first)
     memset(handle, 0, 0x40);
     c->sp = sp;
     // With the autobuild's tag, its creation callback too (x7; the autobuild, main+0x1d3b470, passes one): an object of
@@ -121,6 +122,22 @@ static int request_create(Cpu *c, const char *name, const float pos[3], const fl
     c->sp = sp0;
     memcpy(c->x, saved_x, sizeof saved_x);
     return (int)(ok & 1);
+}
+
+// The game's own create node (main+0x231fba0) on a failed request: main+0x2ae4d2c(handle), which, for status 4, calls
+// main+0x5557e0(record, 0) (status 4 or 9: main+0x5559a0 frees the record; 2, 3, 5..7: cancelled, then freed) and
+// clears the handle. A claimed handle is cleared by the claim itself (main+0x89fe48).
+#define REQUEST_RELEASE 0x5557e0
+int coop_handle_norelease(void) {   // TOTK_COOP_TEST_NORELEASE=1: the old way (nothing released, retried at once), to compare
+    static int on = -1;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_NORELEASE") != NULL;
+    return on;
+}
+void coop_handle_release(Cpu *c, uint8_t *handle) {
+    uint64_t w = coop_rd_ptr((uint64_t)(uintptr_t)handle);
+    if (!w || coop_handle_norelease()) return;
+    coop_guest_call(c, MOD_MAIN_BASE + REQUEST_RELEASE, w, 0, 0, 0);
+    memset(handle, 0, 8);
 }
 
 int coop_handle_status(const uint8_t *handle) {

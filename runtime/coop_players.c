@@ -1050,6 +1050,47 @@ int coop_players_calc(Cpu *c, uint64_t addr) {
 // The other player's stand-in is TotK Online's kind (read for behaviour only), an actor of its own, PlayerPuppet
 // (tools/coop/make_puppet_pack.py: Link's model, animations, equipment user and body, no Player component, so nothing
 // of its own moves it or its gear).
+// A copy the game would not make (handle status 4: in a play session, four fans of player 1's left 647 m behind
+// when this Link fast travelled; their area was no longer loaded here). Each failure is released (coop_handle_release)
+// and the copy asked for again only after 2 s, then 4, 8 ... up to 60 s; before, it was asked for every tick (1498
+// failed requests in that session, each one's record leaked, until the game could make no actor at all).
+#define FAIL_N 64
+static struct { int net_id; uint32_t id; int fails; uint64_t retry_ms; } fails_tab[FAIL_N];
+static int fail_find(int net_id, uint32_t id, int make) {
+    int free = -1;
+    uint64_t now = plat_now_ns() / 1000000;
+    for (int i = 0; i < FAIL_N; i++) {
+        if (fails_tab[i].fails && fails_tab[i].net_id == net_id && fails_tab[i].id == id) return i;
+        if (free < 0 && (!fails_tab[i].fails || now > fails_tab[i].retry_ms + 300000)) free = i;   // (old ones reused)
+    }
+    if (!make || free < 0) return -1;
+    fails_tab[free].net_id = net_id, fails_tab[free].id = id, fails_tab[free].fails = 0, fails_tab[free].retry_ms = 0;
+    return free;
+}
+static void copy_failed(const Slot *s, int k) {
+    int i = fail_find(s->net_id, s->mir[k].id, 1);
+    if (i < 0) return;
+    int n = ++fails_tab[i].fails;
+    uint64_t wait = n >= 6 ? 60000 : 2000ull << (n - 1);
+    fails_tab[i].retry_ms = plat_now_ns() / 1000000 + wait;
+    if (n <= 3 || n % 10 == 0)
+        rt_log("coop: slot %d: the copy of object %u (%s) could not be made (%d times): asked for again in %llu s", (int)(s - slots),
+               s->mir[k].id, s->mir[k].name, n, (unsigned long long)(wait / 1000));
+}
+static int copy_wait(const Slot *s, int k) {   // 1: a copy that failed is not asked for yet
+    int coop_handle_norelease(void);   // coop_game.c (test: the old way)
+    if (coop_handle_norelease()) return 0;
+    int i = fail_find(s->net_id, s->mir[k].id, 0);
+    return i >= 0 && plat_now_ns() / 1000000 < fails_tab[i].retry_ms;
+}
+
+int coop_copy_autobuilt(uint64_t actor) {   // a copy here of a device the owner's autobuild made (coop_bonds.c mark_autobuilt)
+    for (int i = 0; actor && i < COOP_MAX_PLAYERS; i++)
+        for (int k = 0; k < COOP_OBJS; k++)
+            if (slots[i].mir[k].state == 3 && slots[i].mir[k].actor == actor) return (slots[i].mir[k].flags & COOP_OBJ_AUTOBUILT) != 0;
+    return 0;
+}
+
 static void spawn_slot(Cpu *c, Slot *s) {
     uint64_t me = coop_player_actor();
     float pos[3], rot[9];
@@ -1645,6 +1686,7 @@ static void arrow_copies(Cpu *c, Slot *s) {
         for (int b = 0; b < 16 && !went; b++)
             went = blown[b].key == ((uint64_t)s->net_id << 32 | o->id) && blown[b].until_ms > plat_now_ns() / 1000000;
         if (went) continue;
+        if (!strncmp(o->name, "MergedActor", 11)) continue;   // (never makable: prop_skip; for a sender of before)
         int k = 0;
         while (k < COOP_OBJS && !(s->mir[k].state && s->mir[k].id == o->id)) k++;
         if (k == COOP_OBJS) {
@@ -1667,6 +1709,20 @@ static void arrow_copies(Cpu *c, Slot *s) {
             quat_mat(o->q, s->mir[k].rot);
         }
     }
+    {   // TOTK_COOP_TEST_DROPCOPIES=<s>: at that time every live copy deleted and wanted again, as a fast travel's unload
+        // deletes them (a play session: "went away (state 11)", then each asked for again where its area is not loaded)
+        static double drop_at = -1;
+        if (drop_at < 0) { const char *e = cfg_get("TOTK_COOP_TEST_DROPCOPIES"); drop_at = e ? atof(e) : 0; }
+        if (drop_at > 0 && frame_step_world_us() / 1e6 >= drop_at) {
+            for (int k = 0; k < COOP_OBJS; k++)
+                if (s->mir[k].state == 3 && s->mir[k].actor) {
+                    coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0), set_driven(s->mir[k].actor);
+                    rt_log("coop: test: dropcopies: the copy of %s (%u) deleted", s->mir[k].name, s->mir[k].id);
+                    s->mir[k].state = 1, s->mir[k].actor = 0, s->mir[k].ticks = 0;
+                }
+            drop_at = 0;
+        }
+    }
     for (int k = 0; k < COOP_OBJS; k++) {
         // Far from every player (coop_far.c): a live copy is deleted and goes back to wanted; a wanted one is not made
         // until it is nearer (TotK Online's server disposes of an actor 1000 m from every player).
@@ -1678,6 +1734,7 @@ static void arrow_copies(Cpu *c, Slot *s) {
             continue;
         }
         if (s->mir[k].state == 1 && coop_far_from_players(s->mir[k].pos)) continue;
+        if (s->mir[k].state == 1 && copy_wait(s, k)) continue;
         // An owner's autobuilt device: made as an autobuild makes it with TOTK_COOP_AUTOBUILT=1 (autobuilt_on).
         if (s->mir[k].state == 1 && ((s->mir[k].flags & COOP_OBJ_AUTOBUILT) && autobuilt_on()
                                          ? coop_request_create_autobuilt(c, s->mir[k].name, s->mir[k].pos, s->mir[k].rot, s->mir[k].handle)
@@ -1685,7 +1742,11 @@ static void arrow_copies(Cpu *c, Slot *s) {
             s->mir[k].state = 2;
         else if (s->mir[k].state == 2) {
             int st = coop_handle_status(s->mir[k].handle);
-            if (st == 4) { rt_log("coop: slot %d: the copy of object %u could not be made", (int)(s - slots), s->mir[k].id); s->mir[k].state = 0; }
+            if (st == 4) {   // released, and asked for again only later: copy_failed
+                coop_handle_release(c, s->mir[k].handle);
+                copy_failed(s, k);
+                s->mir[k].state = 0;
+            }
             else if (st == 3) {
                 s->mir[k].actor = coop_claim(c, s->mir[k].handle, s->mir[k].link, &s->mir[k].ref);
                 s->mir[k].state = s->mir[k].actor ? 3 : 0;
@@ -2096,7 +2157,12 @@ static int prop_skip(const char *nm) {
                                 // the pooled helper actor the game gives each combined contraption (an autobuild's):
                                 // the idle ones wait at the origin, so the other game took one of its own idle ones for
                                 // it by key and moved it to the owner's build (autobuild_3rd.txt pair test, 2026-11-08)
-                                "CombinedActorIntegrator"};
+                                "CombinedActorIntegrator",
+                                // the map's merged-mesh groups (MergedActorD100): a game moves them as world objects;
+                                // the other, which had not got them (after a fast travel), asked for copies by name, the
+                                // game cannot make one (handle status 4), and the requests asked for again every tick
+                                // took the actor manager down: no actor could be made there (a play session, 2026-11-08)
+                                "MergedActor"};
     // (UltraHand_Connection_Effect2, an effect Ultrahand makes on a contraption, is copied again: it was left out on
     // 2026-11-08 morning, and then the tester saw no glue on a hand-glued contraption in the other game; whether it is the
     // glue's look is not known)

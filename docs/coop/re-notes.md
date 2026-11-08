@@ -32,6 +32,27 @@ evidence), guess.
   it from its enter function main+0x231fa58 (`coop_NodeGenericRequestCreateActor_enter`); the strings "Pack/Actor/",
   ".pack", "ActorMgr" inside it. Confidence: likely (not called by us yet).
 
+## A failed create request must be released (fixed 2026-11-08)
+- a play session (main d84dcc4, game 2 from build143play): after a fast travel game 2 made no actor at all
+  (copies, its own capsule devices: the item left the inventory and nothing came), and the ground was missing. Its
+  log: "the copy of object N could not be made" 1498 times, for four objects only: keys f36511da, fdad097d, 8f82aab6,
+  f1b2abdf, which game 1 logged as "I move MergedActorD100": the map's merged-mesh groups, moved as world objects;
+  game 2 no longer had them after its fast travel and asked for copies by that name. No such actor can be made (handle
+  status 4), and the copy was asked for again at once, every time.
+- A request's handle holds a record of the actor manager's. The game's own create node (main+0x231fba0) on a failed
+  one calls main+0x2ae4d2c(handle): main+0x5557e0(record, 0) (status 4 or 9: main+0x5559a0 frees it; 2, 3, 5..7:
+  cancelled, then freed) and the handle cleared. A claim clears the handle itself (main+0x89fe48). Our code left failed
+  records in their handles and zeroed them at the next request: each failure leaked one.
+- Shown (TOTK_COOP_TEST_FAILSPAM=35,3000 in game B: a MergedActorD100 asked for again each time it failed;
+  TOTK_COOP_TEST_DEVSWEEP=50 with 14 fans, one every 10 s): the old way (TOTK_COOP_TEST_NORELEASE=1) after 1491 failures
+  requestCreateActor refused every request and none of the 14 fans was made (status 0); released, 2999 failures and all
+  14 fans made.
+- Fix: coop_game.c coop_handle_release (the game's main+0x5557e0), called on every failed copy and spawn-sync request,
+  and by request_create on whatever its handle still holds; a copy that fails is asked for again after 2 s, 4, 8 ... up
+  to 60 s (coop_players.c copy_failed / copy_wait), not every tick; MergedActor is never sent nor copied (prop_skip).
+  Not reproduced: the status 4 of a fast travel itself (our test travel and copies deleted 2 km away were made again
+  fine); the missing ground is taken to be the same exhaustion (not shown).
+
 ## Hooking from the recomp
 - `rt_call(Cpu*, fn, n, ...)` (runtime/host.h): host code calls a guest function; needs the guest thread's Cpu.
 - HOST_OVERRIDE / HOST_OBSERVER entries (runtime/host.h, hostfn.c): replace a guest function, or run host code and
@@ -1132,7 +1153,21 @@ the tester's idea: the other game builds the owner's blueprint itself, so the pa
   after the first build the update no longer reaches it, and in game B it would need B's Link in its Autobuild (the
   screen, the hologram, the ability's state) with A's blueprint loaded, and the build's cost would be B's. Not tried.
 
-## The green tint of autobuilt parts (open, 2026-11-08 afternoon)
+## The green tint of autobuilt parts (done, 2026-11-08 evening)
+- The lead (the tester's find, the "green_begone" mod, no licence: behaviour only; shared notes green-tint-lead.md): the
+  mod blanks an atomic OR of bit 0 into +0x150 of its argument; in 1.4.3 the function is main+0x1c07114. The Autobuild's
+  confirm calls it (main+0x1d3c0d4 at main+0x1d3c4e0) on [[actor+0x228]+0x480], each part's
+  SpecialPowerReceiverComponent (main+0x194f69c returns it: read in the generated C; Ghidra headless decompiled
+  main+0x1c07114 itself). It also ORs bit 0 into +0x27c, sets +0x264 / +0x268 and the +0x20 flags, clears bit 2 of the
+  actor's +0x5ac and touches the actor's component +0x280.
+- coop_bonds.c mark_autobuilt calls it once on each copy of an autobuilt part (the owner's COOP_OBJ_AUTOBUILT flag,
+  coop_players.c coop_copy_autobuilt) when the copy is bonded. Pair test (autobuild_noy_3rd.txt in A, idle B, game
+  screenshots in B at 40-44 s): B's copy Fanplane is green, as A's; the hit pair (autobuild_3rd.txt with Y at 48 and
+  50 s) still shows B's copies on, off and on with A. TOTK_COOP_TEST_GREEN=0 leaves it out, =all marks every bonded copy.
+- Not tested: the mod's side effect, autobuilt parts destroyed when broken apart, on a copy taken apart in the other
+  game (an owner's autobuilt part taken off is deleted by the game already: autobuild_part_3rd.txt).
+
+### Earlier research (before the lead)
 - What the autobuild passes when it makes a part (TOTK_COOP_TEST_CREATEDUMP=1, coop_spawn.c create_dump on
   requestCreateActor; the autobuild's call is main+0x1d3bb98 in main+0x1d3b470) against coop_game.c request_create:
   the create argument's +0x48 0x0101010100000001 (ours 0), +0x58 a parameter list (only "SpecialParts_InitOn", for

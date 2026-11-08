@@ -361,6 +361,31 @@ int coop_bonds_take(const void *data, int n, int from) {   // coop_world.c peer_
     }
     return 1;
 }
+// An autobuilt part's look: the Autobuild's confirm (main+0x1d3c0d4, at main+0x1d3c4e0) calls main+0x1c07114 on each
+// part's SpecialPowerReceiverComponent; it ORs bit 0 into the component's +0x150 (the green, as the "green_begone" mod
+// shows: read for behaviour only, no licence) and +0x27c, sets +0x264/+0x268 and the +0x20 flags, and clears bit 2 of
+// the actor's +0x5ac. Called once on each copy of an autobuilt part (coop_players.c copy flag COOP_OBJ_AUTOBUILT) when it
+// is bonded. TOTK_COOP_TEST_GREEN=0: not called; =all: on every bonded copy.
+#define MARK_AUTOBUILT 0x1c07114
+int coop_copy_autobuilt(uint64_t actor);   // coop_players.c
+static void mark_autobuilt(Cpu *c, uint64_t a) {
+    static const char *mode = (const char *)1;
+    if (mode == (const char *)1) mode = cfg_get("TOTK_COOP_TEST_GREEN");
+    if (mode && *mode == '0') return;
+    if (!(mode && !strcmp(mode, "all")) && !coop_copy_autobuilt(a)) return;
+    static uint64_t done[128];
+    static int n;
+    for (int i = 0; i < n; i++) if (done[i] == a) return;
+    uint64_t comp = comp_of(a);
+    if (!comp) return;
+    uint32_t b = 0;
+    coop_rd(comp + 0x150, &b, 4);
+    if (!(b & 1)) coop_guest_call(c, MOD_MAIN_BASE + MARK_AUTOBUILT, comp, 0, 0, 0);
+    done[n++ % 128] = a;
+    static int said;
+    char nm[48];
+    if (said++ < 20) rt_log("coop: bonds: %s's copy marked autobuilt (+0x150 %x before)", coop_actor_name(a, nm, sizeof nm), b);
+}
 static void bond_pairs(Cpu *c, int64_t now) {
     static int said;
     for (int k = 0; k < PAIR_N; k++) {
@@ -396,6 +421,7 @@ static void bond_pairs(Cpu *c, int64_t now) {
         if (!coop_rd(mb + 0x98, wm, sizeof wm) || !coop_rd(rb + 0x98, wr, sizeof wr)) continue;
         call5(c, MOD_MAIN_BASE + BOND_BODIES, comp, 0, rb, (uint64_t)(uintptr_t)wm, (uint64_t)(uintptr_t)wr);
         pair[k].tries++, pair[k].tried_us = now;
+        mark_autobuilt(c, pair[k].ma), mark_autobuilt(c, pair[k].ra);
         if (said < 40) said++, rt_log("coop: bonds: %s bonded to %s (player %u's contraption)", pair[k].m.name, pair[k].root.name, pair[k].m.owner);
     }
 }

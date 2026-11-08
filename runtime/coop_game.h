@@ -38,6 +38,10 @@ int coop_request_create(Cpu *c, const char *name, const float pos[3], const floa
 // actor's constructor reads) holds the autobuild's type object (coop_game.c).
 int coop_request_create_autobuilt(Cpu *c, const char *name, const float pos[3], const float rot[9], uint8_t *handle);
 int coop_handle_status(const uint8_t *handle);
+// A request given up: its record released as the game does with one (main+0x5557e0: a failed one, status 4, freed; a
+// pending one cancelled and freed) and the handle cleared. Every handle not claimed must go through this: the actor
+// manager's request records run out otherwise, and then no actor can be made at all (a play session, 2026-11-08).
+void coop_handle_release(Cpu *c, uint8_t *handle);
 uint64_t coop_claim(Cpu *c, uint8_t *handle, uint8_t *link, uint64_t *ref);
 // Gives a new Player the first Player's update links to the resident helpers (ThrowBox, CarryBox, ...).
 void coop_copy_dependencies(Cpu *c, uint64_t model, uint64_t copy, int verbose);
