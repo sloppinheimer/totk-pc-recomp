@@ -30,18 +30,23 @@
 #       coop: gamedata: test: float SageOfGerudo_SliderBlockPos1 (42a21ad2) set to ...            + "float 42a21ad2 = ..., shared"
 #       coop: gamedata: player n says hello: catching them up on the N changes of this session    (at B's 50 s; N >= 5)
 #       coop: gamedata: catch-up for player n: N changes sent (pass 1 of 2), then the same with (pass 2 of 2)
+#       (and B's own changes since its 50 s back: "player n's ... applied here (catch-up)" or "older than" in the stats)
 #       coop: gamedata: test: key K set back to 0 ..., bool b06a5a66 set back ..., int I set back ..., enum E set back ...,
 #         float 42a21ad2 set back ... (from 65 s), each followed by its "... in this game, shared" line
 #   B:  coop: gamedata: hello sent (1 other player here) (joined late, the test)
+#       coop: gamedata: player n says hello: catching them up on the M changes of this session   (A's answer: B's log)
 #       coop: gamedata: player n's key K = 0x1 applied here (catch-up) (it read 0), the same for bool b06a5a66, int I,
 #         enum E (= 0x62965740) and float 42a21ad2; each followed by "player n's ... now reads ... here (as sent)"
+#         When X is 0 (the save had IsGet.Item_Fruit_A set) the bool is not taken by catch-up, as it would clear a set
+#         flag: "player n's bool b06a5a66 = 0 kept as 0x1 here (catch-up: it would move this game's progress back)", and
+#         its put-back later is already so (no line).
 #       coop: gamedata: blessings: S of 152 shrines cleared here, H hearts and V stamina vessels bought, so W; the pouch
 #         had P: set to W (key item slot ...)      when the save's blessings matched the formula before (W = P + 1)
 #         or "...; the pouch has P: left so"       when the save holds more blessings than the formula gives
 #       then, live from A's 65 s: "player n's key K = 0 applied here (it read 0x1)" and the same for the other four,
 #         each with its "now reads ... (as sent)"
-#   B's 30 s stats line: "... received: ... applied, ... by catch-up; dropped: D not joined yet, ..." with D > 0 (A's
-#   live packets before 50 s) and applied >= 10.
+#   B's 30 s stats line: "... received: ... applied, ... by catch-up; dropped: D not sharing yet, ..." with D > 0 (A's
+#   live packets before 50 s) and applied >= 9.
 # Failing signs: no "sharing world progress" line (the calc hook did not run, or no other player was seen);
 # "GameDataList ... not read" (numbers are then not shared); "NOT as sent"; B's "unknown here" counting up (the two
 # games' tables differ); no "says hello" line in A; "blessings: not worked out".

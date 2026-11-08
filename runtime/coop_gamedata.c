@@ -22,10 +22,24 @@
 // The event-flag setter writes its table directly, not through the queue, so its writes are taken in its own hook
 // (coop_gamedata_event_bool).
 //
-// Catch-up: every shared change seen in this session (this game's and the ones applied from the others) is kept in a
-// session log, one entry per value with its latest value. When a game starts sharing (it joined, or its world was
-// loaded again) it says hello; each game that hears it sends that player its session log, twice, 2 s apart. So a
-// player who joins late gets what the others changed while playing together, not their whole saves.
+// Order: every change carries a stamp from a Lamport clock (stamp_new), and a game takes another's change only when its
+// stamp is above the one it has for that value, so a late resend of an older value never undoes a newer one and two
+// games that change one value at once both end on the same of the two.
+//
+// Tracking and sharing: from 3 s after this game's Link is in the world, its changes are tracked (captured into the
+// session log below), also while it is alone; they are shared (sent, and the others' taken) while another player is in
+// the session. When sharing stops (nobody else here, or out of the world) what was waiting to be sent or applied is
+// dropped, and packets that come while not sharing are dropped too: the catch-up brings it all when sharing starts.
+//
+// Catch-up: every shared change this game made or took while tracking its world is kept in a session log, one entry
+// per value with its latest value and stamp. When a game starts sharing (it joined, a player came back, or its world
+// was loaded again) it says hello; each game that hears it sends that player its session log, twice, 2 s apart, and
+// answers with a hello of its own, so that player sends its log back. So a player who joins late, or comes back, gets
+// what the others changed in the meantime, also alone, and not their whole saves. A caught-up value that would move
+// this game's own progress back (a set flag cleared, a number lowered, a cleared shrine changed) is not taken unless
+// this game changed that value in the session itself (moves_back): a save further along keeps its progress. When this
+// game's tracking starts again and many of the log's values read otherwise, its world was loaded again from a save and
+// the log is cleared (slog_check); after a stage change they still read so and it is kept.
 //
 // Addresses (1.4.3 main; how each was found: docs/coop/proxy-plan.md "Shared world progress", and the hand-over note):
 //   main+0xa72b00  GameDataMgr::calc (x0 = the manager): 1.2.1 main+0xee9704, the same code (the same offsets 0xd0c,
@@ -158,11 +172,13 @@ enum { C_BOOL, C_INT, C_ENUM, C_FLOAT, NCAT };   // the name sets
 
 // ---- the wire: "GMDT" packets on the HIT channel (coop_world.c's packet loop hands them to coop_gamedata_take).
 // coop_world.c peer_tick takes HIT packets into a LinkHitPacket (616 bytes) and drops a longer one, so a packet is kept
-// to 8 + 36 * 16 = 584 bytes.
+// to 8 + 25 * 24 = 608 bytes. Each change carries its stamp (stamp_new: the order of changes across the games).
 #define GD_KIND 0x54444d47u   // "GMDT"
-#define GD_VER 2
-#define GD_PER_PACKET 36
-typedef struct { uint64_t id; uint32_t value; uint8_t type, pad[3]; } GdEntry;   // id: the name's hash, or the key
+#define GD_VER 3
+#define GD_PER_PACKET 25
+// id: the name's hash, or the key; for a hello, the sender's id and (bits 16..) whom it answers. value: for a hello, 0
+// when it asks for an answer, else the player it answers.
+typedef struct { uint64_t id, stamp; uint32_t value; uint8_t type, pad[3]; } GdEntry;
 typedef struct { uint32_t kind; uint8_t n, ver; uint16_t to; GdEntry e[GD_PER_PACKET]; } GdPacket;   // to: 0 for all
 _Static_assert(sizeof(GdPacket) <= 616, "GdPacket fits coop_world.c's HIT receive buffer");
 _Static_assert(sizeof(GdPacket) <= COOP_HIT_MAX, "GdPacket fits a HIT packet");
@@ -597,10 +613,12 @@ static void snapshot(uint64_t gmd) {
         uint64_t b = gmd + TB(t->vt), map = g64(b + F_MAP);
         uint32_t n = g32(b + F_COUNT), size = g32(b + F_MSIZE);
         if (n > 1u << 20) n = 0;
-        uint32_t *hash = realloc(t->hash, (size_t)(n ? n : 1) * 4), *shadow = realloc(t->shadow, (size_t)(n ? n : 1) * 4);
-        uint8_t *shared = realloc(t->shared, n ? n : 1);
-        if (!hash || !shadow || !shared) { free(hash), free(shadow), free(shared); t->hash = t->shadow = NULL, t->shared = NULL, t->n = 0; continue; }
+        free(t->hash), free(t->shadow), free(t->shared);
+        uint32_t *hash = malloc((size_t)(n ? n : 1) * 4), *shadow = malloc((size_t)(n ? n : 1) * 4);
+        uint8_t *shared = malloc(n ? n : 1);
+        if (!hash || !shadow || !shared) n = 0, free(hash), free(shadow), free(shared), hash = shadow = NULL, shared = NULL;
         t->hash = hash, t->shadow = shadow, t->shared = shared, t->n = n;
+        if (!n) { t->nshared = t->npersonal = t->nunsaved = 0; continue; }
         memset(hash, 0, (size_t)n * 4);
         for (uint32_t i = 0; map && i < size; i++) {
             uint32_t h = g32(map + (uint64_t)i * 8), idx = g32(map + (uint64_t)i * 8 + 4);
@@ -617,73 +635,132 @@ static void snapshot(uint64_t gmd) {
     }
 }
 
-// ---- the session log: every shared change seen in this session, its latest value (catch-up, header comment)
+// ---- the order of changes: a Lamport clock. A change made here gets a stamp above every stamp this game has seen
+// (the counter << 8 | this player's id, so two games' stamps never tie); a change from another game is taken only when
+// its stamp is above the one this game has for that value. A late resend of an older value then loses to a newer one
+// in every game, and the games end on the same value.
+static _Atomic uint64_t lclock;
+static uint64_t stamp_new(void) { return (atomic_fetch_add(&lclock, 1) + 1) << 8 | (uint64_t)(coop_net_id() & 0xff); }
+static void stamp_seen(uint64_t s) {
+    uint64_t c = s >> 8, cur = atomic_load(&lclock);
+    while (cur < c && !atomic_compare_exchange_weak(&lclock, &cur, c)) {}
+}
+
+// ---- the session log: every shared change this game made or took while it tracked this world, also while no other
+// player was here, with its latest value and stamp (catch-up, header comment)
 #define SLOG_N 32768   // a power of 2
-static struct { uint64_t id; uint32_t value; uint8_t type, used; } slog[SLOG_N];
+static struct { uint64_t id, stamp; uint32_t value; uint8_t type, used; } slog[SLOG_N];
 static int slog_n;
+static _Atomic uint32_t n_slog_full;
 static PlatMutex slog_lock = PLAT_MUTEX_INIT;
-static void slog_set(uint8_t type, uint64_t id, uint32_t value) {
+static uint32_t slog_at(uint8_t type, uint64_t id) {
+    return (uint32_t)(((id ^ (uint64_t)type << 56) * 0x9e3779b97f4a7c15ull) >> 49);
+}
+static int slog_get(uint8_t type, uint64_t id, uint32_t *value, uint64_t *stamp) {   // 1 when the log has the value
+    int found = 0;
     plat_mutex_lock(&slog_lock);
-    uint64_t x = (id ^ (uint64_t)type << 56) * 0x9e3779b97f4a7c15ull;
-    for (uint32_t i = (uint32_t)(x >> 49), k = 0; k < SLOG_N; k++, i = (i + 1) & (SLOG_N - 1)) {
-        if (slog[i].used && slog[i].id == id && slog[i].type == type) { slog[i].value = value; break; }
+    for (uint32_t i = slog_at(type, id), k = 0; k < SLOG_N && slog[i].used; k++, i = (i + 1) & (SLOG_N - 1))
+        if (slog[i].id == id && slog[i].type == type) { *value = slog[i].value, *stamp = slog[i].stamp, found = 1; break; }
+    plat_mutex_unlock(&slog_lock);
+    return found;
+}
+static void slog_set(uint8_t type, uint64_t id, uint32_t value, uint64_t stamp) {
+    plat_mutex_lock(&slog_lock);
+    for (uint32_t i = slog_at(type, id), k = 0; k < SLOG_N; k++, i = (i + 1) & (SLOG_N - 1)) {
+        if (slog[i].used && slog[i].id == id && slog[i].type == type) {
+            if (stamp >= slog[i].stamp) slog[i].value = value, slog[i].stamp = stamp;
+            break;
+        }
         if (!slog[i].used) {
-            if (slog_n >= SLOG_N * 3 / 4) break;   // full: the change goes out live but is not caught up
-            slog[i].used = 1, slog[i].id = id, slog[i].type = type, slog[i].value = value, slog_n++;
+            if (slog_n >= SLOG_N * 3 / 4) { atomic_fetch_add(&n_slog_full, 1); break; }   // full: sent live, not caught up
+            slog[i].used = 1, slog[i].id = id, slog[i].type = type, slog[i].value = value, slog[i].stamp = stamp, slog_n++;
             break;
         }
     }
     plat_mutex_unlock(&slog_lock);
 }
+static void slog_clear(void) {
+    plat_mutex_lock(&slog_lock);
+    memset(slog, 0, sizeof slog), slog_n = 0;
+    plat_mutex_unlock(&slog_lock);
+}
+
+// ---- state shared by the hooks
+static _Atomic int tracking;          // 1 while this game tracks its world's changes: in the world, settled, tables read
+static _Atomic int gate;              // 1 while it also shares them: tracking, and another player is in the session
+static _Atomic uint64_t track_gmd;    // the manager while tracking
 
 // ---- outbox: this game's shared changes, each sent at once and again 1, 3 and 7 s later; a value changed again
 // within 1 s of being sent waits for that second (a counter that changes every frame is sent once a second). Locked:
-// the event-flag hook may run on another thread than calc.
+// the event-flag hook may run on another thread than calc. When it is full a change is not sent, but it is in the
+// session log: the whole log then goes to everyone (resync, out_flush).
 #define OUT_N 2048
 static const uint64_t resend_ns[] = {1000000000ull, 2000000000ull, 4000000000ull};
-static struct { uint64_t id, next_ns, last_ns; uint32_t value; uint8_t type, sends; } out[OUT_N];
+static struct { uint64_t id, stamp, next_ns, last_ns; uint32_t value; uint8_t type, sends; } out[OUT_N];
 static int out_n;
 static PlatMutex out_lock = PLAT_MUTEX_INIT;
 static _Atomic uint32_t n_sent_key, n_sent_bool, n_sent_event, n_sent_num, n_out_full, n_packets;
+static _Atomic int resync;
 
-static void out_add(uint8_t type, uint64_t id, uint32_t value) {
-    if (type != T_HELLO) slog_set(type, id, value);
+static void out_put(uint8_t type, uint64_t id, uint32_t value, uint64_t stamp) {
     plat_mutex_lock(&out_lock);
     int i = 0;
     while (i < out_n && !(out[i].type == type && out[i].id == id)) i++;
     if (i == out_n) {
-        if (out_n == OUT_N) { plat_mutex_unlock(&out_lock); atomic_fetch_add(&n_out_full, 1); return; }
+        if (out_n == OUT_N) {
+            plat_mutex_unlock(&out_lock);
+            atomic_fetch_add(&n_out_full, 1), atomic_store(&resync, 1);
+            return;
+        }
         out_n++;
         out[i].last_ns = 0;
     }
-    out[i].type = type, out[i].id = id, out[i].value = value, out[i].sends = 0;
+    out[i].type = type, out[i].id = id, out[i].value = value, out[i].stamp = stamp, out[i].sends = 0;
     out[i].next_ns = out[i].last_ns ? out[i].last_ns + 1000000000ull : 0;
     plat_mutex_unlock(&out_lock);
 }
-// A change from another game for an id this game also has in its outbox, with another value: theirs is the later
-// one, so this game stops sending its own (else the resends would undo theirs).
-static void out_drop(uint8_t type, uint64_t id, uint32_t value) {
+// A change made in this game: into the session log, and out to the others while any is here.
+static void local_change(uint8_t type, uint64_t id, uint32_t value) {
+    uint64_t s = stamp_new();
+    slog_set(type, id, value, s);
+    if (atomic_load(&gate)) out_put(type, id, value, s);
+}
+// A change from another game, newer than this game's own for that value: this game stops sending its own (else the
+// resends would undo theirs).
+static void out_drop(uint8_t type, uint64_t id, uint64_t stamp) {
     plat_mutex_lock(&out_lock);
     for (int i = 0; i < out_n; i++)
-        if (out[i].type == type && out[i].id == id && out[i].value != value) { out[i] = out[--out_n]; break; }
+        if (out[i].type == type && out[i].id == id && out[i].stamp < stamp) { out[i] = out[--out_n]; break; }
     plat_mutex_unlock(&out_lock);
 }
+static void out_clear(void) {
+    plat_mutex_lock(&out_lock);
+    out_n = 0;
+    plat_mutex_unlock(&out_lock);
+    atomic_store(&resync, 0);
+}
 
-// The catch-up being sent: the session log, from cursor, to player `to` (0: everyone, when two joined at once).
+// The catch-up being sent: the session log, from cursor, to player `to` (0: everyone, when two asked at once or after
+// the outbox was full). Only the calc thread touches it.
 static struct { int on, to, pass; uint32_t cursor, sent; uint64_t next_ns; } cu;
-static uint64_t hello_ns[COOP_MAX_PLAYERS + 1];
+static uint64_t hello_seen[COOP_MAX_PLAYERS + 1][2];   // each player's last hello and last answer heard (0: none since they came)
 
-static void catchup_start(int from, uint64_t now) {
-    if (from < 1 || from > COOP_MAX_PLAYERS) return;
-    if (hello_ns[from] && now - hello_ns[from] < 10000000000ull) return;   // the hello's resends
-    hello_ns[from] = now;
-    cu.to = cu.on && cu.to != from ? 0 : from;
+static void catchup_begin(int to, uint64_t now) {
+    cu.to = cu.on && cu.to != to ? 0 : to;
     cu.on = 1, cu.pass = 0, cu.cursor = 0, cu.sent = 0, cu.next_ns = now;
+}
+// A hello (answer 0) or an answer to this game's hello from player `from`; each has its own stamp, its resends the
+// same: 1 when it starts a catch-up, 0 for a resend.
+static int catchup_start(int from, int answer, uint64_t stamp, uint64_t now) {
+    if (from < 1 || from > COOP_MAX_PLAYERS || stamp == hello_seen[from][answer]) return 0;
+    hello_seen[from][answer] = stamp;
+    catchup_begin(from, now);
     plat_mutex_lock(&slog_lock);
     int n = slog_n;
     plat_mutex_unlock(&slog_lock);
     rt_log("coop: gamedata: player %d says hello: catching %s up on the %d changes of this session", from,
            cu.to ? "them" : "everyone", n);
+    return 1;
 }
 
 static void out_flush(uint64_t now) {
@@ -694,7 +771,7 @@ static void out_flush(uint64_t now) {
         p.kind = GD_KIND, p.ver = GD_VER, p.n = 0, p.to = 0;
         for (int i = 0; i < out_n && p.n < GD_PER_PACKET; i++) {
             if (out[i].next_ns > now) continue;
-            p.e[p.n++] = (GdEntry){.id = out[i].id, .value = out[i].value, .type = out[i].type};
+            p.e[p.n++] = (GdEntry){.id = out[i].id, .stamp = out[i].stamp, .value = out[i].value, .type = out[i].type};
             if (out[i].sends == 0) {
                 uint8_t t = out[i].type;
                 if (t != T_HELLO) atomic_fetch_add(t == T_KEY ? &n_sent_key : t == T_BOOL ? &n_sent_bool : &n_sent_num, 1);
@@ -707,14 +784,21 @@ static void out_flush(uint64_t now) {
         coop_net_hit_send(&p, (int)(offsetof(GdPacket, e) + p.n * sizeof(GdEntry)));
         atomic_fetch_add(&n_packets, 1);
     }
+    int room = out_n < OUT_N / 2;
     plat_mutex_unlock(&out_lock);
+    if (room && !cu.on && atomic_exchange(&resync, 0)) {
+        catchup_begin(0, now);
+        rt_log("coop: gamedata: the outbox was full: sending the whole session log to everyone (%u changes not sent)",
+               atomic_load(&n_out_full));
+    }
     // the catch-up, with what is left of this frame's packets
     while (cu.on && budget > 0 && now >= cu.next_ns) {
         p.kind = GD_KIND, p.ver = GD_VER, p.n = 0, p.to = (uint16_t)cu.to;
         plat_mutex_lock(&slog_lock);
         while (cu.cursor < SLOG_N && p.n < GD_PER_PACKET) {
             uint32_t i = cu.cursor++;
-            if (slog[i].used) p.e[p.n++] = (GdEntry){.id = slog[i].id, .value = slog[i].value, .type = slog[i].type};
+            if (slog[i].used)
+                p.e[p.n++] = (GdEntry){.id = slog[i].id, .stamp = slog[i].stamp, .value = slog[i].value, .type = slog[i].type};
         }
         plat_mutex_unlock(&slog_lock);
         if (p.n) {
@@ -730,27 +814,30 @@ static void out_flush(uint64_t now) {
     }
 }
 
-// ---- inbox: the other games' changes, filled by coop_gamedata_take, applied at the next calc
+// ---- inbox: the other games' changes, filled by coop_gamedata_take, applied at the next calc. Taken only while this
+// game shares (gate): what comes while it does not is dropped, and it is caught up when it shares again.
 #define IN_N 16384
-static struct { uint64_t id; uint32_t value; uint8_t type, catchup; int from; } in[IN_N];
+static struct { uint64_t id, stamp; uint32_t value; uint8_t type, catchup; int from; } in[IN_N];
 static int in_n;
 static PlatMutex in_lock = PLAT_MUTEX_INIT;
-static _Atomic uint32_t n_recv, n_applied, n_same, n_personal_in, n_unknown, n_in_full, n_catchup_in, n_late_drop, n_not_mine;
-static _Atomic int late_now;   // the test's late join: this game is not in the sharing yet
+static _Atomic uint32_t n_recv, n_applied, n_same, n_personal_in, n_unknown, n_in_full, n_catchup_in, n_closed_drop,
+    n_not_mine, n_stale, n_kept, n_stuck;
 
 int coop_gamedata_take(const void *data, int n, int from) {   // coop_world.c's packet loop: 1 when it was ours
     const GdPacket *p = data;
     if (n < (int)offsetof(GdPacket, e) || p->kind != GD_KIND) return 0;
     if (p->ver != GD_VER || p->n < 1 || p->n > GD_PER_PACKET || n != (int)(offsetof(GdPacket, e) + p->n * sizeof(GdEntry))) return 1;
     if (!share_on()) return 1;
-    if (atomic_load(&late_now)) { atomic_fetch_add(&n_late_drop, p->n); return 1; }
+    if (!atomic_load(&gate)) { atomic_fetch_add(&n_closed_drop, p->n); return 1; }
     if (p->to && p->to != coop_net_id()) { atomic_fetch_add(&n_not_mine, p->n); return 1; }
     plat_mutex_lock(&in_lock);
     for (int i = 0; i < p->n; i++) {
         uint8_t t = p->e[i].type;
         if (t != T_BOOL && t != T_KEY && t != T_INT && t != T_ENUM && t != T_FLOAT && t != T_HELLO) continue;
         if (in_n == IN_N) { atomic_fetch_add(&n_in_full, 1); continue; }
-        in[in_n].id = p->e[i].id, in[in_n].type = t, in[in_n].from = from, in[in_n].catchup = p->to != 0;
+        // a key is 64 bits; every other id is a 32-bit hash (so one value has one id in the session log)
+        in[in_n].id = t == T_KEY ? p->e[i].id : (uint32_t)p->e[i].id;
+        in[in_n].stamp = p->e[i].stamp, in[in_n].type = t, in[in_n].from = from, in[in_n].catchup = p->to != 0;
         in[in_n].value = t == T_BOOL || t == T_KEY ? p->e[i].value & 1 : p->e[i].value;
         in_n++;
         if (t != T_HELLO) atomic_fetch_add(&n_recv, 1);
@@ -759,12 +846,14 @@ int coop_gamedata_take(const void *data, int n, int from) {   // coop_world.c's 
     plat_mutex_unlock(&in_lock);
     return 1;
 }
+static void in_clear(void) {
+    plat_mutex_lock(&in_lock);
+    in_n = 0;
+    plat_mutex_unlock(&in_lock);
+}
 
-// ---- state shared by the hooks
-static _Atomic int gate;              // 1 while this game shares: in a session with other players, in the world, settled
-static _Atomic uint64_t gate_gmd;     // the manager while the gate is open
 static uint64_t world_since_ns, last_me;
-static int said_start, was_open, bless_pending;
+static int said_start, was_tracking, was_open, bless_pending;
 #define VERIFY_N 16
 static struct { uint64_t id; uint32_t value; uint8_t type; int from, frames; } verify[VERIFY_N];   // applied, checked after calc
 
@@ -984,7 +1073,8 @@ static void test_tick(uint64_t gmd, int64_t world_us) {
 // ---- capture, apply, verify
 static void capture(uint64_t gmd) {
     static _Atomic uint32_t said;
-    int taken = 0, over = 0;
+    int numbers = 0, over = 0;
+    // the bool and key requests: all of them (calc writes and clears the queue after this, so one left out is lost)
     uint64_t b = gmd + TB(VT_BOOL);
     uint32_t cap = g32(b + F_QCAP), n = g32(b + F_QWORD) & 0xfffff;
     uint64_t ents = g64(b + F_QENT);
@@ -995,8 +1085,7 @@ static void capture(uint64_t gmd) {
         uint8_t v = g8(e) & 1;
         int64_t idx = map_index(gmd, VT_BOOL, h);
         if (idx < 0 || bool_value(gmd, idx) == v || !bool_shared(h)) continue;
-        if (taken++ >= 256) { over++; continue; }
-        out_add(T_BOOL, h, v);
+        local_change(T_BOOL, h, v);
         if (atomic_fetch_add(&said, 1) < 20) rt_log("coop: gamedata: bool %08x = %u in this game, shared", h, v);
     }
     cap = g32(gmd + K_QCAP), n = g32(gmd + K_QWORD) & 0xfffff, ents = g64(gmd + K_QENT);
@@ -1010,12 +1099,12 @@ static void capture(uint64_t gmd) {
         if (idx < 0 || (uint32_t)idx >= nk) continue;
         uint64_t ke = key_entry(gmd, idx);
         if (g8(ke + K_VALUE) == v || key_personal(gmd, idx)) continue;
-        if (taken++ >= 256) { over++; continue; }
-        out_add(T_KEY, g64(ke), v);
+        local_change(T_KEY, g64(ke), v);
         if (atomic_fetch_add(&said, 1) < 20)
             rt_log("coop: gamedata: key %016llx = %u in this game (reset type %#x), shared", (unsigned long long)g64(ke), v, g32(ke + K_RESET));
     }
-    // the numbers: what changed since the last frame (calc has written this game's requests since)
+    // the numbers: what changed since the last frame (calc has written this game's requests since); 256 a frame, the
+    // rest is still different from its copy and taken next frame
     for (int k = 0; k < 3; k++) {
         NumTab *t = &nt[k];
         uint64_t te = g64(gmd + TB(t->vt) + F_ENT);
@@ -1024,9 +1113,9 @@ static void capture(uint64_t gmd) {
             if (!t->shared[i]) continue;
             uint32_t v = g32(te + (uint64_t)i * t->stride + N_VALUE);
             if (v == t->shadow[i]) continue;
-            if (taken++ >= 256) { over++; continue; }   // left different: taken next frame
+            if (numbers++ >= 256) { over++; continue; }
             t->shadow[i] = v;
-            out_add((uint8_t)t->wire, t->hash[i], v);
+            local_change((uint8_t)t->wire, t->hash[i], v);
             if (atomic_fetch_add(&said, 1) < 40) {
                 if (t->wire == T_FLOAT) { float f; memcpy(&f, &v, 4); rt_log("coop: gamedata: float %08x = %.2f in this game, shared", t->hash[i], (double)f); }
                 else if (t->wire == T_ENUM) rt_log("coop: gamedata: enum %08x = %08x in this game, shared", t->hash[i], v);
@@ -1037,49 +1126,93 @@ static void capture(uint64_t gmd) {
     if (over) {
         static uint64_t last;
         uint64_t now = plat_now_ns();
-        if (now - last > 5000000000ull) { last = now; rt_log("coop: gamedata: %d changes in one frame not shared yet (256 at most)", over); }
+        if (now - last > 5000000000ull) { last = now; rt_log("coop: gamedata: %d number changes in one frame left for the next (256 a frame)", over); }
     }
 }
 
+// A catch-up value that would move this game's own progress back: a set flag cleared, a number lowered, a cleared
+// shrine's state changed. A catch-up carries the others' session changes; this game's save may be further along than
+// their game was when they made them, so such a value is not taken when this game has no change of its own (in its
+// session log) for it. A live change, made while both play, is taken as it is.
+static int moves_back(uint8_t t, uint64_t id, uint32_t cur, uint32_t v) {
+    if (t == T_BOOL || t == T_KEY) return cur && !v;
+    if (t == T_INT) return (int32_t)v < (int32_t)cur;
+    if (t == T_ENUM) return cur == ENUM_CLEAR && dungeon_of((uint32_t)id) >= 0;
+    return 0;
+}
+
 static void apply(uint64_t gmd, uint64_t now) {
-    static _Atomic uint32_t said, said_cu;
+    static _Atomic uint32_t said, said_cu, said_kept;
+    static int stuck_frames;
     plat_mutex_lock(&in_lock);
-    int done = 0;
+    int done = 0, me = coop_net_id();
     for (; done < in_n; done++) {
-        uint64_t id = in[done].id;
-        uint32_t v = in[done].value, cur;
+        uint64_t id = in[done].id, stamp = in[done].stamp, have_stamp;
+        uint32_t v = in[done].value, cur, have;
         uint8_t t = in[done].type;
         int from = in[done].from, ok;
-        if (t == T_HELLO) { catchup_start(from, now); continue; }
+        if (t == T_HELLO) {   // value 0: a hello to everyone, which wants an answer; else the answer to one player's
+            if (v && v != (uint32_t)me) continue;
+            if (catchup_start(from, v != 0, stamp, now) && !v)
+                out_put(T_HELLO, (uint64_t)from << 16 | (uint32_t)me, (uint32_t)from, stamp_new());   // so they catch this game up too
+            continue;
+        }
+        stamp_seen(stamp);
+        int known = slog_get(t, id, &have, &have_stamp);
+        if (known && stamp <= have_stamp) { atomic_fetch_add(&n_stale, 1); continue; }   // older than what this game has
+        NumTab *nt_ = NULL;
+        int64_t idx;
         if (t == T_BOOL) {
-            int64_t idx = map_index(gmd, VT_BOOL, (uint32_t)id);
+            idx = map_index(gmd, VT_BOOL, (uint32_t)id);
             if (idx < 0) { atomic_fetch_add(&n_unknown, 1); continue; }
             if (!bool_shared((uint32_t)id)) { atomic_fetch_add(&n_personal_in, 1); continue; }
             cur = (uint32_t)bool_value(gmd, idx);
-            if (cur == v) { atomic_fetch_add(&n_same, 1); slog_set(t, id, v); continue; }
-            ok = push_bool(gmd, (uint8_t)v, (uint32_t)id);
         } else if (t == T_KEY) {
-            int64_t idx = key_index(gmd, id);
+            idx = key_index(gmd, id);
             if (idx < 0) { atomic_fetch_add(&n_unknown, 1); continue; }
             if (key_personal(gmd, idx)) { atomic_fetch_add(&n_personal_in, 1); continue; }
             cur = g8(key_entry(gmd, idx) + K_VALUE);
-            if (cur == v) { atomic_fetch_add(&n_same, 1); slog_set(t, id, v); continue; }
-            ok = push_key(gmd, (uint8_t)v, idx);
         } else {
-            NumTab *nt_ = tab_of(t);
-            int64_t idx = nt_ ? map_index(gmd, nt_->vt, (uint32_t)id) : -1;
+            nt_ = tab_of(t);
+            idx = nt_ ? map_index(gmd, nt_->vt, (uint32_t)id) : -1;
             if (idx < 0 || (uint32_t)idx >= nt_->n) { atomic_fetch_add(&n_unknown, 1); continue; }
             if (!nt_->shared[idx]) { atomic_fetch_add(&n_personal_in, 1); continue; }
             cur = num_value(gmd, nt_, idx);
-            if (cur == v) { atomic_fetch_add(&n_same, 1); nt_->shadow[idx] = v; slog_set(t, id, v); continue; }
+        }
+        if (cur == v) {
+            atomic_fetch_add(&n_same, 1);
+            if (nt_) nt_->shadow[idx] = v;
+            slog_set(t, id, v, stamp), out_drop(t, id, stamp);
+            continue;
+        }
+        if (in[done].catchup && !known && moves_back(t, id, cur, v)) {
+            // this game's value stands for that change: a late live resend of it is then older, not taken either
+            slog_set(t, id, cur, stamp);
+            atomic_fetch_add(&n_kept, 1);
+            if (atomic_fetch_add(&said_kept, 1) < 20)
+                rt_log("coop: gamedata: player %d's %s %0*llx = %#x kept as %#x here (catch-up: it would move this game's "
+                       "progress back)", from, type_name(t), id_width(t), (unsigned long long)id, v, cur);
+            continue;
+        }
+        if (t == T_BOOL) ok = push_bool(gmd, (uint8_t)v, (uint32_t)id);
+        else if (t == T_KEY) ok = push_key(gmd, (uint8_t)v, idx);
+        else {
             ok = push_num(gmd, nt_, (uint32_t)id, v);
             if (ok) nt_->shadow[idx] = v;   // calc writes it now: not this game's change
             if (ok && t == T_ENUM && v == ENUM_CLEAR && dungeon_of((uint32_t)id) >= 0) bless_pending = 3;
         }
-        if (!ok) break;   // the queue is full: the rest next frame
+        if (!ok) {   // the queue is full: the rest next frame; a change no queue takes for 2 s is dropped
+            if (++stuck_frames < 120) break;
+            atomic_fetch_add(&n_stuck, 1);
+            rt_log("coop: gamedata: player %d's %s %0*llx = %#x: its queue took nothing for 2 s, dropped", from, type_name(t),
+                   id_width(t), (unsigned long long)id, v);
+            stuck_frames = 0;
+            continue;
+        }
+        stuck_frames = 0;
         atomic_fetch_add(&n_applied, 1);
-        slog_set(t, id, v);
-        out_drop(t, id, v);
+        slog_set(t, id, v, stamp);
+        out_drop(t, id, stamp);
         if (atomic_fetch_add(in[done].catchup ? &said_cu : &said, 1) < 20)
             rt_log("coop: gamedata: player %d's %s %0*llx = %#x applied here%s (it read %#x)", from, type_name(t), id_width(t),
                    (unsigned long long)id, v, in[done].catchup ? " (catch-up)" : "", cur);
@@ -1107,6 +1240,33 @@ static void verify_tick(uint64_t gmd) {
     }
 }
 
+// Tracking starts again (the world was loaded again, or a stage change took the Link away): was the world reloaded
+// from a save? Then this session's changes no longer read so here and the log is not this world's any more: cleared
+// (the others catch this game up again when it shares). After a stage change within the same world they still read so.
+static void slog_check(uint64_t gmd) {
+    uint32_t checked = 0, back = 0;
+    plat_mutex_lock(&slog_lock);
+    for (uint32_t i = 0; i < SLOG_N; i++) {
+        if (!slog[i].used) continue;
+        uint8_t t = slog[i].type;
+        int64_t now = -1, idx;
+        if (t == T_KEY) { idx = key_index(gmd, slog[i].id); now = idx < 0 ? -1 : g8(key_entry(gmd, idx) + K_VALUE); }
+        else if (t == T_BOOL) { idx = map_index(gmd, VT_BOOL, (uint32_t)slog[i].id); now = idx < 0 ? -1 : bool_value(gmd, idx); }
+        else { NumTab *x = tab_of(t); idx = x ? map_index(gmd, x->vt, (uint32_t)slog[i].id) : -1; now = idx < 0 ? -1 : num_value(gmd, x, idx); }
+        if (now < 0) continue;
+        checked++, back += now != slog[i].value;
+    }
+    plat_mutex_unlock(&slog_lock);
+    if (!checked) return;
+    // a few may have moved by themselves while not tracked (time of day flags): a quarter, and at least 4, is a reload
+    if (back >= 4 && back * 4 >= checked) {
+        slog_clear();
+        rt_log("coop: gamedata: the world was loaded again (%u of the session's %u changes read otherwise): session log cleared",
+               back, checked);
+    } else
+        rt_log("coop: gamedata: tracking again: the session's %u changes kept (%u read otherwise)", checked, back);
+}
+
 // GameDataMgr::calc's entry (coop_spawn.c coop_hook), x0 = the manager; me: this game's Link (0 outside the world).
 void coop_gamedata_calc(uint64_t gmd, uint64_t me) {
     if (!share_on() || !gmd) return;
@@ -1116,42 +1276,67 @@ void coop_gamedata_calc(uint64_t gmd, uint64_t me) {
     int ids[COOP_MAX_PLAYERS];
     char names[COOP_MAX_PLAYERS][17];
     int others = coop_net_on() && coop_net_id() ? coop_net_players(ids, names, COOP_MAX_PLAYERS) : 0;
+    if (others < 0) others = 0;
     if (me != last_me) last_me = me, world_since_ns = now;
     static int late = -1;
     static int64_t late_us;
     if (late < 0) late = test_named("TOTK_COOP_TEST_LATE", &late_us);
     int64_t world_us = frame_step_world_us();
     int is_late = late && world_us < late_us;
-    atomic_store(&late_now, is_late);
-    // Shared from 3 s after this game's Link is there (a save's load writes many values first), while another player is
-    // in the session, once the name tables are loaded.
-    int open = others > 0 && me && now - world_since_ns > 3000000000ull && atomic_load(&tables_ready) && !is_late;
-    atomic_store(&gate_gmd, open ? gmd : 0);
+    // A player who left: a catch-up being sent to them stops.
+    uint32_t here = 0;
+    for (int i = 0; i < others; i++)
+        if (ids[i] >= 1 && ids[i] <= COOP_MAX_PLAYERS) here |= 1u << ids[i];
+    for (int p = 1; p <= COOP_MAX_PLAYERS; p++) {
+        if (here >> p & 1) continue;
+        hello_seen[p][0] = hello_seen[p][1] = 0;
+        if (cu.on && cu.to == p) cu.on = 0, rt_log("coop: gamedata: player %d left: their catch-up stopped", p);
+    }
+    // Tracked from 3 s after this game's Link is there (a save's load writes many values first), once the name tables
+    // are loaded, also while no other player is here (they get those changes when they come: catch-up); shared while
+    // another player is in the session.
+    int track = me && now - world_since_ns > 3000000000ull && atomic_load(&tables_ready) && !is_late;
+    int open = track && others > 0;
+    if (was_open && !open) {   // nobody to share with, or not tracking: nothing sent or taken is kept for later
+        out_clear(), in_clear(), cu.on = 0;
+        for (int k = 0; k < VERIFY_N; k++) verify[k].frames = 0;
+        rt_log("coop: gamedata: sharing stops (%s)", track ? "no other player here" : "out of the world");
+    }
     atomic_store(&gate, open);
-    if (!open) { was_open = 0; return; }
-    if (!was_open) {   // sharing starts (again): copy the numbers, say hello so the others catch this game up
-        was_open = 1;
+    atomic_store(&track_gmd, track ? gmd : 0);
+    atomic_store(&tracking, track);
+    if (!track) { was_tracking = was_open = 0; return; }
+    if (!was_tracking) {   // tracking starts (again): copy the numbers (the save's values: not changes)
+        was_tracking = 1;
         snapshot(gmd);
         if (!said_start) said_start = 1, log_start(gmd);
-        out_add(T_HELLO, (uint64_t)coop_net_id(), 0);
-        rt_log("coop: gamedata: hello sent (%d other player%s here)%s", others, others == 1 ? "" : "s", late ? " (joined late, the test)" : "");
+        else slog_check(gmd);
     }
+    if (open && !was_open) {   // sharing starts (again): say hello, so the others catch this game up and it them
+        static int hellos;
+        out_put(T_HELLO, (uint64_t)(uint32_t)coop_net_id(), 0, stamp_new());
+        rt_log("coop: gamedata: hello sent (%d other player%s here)%s", others, others == 1 ? "" : "s",
+               late && !hellos++ ? " (joined late, the test)" : "");
+    }
+    was_open = open;
     verify_tick(gmd);
     test_tick(gmd, world_us);
     capture(gmd);
-    apply(gmd, now);
+    if (open) apply(gmd, now);
     if (bless_pending && !--bless_pending) blessing_tick(gmd);   // after calc wrote the shrine's state
-    out_flush(now);
+    if (open) out_flush(now);
     static uint64_t last_stats;
     if (now - last_stats > 30000000000ull) {
         if (last_stats)
             rt_log("coop: gamedata: %u keys, %u bools (%u of them event flags) and %u numbers shared, %u packets; %u received: "
-                   "%u applied, %u already so, %u the player's here, %u unknown here, %u by catch-up; dropped: %u not joined "
-                   "yet, %u for another player; full: out %u, in %u; session log %d",
+                   "%u applied, %u already so, %u older than this game's, %u kept by catch-up, %u the player's here, %u unknown "
+                   "here, %u by catch-up; dropped: %u not sharing yet, %u for another player, %u no queue took; full: out %u, "
+                   "in %u, session log %u; session log %d",
                    atomic_load(&n_sent_key), atomic_load(&n_sent_bool), atomic_load(&n_sent_event), atomic_load(&n_sent_num),
                    atomic_load(&n_packets), atomic_load(&n_recv), atomic_load(&n_applied), atomic_load(&n_same),
-                   atomic_load(&n_personal_in), atomic_load(&n_unknown), atomic_load(&n_catchup_in), atomic_load(&n_late_drop),
-                   atomic_load(&n_not_mine), atomic_load(&n_out_full), atomic_load(&n_in_full), slog_n);
+                   atomic_load(&n_stale), atomic_load(&n_kept), atomic_load(&n_personal_in), atomic_load(&n_unknown),
+                   atomic_load(&n_catchup_in), atomic_load(&n_closed_drop), atomic_load(&n_not_mine), atomic_load(&n_stuck),
+                   atomic_load(&n_out_full), atomic_load(&n_in_full), atomic_load(&n_slog_full), slog_n);
         last_stats = now;
     }
 }
@@ -1162,8 +1347,8 @@ void coop_gamedata_calc(uint64_t gmd, uint64_t me) {
 // writes at once too. Runs the setter itself: 1.
 int coop_gamedata_event_bool(Cpu *c, uint64_t addr) {
     static __thread int inside;
-    if (inside || !share_on() || !atomic_load(&gate)) return 0;
-    uint64_t gmd = atomic_load(&gate_gmd), key = c->x[2];
+    if (inside || !share_on() || !atomic_load(&tracking)) return 0;
+    uint64_t gmd = atomic_load(&track_gmd), key = c->x[2];
     uint32_t h = (uint32_t)c->x[3], th = 0;
     uint8_t v = c->x[1] & 1;
     uint64_t map = key ? g64(key) : 0;
@@ -1187,7 +1372,7 @@ int coop_gamedata_event_bool(Cpu *c, uint64_t addr) {
     rt_dispatch(c);
     inside = 0;
     if ((c->x[0] & 1) && idx >= 0 && was != v && bool_shared(th)) {
-        out_add(T_BOOL, th, v);
+        local_change(T_BOOL, th, v);
         atomic_fetch_add(&n_sent_event, 1);
         static _Atomic uint32_t said;
         if (atomic_fetch_add(&said, 1) < 20) rt_log("coop: gamedata: event bool %08x = %u in this game, shared", th, v);

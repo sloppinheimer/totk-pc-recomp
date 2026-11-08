@@ -148,21 +148,40 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
       Obj_DungeonClearSeal (Pouch.KeyItem.Content.Name / .StockNum, through the String64Array queue, 0x58-byte entries
       with their own text buffer, and the IntArray queue, {value, index, hash, op}) to that, in an empty key item
       slot when the player has none. It never lowers it.
-    - **catch-up**: every shared change of the session is kept (latest value per entry). A game that starts sharing
-      says hello; the others send it their session log twice, 2 s apart, addressed to it. So a player who joins late
-      gets what the others changed while playing together, not their whole saves.
+    - **catch-up**: every shared change a game makes or takes while its Link is in the world is kept (latest value
+      and stamp per entry), also while it is alone. A game that starts sharing (it joined, a player came back, its
+      world was loaded again) says hello; the others send it their session log twice, 2 s apart, addressed to it, and
+      answer with a hello so it sends its log back. So a player who joins late or comes back gets what the others
+      changed meanwhile, also alone, not their whole saves. A caught-up value that would move this game's progress
+      back (a set flag cleared, a number lowered, a cleared shrine changed) is left as this game has it unless this
+      game changed it in the session. When a game's world is loaded again from a save (many of its log's values read
+      otherwise when tracking starts again) its log is cleared and the others catch it up.
+    - **order**: each change carries a Lamport stamp; a game takes another's change only when its stamp is above the
+      one it has for that value, so a late resend of an older value does not undo a newer one, and two games that
+      change one value at once end on the same value. While a game is not sharing, packets for it are dropped and
+      what waited to be sent or applied is dropped too (the catch-up brings it). GMDT version 3: 24-byte entries
+      (id, stamp, value, type), 25 a packet (608 bytes).
+    - review fixes (2026-11-07, offline harness only): changes made while no other player is there were never
+      shared; state outlived a session (inbox applied later, a catch-up sent on to a player who had left, a rejoin
+      within 10 s not caught up); bool and key requests over 256 in a frame were lost (now all taken; a full outbox
+      sends the whole session log to everyone instead); a bool id's top 32 bits could fill the session log; one
+      change no queue took stopped the inbox (dropped after 2 s); the number copies leaked on a failed allocation.
     - also fixed: coop_world.c peer_tick takes HIT packets into a 616-byte buffer and drops longer ones; a GMDT packet
       held up to 60 entries (968 bytes), so a burst of more than 38 changes was lost. It now holds 36.
     - test: `tools\coop\gamedata_test.ps1` (game A changes a key, a bool, an Int, a shrine and a Float and puts them
       back; game B joins the sharing late, `TOTK_COOP_TEST_LATE=B:50`); the lines a passing run shows are in the
       script. Checked offline on two fake managers in one process (a harness, not in the repo), with the real
       GameDataList and actor list: numbers both ways with no echo, the personal ones kept, an "add" shared as its
-      result, the late join caught up, the blessing slot filled, packets lost for 10 s made up by the resends.
+      result, the late join caught up (a lower kill count kept), the blessing slot filled, packets lost for 10 s made
+      up by the resends, changes made apart exchanged when the players meet again, a stage change keeping the log, a
+      reload clearing it and being caught up, one value changed in both games in one frame ending equal. Not run in
+      the harness: a full outbox's resync, a queue that never takes a change.
     - unverified: that the game reads the pouch's key items from game data each time (a pouch kept elsewhere would
       overwrite the blessings), what a shared quest step does in a game whose quest is elsewhere, and that the Enum,
       Int and Float entries' value is at +0x1c in every one of them (read in calc's compare, the start lines' counts
       check the tables). Known gaps: a change pushed by another thread between the read and calc is applied but not
-      sent; the same value changed in two games in one frame can end swapped; bool families
+      sent; two games that changed one value while apart end on the one with the higher stamp, not the later one;
+      live changes take the latest value, so a player further along can be moved back by one behind; bool families
       whose names cannot be made from the RomFS (ReadyMadeAutoBuilderDraft.*) are shared.
 - **Not done:**
   - the stand-in's arrows shot by it with its owner's camera (patched unproject): not ported, on purpose for now.
