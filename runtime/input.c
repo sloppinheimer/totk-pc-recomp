@@ -122,7 +122,9 @@ static void script_load(void) {
     rt_log("input: script %s, %d events", path, script_n);
 }
 
-static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
+// menu: for the menu's own pad read (input_pad_read), which reads the script's buttons and sticks too, so a script can
+// drive the menu; the mouse counts are left to the game's poll, which uses them up.
+static void script_apply_to(uint64_t *b, int32_t sl[2], int32_t sr[2], int menu) {
     if (!script_state) script_load();
     if (!script_n) return;
     uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), tick = frame_step_ticks();
@@ -132,7 +134,7 @@ static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
         if (e->timed ? w < 0 : script_mixed && w >= 0) continue;
         uint64_t now = e->timed ? (uint64_t)w : tick;
         if (now < e->at || (now >= e->at + e->hold && (e->logged || !e->timed))) continue;
-        if (e->stick == 3 && e->logged) continue;
+        if (e->stick == 3 && (e->logged || menu)) continue;
         if (!e->logged) {
             e->logged = 1;
             if (e->timed) rt_log("input: script frame %llu at %.1f ms: %s", (unsigned long long)fr, w / 1000.0, e->text);
@@ -146,6 +148,8 @@ static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
         else *b |= 1ull << e->bit;
     }
 }
+
+static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2]) { script_apply_to(b, sl, sr, 0); }
 
 // TOTK_INPUT_RECORD=<file>: writes the merged input as TOTK_INPUT_SCRIPT lines, one per button press and per stick
 // segment, so a played session replays as a script. A stick segment ends when an axis moves by more than REC_STICK_STEP.
@@ -823,6 +827,8 @@ int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly) {
     if (!state) start();
     if (state > 0) binds_refresh();
     int ok = state == 1 && pad_read(&b, sl, sr);
+    script_apply_to(&b, sl, sr, 1);   // TOTK_INPUT_SCRIPT drives the menu as a pad does (tests)
+    if (script_n) ok = 1;
     plat_mutex_unlock(&lock);
     *buttons = b;
     *lx = sl[0];
