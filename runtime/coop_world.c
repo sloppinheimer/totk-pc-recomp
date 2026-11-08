@@ -5287,6 +5287,22 @@ void coop_anim_copy_test(Cpu *c, uint64_t me) {
 void coop_anim_pack(uint64_t me, CoopAnim *out) {
     AnimSlot s[COOP_ANIM_SLOTS];
     int n = anim_read(anim_player_of(me), s, COOP_ANIM_SLOTS);
+    {   // How many slots this Link's animation player has, and which past the 7 sent carry weight (a two-handed weapon's
+        // left hand did not reach it on the stand-in; a play session, 2026-11-08). Logged when that set changes.
+        static AnimSlot all[24];
+        static uint32_t last_mask = ~0u;
+        static int said;
+        int na = anim_read(anim_player_of(me), all, 24);
+        uint32_t mask = 0;
+        for (int i = COOP_ANIM_SLOTS; i < na; i++) if (all[i].idx != 0xffff && all[i].w > 0.001f) mask |= 1u << i;
+        if (mask != last_mask && said < 80) {
+            last_mask = mask, said++;
+            char b[200] = "";
+            for (int i = COOP_ANIM_SLOTS; i < na; i++)
+                if (mask >> i & 1) { size_t l = strlen(b); snprintf(b + l, sizeof b - l, " %d:clip %u w %.2f", i, all[i].idx, all[i].w); }
+            rt_log("coop: this Link's animation slots: %d, past the %d sent with weight:%s", na, COOP_ANIM_SLOTS, b[0] ? b : " none");
+        }
+    }
     uint64_t g = anim_graph_of(me);
     // Each slot's rate (frames a second) from a reference frame at least RATE_SPAN_US of world time back, the last
     // rate kept in between. Taken from the call before, a second call in the same frame saw no time and no frames

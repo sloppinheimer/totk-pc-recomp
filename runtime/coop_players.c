@@ -2206,6 +2206,8 @@ static int prop_skip(const char *nm) {
     // the proxy's weapon has (a play session, 2026-11-06: "the real item is appended onto them").
     if (nm[0]) {
         for (int k = 0; k < 3; k++) if (my_fuse[k][0] && !strcmp(nm, my_fuse[k])) return 1;
+        int old_fuse_name(const char *nm);   // the material of a co-op Link's old item, still watched (below)
+        if (old_fuse_name(nm)) return 1;
         for (int i = 0; i < COOP_MAX_PLAYERS; i++)
             for (int k = 0; k < 3; k++)
                 if (slots[i].actor && ((slots[i].fuse_have[k][0] && !strcmp(nm, slots[i].fuse_have[k])) ||
@@ -2232,6 +2234,10 @@ static int copy_pending_near(const float *p) {
 // remade: one only watched after its item was made again (deleted once out of the gear, kept while held).
 static struct { uint64_t actor, eq; int k, until, since, remade; char name[48], fuse[32]; } old_items[16];
 static char old_item_fuse[32];   // the next old item's fused material: the gear code sets it before regive_gear
+int old_fuse_name(const char *nm) {   // (a loose one is not sent: old_items_tick deletes it)
+    for (int i = 0; i < 16; i++) if (old_items[i].actor && old_items[i].fuse[0] && !strcmp(nm, old_items[i].fuse)) return 1;
+    return 0;
+}
 static void watch_old_item(uint64_t eq, int k, uint64_t old, int remade) {
     int f = -1;
     for (int i = 0; i < 16; i++) {
@@ -2253,14 +2259,35 @@ static void watch_old_item(uint64_t eq, int k, uint64_t old, int remade) {
 // alone left lying in the world, where it could be picked up in that game only (a Silver Moblin Horn off a stand-in's
 // stick when its owner went unarmed; a play session, 2026-11-08). Its fused part is the actor of that material's name
 // within 1 m of the item.
-typedef struct { float at[3]; const char *name; uint64_t found[4]; int n; } FuseFind;
+typedef struct { float at[3]; const char *name; uint64_t found[4]; int n; float r2; } FuseFind;
 static void fuse_find_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
     (void)key;
     FuseFind *f = arg;
     float q[3];
     if (f->n >= 4 || strcmp(nm, f->name) || !coop_rd(a + COOP_ACTOR_POS, q, 12)) return;
     float dx = q[0] - f->at[0], dy = q[1] - f->at[1], dz = q[2] - f->at[2];
-    if (dx * dx + dy * dy + dz * dz < 1.0f) f->found[f->n++] = a;
+    if (dx * dx + dy * dy + dz * dz < (f->r2 > 0 ? f->r2 : 1.0f)) f->found[f->n++] = a;
+}
+// Whether an actor sits on (within 0.6 m of) an item a co-op Link or this Link holds now: the fused part of a weapon in
+// use, not a loose one.
+static int fuse_on_held(uint64_t a) {
+    float q[3];
+    if (!coop_rd(a + COOP_ACTOR_POS, q, 12)) return 1;
+    uint64_t holders[1 + COOP_MAX_PLAYERS];
+    int nh = 0;
+    holders[nh++] = coop_player_actor();
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++) if (slots[i].actor && slots[i].state == LIVE) holders[nh++] = slots[i].actor;
+    for (int h = 0; h < nh; h++) {
+        uint64_t eq = eq_of_actor(holders[h]);
+        for (int k = 0; eq && k < 3; k++) {
+            uint64_t it = eq_item(eq, k);
+            float p[3];
+            if (!it || !coop_rd(it + COOP_ACTOR_POS, p, 12)) continue;
+            float dx = p[0] - q[0], dy = p[1] - q[1], dz = p[2] - q[2];
+            if (dx * dx + dy * dy + dz * dz < 0.6f * 0.6f) return 1;
+        }
+    }
+    return 0;
 }
 static void delete_old_item(Cpu *c, int i) {
     FuseFind ff = {.name = old_items[i].fuse};
@@ -2368,6 +2395,22 @@ static int old_item(uint64_t a) {
 static void old_items_tick(Cpu *c) {
     for (int i = 0; i < 16; i++) {
         if (!old_items[i].actor) continue;
+        // Its fused material come loose while it is watched (emptying a slot knocked a stand-in's horn off its spear,
+        // and the horn lay there and was sent as a world object: a play session, 2026-11-08): deleted, within 1.5 m
+        // of the item, unless it is on an item a co-op Link holds now. Checked every 10 ticks.
+        if (old_items[i].fuse[0] && prop_tick % 10 == 0) {
+            FuseFind ff = {.name = old_items[i].fuse};
+            if (coop_rd(old_items[i].actor + COOP_ACTOR_POS, ff.at, 12)) {
+                void coop_actors_all(void (*fn)(uint64_t, const char *, uint32_t, void *), void *arg);   // coop_world.c
+                ff.r2 = 1.5f * 1.5f;
+                coop_actors_all(fuse_find_fn, &ff);
+                for (int k = 0; k < ff.n; k++) {
+                    if (fuse_on_held(ff.found[k])) continue;
+                    coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, ff.found[k], COOP_DELETE_REASON, 0, 0);
+                    rt_log("coop: proxy: the %s come off its old %s is deleted", old_items[i].fuse, old_items[i].name);
+                }
+            }
+        }
         // (gone, or another actor in its memory: forgotten, not deleted; code review, 2026-11-06)
         if (!actor_is(old_items[i].actor, old_items[i].name)) { old_items[i].actor = 0; continue; }
         if (old_items[i].until < prop_tick) {   // watched 30 s: deleted unless still held (sent as a world object else)
