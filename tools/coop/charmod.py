@@ -7,10 +7,11 @@ files under names of its own, its "set", so that one game can show several chara
 - the stand-in actor PlayerPuppet_<tag> (the character's Player.pack, as tools/coop/make_puppet_pack.py makes
   PlayerPuppet from the game's), its body model Model/<tag>.<fmdb>.bfres.mc and its animation set AS/<actor>.root.asb;
 - the bare head and body pieces Link wears without armor (BARE below) as Armor_..._<tag> actors with their models;
+- in those models, every texture renamed (the tag in place of its first four characters, the file copied under that
+  name) and every material renamed (retexture, material_name), so that this game's own Link's textures, which the mod
+  may replace under the same names, and the stand-in's are different textures of different materials;
 - the files the character mod adds (new names: its animations, textures, AI), so that a game where the mod is off has
   what the stand-in needs.
-The models' textures keep their names, so a texture the mod replaces (Link_RaulSkin_Alb...) is the one of the game the
-stand-in is shown in: renaming them inside the model made the game refuse the actor (docs/coop/character-mods.md).
 
 The tag is four letters and digits made from the character's key ("Link" for the game's own Link, else the mod's
 GameBanana file id or its folder name). Link (the game's files) always gets a set too: a game whose own Link is a
@@ -127,6 +128,119 @@ class Source:
     def from_mod(self, path): return bool(self.mod and (self.mod / path).is_file())
 
 
+# ---- models: Model/<project>.<fmdb>.bfres.mc is "MCPK", two version bytes, a word, then a zstd frame without its magic
+# whose content is the model's BFRES (names, materials, texture names), then its mesh data ("FMSH"), kept as it is. The
+# edits keep every string's length, so the BFRES keeps its size and layout and the header is kept. A repack without
+# the mesh data made the game refuse the actor (the bisect in docs/coop/character-mods.md).
+
+
+def mc_split(raw, zstd):
+    """(the BFRES of the first frame, the bytes after that frame)."""
+    assert raw[:4] == b'MCPK', raw[:4]
+    d = zstd.ZstdDecompressor(format=zstd.FORMAT_ZSTD1_MAGICLESS).decompressobj()
+    out = d.decompress(raw[12:])
+    return out, d.unused_data
+
+
+def mc_unpack(raw, zstd): return mc_split(raw, zstd)[0]
+
+
+def mc_pack(data, like, zstd):
+    fp = zstd.get_frame_parameters(b'\x28\xb5\x2f\xfd' + like[12:])
+    wlog = max(10, (fp.window_size - 1).bit_length())
+    params = zstd.ZstdCompressionParameters.from_level(19, window_log=wlog, format=zstd.FORMAT_ZSTD1_MAGICLESS,
+                                                       write_content_size=False, write_checksum=False)
+    tail = mc_split(like, zstd)[1]
+    out = like[:12] + zstd.ZstdCompressor(compression_params=params).compress(data) + tail
+    assert mc_split(out, zstd) == (data, tail)
+    return out
+
+
+def strings(bfres):
+    """The BFRES string pool's entries: (offset of the text, text) for each u16 length + text + NUL."""
+    out = []
+    for m in re.finditer(rb'[\x20-\x7e]{2,}\x00', bfres):
+        s, o = m.group()[:-1], m.start()
+        if o >= 2 and int.from_bytes(bfres[o - 2:o], 'little') == len(s): out.append((o, s.decode()))
+    return out
+
+
+def material_name(name, prefix):
+    """A material's name in a set: Mt_<x> becomes <prefix>_<x> (two characters, retexture picks them). The game keeps a
+    material's textures by its name: a second model with a same-named material whose textures differ (this game's
+    Link's and a stand-in's) made it refuse the stand-in, and the same model with that material renamed was made
+    (2026-11-08)."""
+    return prefix + name[2:] if name.startswith('Mt_') else name
+
+
+# A BFRES's dictionaries (ResDic: a u32 0, the count, then count + 1 nodes {s32 bit, u16 left, u16 right, u64 key},
+# the first the root with bit -1 and an empty key) find a name by testing bits of it counted from its end
+# (bit b: byte len - 1 - b / 8, bit b % 8); 223 of 223 keys of Link's body are found that way. The materials are keys of
+# one, so a renamed material must still lead to its node: the lookup is run on every key after the edit, and another
+# prefix taken when one fails (Link's set with "Ln" was refused, with "WW" made).
+def _dicts(bf):
+    out = []
+    for d in range(0, len(bf) - 24, 4):
+        magic, n = int.from_bytes(bf[d:d + 4], 'little'), int.from_bytes(bf[d + 4:d + 8], 'little', signed=True)
+        if magic not in (0, 0x4349445f) or not (0 < n < 2000) or d + 8 + 16 * (n + 1) > len(bf): continue
+        nodes = [(int.from_bytes(bf[e:e + 4], 'little', signed=True), int.from_bytes(bf[e + 4:e + 6], 'little'),
+                  int.from_bytes(bf[e + 6:e + 8], 'little'), int.from_bytes(bf[e + 8:e + 16], 'little'))
+                 for e in (d + 8 + 16 * i for i in range(n + 1))]
+        if nodes[0][0] != -1 or not (0 < nodes[0][3] < len(bf) - 2) or bf[nodes[0][3]:nodes[0][3] + 2] != b'\0\0': continue
+        if all(0 < k < len(bf) - 2 and l <= n and r <= n for _, l, r, k in nodes[1:]): out.append(nodes)
+    return out
+
+
+def _key(bf, o): return bytes(bf[o + 2:o + 2 + int.from_bytes(bf[o:o + 2], 'little')])
+
+
+def _bit(key, b):
+    p = b >> 3
+    return (key[len(key) - 1 - p] >> (b & 7)) & 1 if p < len(key) else 0
+
+
+def dicts_ok(bf):
+    """1 when every key of every dictionary in bf is found by the game's lookup."""
+    for nodes in _dicts(bf):
+        for _, _, _, k in nodes[1:]:
+            key = _key(bf, k)
+            node, child = nodes[0], nodes[nodes[0][1]]
+            while node[0] < child[0]:
+                node, child = child, nodes[child[2] if _bit(key, child[0]) else child[1]]
+            if _key(bf, child[3]) != key: return 0
+    return 1
+
+
+def prefixes(tag):
+    """Material prefixes for a tag: a capital letter (the tag's first, then the others) and "t". The second character
+    of "Mt" has to stay: with Lt, Xt and WW the game made Link's stand-in, with Ln, LN and Mn it refused it, though every
+    dictionary lookup still worked (2026-11-08; some lookup tests bit 3 of that character)."""
+    letters = [c for c in tag.upper() if c.isalpha()] + list('ABCDEFGHJKLNPQRSUVWXYZ')
+    seen = []
+    for c in letters:
+        if c + 't' not in seen and c != 'M': seen.append(c + 't')
+    return seen
+
+
+def retexture(bfres, tag, texture_exists):
+    """bfres with every texture it names renamed (the tag in place of the first four characters) and every material
+    renamed (material_name with the first of prefixes(tag) that keeps its dictionaries' lookups working); returns it,
+    {texture name: new name} and the prefix. Same lengths: the string pool is patched in place."""
+    data = bytearray(bfres)
+    renamed = {}
+    mats = []
+    for o, s in strings(bfres):
+        if len(s) > 4 and texture_exists(s):
+            renamed[s] = tag + s[4:]
+            data[o:o + len(s)] = renamed[s].encode()
+        elif s.startswith('Mt_'): mats.append((o, s))
+    if not mats: return bytes(data), renamed, ''
+    for p in prefixes(tag):
+        for o, s in mats: data[o:o + len(s)] = material_name(s, p).encode()
+        if dicts_ok(data): return bytes(data), renamed, p
+    raise SystemExit('no material prefix keeps the model\'s dictionaries working')
+
+
 # ---- byml (tools/coop/byml.py) and SARC (oead)
 
 
@@ -154,13 +268,21 @@ def build_set(rom, src, key, out, log):
     tag = tag_of(key)
     files = {}   # RomFS path -> bytes
 
+    textures = {}   # a texture's name -> the set's name for it
+    material_prefix = {}   # a model (fmdb name) -> the prefix of its materials in the set
+
+    def tex_exists(name):
+        return src.get(f'TexToGo/{name}.txtg') is not None
+
     def model(project, fmdb):
-        """Copies Model/<project>.<fmdb>.bfres.mc as the tag's project (the file as it is: the model names its
-        textures, which stay this game's, docs/coop/character-mods.md "Textures"); returns the new project name."""
+        """Copies Model/<project>.<fmdb>.bfres.mc as the tag's project, its textures and materials renamed (retexture);
+        returns the new project name."""
         raw = src.get(f'Model/{project}.{fmdb}.bfres.mc')
         if raw is None: return None
         newp = tag + project[4:] if len(project) > 4 else tag
-        files[f'Model/{newp}.{fmdb}.bfres.mc'] = raw
+        bf, ren, material_prefix[fmdb] = retexture(mc_unpack(raw, rom.zstd), tag, tex_exists)
+        textures.update(ren)
+        files[f'Model/{newp}.{fmdb}.bfres.mc'] = mc_pack(bf, raw, rom.zstd)
         return newp
 
     rows = []   # (new actor name, the actor whose rows it copies, ModelProjectName, FmdbName)
@@ -190,6 +312,14 @@ def build_set(rom, src, key, out, log):
     rows.append((actor, 'PlayerPuppet', newp, mi['FmdbName']))
     mi['ModelProjectName'] = newp
     members[mi_path] = byml.write(mi)
+    # The materials its equipment user hides under armor, by their names in the set's model.
+    eq_ref = comps.get('EquipmentUserRef', '')[1:]
+    if eq_ref in members:
+        eq = byml.read(members[eq_ref])
+        for g in eq.get('HiddenMaterialGroupList') or []:
+            g['MaterialNameList'] = [material_name(m, material_prefix.get(mi['FmdbName'], 'Mt'))
+                                     for m in g.get('MaterialNameList') or []]
+        members[eq_ref] = byml.write(eq)
     # Its animation set, under its own name.
     asb = src.get('AS/Player.root.asb.zs')
     if asb is not None and comps.get('ASRef') == '?AS/Player.root.asb':
@@ -227,6 +357,14 @@ def build_set(rom, src, key, out, log):
         files[f'Pack/Actor/{new_actor}.pack.zs'] = rom.zs(pack_write(rom, members), raw)
         bare[piece] = new_actor
 
+    # The textures under the set's names (with their numbered parts: Name.1.txtg ... are a texture array's).
+    for old, new in textures.items():
+        for suffix in [''] + [f'.{i}' for i in range(64)]:
+            data = src.get(f'TexToGo/{old}{suffix}.txtg')
+            if data is None:
+                if suffix: break
+                continue
+            files[f'TexToGo/{new}{suffix}.txtg'] = data
     # The files the character mod adds (names the game lacks) its stand-in and pieces may need, as they are: its
     # animations, textures, AI and effects. Without them a game where the mod is off refused the stand-in (the pair test
     # of 2026-11-08). The game's own names are left alone: those are the files a mod replaces.
@@ -244,7 +382,7 @@ def build_set(rom, src, key, out, log):
             try: os.link(data, t)
             except OSError: shutil.copyfile(data, t)
         else: t.write_bytes(data)
-    log(f'{key}: tag {tag}, actor {actor}, {len(files)} files ({added} the mod adds)')
+    log(f'{key}: tag {tag}, actor {actor}, {len(files)} files ({added} the mod adds), material prefixes {material_prefix}')
     return dict(key=key, tag=tag, actor=actor, bare=bare, rows=rows)
 
 

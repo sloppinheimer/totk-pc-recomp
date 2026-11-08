@@ -17,7 +17,10 @@ one PC (`tools\coop\run_pair.ps1`).
   - `PlayerPuppet_<tag>`: a stand-in actor made from that character's `Player.pack`, as `make_puppet_pack.py` makes
     `PlayerPuppet` from the game's. Its members that `Player.pack` also has go in under names of its own, and so does its
     animation set (`AS/PlayerPuppet_<tag>.root.asb`);
-  - its body model copied as `Model/<tag>.<fmdb>.bfres.mc`, with the copy's `ModelInfo` pointing at it;
+  - its body model copied as `Model/<tag>.<fmdb>.bfres.mc`, with the copy's `ModelInfo` pointing at it. In the copy
+    every texture is renamed (the tag in place of its first four characters, the `.txtg` copied under that name) and
+    every material `Mt_<x>` becomes `<letter>t_<x>`, so the stand-in shows its own character's textures in any game
+    (Textures, below);
   - the bare pieces Link wears with no armor (`Armor_999_Head`, `Armor_Default_Upper`, `Armor_Default_Lower`) as
     `<piece>_<tag>` actors with their own model copies;
   - the files the character mod *adds* (new names: animations, textures, AI), so that a game where the mod is off has what
@@ -48,21 +51,40 @@ one PC (`tools\coop\run_pair.ps1`).
 - The new set shows after a restart: the RomFS overlay is read at start. A character made this PC's from the tab needs
   that restart too.
 
+### Textures (solved 2026-11-08)
+
+The Riju mod replaces Link's own textures under their own names (`Link_RaulSkin_Alb`, `Link_Head_Alb`, the belt, the
+eyes), and the game finds textures by name in `TexToGo/`, so one game holds one version of each. Each set therefore
+renames the textures inside its models and copies the files under the new names. That alone made the game refuse the
+stand-in; what it takes:
+
+- **A model's `.bfres.mc`** is "MCPK", two version bytes, a word, a zstd frame without its magic holding the BFRES (names,
+  materials, texture names), then the mesh data (`FMSH`). Same-length edits to the BFRES's strings, recompressed, with
+  the mesh data kept as it is, load (dropping the mesh data made the game refuse the actor).
+- **Materials are kept by name.** A second model with a material named like one of this game's Link's (`Mt_Belt_A`) whose
+  textures differ was refused; the same edit with that material renamed was made. So the set renames every material.
+- **The rename keeps the second letter.** With materials renamed to `Lt_`, `Xt_` or `WW_` the stand-in was made; with
+  `Ln_`, `LN_` or `Mn_` it was refused, though every dictionary lookup still worked. Some lookup tests bit 3 of the second
+  character; the set uses a capital letter and `t` (`charmod.py prefixes`).
+- **Dictionaries.** A BFRES's dictionaries (ResDic: count, then nodes {bit, left, right, key}) find a name by testing
+  bits counted from its end (all 223 keys of Link's body are found that way). The materials are keys of one, so the
+  tool runs the lookup on every key after an edit and takes the next prefix when one fails.
+- The texture resolver (main+0x52ddd0) builds `TexToGo/%s.txtg` and falls back to `DummyTextureForEvent` when a texture
+  is missing: a missing texture never refused an actor.
+
+Tested in a pair: game B (Link) shows the Riju stand-in with her own hair, skin and crown, game A (Riju) shows the Link
+stand-in with Link's hair and skin.
+
 ### What does not work, and why
 
-- **Textures are per game, not per player.** A model names its textures, and the game finds them by name in `TexToGo/`.
-  The Riju mod replaces Link's own textures under their own names (`Link_RaulSkin_Alb`, `Link_Head_Alb`, the belt, the
-  eyes). So in one game only one version of each can exist. A Riju stand-in in a game without the mod has Riju's body
-  shape (her hair, build and outfit cut) with Link's skin and hair colours; a Link stand-in in a game with the mod has
-  Link's shape with Riju's colours. The textures the mod adds under new names are shown correctly.
-  Renaming the textures inside a copied model does not work: any change to the body model's texture names made the
-  game refuse the actor, even pointing one at another texture the game has (bisect of 2026-11-08, below). The cause is
-  not known. A model's `.bfres.mc` is "MCPK", a word, a zstd frame without its magic holding the BFRES, then the mesh
-  data (`FMSH`); a repack that keeps the mesh data loads. A `.txtg` carries a 32-byte value at 0x1c that stays the same
-  for a texture's name when its content changes (50 of 51 textures the Riju mod replaces). It is not an MD5, SHA-1 or
-  SHA-256 of the name, and changing it in a copy did not help either.
-- **Armor fitted to another character** is not shown: copies of the 332 refitted armor packs per character are possible
-  in the same way as the bare pieces, but each would draw with this game's textures, as the body does.
+- **Armor fitted to another character** is not shown. A stand-in of another character than this game's wears its bare
+  pieces. Copies of the 332 refitted armor packs per character could now be made the same way as the bare pieces, with
+  their own textures and materials; not done.
+- **Material and eye animations** of a set's models: the game looks for `Model/<project>.anim.bfres` and
+  `AnimationEvent/Animation/<project>.anim.baev` for the new project name, which the sets lack, and
+  `Phive/EyeTextureScroll/Player_Link...` names the eye materials by their old names. A stand-in's eyes may not move.
+- **Two characters on one material prefix** (the same capital letter): if both are shown in one game their same-named
+  materials could clash again. The letter comes from the tag, so with few characters it is unlikely; not tested.
 - **The mod's game changes** (new weapons, Gerudo Town logic, events, GameData, its UI) are not in a set: they belong to
   whoever has the mod switched on. A party member's weapon that only their mod adds is not shown here.
 - **Code mods.** A mod with ExeFS is refused by the fetch. Installed by hand it works for this PC's own Link as before.
@@ -85,8 +107,8 @@ one PC (`tools\coop\run_pair.ps1`).
 | + only `Link_Belt_A_Alb` pointed at the game's `Link_Belt_C_Alb` | 4 |
 | + the copies' 0x1c values changed as well | 4 |
 
-The head, eye and common textures probably only seemed to work because those materials are not loaded when the
-actor is made.
+The head, eye and common textures probably only seemed to work because those materials are hidden under the head piece.
+The cause of the refusals was the material names (Textures, above).
 
 ### Testing
 
