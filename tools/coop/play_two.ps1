@@ -3,8 +3,11 @@
 # to the real profile. The copies are kept from one start to the next, with what was saved in them; -Fresh makes them
 # again from the real profile. (Made fresh each start, a session's saves were lost at the next one, a play session,
 # 2026-11-06.) Close either window (or this console) to end the session.
-#   powershell -ExecutionPolicy Bypass -File tools\coop\play_two.ps1 [-Fresh] [-TwoPads]   (or double-click "Play co-op (two pads).vbs")
-param([string]$Name1 = "Player 1", [string]$Name2 = "Player 2", [string]$Size = "1904x1071", [switch]$Fresh, [switch]$TwoPads)
+#   powershell -ExecutionPolicy Bypass -File tools\coop\play_two.ps1 [-Fresh] [-TwoPads] [-Online]   (or double-click "Play co-op (two pads).vbs")
+# -Online: the TotK Online ways that are still opt-in: the other player shown as a PlayerPuppet (TOTK_COOP_STANDIN=puppet;
+# its pack made by tools/coop/make_puppet_pack.py) and world progress shared (TOTK_COOP_SHARE_WORLD=1). Horses stay off.
+param([string]$Name1 = "Player 1", [string]$Name2 = "Player 2", [string]$Size = "1904x1071", [switch]$Fresh, [switch]$TwoPads,
+      [switch]$Online)
 # One gamepad (the first) moves both games; Minus with the right stick click, or F9, switches to only the game in
 # focus and back (input.c, pad_focus_gate). -TwoPads: game 1 reads the first gamepad, game 2 the second, as before.
 $ErrorActionPreference = 'Stop'
@@ -20,8 +23,10 @@ Set-Location $root
 Get-Process totk -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep 2
 
-# The second game runs from build\v143b: links to build\v143's files, a logs folder of its own.
-$a = Join-Path $root 'build\v143'; $b = Join-Path $root 'build\v143b'
+# The second game runs from build\v143play: links to build\v143's files, a logs folder of its own. (Not build\v143b,
+# which the test scripts use too: a game left there that cannot be stopped holds its files, and the links could not
+# be made again; 2026-11-07.)
+$a = Join-Path $root 'build\v143'; $b = Join-Path $root 'build\v143play'
 if (-not (Test-Path $b)) { New-Item -ItemType Directory $b | Out-Null }
 foreach ($f in Get-ChildItem $a -Force) {
     $t = Join-Path $b $f.Name
@@ -46,6 +51,7 @@ foreach ($g in @(@{dir = $a; n = 1; name = $Name1; pad = '0'}, @{dir = $b; n = 2
     $env:TOTK_MOUSE_SENS = '0'          # no mouse camera, no cursor capture: the mouse moves between the windows
     $env:TOTK_COOP_HIDE_CONSOLE = '1'
     Remove-Item Env:TOTK_INPUT_SCRIPT, Env:TOTK_INPUT, Env:TOTK_COOP_AUTOSPAWN -ErrorAction SilentlyContinue
+    if ($Online) { $env:TOTK_COOP_STANDIN = 'puppet'; $env:TOTK_COOP_SHARE_WORLD = '1' }
     $games += Start-NoConsole (Join-Path $g.dir 'totk.exe') '' $g.dir
     Start-Sleep 3
 }
