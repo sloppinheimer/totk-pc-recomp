@@ -612,6 +612,7 @@ static void glue_test(Cpu *c, uint64_t me) {
     static uint64_t obj[2];
     static double glued_at;
     static int make_only;   // stage 2: when both were there; stage 3 on: when they were glued
+    static int stack;
     if (!spec) {
         spec = cfg_get("TOTK_COOP_TEST_GLUE") ? cfg_get("TOTK_COOP_TEST_GLUE") : "";
         const char *who = cfg_get("TOTK_COOP_NAME");
@@ -621,7 +622,8 @@ static void glue_test(Cpu *c, uint64_t me) {
             memcpy(names[0], spec, (size_t)(comma - spec)), names[0][comma - spec] = 0;
             snprintf(names[1], sizeof names[1], "%s", comma + 1);
             char *third = strchr(names[1], ',');   // <n1>,<n2>,make: made only, for a player to glue by hand
-            if (third) make_only = !strcmp(third + 1, "make"), *third = 0;
+            // <n1>,<n2>,stack: made only, the second 0.7 m above the first (it falls on it), for a scripted Ultrahand glue
+            if (third) make_only = !strcmp(third + 1, "make") || (stack = !strcmp(third + 1, "stack")), *third = 0;
         } else if (*spec) {
             rt_log("coop: test: glue: TOTK_COOP_TEST_GLUE wants two names, a comma between");
             spec = "";
@@ -634,8 +636,8 @@ static void glue_test(Cpu *c, uint64_t me) {
     if (stage == 0 && now > 30) {   // forward: the rotation's third column; right: its first
         static const float rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
         for (int k = 0; k < 2; k++) {
-            float s = k ? 0.4f : -0.4f;
-            float at[3] = {p[0] + r[2] * 1.5f + r[0] * s, p[1] + 0.5f, p[2] + r[8] * 1.5f + r[6] * s};
+            float s = stack ? 0 : k ? 0.4f : -0.4f;
+            float at[3] = {p[0] + r[2] * 1.5f + r[0] * s, p[1] + 0.5f + (stack && k ? 0.7f : 0), p[2] + r[8] * 1.5f + r[6] * s};
             if (!coop_request_create(c, names[k], at, rot, handle[k])) { rt_log("coop: test: glue: %s not asked for", names[k]); stage = 9; return; }
             rt_log("coop: test: glue: %s asked for at %.2f %.2f %.2f", names[k], at[0], at[1], at[2]);
         }

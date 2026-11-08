@@ -851,9 +851,27 @@ three fans go on (on, energy 10) 0.4 s after the hit; in B only the copy fan the
   B's hit turns all of them off in both (B's copies first, then A's contraption through B's proxy in A). Not tested:
   a contraption made by hand with Ultrahand, one taken apart (the copy is made again, untested), more than one
   contraption, a contraption flown while the copies are bonded.
+- More pair tests (2026-11-08, after the fix):
+  - Taking a part off with Ultrahand (autobuild_part_3rd.txt, `TOTK_COOP_TEST_ABHIT=36` only to put the Link by a fan:
+    the wheel's right slot, A grabs, the right stick shaken 2 s, B lets go): the game deletes the part (state 11, as
+    for an autobuild part taken off; removeScotch on it, TOTK_COOP_TEST_ABPART, did the same) and makes the rest one
+    group again, under another group object. The copy of the part went away in B with it and the others stayed
+    bonded (pairs are kept by member; the group object changing parts nothing). Same picture on both screens.
+  - Two contraptions (autobuild_two_3rd.txt, `TOTK_COOP_TEST_ABPLACE=34 TOTK_COOP_TEST_ABHIT=50`): each bonded as its
+    own group in B; a hit on the first turns on its three fans only, in A (logged) and in B (logged for the first;
+    the second was out of the log's reach and out of view in B).
+  - Both ways again: B's hit missed once (its Link was put by a fan that was blowing); when it lands, both games end in
+    the same state at the same moment.
+  - Ultrahand's glue effect actor (UltraHand_Connection_Effect2) was sent as a made object and copied: now skipped.
+  - A contraption glued by hand: not tested. Scripted Ultrahand grabs and shakes (above), but bringing one part to
+    another to glue did not work by script (glue_hand_3rd.txt: no glue was made; two fans made stacked lost the top
+    one, deleted by the game at once). Whether glue by hand makes the same group is not known: glue made by our own
+    call (createScotch and doScotch) does not.
 - Green, still open: none of the label, the glue component's flags (+0x20 0x0080000000000200 set by hand) or the
   shared group tints a copy. A dump of every component of an original fan and a copy (TOTK_COOP_TEST_ABDUMP) was not
-  a clean diff (the copy lacked nine of the original's components at the dump). The tint's parameters are
+  a clean diff (the copy lacked nine of the original's components at the dump), nor was one of their models (the two
+  layouts were shifted against each other). Also tried on copies with no tint: actor +0x440 bit 0x200000 (set on the
+  originals, not on copies). The AutoBuilder parameter reader main+0x1d398e4 is not run in play (hooked: never). The tint's parameters are
   AutoBuilderBuildStateRealColorR/G/B (the reader of the param struct, main+0x1d398e4, puts R at +0x44); who applies
   them to a model is not found.
 

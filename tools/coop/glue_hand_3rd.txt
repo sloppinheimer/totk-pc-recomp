@@ -1,0 +1,21 @@
+# The 100% save (third in the Continue list), the first weapon equipped at 14 s. With
+# TOTK_COOP_TEST_ABPLACE=25 (the Link on flat ground) and
+# TOTK_COOP_TEST_GLUE=SpObj_WindGenerator_A_01,SpObj_WindGenerator_A_01,make (coop_glue.c) two fans are made 1.5 m in
+# front of the Link at 30 s, 0.8 m apart. L at 34 s takes Ultrahand (the save's chosen ability), A at 36 s grabs the
+# one it aims at, the left stick moves it toward the other from 37 s, A at 38.5 s lets go: Ultrahand glues it there. With
+# TOTK_COOP_TEST_ABHIT=40 (coop_autobuild.c) the Link is put by a fan at 40 s; Y at 42 s draws, Y at 44 s hits.
+480 A 4
+700 DOWN 4
+760 DOWN 4
+820 A 4
+980 A 4
+@14000 PLUS 150
+@15500 A 150
+@16300 A 150
+@17500 PLUS 150
+@34000 L 150
+@36000 A 150
+@37000 LSTICK -20000 0 600
+@38500 A 150
+@42000 Y 150
+@44000 Y 150
