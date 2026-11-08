@@ -50,6 +50,11 @@ root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 SETS = 'zz-coop-characters'
+# Stand-in slots for a character fetched while the game runs (runtime/coop_chars.c): their actors' table rows are in the
+# sets from the start (the game reads the actor tables once), their files are added live (charmod.py slot, romfs.c
+# romfs_live_add). Each is used once a run: the game may keep a pack it loaded under that name. The first letters differ,
+# so that two slots' materials (material_name) never share a name.
+SLOT_TAGS = ('JS01', 'KS02', 'XS03', 'ZS04')
 # Folders of a character mod's added files that go into its set (not RSDB, GameData, UI, events: the mod's game changes).
 ADDED_KINDS = ('Model', 'TexToGo', 'AI', 'AnimationEvent', 'Effect', 'Phive', 'Shader', 'Component')
 INFO = 'coop-character.json'   # in a character mod's folder: where it came from (written by fetch)
@@ -262,10 +267,10 @@ def pack_write(rom, members):
 # ---- a character's set
 
 
-def build_set(rom, src, key, out, log):
+def build_set(rom, src, key, out, log, tag=None):
     """Writes the character's set into out (a RomFS folder); returns its entry for characters.json."""
     byml = byml_mod()
-    tag = tag_of(key)
+    tag = tag or tag_of(key)
     files = {}   # RomFS path -> bytes
 
     textures = {}   # a texture's name -> the set's name for it
@@ -460,7 +465,13 @@ def cmd_sets(args):
             continue
         entries.append(e | dict(folder=folder, name=info.get('name') or folder, page=info.get('page', ''),
                                 file_id=info.get('file_id', 0), mod_id=info.get('mod_id', 0)))
-    rows = [r for e in entries for r in e.pop('rows')]
+    # The slots' rows: those of Link's set under each slot's tag (its files are not kept).
+    slot_rows = []
+    with tempfile.TemporaryDirectory(dir=out) as tmp:
+        for t in SLOT_TAGS:
+            slot_rows += build_set(rom, Source(rom, args.overlay), 'Link', Path(tmp), lambda m: None, tag=t)['rows']
+    rows = [r for e in entries for r in e.pop('rows')] + slot_rows
+    (out / 'slots.tsv').write_text(''.join(t + '\n' for t in SLOT_TAGS), encoding='utf-8')
     for table in ('RSDB/ActorInfo.Product.143.rstbl.byml.zs', 'RSDB/GameActorInfo.Product.143.rstbl.byml.zs'):
         t = rf / table
         t.parent.mkdir(parents=True, exist_ok=True)
@@ -473,6 +484,33 @@ def cmd_sets(args):
         'key', 'tag', 'actor', 'folder', 'name', 'page', 'mod_id', 'file_id')) + '\t' + '\t'.join(
         e['bare'].get(p, '') for p in BARE) + '\n' for e in entries), encoding='utf-8')
     print(json.dumps(dict(status='pass', out=str(out), characters=[(e['name'], e['key'], e['tag']) for e in entries])))
+
+
+def entry_line(e):
+    """A characters.tsv line (runtime/coop_chars.c coop_chars_init)."""
+    clean = lambda v: str(v).replace('\t', ' ').replace('\n', ' ')
+    return '\t'.join(clean(e.get(k, '')) for k in ('key', 'tag', 'actor', 'folder', 'name', 'page', 'mod_id', 'file_id')) + \
+        '\t' + '\t'.join(e['bare'].get(p, '') for p in BARE) + '\n'
+
+
+def cmd_slot(args):
+    """One character mod's set under a slot's tag into <out>/romfs, and its characters.tsv line in <out>/slot.tsv: the
+    files the game adds while it runs (romfs.c romfs_live_add)."""
+    rom = Rom(args.romfs)
+    folder = args.mods / args.folder
+    r = find_romfs(folder)
+    if not r or not is_character(r): raise SystemExit(f'{folder} is not a character mod')
+    info = json.loads((folder / INFO).read_text(encoding='utf-8')) if (folder / INFO).is_file() else {}
+    key = f'gb:{info["file_id"]}' if info.get('file_id') else folder.name
+    if args.out.exists(): shutil.rmtree(args.out)
+    (args.out / 'romfs').mkdir(parents=True)
+    e = build_set(rom, Source(rom, args.overlay, r), key, args.out / 'romfs', lambda m: print(m, file=sys.stderr),
+                  tag=args.tag)
+    e |= dict(folder=folder.name, name=info.get('name') or folder.name, page=info.get('page', ''),
+              file_id=info.get('file_id', 0), mod_id=info.get('mod_id', 0))
+    (args.out / 'slot.tsv').write_text(entry_line(e), encoding='utf-8')
+    status.set(slot=str(args.out))
+    print(json.dumps(dict(status='pass', slot=str(args.out), key=key, tag=args.tag, actor=e['actor'])))
 
 
 def cmd_list(args):
@@ -667,6 +705,11 @@ def cmd_fetch(args):
         status.set(text='making the character sets')
         cmd_sets(args)
         status.set(text=f'{mi["name"]} is ready; it shows after a restart')
+    if args.slot:   # its set under a slot's tag, for the game to add while it runs
+        status.set(text='making its stand-in for this session')
+        args.folder, args.tag, args.out = folder, args.slot, args.slot_out
+        cmd_slot(args)
+        status.set(text=f'{mi["name"]} is ready')
 
 
 def main():
@@ -690,6 +733,13 @@ def main():
     s.add_argument('--yes', action='store_true')
     s.add_argument('--sets', action='store_true', help='then make the character sets again')
     s.add_argument('--from-file', type=Path, help='(a test) this file in place of the download (its MD5 is still checked)')
+    s.add_argument('--slot', help='then its set under this slot tag (SLOT_TAGS) into --slot-out')
+    s.add_argument('--slot-out', type=Path)
+    common(s)
+    s = sub.add_parser('slot')
+    s.add_argument('folder', help='the folder of the character mod in --mods')
+    s.add_argument('--tag', required=True, choices=SLOT_TAGS)
+    s.add_argument('--out', type=Path, required=True)
     common(s)
     args = ap.parse_args()
     global status
@@ -699,7 +749,7 @@ def main():
         args.overlay = args.mods.parent / 'romfs-patches'
         if not args.overlay.is_dir(): args.overlay = None
     try:
-        dict(sets=cmd_sets, list=cmd_list, info=cmd_info, fetch=cmd_fetch)[args.cmd](args)
+        dict(sets=cmd_sets, list=cmd_list, info=cmd_info, fetch=cmd_fetch, slot=cmd_slot)[args.cmd](args)
     except SystemExit as e:
         if e.code not in (None, 0):
             status.set(state='failed', text=str(e.code))

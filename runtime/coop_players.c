@@ -55,6 +55,7 @@ typedef struct {
     char gear_want[COOP_GEAR_SLOTS][32], gear_have[COOP_GEAR_SLOTS][32];   // the owner's gear; what this Link was given
     char character[COOP_CHAR_KEY];     // the owner's character (NetState.character; "" Link) and the stand-in actor
     char standin[48];                  // spawned for it (coop_chars.c: that character's set, else PlayerPuppet)
+    int recharacter;                   // its stand-in is being deleted to be made again as another actor
     int ride_owner;                    // the owner's Link rides that player's object ride_id at ride_off (proxy_drive)
     uint32_t ride_id;
     float ride_off[3];
@@ -1058,6 +1059,11 @@ static void spawn_slot(Cpu *c, Slot *s) {
     // The owner's character's stand-in (coop_chars.c): its set's PlayerPuppet_<tag>, else the plain PlayerPuppet.
     const char *player = coop_char_actor(s->character);
     snprintf(s->standin, sizeof s->standin, "%s", player);
+    s->recharacter = 0;
+    // A new stand-in has none of the gear its slot gave the last one (made again after a load or as another character):
+    // the gear code below gives it its owner's again.
+    memset(s->gear_have, 0, sizeof s->gear_have), memset(s->fuse_have, 0, sizeof s->fuse_have);
+    memset(s->dye_have, -1, sizeof s->dye_have);
     if (coop_request_create(c, player, pos, rot, s->handle)) {
         s->state = REQUESTED;
         rt_log("coop: slot %d: %s requested at %.1f %.1f %.1f", (int)(s - slots), player, pos[0], pos[1], pos[2]);
@@ -5320,6 +5326,15 @@ void coop_players_tick(Cpu *c) {
                     if (s->actor && eq_owner[e].actor == s->actor) eq_owner[e].actor = eq_owner[e].eq = 0;
                 s->actor = 0, s->state = s->state == LIVE ? WANTED : FREE;
                 continue;
+            }
+            // Its owner's character got a set of its own while the game runs (coop_chars.c, a fetched character in a
+            // stand-in slot): the stand-in is deleted, and made again as the new actor when it is gone (WANTED below).
+            if (s->state == LIVE && s->source == SRC_NET && s->standin[0] && !s->recharacter &&
+                strcmp(coop_char_actor(s->character), s->standin)) {
+                rt_log("coop: slot %d: its owner's character is now %s; the stand-in %s is made again", i,
+                       coop_char_actor(s->character), s->standin);
+                coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->actor, COOP_DELETE_REASON, 0, 0);
+                s->recharacter = 1;
             }
             // The owner changed an item: make that slot the owner's item.
             uint64_t eq = s->state == LIVE && s->source == SRC_NET ? eq_of_actor(s->actor) : 0;

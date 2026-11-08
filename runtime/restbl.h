@@ -13,6 +13,7 @@ Restbl *restbl_parse(const uint8_t *data, size_t n);
 void restbl_free(Restbl *t);
 // The table's key of a RomFS path: the path without a trailing .zs or .mc, into buf.
 const char *restbl_key(const char *path, char *buf, size_t n);
+uint32_t restbl_hash(const char *key);   // a key's hashed-entry hash (CRC-32)
 // 1 with *size when key has an entry.
 int restbl_get(const Restbl *t, const char *key, uint32_t *size);
 // The entry of key raised to size (added when missing); 1 when the table changed.
@@ -45,6 +46,10 @@ int restbl_sarc_each(const uint8_t *p, size_t n, RestblMember *each, void *ctx);
 typedef void RestblNote(const char *key, uint32_t was, uint32_t now, void *ctx);
 int restbl_pack_raise(Restbl *t, const Restbl *base, const uint8_t *mod, size_t mod_n, const uint8_t *orig,
                       size_t orig_n, RestblNote *note, void *ctx);
+
+// Every entry of t: each(hash, size, ctx) (a named entry with its key's hash). An empty table (version 1).
+void restbl_each(const Restbl *t, void (*each)(uint32_t hash, uint32_t size, void *ctx), void *ctx);
+Restbl *restbl_empty(void);
 
 // restbl_probe.c, part of --probe-mods: the number of failed checks.
 int restbl_probe(void);
