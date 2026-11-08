@@ -2778,13 +2778,17 @@ static void ground_take(const GroundPacket *p, int n) {
 // plays its hit there. Kept on the copy, an arrow only took life off the copy, sent on as lost life, which played no
 // hit: a Stalkoblin never fell apart and its life came back (a play session, 2026-11-07).
 #define ECONTACT_ARROW 0x4541  // "AE"
-// The contacts sent go in a packet of each hit update's own (hit updates run on several threads at once). The one
-// received waits in ce_in, under ce_lock (taken on the game thread, added on a hit update's), until its enemy's next
-// hit update, or CE_WAIT_NS: an enemy that died or went to sleep has no hit update, and the next packet would wait
-// behind it for good (code review, 2026-11-07).
+// The contacts sent go in a packet of each hit update's own (hit updates run on several threads at once). Each one
+// received waits in a slot of ce_in, under ce_lock (taken on the game thread, added on a hit update's), until its
+// enemy's next hit update, or CE_WAIT_NS: an enemy that died or went to sleep has no hit update. With one slot for
+// every enemy, a packet that came while one waited was dropped unlogged: a Stalkoblin shot ten times took none of the
+// arrows (a play session, 2026-11-08). CE_SLOTS wait at once; a packet with none free is logged.
 #define CE_WAIT_NS 1000000000ull
+#define CE_SLOTS 16
 static PlatMutex ce_lock = PLAT_MUTEX_INIT;
-static struct { _Atomic int n; uint64_t dc, by, weap, at_ns; uint32_t brel[CONTACT_MAX]; _Alignas(16) uint8_t e[CONTACT_MAX][CONTACT_SZ]; } ce_in;
+typedef struct { _Atomic int n; uint64_t dc, by, weap, at_ns; uint32_t brel[CONTACT_MAX]; _Alignas(16) uint8_t e[CONTACT_MAX][CONTACT_SZ]; } CeSlot;
+static CeSlot ce_in[CE_SLOTS];
+static _Atomic int ce_waiting;   // slots in use (ce_add looks only when some are)
 static int ce_owner_of(uint64_t a, uint32_t *key) {
     *key = key_of_actor(a);
     for (int k = 0; *key && k < FOLLOW_N; k++) if (follow[k].key == *key) return follow[k].owner;
@@ -2812,7 +2816,7 @@ uint64_t coop_eq_row_ref(uint64_t actor, int row);   // coop_players.c
 // A CE packet from player `from` (the hit update of its enemy adds it: ce_add).
 static void ce_take(const ContactPacket *cp, int from) {
     uint64_t now = plat_now_ns();
-    if (!cp->n || cp->n > CONTACT_MAX || (atomic_load(&ce_in.n) && now - ce_in.at_ns < CE_WAIT_NS)) return;
+    if (!cp->n || cp->n > CONTACT_MAX) return;
     uint64_t a = 0, co[COOP_MAX_PLAYERS];
     int ids[COOP_MAX_PLAYERS], nc = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
     for (int i = 0; i < KNOWN_N && !a; i++) if (mine_known[i].key == cp->key) a = mine_known[i].actor;
@@ -2823,22 +2827,43 @@ static void ce_take(const ContactPacket *cp, int from) {
     uint64_t coop_eq_bow_ref(uint64_t actor);   // coop_players.c
     uint64_t by_ref = actor_ref(by), weap = cp->kind == ECONTACT_ARROW ? coop_eq_bow_ref(by) : coop_eq_row_ref(by, 0);
     plat_mutex_lock(&ce_lock);
-    memcpy(ce_in.e, cp->e, cp->n * CONTACT_SZ), memcpy(ce_in.brel, cp->brel, sizeof ce_in.brel);
-    ce_in.dc = dc, ce_in.by = by_ref, ce_in.weap = weap, ce_in.at_ns = now;
-    atomic_store(&ce_in.n, (int)cp->n);
+    CeSlot *sl = NULL;
+    for (int i = 0; i < CE_SLOTS && !sl; i++) {
+        CeSlot *t = &ce_in[i];
+        if (atomic_load(&t->n) && now - t->at_ns >= CE_WAIT_NS) {   // waited too long: its enemy has no hit update
+            atomic_store(&t->n, 0), atomic_fetch_sub(&ce_waiting, 1);
+            static int said_x;
+            if (said_x++ < 10) rt_log("coop: contact from a stand-in dropped: its enemy ran no hit update in 1 s");
+        }
+        if (!atomic_load(&t->n)) sl = t;
+    }
+    if (sl) {
+        memcpy(sl->e, cp->e, cp->n * CONTACT_SZ), memcpy(sl->brel, cp->brel, sizeof sl->brel);
+        sl->dc = dc, sl->by = by_ref, sl->weap = weap, sl->at_ns = now;
+        atomic_store(&sl->n, (int)cp->n), atomic_fetch_add(&ce_waiting, 1);
+    }
     plat_mutex_unlock(&ce_lock);
+    if (!sl) {
+        static int said_f;
+        if (said_f++ < 10) rt_log("coop: contact from player %d on %08x dropped: %d already wait", from, cp->key, CE_SLOTS);
+    }
 }
-static void ce_add(uint64_t dc) {
-    if (!atomic_load(&ce_in.n)) return;
+static void ce_add_one(uint64_t dc, CeSlot *sl);
+static void ce_add(uint64_t dc) {   // every packet waiting for this enemy, in this hit update
+    if (!atomic_load(&ce_waiting)) return;
+    for (int i = 0; i < CE_SLOTS; i++)
+        if (atomic_load(&ce_in[i].n) && ce_in[i].dc == dc) ce_add_one(dc, &ce_in[i]);
+}
+static void ce_add_one(uint64_t dc, CeSlot *sl) {
     uint8_t ein[CONTACT_MAX][CONTACT_SZ];
     uint32_t brel[CONTACT_MAX];
     uint64_t by, weap;
     plat_mutex_lock(&ce_lock);
-    int n = atomic_load(&ce_in.n);
-    if (!n || dc != ce_in.dc) { plat_mutex_unlock(&ce_lock); return; }
-    memcpy(ein, ce_in.e, (size_t)n * CONTACT_SZ), memcpy(brel, ce_in.brel, sizeof brel);
-    by = ce_in.by, weap = ce_in.weap;
-    atomic_store(&ce_in.n, 0);
+    int n = atomic_load(&sl->n);
+    if (!n || dc != sl->dc) { plat_mutex_unlock(&ce_lock); return; }
+    memcpy(ein, sl->e, (size_t)n * CONTACT_SZ), memcpy(brel, sl->brel, sizeof brel);
+    by = sl->by, weap = sl->weap;
+    atomic_store(&sl->n, 0), atomic_fetch_sub(&ce_waiting, 1);
     plat_mutex_unlock(&ce_lock);
     uint64_t a = coop_rd_ptr(dc + 0x198), l = contact_list(dc), base;
     int32_t cnt = 0, cap = 0;
