@@ -965,6 +965,28 @@ other game reaching the owner's devices, both wait on one. A hit does it (the pr
   contact plus the hit reaction is not what decides; the graph reads something else the real attack sets (the
   attacker's side, not the contact), not found. Steps after this one (turning off, sending the owner's on state in
   "CB", the sweep over device kinds) wait for a switch that works (2026-11-08).
+- **The switch (found 2026-11-08 afternoon): component 166's byte +0x8d, bit 3.** A device's update runs main+0x4a3500
+  (from the actor update main+0x41bb20) with x19 = component 166 ([actor+0x228]+0x530) and x20 = its actor (+0x18).
+  When its byte +0x60 is set, its +0x64 is not 0x17 and its byte +0x8d has bit 3, it takes the branch at
+  main+0x4a440c: the actor's SpecialPowerReceiverComponent (+0x480) is asked main+0x9fb7fc(comp, 7, &flag), then
+  main+0x9fb7cc, and component 166 is asked for state 4 (main+0x1c08774 with {1, 4}: its +0x20/+0x24 request), after
+  which the device and the rest of its contraption turn on. Found by tracing (TOTK_COOP_TEST_ABTRACE, every tick) a
+  really hit fan against a replay's fan: the damage component's hit record is the same in both, but only the real
+  hit's component 166 changes: +0x8d 0x61 -> 0x69 (bit 3) -> 0x63 (bit 1) -> 0x61 within 0.05 s, +0x28 8 -> 4 -> 8,
+  +0x90 0 -> 1. The profiler with component 166 as the argument (TOTK_COOP_TEST_FANHITC166=1) showed main+0x1c08774
+  from main+0x4a4f1c at the real hit only. Test (TOTK_COOP_TEST_DEV8D=08 with TOTK_COOP_TEST_DEVHIT=58,
+  autobuild_two_3rd.txt, `TOTK_COOP_TEST_ABPLACE=34 TOTK_COOP_TEST_ABHIT=50`): bit 3 set on one fan of the unhit
+  contraption (+0x8d 0x61 -> 0x69, +0x60 1) turned all three of its fans on (on, energy 10) within 2 s; the hit
+  contraption was unchanged. On an on fan (+0x8d 0x71) bit 3 did not turn it off: off is not known yet (bit 1's
+  branch, main+0x4a45ac, is the next thing to try). Not tried yet: B's copies, other device kinds, the stick.
+- A PlayerPuppet cannot take a steering stick: it has no Player component (make_puppet_pack.py), and the Link takes
+  the stick by its A button in its own state machine, not by a call. In the stick pair (autobuild_stick_3rd.txt,
+  `TOTK_COOP_TEST_ABSTICK=50,1`, game B idle) A's stand-in in B stands 0.7 m behind the copy stick, where A's Link
+  holds A's, and the copy stick's on bool stays 0 and B's copies off.
+- Hits through the stand-in: A's hit already reaches B's autobuilt copies (the stand-in's swing lands on one, and the
+  bonded copies turn on as one; "Autobuild copies" above). For a hand-glued contraption the tester's play log (build  v143play, player 2 glued by hand) shows the first glue (stick to wing) gave a group that player 2's game sent, but
+  bonds' log line stops after 10 sends, all before the cannon was glued, so whether the later parts joined is not in
+  it, and player 1's log was not there.
 
 ## Proxy hair and clothes stay blown after a fan (open)
 the tester (2026-11-05): after a fan's wind hits the proxy, its hair and clothes keep flapping as if in wind, on that

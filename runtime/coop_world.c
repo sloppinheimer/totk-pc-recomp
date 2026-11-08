@@ -2943,6 +2943,7 @@ static void contacts_filter(uint64_t dc) {
 // docs/coop/re-notes.md "Device state on the copies".
 static _Alignas(16) uint8_t dev_tpl[CONTACT_SZ];
 static _Atomic int dev_tpl_ok;
+static uint8_t dev_tpl_b1cf;   // the hit device's damage component byte +0x1cf (0x41 on a hit fan, 0 on the others)
 static int64_t dev_tpl_brel;   // the hit body from its device's main body: a fan's hit lands on a body of its own
 static _Atomic uint64_t dev_hit_want;   // the device to start, 0 none
 static void dev_contact(uint64_t dc) {
@@ -2958,6 +2959,7 @@ static void dev_contact(uint64_t dc) {
         uint64_t hb;
         memcpy(&hb, dev_tpl + 0x58, 8);
         dev_tpl_brel = (int64_t)(hb - enemy_body(a));
+        coop_rd(dc + 0x1cf, &dev_tpl_b1cf, 1);
         atomic_store(&dev_tpl_ok, 1);
         uint64_t r1, r2;
         memcpy(&r1, dev_tpl + 0x68, 8), memcpy(&r2, dev_tpl + 0x80, 8);
@@ -2977,6 +2979,13 @@ static void dev_contact(uint64_t dc) {
     memcpy(&id, e + 0x38, 4), id += ++bump * 0x1000, memcpy(e + 0x38, &id, 4);
     cnt++;
     memcpy((void *)(uintptr_t)(l + 0x18), &cnt, 4);
+    uint8_t was = 0;
+    const char *b1 = cfg_get("TOTK_COOP_TEST_DEVHIT1CF");   // =<hex>: that byte written there too (the hit fan had 0x41)
+    if (b1 && coop_rd(dc + 0x1cf, &was, 1)) {
+        uint8_t v = (uint8_t)strtoul(b1, NULL, 16);
+        ST8(dc + 0x1cf, v);
+        rt_log("coop: devhit: its +0x1cf %02x -> %02x (the kept hit's device had %02x)", was, v, dev_tpl_b1cf);
+    }
     rt_log("coop: devhit: a contact put on %s %llx (body %llx)", nm, (unsigned long long)a, (unsigned long long)body);
 }
 int coop_dev_hit(uint64_t device) {   // 1: a contact is kept; 0: none yet (put on once the first one is kept)
