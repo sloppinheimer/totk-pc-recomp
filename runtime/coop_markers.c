@@ -27,7 +27,7 @@
 //   node-8; main+0x6070 FindPaneByName), +0x50 size, +0x58 flags (bit 0 visible), +0x59 alpha, +0x70 the global
 //   matrix (3x4 rows, set to identity by the constructor main+0x10d6080), +0xb0 the name (main+0x402b30).
 // All of it is read with coop_rd from the overlay's thread; every pane is checked by name each frame and looked up
-// again when one no longer matches (a screen rebuilt or freed).
+// again when one no longer matches (a screen rebuilt), and the screen is dropped when this Link changes (a freed one).
 
 #include <math.h>
 #include <stdatomic.h>
@@ -53,8 +53,14 @@
 #define MINI_MAX_HALF 400.0f     // N_Cut_00 narrower than this (249 in the minimap, 2250 on the map): the minimap
 
 static _Atomic uint64_t g_screen;   // the AppMap screen, from its set-up (coop_hook)
+// This PC's Link (the "Player" actor) when the screen was set up, 0 when there was none yet (a load). Nothing tells
+// this code that the screen is freed (back to the title, a save loaded), so it is taken as gone once the Link is not
+// that one any more: none (the title, a load) or another (the world after a load), until the next set-up. Without
+// that, a freed screen's panes still carry their names and the markers would read them.
+static _Atomic uint64_t g_screen_me;
 void coop_markers_screen(uint64_t screen) {
     uint64_t was = atomic_exchange(&g_screen, screen);
+    atomic_store(&g_screen_me, coop_player_actor());
     if (was != screen) rt_log("coop: markers: the map screen was set up (%#llx)", (unsigned long long)screen);
 }
 
@@ -110,7 +116,15 @@ static int panes_ok(void) {
 }
 
 static int resolve(void) {
-    uint64_t screen = atomic_load(&g_screen);
+    uint64_t screen = atomic_load(&g_screen), me = coop_player_actor(), was_me = atomic_load(&g_screen_me);
+    if (screen && me && !was_me) atomic_compare_exchange_strong(&g_screen_me, &was_me, me), was_me = me;   // set up in a load
+    if (screen && (!me || me != was_me)) {
+        static uint64_t said_for;
+        if (said_for != screen) said_for = screen, rt_log("coop: markers: this Link is %s: the map screen %#llx is taken as gone",
+                                                          me ? "another one" : "gone", (unsigned long long)screen);
+        memset(&P, 0, sizeof P);
+        return 0;
+    }
     if (!screen) return 0;
     if (screen == P.screen && panes_ok()) return 1;
     if (screen == P.screen && P.miss && --P.miss) return 0;
@@ -217,6 +231,7 @@ int coop_markers(CoopMarker *out, int max, float w, float h, CoopMarkView *v) {
     for (int i = 0; i < n && r < max; i++) {
         float X, Y;
         to_layout(m, ic, pos[i], &X, &Y);
+        if (!isfinite(X) || !isfinite(Y)) continue;   // a bad reported position: on neither map nor circle
         CoopMarker *o = &out[r++];
         o->x = w / 2 + X * k, o->y = h / 2 - Y * k, o->id = ids[i], o->edge = 0;
         if (v->mode == 2) {

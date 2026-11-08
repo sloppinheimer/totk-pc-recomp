@@ -53,6 +53,9 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
     puppet released, not sent; never deleted (`coop: far: ... not followed`);
   - placed objects another player moves (coop_players.c force_to): not moved; never deleted;
   - stand-ins (co-op Link, PlayerPuppet) and this game's own actors, runtime-made or placed: never.
+  Nothing is far while a player's place is not known: a state more than 3 s old, world packets from a player with
+  no state yet, and for 10 s after a player comes or goes (log `coop: far: the players changed`). Without that, a
+  game that had just joined was not counted and what was held for it was let go of (code review, 2026-11-07).
   Test: tools/coop/far_3rd.txt (command and log lines). `TOTK_COOP_TEST_FAR_COPY` makes a copy through spawn_take as
   if the other game had sent a SPAWN. The test spawn passes no create queue, so it gives no spawn-sync copy.
   `TOTK_COOP_TEST_FAR` puts the Link 1100 m away with ForceSetMatrix. Unverified: the whole of it in a game; whether
@@ -453,7 +456,10 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
   - Unproven: that the minimap is the AppMap screen in its MiniMap pose; the 3 layout units a metre; that a hidden
     minimap (menus, cutscenes) shows as a hidden or transparent pane (if the game stops drawing the screen instead,
     the markers stay on screen there); the layout-to-screen scale on a screen not 16:9 (assumed: the layout's 1080
-    rows fill the height, centred).
+    rows fill the height, centred); that this PC's Link ("Player") is a new actor after a save load and absent on
+    the title, which is how coop_markers.c `resolve` drops a freed map screen (log "coop: markers: this Link is
+    gone/another one: the map screen ... is taken as gone"). If the game keeps the map screen across a load without
+    setting it up again, the markers stay off until the next set-up.
   - Test: `$env:TOTK_COOP_PUPPET=1; tools\coop\run_pair.ps1 -Seconds 75 -ScriptA tools\coop\walk_far_3rd.txt
     -ScriptB tools\coop\map_markers_3rd.txt -MarkShotsB 30-62:2 -ShotsDir build\markers -MarkSelf` (overlay shots in
     build\markers\B-overlay). Expect in B's frames: before 40 s the minimap (bottom right) with a white dot on B's own

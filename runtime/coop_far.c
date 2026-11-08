@@ -39,16 +39,29 @@ float coop_far_m(void) {
 }
 
 // The players' places: this Link, each remote Link here, each other player's last reported place. Read again when
-// older than 100 ms (game thread only).
+// older than 100 ms. Game thread only: every caller runs under coop_spawn.c coop_tick (coop_players_tick, and
+// coop_world_tick from it).
+//
+// Nothing is far while a player's place is not known (unsure), since what this game holds for that player may stand
+// beside them:
+// - a player whose last state is more than 3 s old (a load, a stall);
+// - a player who sends world packets but no state yet (coop_net lists a player only from its first state);
+// - for 10 s after a player comes or goes (and after the first look), while the first states, the Links here and the
+//   copies made for a new player settle. Without these, a game just joined was not counted, and everything held for
+//   it was let go of (code review, 2026-11-07).
 static float at[1 + 2 * COOP_MAX_PLAYERS][3];
-static int nat;
+static int nat, unsure;
 static uint64_t at_ns;
 static int me_known;
+
+#define FAR_STATE_OLD_NS 3000000000ull
+#define FAR_WORLD_OLD_NS 5000000000ull
+#define FAR_SETTLE_NS 10000000000ull
 
 static void places(void) {
     uint64_t now = plat_now_ns();
     if (at_ns && now - at_ns < 100000000ull) return;
-    at_ns = now, nat = 0;
+    at_ns = now, nat = 0, unsure = 0;
     uint64_t me = coop_player_actor();
     me_known = me && coop_rd(me + COOP_ACTOR_POS, at[nat], 12);
     if (me_known) nat++;
@@ -57,11 +70,26 @@ static void places(void) {
     int n = coop_player_actors(links, ids, COOP_MAX_PLAYERS);
     for (int i = 0; i < n; i++)
         if (links[i] && coop_rd(links[i] + COOP_ACTOR_POS, at[nat], 12)) nat++;
+    uint32_t live = 0;
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++) {
         static NetState st;
+        static uint8_t world[2048];   // (coop_net's WORLD_MAX is 1800)
         uint64_t age;
-        if (id != coop_net_id() && coop_net_remote(id, &st, &age)) memcpy(at[nat++], st.pos, 12);
+        if (id == coop_net_id()) continue;
+        if (coop_net_remote(id, &st, &age)) {
+            live |= 1u << id;
+            if (age > FAR_STATE_OLD_NS || !isfinite(st.pos[0]) || !isfinite(st.pos[1]) || !isfinite(st.pos[2])) unsure = 1;
+            else memcpy(at[nat++], st.pos, 12);
+        } else if (coop_net_world(id, world, sizeof world, &age) && age < FAR_WORLD_OLD_NS)
+            unsure = 1;
     }
+    static uint32_t was_live;
+    static uint64_t changed_ns;
+    if (!changed_ns || live != was_live) {
+        if (changed_ns) rt_log("coop: far: the players changed: nothing is far for %.0f s", FAR_SETTLE_NS / 1e9);
+        was_live = live, changed_ns = now;
+    }
+    if (now - changed_ns < FAR_SETTLE_NS) unsure = 1;
 }
 
 float coop_far_nearest(const float p[3]) {
@@ -77,8 +105,8 @@ float coop_far_nearest(const float p[3]) {
 int coop_far_from_players(const float p[3]) {
     if (!coop_far_on() || !isfinite(p[0]) || !isfinite(p[1]) || !isfinite(p[2])) return 0;
     places();
-    // (this Link's place unknown, a load: nothing is far)
-    return me_known && coop_far_nearest(p) > coop_far_m();
+    // (this Link's place unknown, a load, or a player's place unknown: nothing is far)
+    return me_known && !unsure && coop_far_nearest(p) > coop_far_m();
 }
 
 int coop_far_actor(uint64_t a, float *dist) {

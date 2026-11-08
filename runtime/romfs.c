@@ -632,7 +632,8 @@ static Restbl *restbl_unpack(const void *z, size_t n) {
 
 typedef struct { const char *name; const uint8_t *data; size_t size; } PackMember;
 
-// The members of SARC p[0..n), in *out (malloc'd; names and data point into p); their count, 0 when p is no SARC.
+// The members of SARC p[0..n), in *out (malloc'd; names and data point into p); their count. 0 (and *out NULL) when p
+// is no SARC or has no readable member.
 static size_t sarc_list(const uint8_t *p, size_t n, PackMember **out) {
     uint16_t head, count, bom;
     uint32_t data;
@@ -654,6 +655,10 @@ static size_t sarc_list(const uint8_t *p, size_t n, PackMember **out) {
         size_t s = names + (size_t)(attr & 0xffffff) * 4;
         if (!(attr >> 24) || s >= n || !memchr(p + s, 0, n - s) || lo > hi || data + (size_t)hi > n) continue;
         m[k++] = (PackMember){(const char *)p + s, p + data + lo, hi - lo};
+    }
+    if (!k) {   // every member skipped: callers free *out only for a count
+        free(m);
+        return 0;
     }
     *out = m;
     return k;

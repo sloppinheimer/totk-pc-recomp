@@ -9,7 +9,7 @@
 int coop_far_on(void);
 float coop_far_m(void);
 // 1 when p is more than coop_far_m() from this Link, every remote Link here and every other player's reported place
-// (0 while this Link's place is unknown). Game thread.
+// (0 while this Link's or any other player's place is unknown, and for 10 s after a player comes or goes). Game thread.
 int coop_far_from_players(const float p[3]);
 float coop_far_nearest(const float p[3]);               // metres to the nearest of those places (INFINITY none)
 int coop_far_actor(uint64_t actor, float *dist);        // coop_far_from_players at the actor's place; dist: how far
