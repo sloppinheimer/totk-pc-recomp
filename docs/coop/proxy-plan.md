@@ -161,6 +161,13 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
       change one value at once end on the same value. While a game is not sharing, packets for it are dropped and
       what waited to be sent or applied is dropped too (the catch-up brings it). GMDT version 3: 24-byte entries
       (id, stamp, value, type), 25 a packet (608 bytes).
+    - **settling** (2026-11-07, offline harness only): the tour case on two different saves failed the sync audit with
+      sharing on; its logs showed each game taking its own save's load as changes (1300-1500 quest steps, challenge
+      states and counts written after the Link appeared, before the world clock started) and the other applying
+      them. Now nothing is tracked before the world clock runs, and after tracking starts, or after any frame with
+      more than 32 changes (a load or a reset), values are only copied until 2 s pass with no frame of more than 4;
+      a log entry a load undid leaves the log (the others' catch-up brings it back). Not found: what moved the time
+      of day in that run (no clock entry is shared; perhaps a quest state from the other save, unverified).
     - review fixes (2026-11-07, offline harness only): changes made while no other player is there were never
       shared; state outlived a session (inbox applied later, a catch-up sent on to a player who had left, a rejoin
       within 10 s not caught up); bool and key requests over 256 in a frame were lost (now all taken; a full outbox

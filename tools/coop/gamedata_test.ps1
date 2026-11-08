@@ -22,6 +22,7 @@
 #         coop: gamedata: Float: 56 entries, 4 shared, 30 the player's, 22 not in the progress save; ...
 #           (the counts worked out offline from GameDataList 1.4.0 with the same rule: equal counts show that the game's
 #           tables are what the code takes them for)
+#   both: coop: gamedata: settled: N values the load wrote taken as this save's, not shared   (before the hello)
 #   A:  coop: gamedata: hello sent (1 other player here)
 #       coop: gamedata: test: key K (index ..., reset type T) set to 1 in this game (it read 0)   + "key K = 1 ..., shared"
 #       coop: gamedata: test: bool IsGet.Item_Fruit_A (b06a5a66) set to X ...                     + "bool b06a5a66 = X ..., shared"
