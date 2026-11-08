@@ -121,9 +121,22 @@ Continue (`tools/coop/to_title_3rd.txt`) did not make it again either: the same 
 only at 3.1 s. So nothing in a run makes the Player again or reads its files again, and its resources stay loaded as
 long as it exists.
 
-**Hiding this PC's Link behind a stand-in of its own character** (its model only) was not prototyped: the actor's scale
-(+0x2e4, which shrinks a Zonai beam's copy) set to 0.02 every tick left the Player drawn at full size, and the switch
-that hides a model is not known yet (it needs the game's model or material visibility code found, e.g. in Ghidra).
+**Hiding this PC's Link behind a stand-in of its own character** (its model only) was not prototyped: no switch that
+hides the Player's model is known yet.
+
+- The actor's scale (+0x2e4, which shrinks a Zonai beam's copy) set to 0.02 every tick left the Player drawn at full size.
+- The scope (right stick press) hides Link. `TOTK_COOP_TEST_MODELDIFF=18,25` read the Player actor, the heap objects its
+  first 0x800 bytes point to and the ones those point to (456 objects), before and in the scope, against a run without
+  it. Each flag-like byte and each float that went from 1 to 0 in the scope only was then held at its scope value every
+  tick while Link walked (`TOTK_COOP_TEST_HIDEBYTE=<a>[/<b>],<offset>,<value>[,<from s>]`): none hid him. The tries were
+  `[actor+0x168]+0x3d8`, `[actor+0x188]+0x199` and `+0x1b1`, `[[actor+0x88]+0x1f0]+0x112`,
+  `[[actor+0x238]+0xc8]+0x21c`, `[[actor+0x3b8]+0x40]+0x140`, and the floats `[[actor+0x88]+0x1f0]+0x110`,
+  `[[actor+0x608]+0x8]+0x2c8` and `[[actor+0x608]+0x1a8]+0x190`.
+- The first two of those floats are the armor dye's blend: at 0 the worn tunic shows its save dye (10, pink), the pink
+  tunic seen once after a stand-in was made again.
+- Likely the scope hides Link through the camera (first-person view), not a model flag, so it is a poor probe. Next:
+  Ghidra on the model unit's or material's visibility setters (the GhidraMCP backend was not running for this), or a
+  cutscene that hides Link as the probe.
 
 **Slots are not freed.** A stand-in made again under an actor name the game loaded before opens none of its files
 again: after Riju (slot JS01) → Link → Riju in one run (`TOTK_COOP_TEST_CHARKEY=Link@40,gb:1600822@70`), the second
