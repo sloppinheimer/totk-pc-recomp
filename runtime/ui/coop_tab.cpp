@@ -11,13 +11,15 @@
 
 extern "C" {
 #include "cfg.h"
+#include "coop_chars.h"
 #include "coop_net.h"
+#include "mods.h"
 #include "ui_text.h"
 #include "platform/platform.h"
 void menu_page_modal(bool on);   // ui/menu.cpp: B and the tab keys stay with the keyboard while it is open
 }
 
-static char g_name[17], g_addr[128];
+static char g_name[17], g_addr[128], g_gb[160];
 static bool g_loaded;
 
 static void load_fields(void) {
@@ -26,6 +28,8 @@ static void load_fields(void) {
     const char *n = cfg_get("TOTK_COOP_NAME"), *a = cfg_get("TOTK_COOP_JOIN");
     snprintf(g_name, sizeof g_name, "%s", n && *n ? n : "Player");
     snprintf(g_addr, sizeof g_addr, "%s", a ? a : "");
+    const char *gb = cfg_get("TOTK_COOP_CHAR_LINK");   // a test sets the link (the keyboard has no '/')
+    if (gb) snprintf(g_gb, sizeof g_gb, "%s", gb);
 }
 
 static void save_fields(void) {
@@ -146,6 +150,82 @@ static void copy_button(const char *id, UiTextId label, UiTextId desc, const cha
     if (action(id, label, desc, scale) && plat_clipboard_set(text)) copied_id = id, copied_at = ImGui::GetTime();
 }
 
+// Character mods (coop_chars.c; docs/coop/character-mods.md): this PC's character and each player's, the prompt to
+// download a party member's character from GameBanana (it waits for a yes), a GameBanana link to look one up, and a
+// switch per character mod for this PC's Link (it applies at the next start, as the Mods tab's switches do).
+static void characters_section(float scale) {
+    static char line[640];
+    opt_group(UI_MENU_COOP_CHARS);
+    snprintf(line, sizeof line, menu_text(UI_MENU_COOP_CHAR_SELF), coop_char_local()->name);
+    opt_text_str(line);
+    int ids[COOP_MAX_PLAYERS];
+    char names[COOP_MAX_PLAYERS][17];
+    int n = *coop_net_target() ? coop_net_players(ids, names, COOP_MAX_PLAYERS) : 0;
+    const char *ask_name = "?";
+    CoopCharAsk ask;
+    int asking = coop_chars_ask(&ask);
+    for (int i = 0; i < n; i++) {
+        const char *key = coop_chars_of(ids[i]);
+        const CoopChar *c = coop_char_find(key[0] ? key : "Link");
+        char what[200];
+        if (c) snprintf(what, sizeof what, "%s", c->name);
+        else snprintf(what, sizeof what, menu_text(UI_MENU_COOP_CHAR_MISSING),
+                      asking && ask.ready && ask.player_id == ids[i] && ask.name[0] ? ask.name : key);
+        if (asking && ask.player_id == ids[i]) ask_name = names[i];
+        ImGui::TextColored(coop_colour_v4(ids[i]), "%s", names[i][0] ? names[i] : "?");
+        ImGui::SameLine(0, 0);
+        ImGui::Text(": %s", key[0] ? what : "...");
+    }
+    if (asking) {
+        if (!ask.ready) {
+            snprintf(line, sizeof line, menu_text(UI_MENU_COOP_CHAR_LOOKING), ask.page[0] ? ask.page : "...");
+            opt_text_str(line);
+        } else {
+            snprintf(line, sizeof line, menu_text(UI_MENU_COOP_CHAR_ASK), ask.player_id ? ask_name : coop_char_local()->name,
+                     ask.name, ask.file, (double)ask.size / 1e6, ask.page);
+            opt_text_str(line, true);
+            if (action("##coop_char_yes", UI_MENU_COOP_CHAR_YES, UI_MENU_COOP_CHAR_YES_DESC, scale)) coop_chars_answer(1);
+            if (action("##coop_char_no", UI_MENU_COOP_CHAR_NO, UI_MENU_COOP_CHAR_NO_DESC, scale, true)) coop_chars_answer(0);
+        }
+    }
+    CoopJob jobv;
+    coop_chars_job(&jobv);
+    const CoopJob *job = &jobv;
+    if (job->state == COOP_JOB_RUNNING && !strcmp(job->what, "fetch")) {
+        snprintf(line, sizeof line, menu_text(UI_MENU_COOP_CHAR_PROGRESS), (double)job->got / 1e6, (double)job->size / 1e6);
+        opt_text_str(line);
+        if (job->text[0]) opt_text_str(job->text);
+    } else if (job->state == COOP_JOB_FAILED) {
+        snprintf(line, sizeof line, menu_text(UI_MENU_COOP_CHAR_FAILED), job->text);
+        opt_text_str(line, true);
+    } else if (coop_chars_restart_needed())
+        opt_text(UI_MENU_COOP_CHAR_RESTART);
+    field("##coop_gb", UI_MENU_COOP_CHAR_LINK, g_gb, sizeof g_gb, scale);
+    if (g_gb[0] && !asking && job->state != COOP_JOB_RUNNING &&
+        action("##coop_gb_look", UI_MENU_COOP_CHAR_LOOKUP, UI_MENU_COOP_CHAR_LOOKUP_DESC, scale))
+        coop_chars_lookup(g_gb);
+    // A switch per character mod: on makes it this PC's Link's (the others off), from the next start.
+    for (int k = 0; k < coop_char_count(); k++) {
+        const CoopChar *c = coop_char_at(k);
+        if (!c->folder[0]) continue;
+        int mi = -1;
+        for (int i = 0; i < mods_count(); i++) if (!strcmp(mods_at(i)->name, c->folder)) mi = i;
+        if (mi < 0) continue;
+        char id[300];
+        snprintf(id, sizeof id, "##coop_char_%s", c->folder);
+        if (opt_toggle_text(id, c->name, menu_text(UI_MENU_COOP_CHAR_USE_DESC), mods_at(mi)->enabled)) {
+            int on = !mods_at(mi)->enabled;
+            for (int j = 0; j < coop_char_count(); j++) {   // one character at a time
+                const CoopChar *o = coop_char_at(j);
+                for (int i = 0; on && o->folder[0] && i < mods_count(); i++)
+                    if (i != mi && !strcmp(mods_at(i)->name, o->folder)) mods_set_enabled(i, 0);
+            }
+            mods_set_enabled(mi, on);
+            opt_save_soon();
+        }
+    }
+}
+
 extern "C" void tab_coop(float scale) {
     load_fields();
     opt_begin("##coop", scale);
@@ -238,6 +318,7 @@ extern "C" void tab_coop(float scale) {
         cfg_set("TOTK_COOP_TAGS", tags_on ? "off" : "on");
         opt_save_soon();
     }
+    characters_section(scale);
     opt_text(UI_MENU_COOP_NOTE);
     static bool test_kbd;   // TOTK_COOP_TEST_KBD: the keyboard opens on the name the first time the tab shows (tests)
     if (!test_kbd && cfg_get("TOTK_COOP_TEST_KBD")) {

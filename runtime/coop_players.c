@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "coop_chars.h"
 #include "coop_far.h"
 #include "coop_game.h"
 #include "coop_mounts.h"
@@ -52,6 +53,8 @@ typedef struct {
     int err_n;
     int have_want, idle;
     char gear_want[COOP_GEAR_SLOTS][32], gear_have[COOP_GEAR_SLOTS][32];   // the owner's gear; what this Link was given
+    char character[COOP_CHAR_KEY];     // the owner's character (NetState.character; "" Link) and the stand-in actor
+    char standin[48];                  // spawned for it (coop_chars.c: that character's set, else PlayerPuppet)
     int ride_owner;                    // the owner's Link rides that player's object ride_id at ride_off (proxy_drive)
     uint32_t ride_id;
     float ride_off[3];
@@ -559,6 +562,7 @@ static Slot *slot_new(int source, int net_id) {
             memset(s->dye_want, -1, sizeof s->dye_want), memset(s->dye_have, -1, sizeof s->dye_have);
             s->out_want = 0, s->out_have = -1, s->have_phys = 0, s->top_last = -1e9f, s->have_body = 0, s->shield_actor = 0, s->shield_placed = 0;
             s->live_ticks = 0;
+            s->character[0] = 0, s->standin[0] = 0;
             s->leaving = 0, s->ride_owner = 0;   // (left from the slot's last player, code review)
             s->state = WANTED;
             rt_log("coop: player slot %d for %s %d", i, source == SRC_NET ? "remote player" : "local pad", net_id);
@@ -1051,7 +1055,9 @@ static void spawn_slot(Cpu *c, Slot *s) {
     if (s->have_want) memcpy(pos, s->want_pos, 12), memcpy(rot, s->want_rot, 36);
     else pos[0] += 2 * rot[2], pos[2] += 2 * rot[8];   // 2 m in front of this PC's Link
     pos[1] += 0.5f;
-    const char *player = "PlayerPuppet";
+    // The owner's character's stand-in (coop_chars.c): its set's PlayerPuppet_<tag>, else the plain PlayerPuppet.
+    const char *player = coop_char_actor(s->character);
+    snprintf(s->standin, sizeof s->standin, "%s", player);
     if (coop_request_create(c, player, pos, rot, s->handle)) {
         s->state = REQUESTED;
         rt_log("coop: slot %d: %s requested at %.1f %.1f %.1f", (int)(s - slots), player, pos[0], pos[1], pos[2]);
@@ -4950,6 +4956,7 @@ void coop_players_tick(Cpu *c) {
     if (!me) return;
     coop_world_tick(c, me);
 
+    coop_chars_tick();   // the character fetch's job and prompt (coop_chars.c), in a session or not
     // This player's state out, when on a relay.
     if (coop_net_on()) {
         coop_notices_tick(c, me);   // a fast travel of this Link, told to the others (coop_notices.c)
@@ -4961,6 +4968,9 @@ void coop_players_tick(Cpu *c) {
         st.buttons = local_buttons;
         memcpy(st.gear, my_gear, sizeof st.gear);
         memcpy(st.dye, my_dye, sizeof st.dye);
+        const CoopChar *me_char = coop_char_local();
+        snprintf(st.character, sizeof st.character, "%s", me_char->key);
+        st.char_mod = me_char->mod_id;
         static CoopObj cur[COOP_OBJS];
         int n_objs = report_arrows(c, me, cur);
         n_objs += report_props(me, cur + n_objs, COOP_OBJS - n_objs);
@@ -5146,9 +5156,14 @@ void coop_players_tick(Cpu *c) {
                 host_weather = -1, host_far = 1;
         }
         if (!s && !(s = slot_new(SRC_NET, id))) continue;
+        if (s->state == WANTED || !s->character[0]) {   // its character, as it was when the stand-in was asked for
+            memcpy(s->character, st.character, sizeof s->character);
+            s->character[sizeof s->character - 1] = 0;
+        }
+        coop_chars_seen(id, st.character[sizeof st.character - 1] ? "" : st.character, st.char_mod);
         int32_t ast = 0;   // (a live actor: one going away, or another at its address, gets no call; code review)
         if (s->state == LIVE && s->actor && age < 2000000000ull && coop_rd(s->actor + COOP_ACTOR_STATE, &ast, 4) &&
-            ast >= 2 && ast <= 6 && actor_is(s->actor, "PlayerPuppet")) {   // (the name too: another actor at a freed one's address)
+            ast >= 2 && ast <= 6 && actor_is(s->actor, s->standin[0] ? s->standin : "PlayerPuppet")) {   // (the name too: another actor at a freed one's address)
             void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, int64_t age_ns);   // coop_world.c
             static uint64_t y_was[COOP_MAX_PLAYERS];   // its owner's attack button down: logged (the suite's tour case)
             uint64_t y_now = st.buttons >> 3 & 1;
@@ -5250,6 +5265,10 @@ void coop_players_tick(Cpu *c) {
             memcpy(s->gear_want[k], st.gear[k], 32);
             s->gear_want[k][31] = 0;
             s->dye_want[k] = st.dye[k];
+            // Armor on another character's stand-in: this game has its armor fitted to its own Link's character only,
+            // so that stand-in wears its own character's bare pieces (coop_chars.c; docs/coop/character-mods.md).
+            const char *bare = k > 2 && s->gear_want[k][0] ? coop_char_bare(s->character, k - 3) : NULL;
+            if (bare) snprintf(s->gear_want[k], sizeof s->gear_want[k], "%s", bare), s->dye_want[k] = -1;
             if (k < 3) memcpy(s->fuse_want[k], st.fuse[k], 32), s->fuse_want[k][31] = 0;
             if (k < 3) s->out_want = (s->out_want & ~(1 << k)) | (int)((st.flags >> (8 + k)) & 1) << k;
             if (k == 0) s->attack_want = (int)(st.flags >> 13 & 1);
