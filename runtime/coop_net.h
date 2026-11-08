@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define COOP_MAX_PLAYERS 8
-#define COOP_NET_VERSION 22   // packet header version: games and relays of another version ignore each other
+#define COOP_NET_VERSION 23   // packet header version: games and relays of another version ignore each other
 
 // One player's state, sent about 30 times a second. Positions and directions are world space; the sticks are as the
 // player's own camera saw them, with the camera's horizontal forward and right so a receiver can turn them into its
@@ -61,9 +61,11 @@ typedef struct {
     float shield_fuse_scale[3];       // the scale (actor +0x2e4) of the actor fused to the shield (0: none or unknown)
     CoopAnim anim[COOP_ANIM_SLOTS];   // this Link's animation player's first slots (coop_world.c, coop_anim_pack)
     CoopMask mask[COOP_ANIM_MASKS];   // the masks those slots use, as the owner's graph set them
+    int64_t world_us;                 // the owner's world clock (frame_step_world_us) at this state, -1 none: the
+                                      // stand-in is replayed on it (coop_players.c, owner_smoothed)
 } NetState;
 #define COOP_RIDE_MOUNT 0xfe   // NetState.ride_owner for a horse (no player has this id; an older game rides nothing)
-_Static_assert(sizeof(NetState) == 464 + 16 * COOP_ANIM_SLOTS + 88 * COOP_ANIM_MASKS, "NetState wire size");
+_Static_assert(sizeof(NetState) == 472 + 16 * COOP_ANIM_SLOTS + 88 * COOP_ANIM_MASKS, "NetState wire size");
 #define COOP_GEAR_SLOTS 6
 extern const int coop_gear_slot[COOP_GEAR_SLOTS];   // the EquipmentUser slots they are (coop_players.c)
 

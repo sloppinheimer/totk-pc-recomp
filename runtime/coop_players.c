@@ -46,8 +46,11 @@ typedef struct {
     uint32_t last_seq;
     uint64_t last_ns;                  // when that report was sent, as plat_now_ns
     struct { uint64_t ns; float pos[3]; } seen[32];   // puppet mode: where the puppet was, for the error log
-    struct { uint64_t ns; float pos[3], q[4]; } hist[16];   // puppet mode: the owner's last reports (arrival time)
+    struct { uint64_t ns; int64_t w_us; float pos[3], q[4]; } hist[16];   // puppet mode: the owner's last reports
+                                       // (arrival time, and the owner's world clock then, -1 none)
     unsigned nhist;                    // under lock
+    int64_t woff_us;                   // this game's world clock less the owner's, the least delayed estimate
+    int have_woff;
     float jit_prev[2][3], jit_sum, jit_max;   // puppet mode: frame-to-frame jerk of the placed position (log)
     int jit_n, jit_have;
     int nseen;
@@ -553,7 +556,7 @@ static Slot *slot_new(int source, int net_id) {
             Slot *s = &slots[i];
             s->source = source, s->net_id = net_id, s->prev = 0, s->have_want = 0;
             memset(s->vel, 0, sizeof s->vel), s->last_seq = 0, s->last_ns = 0, s->nseen = 0, s->err_n = 0;
-            s->nhist = 0, s->jit_n = 0, s->jit_have = 0;
+            s->nhist = 0, s->jit_n = 0, s->jit_have = 0, s->have_woff = 0;
             memset(s->held, 0, sizeof s->held);
             memset(s->gear_want, 0, sizeof s->gear_want), memset(s->gear_have, 0, sizeof s->gear_have);
             memset(s->fuse_want, 0, sizeof s->fuse_want), memset(s->fuse_have, 0, sizeof s->fuse_have);
@@ -1125,15 +1128,26 @@ static int puppet_delay_ms(void) {
 static int owner_smoothed(Slot *s, float m[12]) {
     int coop_puppet_mode(void);   // coop_world.c
     if (!coop_puppet_mode() || puppet_delay_ms() <= 0) return 0;
-    uint64_t t = plat_now_ns() - (uint64_t)puppet_delay_ms() * 1000000ull;
     float pos[3], q[4];
     int ok = 0;
     plat_mutex_lock(&lock);
     unsigned n = s->nhist < 16 ? s->nhist : 16;
+    // On the owner's world clock when every kept report has it: this game's frames step its world clock evenly, so
+    // the stand-in moves with the frame as everything else here does; by arrival time an uneven frame moved it by
+    // that frame's own length, a jolt (game 1's stand-in: 20 to 90 mm off a straight line each frame, the tester's
+    // session, 2026-11-07). TOTK_COOP_PUPPET_WORLDTIME=0: arrival time, as before.
+    static int wt = -1;
+    if (wt < 0) { const char *e = cfg_get("TOTK_COOP_PUPPET_WORLDTIME"); wt = !(e && *e == '0'); }
+    int64_t lw = frame_step_world_us();
+    int use_w = wt && s->have_woff && lw >= 0 && n;
+    for (unsigned i = 0; use_w && i < n; i++) use_w = s->hist[(s->nhist - 1 - i) % 16].w_us >= 0;
+    #define HT(x) (use_w ? s->hist[x].w_us * 1000 : (int64_t)s->hist[x].ns)
+    int64_t t = use_w ? (lw - s->woff_us) * 1000 - (int64_t)puppet_delay_ms() * 1000000
+                      : (int64_t)(plat_now_ns() - (uint64_t)puppet_delay_ms() * 1000000ull);
     if (n) {
         unsigned newest = (s->nhist - 1) % 16;
-        if (t >= s->hist[newest].ns) {   // past the newest: carry on at its velocity, briefly
-            double a = (double)(t - s->hist[newest].ns) / 1e9;
+        if (t >= HT(newest)) {   // past the newest: carry on at its velocity, briefly
+            double a = (double)(t - HT(newest)) / 1e9;
             if (a > 0.1) a = 0.1;
             for (int k = 0; k < 3; k++) pos[k] = s->hist[newest].pos[k] + s->vel[k] * (float)a;
             memcpy(q, s->hist[newest].q, sizeof q);
@@ -1141,8 +1155,8 @@ static int owner_smoothed(Slot *s, float m[12]) {
         } else {
             for (unsigned i = 1; i < n && !ok; i++) {   // newest pair first
                 unsigned b = (s->nhist - i) % 16, a = (s->nhist - i - 1) % 16;
-                if (s->hist[a].ns > t) continue;
-                float f = s->hist[b].ns > s->hist[a].ns ? (float)((double)(t - s->hist[a].ns) / (double)(s->hist[b].ns - s->hist[a].ns)) : 1;
+                if (HT(a) > t) continue;
+                float f = HT(b) > HT(a) ? (float)((double)(t - HT(a)) / (double)(HT(b) - HT(a))) : 1;
                 const float *qa = s->hist[a].q, *qb = s->hist[b].q;
                 float dot = qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2] + qa[3] * qb[3], sg = dot < 0 ? -1.0f : 1.0f, l = 0;
                 for (int k = 0; k < 3; k++) pos[k] = s->hist[a].pos[k] + (s->hist[b].pos[k] - s->hist[a].pos[k]) * f;
@@ -1158,6 +1172,7 @@ static int owner_smoothed(Slot *s, float m[12]) {
             }
         }
     }
+    #undef HT
     plat_mutex_unlock(&lock);
     if (!ok) return 0;
     float r[9];
@@ -4652,6 +4667,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         coop_notices_tick(c, me);   // a fast travel of this Link, told to the others (coop_notices.c)
         coop_far_test(c, me);       // TOTK_COOP_TEST_FAR (coop_far.c)
         NetState st = {0};
+        st.world_us = frame_step_world_us();
         coop_rd(me + COOP_ACTOR_POS, st.pos, 12), coop_rd(me + COOP_ACTOR_ROT, st.rot, 36);
         camera_frame(st.cam_fwd, st.cam_right);
         st.buttons = local_buttons;
@@ -4856,7 +4872,13 @@ void coop_players_tick(Cpu *c, int numpad3) {
             y_was[s - slots] = y_now;
             void coop_anim_masks_apply(uint64_t standin, const CoopMask *in);   // coop_world.c
             coop_anim_masks_apply(s->actor, st.mask);
-            coop_anim_apply(c, s->actor, st.anim, age);
+            uint64_t aage = age;   // (the state's age on the owner's clock, as the stand-in is placed)
+            int64_t lw2 = frame_step_world_us();
+            if (s->have_woff && st.world_us >= 0 && lw2 >= 0) {
+                int64_t a2 = lw2 - s->woff_us - st.world_us;
+                aage = a2 > 0 ? (uint64_t)a2 * 1000 : 0;
+            }
+            coop_anim_apply(c, s->actor, st.anim, aage);
         }
         if (st.seq != s->last_seq) {   // a new report: the owner's velocity since the previous one
             uint64_t at = plat_now_ns() - age;
@@ -4869,6 +4891,13 @@ void coop_players_tick(Cpu *c, int numpad3) {
             unsigned w = s->nhist % 16;
             if (d2 >= 100) s->nhist = 0, w = 0;   // a warp: no blending across it
             s->hist[w].ns = at;
+            int64_t lw = frame_step_world_us();
+            s->hist[w].w_us = st.world_us >= 0 && lw >= 0 ? st.world_us : -1;
+            if (s->hist[w].w_us >= 0) {   // the offset: down at once to a less delayed state, up slowly (clock drift)
+                int64_t sample = lw - st.world_us;
+                if (!s->have_woff || sample < s->woff_us || sample - s->woff_us > 2000000) s->woff_us = sample, s->have_woff = 1;
+                else s->woff_us += (sample - s->woff_us) / 64;
+            }
             memcpy(s->hist[w].pos, st.pos, 12);
             mat_quat(st.rot, s->hist[w].q);
             s->nhist++;
