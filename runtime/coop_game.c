@@ -1,5 +1,6 @@
 // Co-op: game structures and calls (coop_game.h). Found and tested with coop_spawn.c; docs/coop/re-notes.md.
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "cfg.h"
@@ -99,10 +100,24 @@ static int request_create(Cpu *c, const char *name, const float pos[3], const fl
     ST64(sp + 0x28 + 0x40, (uint64_t)(uintptr_t)empty);
     if (tag) ST64(sp + 0x28 + 0x80, tag);
     arg[0x90] = 3;
+    // TOTK_COOP_TEST_ABARGS=1 (with the tag): the autobuild's other create argument fields too, +0x48
+    // 0x0101010100000001 and +0x90 7 (TOTK_COOP_TEST_CREATEDUMP: what main+0x1d3b470 passes), for the green tint
+    if (tag && cfg_get("TOTK_COOP_TEST_ABARGS")) ST64(sp + 0x28 + 0x48, 0x0101010100000001ull), arg[0x90] = 7;
     memset(handle, 0, 0x40);
     c->sp = sp;
+    // With the autobuild's tag, its creation callback too (x7; the autobuild, main+0x1d3b470, passes one): an object of
+    // vtable main+0x3694e18 holding a pointer to a byte, whose call (main+0x1d43dc8) writes that byte to the new actor's
+    // init values 0x11 and 0x13 (main+0x63336c). TOTK_COOP_TEST_ABFLAG=<0|1> (default 1): the byte.
+    static _Alignas(16) uint64_t cb[2];
+    static uint8_t cb_flag;
+    uint64_t x7 = 0;
+    if (tag) {
+        const char *fl = cfg_get("TOTK_COOP_TEST_ABFLAG");
+        cb_flag = fl ? (uint8_t)atoi(fl) : 1;
+        cb[0] = MOD_MAIN_BASE + 0x3694e18, cb[1] = (uint64_t)(uintptr_t)&cb_flag, x7 = (uint64_t)(uintptr_t)cb;
+    }
     uint64_t ok = rt_call(c, MOD_MAIN_BASE + COOP_REQUEST_CREATE, 8, mgr, sp + 0x20, sp + 0x28, (uint64_t)(uintptr_t)handle,
-                          (uint64_t)1, (uint64_t)0, (uint64_t)0, (uint64_t)0);
+                          (uint64_t)(tag ? 0 : 1), (uint64_t)0, (uint64_t)0, x7);
     c->sp = sp0;
     memcpy(c->x, saved_x, sizeof saved_x);
     return (int)(ok & 1);

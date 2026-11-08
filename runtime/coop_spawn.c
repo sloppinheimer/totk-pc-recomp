@@ -643,7 +643,68 @@ static int calc_wrap(Cpu *c, uint64_t addr) {
 
 // requestCreateActor calls (TOTK_COOP_TRACE=create): the actor name and whose calc it ran in (calc_actor: the actor
 // whose ACTOR_CALC encloses the call on this thread, tracked for Players only).
+// TOTK_COOP_TEST_CREATEDUMP=1: each requestCreateActor of an SpObj_ device: its create argument (x2, 0xa0 bytes) as
+// words, x4..x7 and the caller: an autobuild's devices against ours (coop_game.c request_create), for the green tint
+static void create_dump(Cpu *c) {
+    static int on = -1;
+    if (on < 0) on = getenv("TOTK_COOP_TEST_CREATEDUMP") != NULL;
+    char nm[64] = "";
+    uint64_t np = on ? rd_ptr(c->x[1]) : 0;
+    if (!np || !rd(np, nm, sizeof nm - 1) || strncmp(nm, "SpObj_", 6)) return;
+    static int said;
+    if (said++ > 40) return;
+    uint64_t w[20] = {0};
+    rd(c->x[2], w, sizeof w);
+    char line[900];
+    int n = snprintf(line, sizeof line, "coop: test: createdump '%s' lr main+%llx x4..x7 %llx %llx %llx %llx:", nm,
+                     (unsigned long long)(c->x[30] - MOD_MAIN_BASE), (unsigned long long)c->x[4], (unsigned long long)c->x[5],
+                     (unsigned long long)c->x[6], (unsigned long long)c->x[7]);
+    for (int i = 0; i < 20; i++) n += snprintf(line + n, sizeof line - (size_t)n, " +%02x %llx", i * 8, (unsigned long long)w[i]);
+    rt_log("%s", line);
+    char s1[48] = "", s2[48] = "";   // the strings the autobuild's caller (main+0x1d3b470) compares and passes
+    rd(MOD_MAIN_BASE + 0x2c0bea5, s1, 47), rd(MOD_MAIN_BASE + 0x2c88791, s2, 47);
+    uint64_t f[2] = {0, 0}, vt[4] = {0}, po[8] = {0};
+    if (c->x[7]) rd(c->x[7], f, 16);
+    if (f[0]) rd(f[0], vt, sizeof vt);
+    uint8_t flag = 0;
+    if (f[1]) rd(f[1], &flag, 1);
+    if (w[0x58 / 8]) rd(w[0x58 / 8], po, sizeof po);
+    rt_log("coop: test: createdump: strings '%s' '%s'; x7 {vtable %llx (main+%llx): %llx %llx %llx %llx, flag %u}; +0x58 object: %llx %llx %llx %llx %llx %llx %llx %llx",
+           s1, s2, (unsigned long long)f[0], (unsigned long long)(f[0] - MOD_MAIN_BASE), (unsigned long long)vt[0], (unsigned long long)vt[1],
+           (unsigned long long)vt[2], (unsigned long long)vt[3], flag, (unsigned long long)po[0], (unsigned long long)po[1], (unsigned long long)po[2],
+           (unsigned long long)po[3], (unsigned long long)po[4], (unsigned long long)po[5], (unsigned long long)po[6], (unsigned long long)po[7]);
+    {   // the caller's frame chain and its kept registers (main+0x1d3b470's x19 / x26 / x27: the build's objects)
+        char ch[300];
+        int k = 0;
+        uint64_t fp = c->x[29];
+        for (int d = 0; d < 10 && fp && k < (int)sizeof ch - 24; d++) {
+            uint64_t next = rd_ptr(fp), ret = rd_ptr(fp + 8);
+            if (!ret) break;
+            k += snprintf(ch + k, sizeof ch - (size_t)k, " <- main+%llx", (unsigned long long)(ret - MOD_MAIN_BASE));
+            if (next <= fp) break;
+            fp = next;
+        }
+        uint64_t v19[4] = {0}, v26[4] = {0}, v27[4] = {0};
+        rd(c->x[19], v19, 32), rd(c->x[26], v26, 32), rd(c->x[27], v27, 32);
+        char path[80] = "";
+        rd(c->x[19] + 0x14, path, 79);
+        extern uint64_t coop_ab_obj;   // (coop_autobuild.c: TOTK_COOP_TEST_REBUILD calls main+0x1d3b470 on it again)
+        if (c->x[30] - MOD_MAIN_BASE == 0x1d3bb98 && !coop_ab_obj) coop_ab_obj = c->x[19], rt_log("coop: test: createdump: the build's object %llx, path '%s'", (unsigned long long)c->x[19], path);
+        char s1920[48] = "";
+        rd(rd_ptr(c->x[26] + 0x1920), s1920, 47);
+        rt_log("coop: test: createdump: chain%s; x19 %llx {%llx %llx %llx %llx} x26 %llx {%llx %llx %llx %llx} [x26+0x1920] '%s' x27 %llx {%llx %llx %llx %llx}",
+               ch, (unsigned long long)c->x[19], (unsigned long long)v19[0], (unsigned long long)v19[1], (unsigned long long)v19[2],
+               (unsigned long long)v19[3], (unsigned long long)c->x[26], (unsigned long long)v26[0], (unsigned long long)v26[1],
+               (unsigned long long)v26[2], (unsigned long long)v26[3], s1920, (unsigned long long)c->x[27], (unsigned long long)v27[0],
+               (unsigned long long)v27[1], (unsigned long long)v27[2], (unsigned long long)v27[3]);
+    }
+    for (int i = 0; i < 8 && w[0x58 / 8]; i++) {   // strings the +0x58 object's words point at
+        char t[40] = "";
+        if (po[i] > 0x1000000 && rd(po[i], t, 39) && t[0] > 0x20 && t[0] < 0x7f) rt_log("coop: test: createdump: +0x58 word %d -> '%s'", i, t);
+    }
+}
 static int create_trace(Cpu *c) {
+    create_dump(c);
     static int on = -1;
     if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "create"); }
     if (!on) return 0;

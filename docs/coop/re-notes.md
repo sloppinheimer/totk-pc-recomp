@@ -1064,6 +1064,56 @@ other game reaching the owner's devices, both wait on one. A hit does it (the pr
 - Not done: the glue's look in the other game (createScotch's request with Ultrahand's attachment points; no
   decoding of them found), and bonding world objects the other game has itself (coop_bonds bonds copies only: a
   plank from the map glued by hand would stay loose in the other game).
+- Glue by hand by script, a fifth and sixth run (glue_near4-style, B's Link asked to stand aside with
+  TOTK_COOP_TEST_ABPLACE in B, which did not move it): held, pushed and let go, the loose fan beside the build; no
+  glue. Both the glue's look and B's own world objects need a real glue by hand first: one by the tester in a logged
+  session (the "(N parts)" line and coop_glue's "made here") is the way to get it.
+
+## Running the game's own Autobuild in the other game (feasibility, open, 2026-11-08)
+the tester's idea: the other game builds the owner's blueprint itself, so the parts come out green and as one unit.
+- Where the parts are made: the Autobuild ability's update (main+0x9a2c00, a large state machine, called through a
+  vtable) fills per-part records and then calls main+0x1d3b470(obj) directly (at main+0x9a70ec, on a job thread:
+  frame chain main+0x9a70ec <- 0x75d9c <- 0x74218 <- 0xacf8dc). main+0x1d3b470 makes each part with requestCreateActor
+  (main+0x1d3bb98), with the create argument and callback in "The green tint" below.
+- obj (0x1ec715548 in every run: a pooled object) holds the blueprint's path at +0x14,
+  'Game/BluePrint/CombinedActorInfo/Obj_AutoBuilderDraft_00.cai' for the first schematic. [obj+0x3c50] points into
+  it at the blueprint as loaded, a CombinedActorInfo in memory: magic "CmbAct", a byte 2 at +8, a byte at +9 that
+  main+0x1d3b470 must find non-zero to build anything, and part records from +0xc, 0x118 bytes each, each with the
+  part's transform (main+0x1d3b470 walks them with x27). So the layout is the .cai's (for the Autobuild screen's own
+  schematics; history designs not looked at).
+- The same path makes the screen's previews: more parts (a stick, fans, rockets) were made through main+0x1d3bb98
+  while the script scrolled, some on another thread's stack.
+- Calling it again (TOTK_COOP_TEST_REBUILD=40 with TOTK_COOP_TEST_CREATEDUMP=1, tools/coop/autobuild_noy_3rd.txt: autobuild_3rd.txt
+  without its sword swings) on the kept obj, 10 s after the build: it returns at once and makes nothing; byte +9 reads
+  0 after the build, and setting it to 1 or 4 first (TOTK_COOP_TEST_REBUILDN) makes nothing either. The caller sets
+  more per part just before the call (bytes +0xd7 and +0x117 of each record cleared, words written to an output
+  list), so main+0x1d3b470 alone is not the whole build.
+- Not answered yet: the cost (where zonaite, battery or capsules are taken: in main+0x9a2c00 before the call, as far
+  as can be seen), what is tied to the Link (obj is the ability's), mapping the made parts to the owner's numbers, and
+  whether the parts made this way are green at all in the other game (the tint may be put on after main+0x1d3b470
+  returns: the same create arguments on copies give none). Ghidra was down; this is read from the generated C.
+- Verdict so far: plausible, not shown. The next step is to drive main+0x9a2c00's confirm state (or replay its
+  per-part preparation before main+0x1d3b470) in game A a second time, and only then in game B.
+
+## The green tint of autobuilt parts (open, 2026-11-08 afternoon)
+- What the autobuild passes when it makes a part (TOTK_COOP_TEST_CREATEDUMP=1, coop_spawn.c create_dump on
+  requestCreateActor; the autobuild's call is main+0x1d3bb98 in main+0x1d3b470) against coop_game.c request_create:
+  the create argument's +0x48 0x0101010100000001 (ours 0), +0x58 a parameter list (only "SpecialParts_InitOn", for
+  spring pistons), +0x80 the autobuild type object (we pass it with TOTK_COOP_AUTOBUILT=1), +0x90 7 (ours 3), x4 0
+  (ours 1), and x7 a creation callback: an object of vtable main+0x3694e18 with a pointer to a byte, whose call
+  (main+0x1d43dc8) writes that byte to the new actor's init values 0x11 and 0x13 (main+0x63336c on x1+0x14). The byte
+  was 0 for the first four parts made and 1 for six more on another thread (the schematic previews, it seems), and the
+  built Fanplane is green, so it is not the tint.
+- Passing all of it on B's copies (TOTK_COOP_AUTOBUILT=1 with TOTK_COOP_TEST_ABFLAG=1 and TOTK_COOP_TEST_ABARGS=1, in
+  coop_game.c): B's copies are not green (game screenshots at 38-40 s, B against A at 36 s).
+- A tick trace of an autobuilt fan through the build's confirm (TOTK_COOP_TEST_ABTRACE=SpObj_WindGenerator_A_01,29.9):
+  at 30.02 s words in components 14, 57, 75, 80 and 83 go 0.6 -> 1.0 together, a flag word 0x11249 -> 0x10009: the
+  preview's see-through look going solid. Nothing there stays green-only. A dump of all components at 38 s in both games
+  (TOTK_COOP_TEST_COMPDUMP=38[,<comp>...], with each component's resource name, compname) is mostly pointers; the
+  names are the same on both sides (ModelInfo twice, ELink, XLink, ...), and component slots 96, 107, 111, 116, 133,
+  144, 194 and 197 were filled on A's fan and empty on B's copy in one run. Next: what those slots are (their vtables
+  main+0x3675850, 0x3677088, 0x3677508, 0x3678550, 0x367c398, 0x367d4d0), and the model's material parameters, which
+  no dump here reaches.
 - A PlayerPuppet cannot take a steering stick: it has no Player component (make_puppet_pack.py), and the Link takes
   the stick by its A button in its own state machine, not by a call. In the stick pair (autobuild_stick_3rd.txt,
   `TOTK_COOP_TEST_ABSTICK=50,1`, game B idle) A's stand-in in B stands 0.7 m behind the copy stick, where A's Link
