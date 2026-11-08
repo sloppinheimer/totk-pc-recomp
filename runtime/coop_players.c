@@ -3662,6 +3662,27 @@ static int ride_place(const Slot *s, float out[3]) {
 // with a name: COOP_OBJ_KEYED | its key from where it is (coop_world.c coop_actor_world_key: the key every game gives a
 // resting placed object), owner this player. 0 for none.
 // Run on the co-op tick only (the tables are the tick's).
+// For coop_bonds.c (on the co-op tick): the objects this game sends (made here, or placed ones it moves) whose actor is
+// still that object; whether an actor is a copy of another player's object; and a copy made again (deleted here and
+// wanted anew, as a copy far from every player is), which parts it from what this game bonded it to.
+int coop_own_sent_objects(uint64_t *out, int max) {
+    int n = 0;
+    for (int e = 0; e < PROPS_N && n < max; e++)
+        if (props[e].actor && (props[e].made || props[e].touched) && actor_is(props[e].actor, props[e].name)) out[n++] = props[e].actor;
+    return n;
+}
+int coop_is_copy(uint64_t a) {
+    Slot *cs;
+    int ck;
+    return copy_of(a, &cs, &ck);
+}
+void coop_copy_remake(Cpu *c, uint64_t a) {
+    Slot *s;
+    int k;
+    if (!copy_of(a, &s, &k)) return;
+    if (copy_alive(s, k)) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, a, COOP_DELETE_REASON, 0, 0), set_driven(a);
+    s->mir[k].state = 1, s->mir[k].actor = 0, s->mir[k].ticks = 0;
+}
 int coop_obj_ident(uint64_t a, int *owner, uint32_t *id) {
     if (!a) return 0;
     for (int e = 0; e < PROPS_N; e++)

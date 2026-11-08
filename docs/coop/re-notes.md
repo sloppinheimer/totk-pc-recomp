@@ -792,7 +792,7 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   that same path, or finding what that record changes in the model at load, is the next step: hook main+0x6898dc
   to log the record during a build.
 
-## Autobuild copies (open, 2026-11-08)
+## Autobuild copies (one unit: done; green: open; 2026-11-08)
 the tester: an autobuilt contraption with three fans turns all its fans on at one hit in the builder's game, one fan per
 hit in the other game; the copies are not green. Pair test: tools/coop/autobuild_3rd.txt in game A (the 100% save
 autobuilds the Fanplane, the first schematic: a wing, three fans; Autobuild is the wheel's down-right slot) with
@@ -827,9 +827,35 @@ three fans go on (on, energy 10) 0.4 s after the hit; in B only the copy fan the
   AutoBuilderBuildStateRealColorR/G/B and AutoBuilderRealStateAplha (an AutoBuilder parameter read by main+0x1d398e4,
   R at +0x44), the reader of which was not found.
 - The schematic is a CombinedActorInfo blueprint (Game/BluePrint/CombinedActorInfo/%s.cai, loaded by the Autobuild
-  screen, main+0x2138ab4, into the object at [main+0x3a62ef0]). Next, one of: find what turns a loaded blueprint into
-  devices and a group (the build step after the screen) and run it in the other game for the copies; or find how the
-  group is taken from its pool and filled (its members at +0x78), and fill one for the copies.
+  screen, main+0x2138ab4, into the object at [main+0x3a62ef0]).
+- Where the group comes from: a connection graph ([main+...] object at 0x1b98f1000 run after run, vtable
+  main+0x392cae0), updated each frame in a job (main+0x181e40): its pending edges (+0xe8 list) join bodies' nodes,
+  each connected set gets a pooled set object (vtable main+0x392c5e8), whose holder's group (main+0xc16144 ->
+  main+0xc165c4 -> main+0xc16b94 fills the members, main+0x14f334 their links) is handed to every member's component
+  by main+0x1d93978. An edge is added by main+0x18ba00 (graph, edge, node A, node B), from requests in a ring the job
+  runs (main+0x185210 -> main+0x185770). The autobuild's edges (class main+0x392c2a0, made by main+0xa2cc20 from a
+  description: +0x10 and +0x18 the two bodies, two pivot frames) come from main+0x1916830 (the bond maker), called
+  by main+0x1c05b84 (component, body index, other body, world matrix, other's world matrix, world pivot) in an actor
+  update (lr chain main+0x420da8 <- 0x43006c <- 0x4702cc). main+0x1c05a98 is its plain form: it takes the pivot from
+  the two bodies itself (main+0x299daec, as doScotch does). Write watches (TOTK_COOP_TEST_ABWATCH) and hooks found
+  each step; addresses of the pooled objects were the same in every run.
+- Why Ultrahand glue made by our call gives no group: doScotch makes an edge too (main+0x5fa1a4 / main+0x5f9dd8,
+  class main+0x392c4c0), but in game A its two bodies were joined and still no group came, and on a copy its body
+  indices stayed -1: a body whose +0x68 has bit 24 set is left out of any edge (main+0xa2d39c, main+0x5f9dd8). Every
+  copy's body has it set (0x104009400; the originals' 0x100009400); what sets it was not found (writers of the word:
+  main+0x25a450, 0x182eb0, 0x188500, 0xa0faac, 0xa11af0).
+- The fix (coop_bonds.c): the owner sends the groups its own objects form; the other game clears bit 24 on its
+  copies' bodies and bonds each to the group's first copy with main+0x1c05a98. Pair test (autobuild_3rd.txt in A,
+  autobuild_b_3rd.txt in B, `TOTK_COOP_TEST_ABLOG=1 TOTK_COOP_TEST_ABHIT=36 TOTK_COOP_TEST_ABHIT_B=46`): the copies
+  join one group in B; A's hit turns all three fans on in A and, through the proxy's swing, all three copies in B;
+  B's hit turns all of them off in both (B's copies first, then A's contraption through B's proxy in A). Not tested:
+  a contraption made by hand with Ultrahand, one taken apart (the copy is made again, untested), more than one
+  contraption, a contraption flown while the copies are bonded.
+- Green, still open: none of the label, the glue component's flags (+0x20 0x0080000000000200 set by hand) or the
+  shared group tints a copy. A dump of every component of an original fan and a copy (TOTK_COOP_TEST_ABDUMP) was not
+  a clean diff (the copy lacked nine of the original's components at the dump). The tint's parameters are
+  AutoBuilderBuildStateRealColorR/G/B (the reader of the param struct, main+0x1d398e4, puts R at +0x44); who applies
+  them to a model is not found.
 
 ## Proxy hair and clothes stay blown after a fan (open)
 the tester (2026-11-05): after a fan's wind hits the proxy, its hair and clothes keep flapping as if in wind, on that

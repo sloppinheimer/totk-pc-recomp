@@ -686,15 +686,20 @@ static void glue_test(Cpu *c, uint64_t me) {
         }
         uint64_t e = 0;
         int ok = make_bond(c, obj[0], obj[1], ha, hb, ma, mb, 0, &e);   // in_apply 0: captured as glue made here
-        rt_log("coop: test: glue: %s to %s: entry %llx, %s", names[0], names[1], (unsigned long long)e, ok ? "glued" : "not glued");
+        rt_log("coop: test: glue: %s to %s: entry %llx, %s; its constraint object (doScotch's [entry+0x560]) %llx", names[0], names[1],
+               (unsigned long long)e, ok ? "glued" : "not glued", (unsigned long long)(e ? coop_rd_ptr(e + 0x560) : 0));
         if (!ok) stage = 9;
     }
     {   // their glue components' group (+0x28: an autobuild's devices share one; coop_autobuild.c), 1 s and 4 s after
         static int said;
         if (stage == 3 && ((said == 0 && now > glued_at + 1) || (said == 1 && now > glued_at + 4))) {
             said++;
-            rt_log("coop: test: glue: %.0f s after: groups %llx %llx", now - glued_at, (unsigned long long)coop_rd_ptr(scotch_comp(obj[0]) + 0x28),
-                   (unsigned long long)coop_rd_ptr(scotch_comp(obj[1]) + 0x28));
+            uint32_t ha = body_handle(coop_rd_ptr(phys_ctl(obj[0]) + 0x150)), hb = body_handle(coop_rd_ptr(phys_ctl(obj[1]) + 0x150));
+            uint64_t e = find_entry(scotch_comp(obj[0]), ha, hb), edge = e ? coop_rd_ptr(e + 0x560) : 0, w[2] = {0, 0};
+            coop_rd(edge + 0xe8, &w[0], 8), coop_rd(edge + 0x28, &w[1], 8);
+            rt_log("coop: test: glue: %.0f s after: groups %llx %llx; the edge %llx: +0xe8 %llx, +0x28 %llx, +0x70 %llx", now - glued_at,
+                   (unsigned long long)coop_rd_ptr(scotch_comp(obj[0]) + 0x28), (unsigned long long)coop_rd_ptr(scotch_comp(obj[1]) + 0x28),
+                   (unsigned long long)edge, (unsigned long long)w[0], (unsigned long long)w[1], (unsigned long long)coop_rd_ptr(edge + 0x70));
         }
     }
     if (stage == 3 && now > glued_at + 20) {
@@ -722,6 +727,7 @@ static void glue_test(Cpu *c, uint64_t me) {
 
 // Two actors here glued as the glue test glues them (each body's frame at the middle point between the actors), not
 // captured as a bond of this game's (it is not sent). 1: glued. For coop_autobuild.c.
+uint64_t coop_glue_last_entry;   // the entry coop_glue_pair last made
 int coop_glue_pair(Cpu *c, uint64_t a, uint64_t b) {
     uint64_t ba = coop_rd_ptr(phys_ctl(a) + 0x150), bb = coop_rd_ptr(phys_ctl(b) + 0x150);
     uint32_t ha = body_handle(ba), hb = body_handle(bb);
@@ -740,7 +746,9 @@ int coop_glue_pair(Cpu *c, uint64_t a, uint64_t b) {
         }
     }
     in_apply = 1;
-    int ok = make_bond(c, a, b, ha, hb, ma, mb, 0, NULL);
+    uint64_t e = 0;
+    int ok = make_bond(c, a, b, ha, hb, ma, mb, 0, &e);
     in_apply = 0;
+    coop_glue_last_entry = e;
     return ok;
 }

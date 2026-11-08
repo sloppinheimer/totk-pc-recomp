@@ -753,6 +753,12 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
 - **Riding** another player's contraption (protocol 12): this Link is carried by the object it stands on; the copy
   is moved by physics speed so it holds the Link up; the other games put the rider on their one of the object. Ride
   test at 5 m/s: on for 50 m on both screens. Not tested with a real glider flown in play, turning, or two riders.
+- **Contraptions** (2026-11-08, coop_bonds.c): the devices of one contraption (an autobuild's) share a group in their
+  builder's game, so one hit turns on every fan; the other games' copies had none (one hit, one copy fan). The owner
+  sends its objects' groups ("CB" packets, once a second); the others bond their copies with the game's bond call
+  (main+0x1c05a98), and the copies get a group of their own. Pair test: a hit in either game turns every fan of the
+  contraption on (or off) in both. Not tested: Ultrahand-made contraptions, taking one apart, two at once, flying one.
+  TOTK_COOP_BONDS=0 off. Re-notes "Autobuild copies".
 - **Zonai devices** on the other screens: copies of devices run their own logic, and a player's attack makes their
   proxy swing in the other games, so a hit turns the copy on there too (a fan in the pair test). Effects are the
   copies' own (not yet looked at on screen). Not covered: devices turned on other ways (arrows, a steering stick,
@@ -773,7 +779,7 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
 - **Open (the tester's list, 2026-11-05):** the proxy shows no paraglider (Parasail is left out of world objects: a copy
   of it took the other game down with the Ultrahand crash, since fixed); the Ultrahand beam and Recall effects;
   a bomb arrow's blast on the other screen; hair and clothes still blown after a fan (re-notes); an autobuilt
-  contraption's copies: not green, and not one unit (one hit turns on one copy fan; re-notes "Autobuild copies"); arrow copies cannot be picked up (frozen, their body kept away: a copy was taken from
+  contraption's copies are not green (re-notes "Autobuild copies"; they are one unit now, coop_bonds.c); arrow copies cannot be picked up (frozen, their body kept away: a copy was taken from
   the bow).
 - **The Master Sword's beam** (2026-11-06): the proxy makes none, so the owner's beam (PlayerBeam, a pooled actor,
   awake while it flies) is sent as a made object while it is within 6 m of its Link. Its copy is given the beam's
