@@ -818,21 +818,67 @@ static void compdump_test(int n) {
 // Autobuild ability's update (main+0x9a2c00) runs, called again at that time on the object it ran on: whether the
 // game's own build can be run from code (the other game's copies made as the game makes them)
 uint64_t coop_ab_obj;
+uint8_t coop_ab_cai[0xc + 0x15 * 0x118];
+// The ability update's preparation, replayed (main+0x9a2c00 before its call at main+0x9a70ec): the blueprint put back
+// as it was at the build (its part count, +9, reads 0 after it), the build's entry pool released (+0x4d10 counter
+// stepped, +0x4d10+0x220 cleared, the +0x4f48 used entries put back on the free list at +0x4f58), then per part an entry
+// from the pool at +0x1b0 (main+0x1d3cfc8) with the record's +0x98 and +0xd8, its +0x90 and +0x94, the record's +0xd7
+// and +0x117 cleared; then main+0x1d3b470.
 static void rebuild_test(Cpu *c) {
     static double at = -1;
     if (at < 0) { const char *e = cfg_get("TOTK_COOP_TEST_REBUILD"); at = e ? atof(e) : 0; }
     if (at <= 0 || frame_step_world_us() / 1e6 < at) return;
     at = 0;
-    if (!coop_ab_obj) { rt_log("coop: test: rebuild: no build's object kept"); return; }
-    uint64_t cnt = 0;
-    coop_rd(coop_ab_obj + 0x3c50, &cnt, 8);
-    uint8_t hd[16] = {0};
-    coop_rd(cnt, hd, 16);
-    rt_log("coop: test: rebuild: main+0x1d3b470 on %llx ([+0x3c50] %llx: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x)",
-           (unsigned long long)coop_ab_obj, (unsigned long long)cnt, hd[0], hd[1], hd[2], hd[3], hd[4], hd[5], hd[6], hd[7], hd[8], hd[9], hd[10], hd[11]);
-    const char *nb = cfg_get("TOTK_COOP_TEST_REBUILDN");   // =<n>: byte +9 (main+0x1d3b470 builds only when it is not 0) set so first
-    if (cnt && nb) ST8(cnt + 9, (uint8_t)atoi(nb)), rt_log("coop: test: rebuild: its +9 set to %s", nb);
-    coop_guest_call(c, MOD_MAIN_BASE + 0x1d3b470, coop_ab_obj, 0, 0, 0);
+    uint64_t o = coop_ab_obj, cai = o ? coop_rd_ptr(o + 0x3c50) : 0;
+    if (!cai || !coop_ab_cai[9]) { rt_log("coop: test: rebuild: no build kept (object %llx)", (unsigned long long)o); return; }
+    int n = coop_ab_cai[9];
+    memcpy((void *)(uintptr_t)cai, coop_ab_cai, 0xc + (size_t)n * 0x118);
+    {   // TOTK_COOP_TEST_REBUILDDX=<m>: each float triplet in the records within 15 m of this Link moved <m> along x (the
+        // parts' places, wherever the record keeps them), so the second build stands beside the first
+        const char *dxs = cfg_get("TOTK_COOP_TEST_REBUILDDX");
+        uint64_t me = coop_player_actor();
+        float lp[3];
+        int moved = 0;
+        if (dxs && me && coop_rd(me + COOP_ACTOR_POS, lp, 12))
+            for (int w = 0; w + 12 <= 0x5000; w += 4) {   // (the records keep places relative to the build: its object then)
+                uint64_t fa = o + (uint64_t)w;
+                if (fa >= cai && fa < cai + 0xc + (uint64_t)n * 0x118) continue;
+                float f[3];
+                if (!coop_rd(fa, f, 12) || !(fabsf(f[0] - lp[0]) < 15 && fabsf(f[1] - lp[1]) < 15 && fabsf(f[2] - lp[2]) < 15)) continue;
+                rt_log("coop: test: rebuild: the build's object +%#x: %.2f %.2f %.2f moved", w, f[0], f[1], f[2]);
+                f[0] += (float)atof(dxs), moved++;
+                memcpy((void *)(uintptr_t)fa, f, 4);
+                w += 8;
+            }
+        if (dxs) rt_log("coop: test: rebuild: %d places moved by %s m", moved, dxs);
+    }
+    uint64_t pc = o + 0x4d10, pu = o + 0x4f48;
+    uint32_t ctr = LD32(pc), used = LD32(pu);
+    ST64(pc + 0x220, 0);
+    ctr++;
+    ST32(pc, ctr);
+    if ((int32_t)used >= 1) {
+        uint64_t head = LD64(o + 0x4f58);
+        for (uint32_t k = 0; k < used; k++) {
+            uint64_t ent = LD64(LD64(o + 0x4f50) + 8 * (uint64_t)k);
+            ST64(ent, head);
+            ST64(o + 0x4f58, ent);
+            head = ent;
+        }
+    }
+    ST32(pu, 0);
+    if (ctr == 0x7fffffff) ST32(pc, 0);
+    int got = 0;
+    for (int k = 0; k < n; k++) {
+        uint64_t e = coop_guest_call(c, MOD_MAIN_BASE + 0x1d3cfc8, o + 0x1b0, 0, 0, 0);
+        if (!e) continue;
+        uint64_t r = cai + 0xc + (uint64_t)k * 0x118;
+        ST8(r + 0xd7, 0), ST64(e, r + 0x98), ST8(r + 0x117, 0), ST64(e + 8, r + 0xd8);
+        ST32(e + 0x10, LD32(r + 0x90)), ST32(e + 0x14, LD32(r + 0x94));
+        got++;
+    }
+    rt_log("coop: test: rebuild: blueprint put back (%d parts), %d pool entries; main+0x1d3b470 on %llx", n, got, (unsigned long long)o);
+    coop_guest_call(c, MOD_MAIN_BASE + 0x1d3b470, o, 0, 0, 0);
     rt_log("coop: test: rebuild: returned");
 }
 
