@@ -3442,6 +3442,8 @@ static void peer_tick(Cpu *c, uint64_t me) {
     hit_watch_test(me);
     link_hit_check(me);
     void coop_glue_tick(Cpu *c, uint64_t me);   // coop_glue.c: Ultrahand glue made here sent, the others' made again
+    void coop_autobuild_tick(Cpu *c, uint64_t me);   // coop_autobuild.c
+    coop_autobuild_tick(c, me);
     coop_glue_tick(c, me);
     int my_id = coop_net_id();
     // Hits from the others on the enemies this game runs: the damage taken from this game's one.

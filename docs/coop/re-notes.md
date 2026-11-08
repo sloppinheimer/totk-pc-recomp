@@ -792,6 +792,45 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   that same path, or finding what that record changes in the model at load, is the next step: hook main+0x6898dc
   to log the record during a build.
 
+## Autobuild copies (open, 2026-11-08)
+the tester: an autobuilt contraption with three fans turns all its fans on at one hit in the builder's game, one fan per
+hit in the other game; the copies are not green. Pair test: tools/coop/autobuild_3rd.txt in game A (the 100% save
+autobuilds the Fanplane, the first schematic: a wing, three fans; Autobuild is the wheel's down-right slot) with
+`TOTK_COOP_TEST_ABLOG=1 TOTK_COOP_TEST_ABHIT=36` (runtime/coop_autobuild.c: A's Link is put by a fan at 36 s and the
+script's second Y hits it; every live device's on state is logged in both games). It reproduces the report: in A all
+three fans go on (on, energy 10) 0.4 s after the hit; in B only the copy fan the proxy's swing reaches.
+- Not Ultrahand glue: the build calls none of createScotch, the glue step or doScotch, and every device's scotch list
+  is empty. Ultrahand glue does not reach the copies either way: there is no bond to send. Glue made in B between the
+  copies (coop_glue.c coop_glue_pair, `TOTK_COOP_TEST_ABGLUE=1`) holds, and changes nothing; glue made by our call on
+  two new devices in one game (TOTK_COOP_TEST_GLUE) gives them no group either. Confidence: sure (logged).
+- What makes the devices one unit: each device's SpecialPowerReceiverComponent ([[actor+0x228]+0x480]) +0x28 points
+  to one group object shared by the whole contraption (vtable main+0x361f1b0; ActorLinks to every device from +0x78,
+  0x18 apart), and its +0x20 flags read 0x0080000000000202 (B's copies: +0x28 0, +0x20 2). The group pointer is
+  written by main+0x1d93978, a component virtual (x0+8 the actor; x2 a pooled physics object, vtable main+0x392c5e8,
+  made by main+0x7a8784; [x2+0x90]+8 the group), reached from a queued actor message (lr main+0x2999d34, the job
+  chain main+0x29a3060 <- 0xacf8dc) when the build is confirmed (A at 30 s). The group, the physics object and the
+  holder sit at the same addresses run after run: they are pooled, so their constructors do not run at a build.
+  Confidence: sure for the fields and the writer (write watch, hook); the group's class is a guess.
+- The fans turned on by the hit's neighbour: their on bool (coop_players.c dev_on_flag) is set by each fan's own
+  behaviour graph in its update (setter main+0x9fb82c from main+0x9fa920 <- 0x9f91d8 <- 0x1066bb8 <- 0x42e228 <-
+  0x41fc08 <- 0x2f175c <- 0x2f152c <- 0x29a3060), the same path as a hit fan's: each reads the contraption's state,
+  and a copy with no group has none. Earlier tests: writing the bool or the energy words by hand starts nothing.
+- Pooled CombinedActorIntegrator actors: idle ones wait at the origin; the active one follows the contraption (A's
+  at the Fanplane). A sent its active one as a moved object, and B took one of its own idle ones for it by key and
+  moved it there. Now left out of the world objects (coop_players.c prop_skip). Its first 0x1000 bytes hold no pointer
+  to the devices or the group.
+- The autobuild type: requestCreateActor (main+0x599670) copies the create argument's +0x80 into the create
+  information's +0x78 (its locals: the argument's +0x68/+0x70/+0x78/+0x80 go to information +0x60..+0x78). The
+  originals carry main+0x3a4e008 there, a static object whose vtable (main+0x361d910) answers the constructor's type
+  check: not a record. coop_game.c coop_request_create_autobuilt makes a copy so, and it is labelled like the original
+  (`TOTK_COOP_AUTOBUILT=1`; off by default). Still not green: the tint is not the label. Strings for the tint:
+  AutoBuilderBuildStateRealColorR/G/B and AutoBuilderRealStateAplha (an AutoBuilder parameter read by main+0x1d398e4,
+  R at +0x44), the reader of which was not found.
+- The schematic is a CombinedActorInfo blueprint (Game/BluePrint/CombinedActorInfo/%s.cai, loaded by the Autobuild
+  screen, main+0x2138ab4, into the object at [main+0x3a62ef0]). Next, one of: find what turns a loaded blueprint into
+  devices and a group (the build step after the screen) and run it in the other game for the copies; or find how the
+  group is taken from its pool and filled (its members at +0x78), and fill one for the copies.
+
 ## Proxy hair and clothes stay blown after a fan (open)
 the tester (2026-11-05): after a fan's wind hits the proxy, its hair and clothes keep flapping as if in wind, on that
 screen only, after the fan is off. Likely cause: the proxy runs none of its own update, and something in it sets the

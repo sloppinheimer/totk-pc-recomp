@@ -721,6 +721,11 @@ int coop_hook(Cpu *c, uint64_t addr) {
     if (addr == MOD_MAIN_BASE + 0xa72b00) { void coop_gamedata_calc(uint64_t gmd, uint64_t me); coop_gamedata_calc(c->x[0], player_actor_cached); return 0; }
     if (addr == MOD_MAIN_BASE + 0xc6a9f0) { int coop_gamedata_event_bool(Cpu *c, uint64_t addr); return coop_gamedata_event_bool(c, addr); }
     // Ultrahand glue (coop_glue.c): doScotch main+0x1d66e34 (a bond made: captured), a bond's break main+0x1c0bb54
+    // Autobuild research (coop_autobuild.c, TOTK_COOP_TEST_ABLOG): the autobuild device class's constructor
+    // main+0x6898dc, createScotch main+0x1c0b94c, the glue step main+0x1c0ba8c and its end main+0x1d61a6c, and the
+    // component call that gives a device its contraption's group, main+0x1d93978.
+    if (addr == MOD_MAIN_BASE + 0x6898dc || addr == MOD_MAIN_BASE + 0x1c0b94c || addr == MOD_MAIN_BASE + 0x1d61a6c || addr == MOD_MAIN_BASE + 0x1c0ba8c ||
+        addr == MOD_MAIN_BASE + 0x1d93978) { int coop_autobuild_hook(Cpu *c, uint64_t addr); return coop_autobuild_hook(c, addr); }
     if (addr == MOD_MAIN_BASE + 0x1d66e34 || addr == MOD_MAIN_BASE + 0x1c0bb54) { int coop_glue_hook(Cpu *c, uint64_t addr); return coop_glue_hook(c, addr); }
     // rotating ground (coop_world.c): the Rotate logic and AI nodes' updates and enters, their turn helper, the turn
     // set, and the blackboard byte read the logic node takes its switch from

@@ -772,8 +772,8 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
   a dropped weapon sent by key in a scripted test (dropping needs the menu), two players picking up one item.
 - **Open (the tester's list, 2026-11-05):** the proxy shows no paraglider (Parasail is left out of world objects: a copy
   of it took the other game down with the Ultrahand crash, since fixed); the Ultrahand beam and Recall effects;
-  a bomb arrow's blast on the other screen; hair and clothes still blown after a fan (re-notes); the autobuild
-  green tint (re-notes); arrow copies cannot be picked up (frozen, their body kept away: a copy was taken from
+  a bomb arrow's blast on the other screen; hair and clothes still blown after a fan (re-notes); an autobuilt
+  contraption's copies: not green, and not one unit (one hit turns on one copy fan; re-notes "Autobuild copies"); arrow copies cannot be picked up (frozen, their body kept away: a copy was taken from
   the bow).
 - **The Master Sword's beam** (2026-11-06): the proxy makes none, so the owner's beam (PlayerBeam, a pooled actor,
   awake while it flies) is sent as a made object while it is within 6 m of its Link. Its copy is given the beam's

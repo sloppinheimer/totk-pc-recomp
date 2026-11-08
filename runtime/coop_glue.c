@@ -218,10 +218,19 @@ static int theirs_pair(uint64_t x, uint64_t y) {   // under glue_lock: a bond of
 }
 
 static void capture(Cpu *c) {
-    if (in_apply || !glue_on() || !coop_world_role()) return;
+    if (in_apply || !glue_on()) return;
     uint64_t entry = c->x[0] - 0x558;
     uint64_t a = link_actor(entry + 0x420), b = link_actor(entry + 0x488);
-    if (!a || !b) return;
+    static int ablog = -1;   // TOTK_COOP_TEST_ABLOG (coop_autobuild.c): every doScotch entry
+    if (ablog < 0) ablog = cfg_get("TOTK_COOP_TEST_ABLOG") != NULL;
+    if (ablog) {
+        static _Atomic int said;
+        char n1[48], n2[48];
+        if (atomic_fetch_add(&said, 1) < 60)
+            rt_log("coop: ablog: doScotch %s %llx to %s %llx from main+%llx", coop_actor_name(a, n1, sizeof n1), (unsigned long long)a,
+                   coop_actor_name(b, n2, sizeof n2), (unsigned long long)b, (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
+    }
+    if (!a || !b || !coop_world_role()) return;
     plat_mutex_lock(&glue_lock);
     int remote = theirs_pair(a, b) >= 0;   // this game remaking another's bond itself is not a bond of its own
     if (!remote && pend_n >= PEND_N) {
@@ -680,6 +689,14 @@ static void glue_test(Cpu *c, uint64_t me) {
         rt_log("coop: test: glue: %s to %s: entry %llx, %s", names[0], names[1], (unsigned long long)e, ok ? "glued" : "not glued");
         if (!ok) stage = 9;
     }
+    {   // their glue components' group (+0x28: an autobuild's devices share one; coop_autobuild.c), 1 s and 4 s after
+        static int said;
+        if (stage == 3 && ((said == 0 && now > glued_at + 1) || (said == 1 && now > glued_at + 4))) {
+            said++;
+            rt_log("coop: test: glue: %.0f s after: groups %llx %llx", now - glued_at, (unsigned long long)coop_rd_ptr(scotch_comp(obj[0]) + 0x28),
+                   (unsigned long long)coop_rd_ptr(scotch_comp(obj[1]) + 0x28));
+        }
+    }
     if (stage == 3 && now > glued_at + 20) {
         stage = 4;
         uint64_t comp = scotch_comp(obj[0]);
@@ -701,4 +718,29 @@ static void glue_test(Cpu *c, uint64_t me) {
         if (e) coop_rd(e + 0x550, &st, 4);
         rt_log("coop: test: glue: 2 s after removeScotch: entry %s, state %u", e ? "still listed" : "gone", st);
     }
+}
+
+// Two actors here glued as the glue test glues them (each body's frame at the middle point between the actors), not
+// captured as a bond of this game's (it is not sent). 1: glued. For coop_autobuild.c.
+int coop_glue_pair(Cpu *c, uint64_t a, uint64_t b) {
+    uint64_t ba = coop_rd_ptr(phys_ctl(a) + 0x150), bb = coop_rd_ptr(phys_ctl(b) + 0x150);
+    uint32_t ha = body_handle(ba), hb = body_handle(bb);
+    float pa[3], pb[3], ra[9], rb[9];
+    if (!scotch_comp(a) || !scotch_comp(b) || ha == ~0u || hb == ~0u || !coop_rd(a + COOP_ACTOR_POS, pa, 12) ||
+        !coop_rd(b + COOP_ACTOR_POS, pb, 12) || !coop_rd(a + COOP_ACTOR_ROT, ra, 36) || !coop_rd(b + COOP_ACTOR_ROT, rb, 36))
+        return 0;
+    float mid[3] = {(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2, (pa[2] + pb[2]) / 2}, ma[12], mb[12];
+    const float *rr[2] = {ra, rb}, *pp[2] = {pa, pb};
+    float *mm[2] = {ma, mb};
+    for (int k = 0; k < 2; k++) {
+        float d[3] = {mid[0] - pp[k][0], mid[1] - pp[k][1], mid[2] - pp[k][2]};
+        for (int row = 0; row < 3; row++) {
+            for (int j = 0; j < 3; j++) mm[k][row * 4 + j] = row == j;
+            mm[k][row * 4 + 3] = rr[k][0 * 3 + row] * d[0] + rr[k][1 * 3 + row] * d[1] + rr[k][2 * 3 + row] * d[2];
+        }
+    }
+    in_apply = 1;
+    int ok = make_bond(c, a, b, ha, hb, ma, mb, 0, NULL);
+    in_apply = 0;
+    return ok;
 }

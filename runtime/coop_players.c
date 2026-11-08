@@ -1197,6 +1197,15 @@ static int is_preview(uint64_t a) {
     if (!is_imaginary(a) || !coop_rd(a + 0x440, &f440, 4) || !coop_rd(a + 0x5d0, &p, 4)) return 0;
     return !(f440 & 0x10) && p == 0x7fc00000;
 }
+// TOTK_COOP_AUTOBUILT=1: a copy of an owner's autobuilt device is made as an autobuild makes it
+// (coop_request_create_autobuilt), so it carries the label too. Off by default: the label alone neither tints the copy
+// green nor joins the copies into one contraption (docs/coop/re-notes.md, "Autobuild copies"), and what else in the
+// game treats labelled devices differently is not known.
+static int autobuilt_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_AUTOBUILT"); on = e && *e == '1'; }
+    return on;
+}
 
 // Test (TOTK_COOP_TEST_ARMORPROBE=1): what holds this Link's worn armor after a save loads. Once before (12 s into
 // the world) and 3 s and 10 s after this Link moves more than 100 m in a tick (a load): the live armor and shield
@@ -1654,7 +1663,10 @@ static void arrow_copies(Cpu *c, Slot *s) {
             continue;
         }
         if (s->mir[k].state == 1 && coop_far_from_players(s->mir[k].pos)) continue;
-        if (s->mir[k].state == 1 && coop_request_create(c, s->mir[k].name, s->mir[k].pos, s->mir[k].rot, s->mir[k].handle))
+        // An owner's autobuilt device: made as an autobuild makes it with TOTK_COOP_AUTOBUILT=1 (autobuilt_on).
+        if (s->mir[k].state == 1 && ((s->mir[k].flags & COOP_OBJ_AUTOBUILT) && autobuilt_on()
+                                         ? coop_request_create_autobuilt(c, s->mir[k].name, s->mir[k].pos, s->mir[k].rot, s->mir[k].handle)
+                                         : coop_request_create(c, s->mir[k].name, s->mir[k].pos, s->mir[k].rot, s->mir[k].handle)))
             s->mir[k].state = 2;
         else if (s->mir[k].state == 2) {
             int st = coop_handle_status(s->mir[k].handle);
@@ -2056,7 +2068,11 @@ static int prop_skip(const char *nm) {
                                 // the Gloom Hands (MiasmaSwarm and its MiasmaTentacle hands): made in one game when its
                                 // Link came near, then sent as moved objects; the other game's copy of a MiasmaTentacle
                                 // crashed it at once (access violation in main+0x4f2894, a play session, 2026-11-07)
-                                "Miasma"};
+                                "Miasma",
+                                // the pooled helper actor the game gives each combined contraption (an autobuild's):
+                                // the idle ones wait at the origin, so the other game took one of its own idle ones for
+                                // it by key and moved it to the owner's build (autobuild_3rd.txt pair test, 2026-11-08)
+                                "CombinedActorIntegrator"};
     // (LightningStrike, a thunderstorm's strike, was left out here for a while; it is sent again, the one that hits
     // this Link, so the others see it struck: the tester's list, 2026-11-06. Its copy runs its own update, copy_place.)   // chests: each player's own
     for (size_t i = 0; i < sizeof pre / sizeof *pre; i++) if (!strncmp(nm, pre[i], strlen(pre[i]))) return 1;
@@ -2492,7 +2508,7 @@ static int report_props(uint64_t me, CoopObj *out, int max) {
         if (!coop_rd(props[e].actor + COOP_ACTOR_POS, o->pos, 12) || !coop_rd(props[e].actor + COOP_ACTOR_ROT, r, 36)) continue;
         o->id = id;
         coop_actor_name(props[e].actor, o->name, sizeof o->name);
-        o->flags = is_imaginary(props[e].actor) ? COOP_OBJ_AUTOBUILT : 0;   // not used here yet: copies are not green
+        o->flags = is_imaginary(props[e].actor) ? COOP_OBJ_AUTOBUILT : 0;   // (autobuilt_on)
         // The paraglider: sent in its Link's frame, so the other games hold it over the proxy as they show it (sent as
         // a world place it would trail the proxy, as a nocked arrow did).
         float lp[3], lr[9];
@@ -3466,12 +3482,21 @@ static void objs_receive(Cpu *c) {
             continue;
         }
         Slot *s = slot_for(SRC_NET, from);
-        if (!s) continue;
+        if (!s) {
+            static int said;
+            if (cfg_get("TOTK_COOP_TEST_ABLOG") && said++ < 5) rt_log("coop: ablog: objects from player %d, who has no slot here", from);
+            continue;
+        }
         for (int e = 0; e < h[0]; e++) {
             CoopObj o;
             memcpy(&o, pk + 4 + e * sizeof(CoopObj), sizeof o);
             if (!o.id) continue;
             o.name[sizeof o.name - 1] = 0;
+            {   // TOTK_COOP_TEST_ABLOG (coop_autobuild.c): the first objects heard of
+                static int ab = -1, said;
+                if (ab < 0) ab = cfg_get("TOTK_COOP_TEST_ABLOG") != NULL;
+                if (ab && said < 40 && o.name[0]) said++, rt_log("coop: ablog: from player %d: object %08x %s flags %x", from, o.id, o.name, o.flags);
+            }
             int j = 0, free = -1;
             for (; j < COOP_OBJS && s->objs_want[j].id != o.id; j++)
                 if (free < 0 && !s->objs_want[j].id) free = j;
