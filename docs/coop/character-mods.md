@@ -121,8 +121,8 @@ Continue (`tools/coop/to_title_3rd.txt`) did not make it again either: the same 
 only at 3.1 s. So nothing in a run makes the Player again or reads its files again, and its resources stay loaded as
 long as it exists.
 
-**Hiding this PC's Link behind a stand-in of its own character** (its model only) was not prototyped: no switch that
-hides the Player's model is known yet.
+**Hiding this PC's Link behind a stand-in of its own character**: no switch in the game that hides the Player's model
+was found (the tries below), but the renderer can leave its models out (This PC's character in place, below).
 
 - The actor's scale (+0x2e4, which shrinks a Zonai beam's copy) set to 0.02 every tick left the Player drawn at full size.
 - The scope (right stick press) hides Link. `TOTK_COOP_TEST_MODELDIFF=18,25` read the Player actor, the heap objects its
@@ -151,8 +151,74 @@ again: after Riju (slot JS01) → Link → Riju in one run (`TOTK_COOP_TEST_CHAR
 `PlayerPuppet_JS01` read no pack, model, animation set or texture, and showed Riju from what the game kept. A deleted
 stand-in's resources stay cached, so a slot refilled with another character's files would show the old one; each slot
 is used once a run, and switching back to a character already loaded costs nothing.
-Serving other files under those names (the live overlay) would therefore not show either. What could work instead is
-not tried: this PC's Link hidden, with a stand-in of its own character driven from its own state as the others' are.
+Serving other files under those names (the live overlay) would therefore not show either.
+
+### This PC's character in place (2026-11-08)
+
+The question: can this PC's own Link become another character while the game runs, with no restart and no save
+reload? **Yes, by the renderer**: it can tell the Player's models from everything else and leave them out, which the
+experiments below show; what is left to build is a stand-in of the new character in the Player's place. The other ways
+are ranked after it.
+
+**1. Leave the Player's models out in the renderer, draw a stand-in instead (tried; feasible).**
+
+- How a draw is named. The game makes a memory pool for each model file it loads, and the pool's storage is the
+  file's own page-aligned copy in memory: for every model pool logged the storage was the address of the file's
+  `FRES` header (`SystemModel.*`, `Terrain.*`, `Grass.*`, `Item_Rupee.*`, `Item_Parasail`, `Link.Link_RaulSkin`, ...).
+  The header's file name (at the offset in its word 0x10) names the pool, and a draw's index buffer lies in its
+  model's pool. `TOTK_TEST_DRAWSKIP=<name part>[,...]` (nvn_api_core.c, test_pool) marks the pools of the model files
+  whose names contain a part, and the replay skips every indexed draw whose index or first vertex buffer lies in one
+  (vk_exec_draw.c op_draw_idx). The skip applies in every pass, the shadow's included.
+- `TOTK_TEST_DRAWSKIP=Link_RaulSkin` (game A's Link was Riju, the Riju mod on; idle; shots at 14 and 20 s): the body
+  skin went (torso, arms, face); the hair (`Armor_999_Head`), the legs (`Armor_Default_Lower`) and the shield stayed,
+  and nothing else in the picture changed.
+- `TOTK_TEST_DRAWSKIP=Link_RaulSkin,Armor_`: seven pools marked (`Link.Link_RaulSkin`, `_RightHand`,
+  `Armor_999_Head`, `Armor_Default_RaulSkin_Upper`, `Armor_Default_Lower`, `Armor_Default_Extra_00` and `_01`); the
+  whole Link went, only the shield (a weapon model) was left in the air.
+- Before the name was used: the body model file is opened on one thread and its pool made on another, among dozens of
+  others, so neither the thread nor the order tells which pool is the model's. Skipping every pool of 64 KiB or more
+  made after the open hid the head and torso; the pool sizes alone did not find it.
+- Why it is exact for the body: `Link.Link_RaulSkin` and `_RightHand` are drawn for the Player only, since the
+  stand-ins of Link are `PlayerPuppet_LnkV` with their own copy (`LnkV.*`) and their own bare pieces. The pieces this
+  PC's Link wears are not: an armor model is shared with every stand-in that wears the same armor and with that armor
+  on a stand or in a shop, and a weapon model with the same weapon lying in the world. A skip by name would hide them
+  all. The Player's own draws of a shared model need telling apart from the others (by the per-model-instance buffers a
+  draw binds, the skinning matrices for one; not tried), or this PC's Link wears only pieces of its own (bare copies
+  like the stand-ins', which leaves its armor unseen while it is another character).
+- Weapons can stay drawn: they hang on the Player's bones, which are where the stand-in's bones are if it copies the
+  Player's skeleton pose (the POSE packets already carry it for the other games).
+
+What it would cost to finish:
+
+- The pools named at creation (the test's code, kept to model pools), and a skip list the game thread sets: the body
+  and whatever this PC's Link wears. Small.
+- The Player's draws of shared armor told apart, or bare pieces only (above). The one open research question.
+- A stand-in of this PC's new character: the set loaded while the game runs (done, as for party members), the stand-in
+  made beside the Player and fed this PC's own state and pose every frame, with no network delay, by the code that
+  applies the other games'. Whether a stand-in collides with the Player is not checked.
+- Shown when the Player would be: the game hides Link at times (the scope; cutscenes may too, not checked) and no flag
+  for that was found, but the renderer sees whether the Player's body was drawn this frame even while it skips it, and can show or
+  skip the stand-in's pool to match, a frame late.
+- Back to Link: stop skipping and delete the stand-in. The other games already follow this PC's character key.
+- Nothing in the game's state changes (camera, input, save, equipment), so a mistake shows as a picture, not a crash.
+
+**2. Change the resource under the Player (not tried; partial at best).** The Player's model object was made for its
+model's shapes, materials and skeleton; another character's model has other counts, vertex layouts and sizes (Riju's
+`Link.Link_RaulSkin` is a 0x5cd28-byte BFRES with its mesh inside, Link's a 0x106b0-byte BFRES plus 0xeeac bytes of
+mesh data), so pointing the object at the stand-in's model needs the game's model setup mapped (Ghidra) and may still
+fault. Swapping buffers under the Player's draws in the renderer fails for the same reason: the draws' counts and
+formats are the old model's. Only textures could be swapped one for one, by name in the renderer's texture cache: that
+covers a retexture mod, not a new body. Large for the mesh, medium for textures only.
+
+**3. Make the Player again (not tried; the largest and riskiest).** No path in the game makes the Player again (save
+load and To Title Screen keep it, above). Deleting and creating it ourselves means finding everything that holds it,
+the camera, input, the HUD and the game data among them, none of it mapped here.
+
+**4. A reload in the game (none found).** The game keeps a resource loaded under its name, and an actor made again
+under a name it loaded before reads none of its files (Slots are not freed, above); the Player never lets go of its
+own. TKMM merges mods into one folder before the game starts, which is the restart this avoids.
+
+Ranked: 1, then 2 for retexture mods only, then 4 and 3. 1 is feasible; the shared armor is its one open question.
 
 ### What does not work, and why
 
@@ -212,6 +278,14 @@ already on disk, game B on a mods folder with only Link's set:
 | B again (restart) | the fetched mod off ("a character mod fetched for another player"); B's Link stays Link; A's stand-in is `PlayerPuppet_WWN4` (Riju's shape) |
 | B with the lookup of `gamebanana.com/mods/627813`, yes, the local zip | the same fetch, the mod off |
 | B with the order naming the fetched folder (as the tab's switch writes it) | B's Link is Riju; with A Riju too, each stand-in wears its owner's armor with Riju's own textures |
+
+This PC's Link left out of the picture (the in-place change above):
+
+```
+powershell -ExecutionPolicy Bypass -File tools\coop\run_pair.ps1 -Seconds 45 -ScriptA tools\coop\idle.txt -Port 41993 -BDir build\v143d -ShotsA w14-20:6 -ShotsDir build\shots-drawskip -EnvA "TOTK_TEST_DRAWSKIP=Link_RaulSkin,Armor_"
+```
+
+The log lists the pools marked (`nvn: test: drawskip: pool ... in model file ...: marked`).
 
 Not tested: a real download from GameBanana (each needs the tester's yes), a 7z or rar archive, the tab's switch pressed in
 the menu (the run above sets what it writes), three or more players.
