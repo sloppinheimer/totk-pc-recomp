@@ -689,7 +689,14 @@ static void create_dump(Cpu *c) {
         char path[80] = "";
         rd(c->x[19] + 0x14, path, 79);
         extern uint64_t coop_ab_obj;   // (coop_autobuild.c: TOTK_COOP_TEST_REBUILD calls main+0x1d3b470 on it again)
-        if (c->x[30] - MOD_MAIN_BASE == 0x1d3bb98 && !coop_ab_obj) coop_ab_obj = c->x[19], rt_log("coop: test: createdump: the build's object %llx, path '%s'", (unsigned long long)c->x[19], path);
+        extern uint8_t coop_ab_cai[0xc + 0x15 * 0x118];   // the blueprint as the build had it (coop_autobuild.c rebuild_test)
+        if (c->x[30] - MOD_MAIN_BASE == 0x1d3bb98 && !coop_ab_obj) {
+            coop_ab_obj = c->x[19];
+            uint64_t cai = rd_ptr(c->x[19] + 0x3c50);
+            int ok = cai && rd(cai, coop_ab_cai, sizeof coop_ab_cai);
+            rt_log("coop: test: createdump: the build's object %llx, path '%s'; its blueprint %llx kept: %d (parts %u, +0xa %u)",
+                   (unsigned long long)c->x[19], path, (unsigned long long)cai, ok, coop_ab_cai[9], coop_ab_cai[10]);
+        }
         char s1920[48] = "";
         rd(rd_ptr(c->x[26] + 0x1920), s1920, 47);
         rt_log("coop: test: createdump: chain%s; x19 %llx {%llx %llx %llx %llx} x26 %llx {%llx %llx %llx %llx} [x26+0x1920] '%s' x27 %llx {%llx %llx %llx %llx}",

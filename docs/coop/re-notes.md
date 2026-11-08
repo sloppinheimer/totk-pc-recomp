@@ -1092,8 +1092,22 @@ the tester's idea: the other game builds the owner's blueprint itself, so the pa
   as can be seen), what is tied to the Link (obj is the ability's), mapping the made parts to the owner's numbers, and
   whether the parts made this way are green at all in the other game (the tint may be put on after main+0x1d3b470
   returns: the same create arguments on copies give none). Ghidra was down; this is read from the generated C.
-- Verdict so far: plausible, not shown. The next step is to drive main+0x9a2c00's confirm state (or replay its
-  per-part preparation before main+0x1d3b470) in game A a second time, and only then in game B.
+- The preparation replayed (coop_autobuild.c rebuild_test, TOTK_COOP_TEST_REBUILD=40 with TOTK_COOP_TEST_CREATEDUMP=1
+  and TOTK_COOP_TEST_ABLOG=1, tools/coop/autobuild_noy_3rd.txt): the ability update, before its call at main+0x9a70ec,
+  checks the blueprint's +9 (parts) and +0xa (both 1..0x15), releases the build's entry pool (obj+0x4d10 counter
+  stepped and its +0x220 cleared, the obj+0x4f48 used entries put back on the free list at obj+0x4f58), takes one entry
+  per part from the pool at obj+0x1b0 (main+0x1d3cfc8) and fills it with the record's +0x98 and +0xd8 (addresses), its
+  +0x90 and +0x94, clearing the record's +0xd7 and +0x117. With the blueprint as it was at the build put back (kept at
+  the first part's create: +9 reads 0 afterwards) and that done from our tick, main+0x1d3b470 made all four parts again
+  (a wing and three fans, ids 0x402..0x405, with the autobuild's tag and callback), 10 s after the first build.
+- But they are not a finished build: they stand where the first build was first put (y 1516.7, 1 to 2 m above where it
+  settled), do not fall, and nothing new is drawn (game screenshots before and after are the same). So the parts come
+  out as the build's first stage, and the rest (the see-through preview turning solid, physics, the group and the
+  green look) is done by main+0x9a2c00's later states, which this does not run. Their place is not in the records
+  (relative) nor as three floats in obj (TOTK_COOP_TEST_REBUILDDX found none): probably a matrix, not found yet.
+- Verdict: a second build from code is partly driven (the parts are made); finishing it needs main+0x9a2c00's states
+  after the call (its confirm path), not found yet. Whether the finished parts would be green in the other game, the
+  cost and the Link ties are still open. Not tried in B.
 
 ## The green tint of autobuilt parts (open, 2026-11-08 afternoon)
 - What the autobuild passes when it makes a part (TOTK_COOP_TEST_CREATEDUMP=1, coop_spawn.c create_dump on
