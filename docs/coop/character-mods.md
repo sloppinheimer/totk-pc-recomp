@@ -220,6 +220,9 @@ own. TKMM merges mods into one folder before the game starts, which is the resta
 
 Ranked: 1, then 2 for retexture mods only, then 4 and 3. 1 is feasible; the shared armor is its one open question.
 
+**Dropped by choice (2026-11-08):** a stand-in played as this PC's own character was judged not worth it, so the
+renderer route is not built and this PC's own character keeps the restart. The `TOTK_TEST_DRAWSKIP` hook stays.
+
 ### What does not work, and why
 
 - **Armor fitted to another character** is not shown. A stand-in of another character than this game's wears its bare
