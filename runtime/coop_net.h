@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define COOP_MAX_PLAYERS 8
-#define COOP_NET_VERSION 24   // packet header version: games and relays of another version ignore each other
+#define COOP_NET_VERSION 25   // packet header version: games and relays of another version ignore each other
 
 // One player's state, sent about 30 times a second. Positions and directions are world space; the sticks are as the
 // player's own camera saw them, with the camera's horizontal forward and right so a receiver can turn them into its
@@ -67,9 +67,12 @@ typedef struct {
     uint16_t blur_serial;             // graph has a WeaponBlur event on, its hand (game::WeaponBlurType), a number that
     float blur_frame, blur_start;     // changes for each new event, the event's frame and first frame, and its
     float blur_param;                 // parameter (event +0x10, +0xc); played on the stand-in's SwordBlur update
+    uint8_t hold_bone[3], hold_pad[5];   // weapon, bow, shield in hand (flags bits 8..10): the body bone holding it
+    float hold[3][12];                // (0xff none) and its model's matrix in that bone's frame (3x4 rows), put on
+                                      // the stand-in's same bone (coop_players.c, hold_send / hold_place)
 } NetState;
 #define COOP_RIDE_MOUNT 0xfe   // NetState.ride_owner for a horse (no player has this id; an older game rides nothing)
-_Static_assert(sizeof(NetState) == 488 + 16 * COOP_ANIM_SLOTS + 88 * COOP_ANIM_MASKS, "NetState wire size");
+_Static_assert(sizeof(NetState) == 640 + 16 * COOP_ANIM_SLOTS + 88 * COOP_ANIM_MASKS, "NetState wire size");
 #define COOP_GEAR_SLOTS 6
 extern const int coop_gear_slot[COOP_GEAR_SLOTS];   // the EquipmentUser slots they are (coop_players.c)
 
