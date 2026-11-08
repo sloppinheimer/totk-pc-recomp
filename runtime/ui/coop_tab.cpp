@@ -82,6 +82,19 @@ static void keyboard(float scale) {
         if (l) kb_buf[l - 1] = 0;
     }
     ImGui::SameLine();
+    // Paste: the clipboard's text added at the end, spaces and line breaks around it left out (a GameBanana link
+    // copied in a browser; the keys above have no '/', the tester, 2026-11-08)
+    if (ImGui::Button(menu_text(UI_MENU_COOP_KEY_PASTE), ImVec2(wide, kh))) {
+        const char *clip = ImGui::GetClipboardText();
+        if (clip) {
+            while (*clip == ' ' || *clip == '\t' || *clip == '\r' || *clip == '\n') clip++;
+            size_t l = strlen(kb_buf), cn = strlen(clip);
+            while (cn && (clip[cn - 1] == ' ' || clip[cn - 1] == '\t' || clip[cn - 1] == '\r' || clip[cn - 1] == '\n')) cn--;
+            if (cn > kb_cap - 1 - l) cn = kb_cap - 1 - l;
+            memcpy(kb_buf + l, clip, cn), kb_buf[l + cn] = 0;
+        }
+    }
+    ImGui::SameLine();
     bool done = ImGui::Button(menu_text(UI_MENU_COOP_KEY_DONE), ImVec2(wide, kh));
     if (done || ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
         save_fields();

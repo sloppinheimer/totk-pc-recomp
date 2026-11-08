@@ -36,6 +36,10 @@ static ImGuiKey key_of(WPARAM vk) {
     case VK_CONTROL: return ImGuiKey_LeftCtrl;
     case 'Q': return ImGuiKey_Q;   // previous tab
     case 'E': return ImGuiKey_E;   // next tab
+    case 'A': return ImGuiKey_A;   // Ctrl+A, C, V, X in the text boxes (a GameBanana link pasted into the Co-op tab)
+    case 'C': return ImGuiKey_C;
+    case 'V': return ImGuiKey_V;
+    case 'X': return ImGuiKey_X;
     default: return ImGuiKey_None;
     }
 }
@@ -61,7 +65,14 @@ extern "C" int menu_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res)
     case WM_KEYUP:
     case WM_SYSKEYUP:
         if (!menu_is_open()) return 0;
-        if (ImGuiKey k = key_of(w)) menu_event_key(k, m == WM_KEYDOWN || m == WM_SYSKEYDOWN);
+        if (ImGuiKey k = key_of(w)) {
+            bool down = m == WM_KEYDOWN || m == WM_SYSKEYDOWN;
+            menu_event_key(k, down);
+            // ImGui takes Ctrl and Shift for its shortcuts (Ctrl+V pastes) from these modifier keys only, not from
+            // LeftCtrl: without them a link could not be pasted into the Co-op tab (the tester, 2026-11-08).
+            if (k == ImGuiKey_LeftCtrl) menu_event_key(ImGuiMod_Ctrl, down);
+            if (k == ImGuiKey_LeftShift) menu_event_key(ImGuiMod_Shift, down);
+        }
         return 0;   // F11 and the system keys keep working
     case WM_MOUSEMOVE:
         if (menu_is_open()) menu_event_mouse_pos((float)GET_X_LPARAM(l), (float)GET_Y_LPARAM(l));
@@ -79,8 +90,7 @@ extern "C" int menu_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res)
     case WM_MOUSEWHEEL:
         if (menu_is_open()) menu_event_wheel(0, (float)GET_WHEEL_DELTA_WPARAM(w) / WHEEL_DELTA);
         return 0;
-    case WM_CHAR:   // typed text for the menu's text boxes (the Co-op tab's name and address)
-        if (menu_is_open() && w >= 0x20 && w != 0x7f) menu_event_char((unsigned)w);
+    case WM_CHAR:   // typed text for the menu's text boxes (the Co-op tab's name and address)        if (menu_is_open() && w >= 0x20 && w != 0x7f) menu_event_char((unsigned)w);
         return 0;
     case WM_SETFOCUS:
     case WM_KILLFOCUS:

@@ -35,6 +35,10 @@ static ImGuiKey key_of(SDL_Scancode sc) {
     case SDL_SCANCODE_LCTRL: case SDL_SCANCODE_RCTRL: return ImGuiKey_LeftCtrl;
     case SDL_SCANCODE_Q: return ImGuiKey_Q;   // previous tab
     case SDL_SCANCODE_E: return ImGuiKey_E;   // next tab
+    case SDL_SCANCODE_A: return ImGuiKey_A;   // Ctrl+A, C, V, X in the text boxes
+    case SDL_SCANCODE_C: return ImGuiKey_C;
+    case SDL_SCANCODE_V: return ImGuiKey_V;
+    case SDL_SCANCODE_X: return ImGuiKey_X;
     default: return ImGuiKey_None;
     }
 }
@@ -56,7 +60,13 @@ extern "C" void menu_sdl_event(const SDL_Event *e) {
         [[fallthrough]];
     case SDL_EVENT_KEY_UP:
         if (!menu_is_open()) return;
-        if (ImGuiKey k = key_of(e->key.scancode)) menu_event_key(k, e->type == SDL_EVENT_KEY_DOWN);
+        if (ImGuiKey k = key_of(e->key.scancode)) {
+            bool down = e->type == SDL_EVENT_KEY_DOWN;
+            menu_event_key(k, down);
+            // ImGui's shortcuts (Ctrl+V pastes) read these modifier keys, not LeftCtrl (menu_win.cpp menu_window_msg)
+            if (k == ImGuiKey_LeftCtrl) menu_event_key(ImGuiMod_Ctrl, down);
+            if (k == ImGuiKey_LeftShift) menu_event_key(ImGuiMod_Shift, down);
+        }
         return;
     case SDL_EVENT_MOUSE_MOTION:
         if (menu_is_open()) menu_event_mouse_pos(e->motion.x * d, e->motion.y * d);
