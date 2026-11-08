@@ -917,8 +917,35 @@ static void rebuild_ok(Cpu *c) {
     rt_log("coop: test: rebuild: the confirm (main+0x1d3c0d4) on %llx returned %llx", (unsigned long long)coop_ab_obj, (unsigned long long)r);
 }
 
+// TOTK_COOP_TEST_FAILSPAM=<s>[,<n>]: from then, a MergedActorD100 asked for again each time its request fails
+// (handle status 4), as copies of one were in a play session, <n> (2000) times; each failure released
+// (coop_handle_release; a no-op with TOTK_COOP_TEST_NORELEASE=1, the old way). With DEVSWEEP: whether this game
+// can still make an actor after.
+static void failspam_test(Cpu *c, uint64_t me) {
+    static double at = -1;
+    static int left, fails, st0;
+    static _Alignas(16) uint8_t h[0x40];
+    if (at < 0) { const char *e = cfg_get("TOTK_COOP_TEST_FAILSPAM"); at = 0, left = 2000; if (e) at = atof(e), sscanf(e, "%*f,%d", &left); }
+    if (at <= 0 || frame_step_world_us() / 1e6 < at || left <= 0) return;
+    int st = coop_handle_status(h);
+    if (st == 4 || !st0) {
+        if (st == 4) fails++, coop_handle_release(c, h), memset(h, 0, 8);   // (the old way leaves the record: see above)
+        float p[3], rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        if (!coop_rd(me + COOP_ACTOR_POS, p, 12)) return;
+        p[0] += 3;
+        int ok = coop_request_create(c, "MergedActorD100", p, rot, h);
+        st0 = 1, left--;
+        if (fails % 200 == 0 || !ok) rt_log("coop: test: failspam: %d failed so far; asked again: %d", fails, ok);
+        if (!left) rt_log("coop: test: failspam: done, %d failed", fails);
+    } else if (st == 3) {
+        rt_log("coop: test: failspam: a MergedActorD100 was made (status 3): stopped");
+        left = 0;
+    }
+}
+
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
     if (!ablog_on()) return;
+    failspam_test(c, me);
     if (cfg_get("TOTK_COOP_TEST_FANHITAB") && atomic_load(&tracked_n) > 1) {   // FANHIT on the build's first fan from
         extern uint64_t coop_fan_actor;                                        // when it is made (the confirm's calls)
         char nm[48];

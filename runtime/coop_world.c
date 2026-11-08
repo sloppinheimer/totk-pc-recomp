@@ -3484,6 +3484,7 @@ static void spawn_tick(Cpu *c) {
             else made[k].state = 0;
             rt_log("coop: spawn sync: %s %08x for player %d %s", made[k].name, made[k].key, made[k].from, a ? "made here" : "not made");
         } else if (st > 3 || now - made[k].ns > 10000000000ull) {
+            coop_handle_release(c, made[k].handle);   // (failed or given up: its record freed, coop_game.h)
             made[k].state = 0;
             rt_log("coop: spawn sync: %s %08x could not be made (%d)", made[k].name, made[k].key, st);
         }

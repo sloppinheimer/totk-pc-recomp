@@ -32,6 +32,27 @@ evidence), guess.
   it from its enter function main+0x231fa58 (`coop_NodeGenericRequestCreateActor_enter`); the strings "Pack/Actor/",
   ".pack", "ActorMgr" inside it. Confidence: likely (not called by us yet).
 
+## A failed create request must be released (fixed 2026-11-08)
+- a play session (main d84dcc4, game 2 from build143play): after a fast travel game 2 made no actor at all
+  (copies, its own capsule devices: the item left the inventory and nothing came), and the ground was missing. Its
+  log: "the copy of object N could not be made" 1498 times, for four objects only: keys f36511da, fdad097d, 8f82aab6,
+  f1b2abdf, which game 1 logged as "I move MergedActorD100": the map's merged-mesh groups, moved as world objects;
+  game 2 no longer had them after its fast travel and asked for copies by that name. No such actor can be made (handle
+  status 4), and the copy was asked for again at once, every time.
+- A request's handle holds a record of the actor manager's. The game's own create node (main+0x231fba0) on a failed
+  one calls main+0x2ae4d2c(handle): main+0x5557e0(record, 0) (status 4 or 9: main+0x5559a0 frees it; 2, 3, 5..7:
+  cancelled, then freed) and the handle cleared. A claim clears the handle itself (main+0x89fe48). Our code left failed
+  records in their handles and zeroed them at the next request: each failure leaked one.
+- Shown (TOTK_COOP_TEST_FAILSPAM=35,3000 in game B: a MergedActorD100 asked for again each time it failed;
+  TOTK_COOP_TEST_DEVSWEEP=50 with 14 fans, one every 10 s): the old way (TOTK_COOP_TEST_NORELEASE=1) after 1491 failures
+  requestCreateActor refused every request and none of the 14 fans was made (status 0); released, 2999 failures and all
+  14 fans made.
+- Fix: coop_game.c coop_handle_release (the game's main+0x5557e0), called on every failed copy and spawn-sync request,
+  and by request_create on whatever its handle still holds; a copy that fails is asked for again after 2 s, 4, 8 ... up
+  to 60 s (coop_players.c copy_failed / copy_wait), not every tick; MergedActor is never sent nor copied (prop_skip).
+  Not reproduced: the status 4 of a fast travel itself (our test travel and copies deleted 2 km away were made again
+  fine); the missing ground is taken to be the same exhaustion (not shown).
+
 ## Hooking from the recomp
 - `rt_call(Cpu*, fn, n, ...)` (runtime/host.h): host code calls a guest function; needs the guest thread's Cpu.
 - HOST_OVERRIDE / HOST_OBSERVER entries (runtime/host.h, hostfn.c): replace a guest function, or run host code and
