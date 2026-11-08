@@ -190,6 +190,38 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
       sent; two games that changed one value while apart end on the one with the higher stamp, not the later one;
       live changes take the latest value, so a player further along can be moved back by one behind; bool families
       whose names cannot be made from the RomFS (ReadyMadeAutoBuilderDraft.*) are shared.
+- **Done: the stand-in's sword trail** (2026-11-07; coop_world.c "The stand-in's sword trail", COOP_NET_VERSION 24;
+  `TOTK_COOP_STANDIN_BLUR=0` turns it off). How the game makes a swing's trail, found by a write watch
+  (`TOTK_COOP_TEST_HITWATCH=<from>-<to>@0x28:0x4a8`) and the generated C:
+  - The Player's pack has a SwordBlur component (SwordBlurRef, kept on the stand-in; vtable main+0x367e028, at
+    [actor+0x228]+0x4a8). Its update, main+0x275954, runs every frame: it looks through the actor's animation graph
+    ([[[actor+0x228]+0x40]+0x18]+0x18, the layers' nodes) for an ASB event of kind 17 ("WeaponBlur", game::WeaponBlurType
+    the hand) that is on, and while one is it emits the weapon's "Blur_Default" effect (ELink: WeaponBlur_Sword,
+    Blur_MasterSword...) on the weapon in that hand. The effect's handle is kept at +0xc8, the event at +0xe0, +0x2a is
+    1 while the effect lives (about 0.17 s a swing). So the trail comes from the animation sequence's nodes, not from
+    the weapon, the Player component or the BSA (no BSARef needed, and nothing of ours calls the effect system).
+  - The stand-in's graph never has those nodes (its clips are played straight onto its animation player), so it never
+    found the event. Now the owner reads its own active WeaponBlur event (hand, frame, first frame, parameter, a number
+    per event) into NetState.blur_*, and the stand-in's update (hooked, COOP_HOOKED) runs once with a copy of the
+    stand-in's own graph whose only layer holds one event made from those values, then gets its graph back. The game's
+    own code then makes the trail on the stand-in's weapon.
+  - Tried first and wrong: copying the owner's component bytes +0xc8..+0xe8 onto the stand-in's. They are effect
+    handles (an effect pool index and serial), meaningless in another game; the stand-in's update cleared them each
+    frame anyway.
+  - Test: `$env:TOTK_COOP_STANDIN='puppet'; $env:TOTK_COOP_PUPPET=1; $env:TOTK_COOP_TEST_BLURWATCH=1;
+    tools\coop\run_pair.ps1 -Seconds 80 -ScriptA tools\coop\equip_draw_3rd.txt -ScriptB tools\coop\idle_3rd.txt
+    -BDir build\v143c -ShotsB "w18-26:0.034" -EnvB "TOTK_SHOTS_CROP=1100,300,1200,1000" -ShotsDir build\trailshots8`:
+    in B the stand-in's +0x2a went to 1 for 0.17 s on each of A's swings (as A's own), and frame f02556 shows the
+    white swing arc over the stand-in. TOTK_COOP_TEST_BLURWATCH also logs the component's words as they change and how
+    many of the stand-in's updates had its owner's event.
+  - Seen, not fixed: in both pair scripts tried (`attack_enemy_3rd.txt`, `equip_draw_3rd.txt`) the stand-in's sword
+    stays on its back while it swings an empty hand, though "Weapon_Sword_070 taken out" is logged; the same with this
+    change off (`TOTK_COOP_STANDIN_BLUR=0`, frames build\trailshots6), so it was there before. The trail is emitted on
+    that weapon actor, so how it looks with the sword in hand is not seen yet.
+  - Seen: the stand-in's SwordBlur update ran about 5 times a second for a while in one run (about 4 m off, 11 calls
+    in 2 s) and 60 in others; at 5 a second a swing's 0.17 s can fall between two updates and show no trail.
+  - Not done: arrow trails and the other action effects (dust, sparks). Not looked into whether they come from other
+    ASB event kinds (the event kind names at main+0x3713400 list AtCollision, Noise, AwarenessScale and others) the same way.
 - **Not done:**
   - the stand-in's arrows shot by it with its owner's camera (patched unproject): not ported, on purpose for now.
     TotK Online has the stand-in shoot because it syncs no arrows; here the owner's arrows (nocked and flying) are

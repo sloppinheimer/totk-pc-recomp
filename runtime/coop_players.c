@@ -4800,6 +4800,8 @@ void coop_players_tick(Cpu *c, int numpad3) {
         coop_anim_pack(me, st.anim);
         void coop_anim_masks_pack(uint64_t me, const CoopAnim *anim, CoopMask *out);   // coop_world.c
         coop_anim_masks_pack(me, st.anim, st.mask);
+        void coop_blur_pack(Cpu *c, uint64_t me, NetState *st);   // coop_world.c: the sword trail
+        coop_blur_pack(c, me, &st);
         coop_net_publish(&st);
         if (coop_proxy_mode()) props_receive(c), ride_carry(c, me), destroy_watch(me), old_items_tick(c);   // placed objects co-op players move; riding them; destroyed
         props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test(), bone_arrow_test(me), impact_test(), glide_log(me), newnear_test(me), beam_test(me), beam_end_tick(), link_hit_test(me);
@@ -4879,6 +4881,8 @@ void coop_players_tick(Cpu *c, int numpad3) {
                 aage = a2 > 0 ? (uint64_t)a2 * 1000 : 0;
             }
             coop_anim_apply(c, s->actor, st.anim, aage);
+            void coop_blur_apply(uint64_t standin, const NetState *st, uint64_t age_ns);   // coop_world.c: the sword trail
+            coop_blur_apply(s->actor, &st, age);
         }
         if (st.seq != s->last_seq) {   // a new report: the owner's velocity since the previous one
             uint64_t at = plat_now_ns() - age;

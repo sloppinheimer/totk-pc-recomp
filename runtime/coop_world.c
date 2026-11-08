@@ -5026,6 +5026,8 @@ void coop_world_tick(Cpu *c, uint64_t me) {
     coop_eqdiff_test(me);
     void coop_binds_test(uint64_t me);   // (below)
     coop_binds_test(me);
+    void coop_blur_test(uint64_t me);   // (below)
+    coop_blur_test(me);
     if (coop_world_role()) ground_tick(c, me);
 }
 
@@ -5490,4 +5492,248 @@ void coop_anim_masks_apply(uint64_t standin, const CoopMask *in) {
     }
     static int said;
     if (changed && said++ < 5) rt_log("coop: stand-in: %d of its body masks set as its owner's", changed);
+}
+
+// ---- the sword trail (SwordBlur component, vtable main+0x367e028, 0xe8 bytes, made by main+0xdd38d4). Its setup
+// (main+0x1c1caf4) bakes, for every node of the actor's animation sequence (ASB) with an event of type 17
+// ("WeaponBlur" in the event list at main+0x3713400), the blade's path over that event's frames into the table at
+// [comp+0xc0] (+8 entries of 0x28 bytes: +4 first frame, +8 last frame, +0x20 the clip's name; +0x28 count).
+#define SWORDBLUR_VT 0x367e028ull
+static uint64_t swordblur_of(uint64_t actor) {
+    uint64_t t = actor ? coop_rd_ptr(actor + 0x228) : 0, p = t ? coop_rd_ptr(t + 0x4a8) : 0;   // (where it is in both, 1.4.3)
+    if (p && coop_rd_ptr(p) == MOD_MAIN_BASE + SWORDBLUR_VT) return p;
+    for (int i = 0; t && i < 0x900 / 8; i++) {
+        uint64_t p = coop_rd_ptr(t + 8ull * i);
+        if (p && coop_rd_ptr(p) == MOD_MAIN_BASE + SWORDBLUR_VT) return p;
+    }
+    return 0;
+}
+static int swordblur_slot(uint64_t actor) {
+    uint64_t t = actor ? coop_rd_ptr(actor + 0x228) : 0;
+    for (int i = 0; t && i < 0x900 / 8; i++) {
+        uint64_t p = coop_rd_ptr(t + 8ull * i);
+        if (p && coop_rd_ptr(p) == MOD_MAIN_BASE + SWORDBLUR_VT) return i * 8;
+    }
+    return -1;
+}
+// Test (TOTK_COOP_TEST_BLURWATCH=1): this Link's and each stand-in's SwordBlur component: where it is, its baked
+// table once, and every change of its words +0x28..+0xe8 with the world time (at most 400 lines).
+void coop_blur_test(uint64_t me) {
+    static int on = -1, said, told[1 + COOP_MAX_PLAYERS];
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_BLURWATCH") != NULL;
+    if (!on) return;
+    static uint32_t last[1 + COOP_MAX_PLAYERS][0xe8 / 4];
+    uint64_t co[COOP_MAX_PLAYERS];
+    int ids[COOP_MAX_PLAYERS], nc = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
+    for (int w = 0; w <= nc && w <= COOP_MAX_PLAYERS; w++) {
+        uint64_t a = w ? co[w - 1] : me, b = swordblur_of(a);
+        if (!b) continue;
+        uint32_t now[0xe8 / 4];
+        if (!coop_rd(b, now, sizeof now)) continue;
+        if (!told[w]) {
+            told[w] = 1;
+            uint64_t tab = coop_rd_ptr(b + 0xc0), ents = 0;
+            uint32_t n = 0;
+            if (tab) coop_rd(tab + 8, &ents, 8), coop_rd(tab + 0x28, &n, 4);
+            rt_log("coop: test: blur %s: component [+0x228]+%#x at %llx, baked table %llx with %u entries", w ? "stand-in" : "this Link",
+                   swordblur_slot(a), (unsigned long long)b, (unsigned long long)tab, n);
+            for (uint32_t k = 0; ents && k < n && k < 400; k++) {
+                int32_t e[3] = {0};
+                coop_rd(ents + 0x28ull * k, e, 12);
+                uint64_t nm = coop_rd_ptr(ents + 0x28ull * k + 0x20);
+                char s[64] = {0};
+                if (nm) coop_rd(nm, s, sizeof s - 1);
+                if (k < 40 || w == 0) rt_log("coop: test: blur   %u: %s frames %d..%d (%d samples)", k, s, e[1], e[2], e[0]);
+            }
+            memcpy(last[w], now, sizeof now);
+            continue;
+        }
+        for (int i = 0x28 / 4; i < 0xe8 / 4 && said < 400; i++)
+            if (now[i] != last[w][i])
+                rt_log("coop: test: blur %s +%#x %08x -> %08x at %.3f s", w ? "stand-in" : "this Link", i * 4, last[w][i], now[i], frame_step_world_us() / 1e6), said++;
+        memcpy(last[w], now, sizeof now);
+    }
+}
+
+// ---- The stand-in's sword trail. Its SwordBlur update (main+0x275954, x0 the component) clears +0x2a, then looks
+// through the actor's animation graph G (anim_graph_of) for an event of kind 17 that is on: G +0x18 the number of
+// layers and +0x20 their records (0x48 bytes, the first word the layer; the first layer's weight at +0xd0 must not be
+// 0), a layer's node at +0x60, the node's events at +0x28 (0x48 bytes each, +0xa0 how many, +0x20 the bound of the
+// index), an event's kind at [+0x28]+0x2c (or [+0x20]+4), its on byte at +0, its frame at [+0x10]+8, its first frame
+// at [+0x30]+0x10 or [+0x20]+0x14 (main+0x293ac18) and its hand from main+0x293b3d4 (node, event, 0; with [+0x30]:
+// its +0 entries, +8 their count, +0xc an entry's size, an entry the address of a record whose +8 is the hand).
+// With one found it emits the "Blur_Default" effect on the weapon in that hand (the links at +0x30/+0x48/+0x60, the
+// EquipmentUser [+0x228]+0x230), keeps the effect's handle at +0xc8 and the event at +0xe0 (a new event: a new
+// effect), sets +0x2a while the effect lives and +0xdc to the event's frame. The stand-in's animation is played clip
+// by clip (coop_anim_apply), so its graph never has the swing's node and its event: no trail.
+// (The component's setup, main+0x1c1caf4, also bakes the blade's path over every WeaponBlur event of the sequence
+// into a table at +0xc0; the stand-in's has the same 198 entries as a Link's, TOTK_COOP_TEST_BLURWATCH.)
+// So the owner sends its event (NetState.blur_*: on, hand, a number per event, frame, first frame, parameter), and on
+// the stand-in the update runs once with a graph of one layer holding one such event made from them (a copy of its
+// own graph with only the layers changed, put in its place for that call; coop_blur_hook). TOTK_COOP_STANDIN_BLUR=0:
+// none of it.
+static int blur_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_BLUR"); on = !(e && *e == '0'); }
+    return on;
+}
+#define BLUR_EVENT_KIND 0x11
+#define BLUR_HAND 0x293b3d4   // (node, event, 0): the event's game::WeaponBlurType
+// This Link's graph's WeaponBlur event that is on, found as the update finds it: 1 with the node and event, else 0.
+static int blur_event_find(uint64_t g, uint64_t *node_out, uint64_t *ev_out) {
+    int32_t n = 0;
+    uint64_t arr = g ? coop_rd_ptr(g + 0x20) : 0;
+    if (!arr || !coop_rd(g + 0x18, &n, 4) || n < 1 || n > 64) return 0;
+    float w0 = 0;
+    uint64_t l0 = coop_rd_ptr(arr);
+    if (!l0 || !coop_rd(l0 + 0xd0, &w0, 4) || w0 == 0) return 0;
+    for (int k = 0; k < n; k++) {
+        uint64_t l = coop_rd_ptr(arr + 0x48ull * k), nd = l ? coop_rd_ptr(l + 0x60) : 0;
+        if (!nd) return 0;
+        uint32_t cnt = 0, bound = 0;
+        coop_rd(nd + 0xa0, &cnt, 4), coop_rd(nd + 0x20, &bound, 4);
+        uint64_t evs = coop_rd_ptr(nd + 0x28);
+        for (uint32_t j = 0; evs && j < cnt && j < 256; j++) {
+            uint64_t e = evs + 0x48ull * (j < bound ? j : 0), d = coop_rd_ptr(e + 0x28);
+            uint32_t kind = 0;
+            if (d) coop_rd(d + 0x2c, &kind, 4);
+            else { uint64_t d2 = coop_rd_ptr(e + 0x20); if (d2) coop_rd(d2 + 4, &kind, 4); }
+            uint8_t on = 0;
+            if (kind == BLUR_EVENT_KIND && coop_rd(e, &on, 1) && on) { *node_out = nd, *ev_out = e; return 1; }
+        }
+    }
+    return 0;
+}
+void coop_blur_pack(Cpu *c, uint64_t me, NetState *st) {
+    static uint64_t last_ev;
+    static float last_frame;
+    static uint16_t serial;
+    st->blur_on = 0, st->blur_hand = 0, st->blur_frame = st->blur_start = st->blur_param = 0, st->blur_serial = serial;
+    uint64_t nd = 0, ev = 0, p;
+    if (!blur_on() || !blur_event_find(anim_graph_of(me), &nd, &ev) || !(p = coop_rd_ptr(ev + 0x10))) { last_ev = 0; return; }
+    float fr = 0, prm = 0, first = 0;
+    coop_rd(p + 8, &fr, 4), coop_rd(p + 0xc, &prm, 4);
+    uint64_t d2 = coop_rd_ptr(ev + 0x20), d3 = coop_rd_ptr(ev + 0x30);
+    if (d2) coop_rd(d2 + 0x14, &first, 4);   // (main+0x293ac18 read here: it returns in s0)
+    else if (d3) coop_rd(d3 + 0x10, &first, 4);
+    if (ev != last_ev || fr < last_frame) serial++;   // another event, or the same one again from its start
+    last_ev = ev, last_frame = fr;
+    st->blur_on = 1, st->blur_serial = serial, st->blur_frame = fr, st->blur_start = first, st->blur_param = prm;
+    st->blur_hand = (uint8_t)coop_guest_call(c, MOD_MAIN_BASE + BLUR_HAND, nd, ev, 0, 0);
+    static int said;
+    if (said++ < 5) rt_log("coop: sword trail: this Link's WeaponBlur event (hand %u, frame %.1f from %.1f, parameter %.1f) goes to the others",
+                           st->blur_hand, fr, first, prm);
+}
+// The owner's event as last received, per stand-in (written by the co-op tick, read by the update's hook on the
+// actor's own thread: seq is odd while it is written).
+typedef struct { uint8_t hand; uint16_t serial; float frame, start, param; } BlurEv;
+static struct { _Atomic uint64_t actor; _Atomic uint32_t seq; BlurEv ev; uint64_t until_ns; } blur_live[COOP_MAX_PLAYERS];
+void coop_blur_apply(uint64_t standin, const NetState *st, uint64_t age_ns) {
+    if (!blur_on() || !standin) return;
+    int k = -1, free = -1;
+    for (int j = 0; j < COOP_MAX_PLAYERS && k < 0; j++) {
+        uint64_t a = atomic_load(&blur_live[j].actor);
+        if (a == standin) k = j;
+        else if (!a && free < 0) free = j;
+    }
+    static int said_on;
+    if (st->blur_on && said_on++ < 3) rt_log("coop: stand-in: its owner's WeaponBlur event came (age %.0f ms)", age_ns / 1e6);
+    if (k < 0 && !st->blur_on) return;
+    if (k < 0) { if (free < 0) return; k = free; }
+    atomic_fetch_add(&blur_live[k].seq, 1);
+    if (st->blur_on && age_ns < 250000000ull) {
+        BlurEv *b = &blur_live[k].ev;
+        // The frame never goes back within one event: the update starts a new trail when it is below +0xdc.
+        float fr = st->blur_frame;
+        if (b->serial == st->blur_serial && blur_live[k].until_ns && fr < b->frame) fr = b->frame;
+        b->hand = st->blur_hand, b->serial = st->blur_serial, b->frame = fr, b->start = st->blur_start, b->param = st->blur_param;
+        blur_live[k].until_ns = plat_now_ns() + 100000000ull;   // (held 100 ms past the last state that had it)
+    } else blur_live[k].until_ns = 0;
+    atomic_store(&blur_live[k].actor, standin);
+    atomic_fetch_add(&blur_live[k].seq, 1);
+}
+// The made-up graph, per stand-in and in two sets chosen by the event's number, so that a new event has another
+// address (the update tells events apart by their address, kept at +0xe0).
+enum { BLUR_G = 0x400 };
+typedef struct {
+    uint8_t g[BLUR_G];     // a copy of the stand-in's graph: +0x18 one layer, +0x20 its record
+    uint64_t rec[9];       // the layer's record (0x48 bytes): the layer
+    uint8_t layer[0x100];  // +0x60 the node, +0xd0 its weight
+    uint8_t node[0xa8];    // +0x20 the bound, +0x28 the event, +0xa0 one event
+    uint8_t ev[0x48];      // +0 on, +0x10 its frames, +0x20 0, +0x28 its kind's record, +0x30 its hands' record
+    uint8_t frames[0x10];  // +8 the frame, +0xc the parameter
+    uint8_t kind[0x30];    // +0x2c the kind
+    uint8_t hands[0x18];   // +0 its entries, +8 one, +0xc an entry's size, +0x10 the first frame
+    uint64_t entries[2];   // the entries: each the address of a record whose +8 is a hand
+    uint8_t hand[0x10];    // +8 the hand
+} BlurFake;
+static BlurFake blur_fake[COOP_MAX_PLAYERS][2] __attribute__((aligned(16)));
+int coop_blur_hook(Cpu *c, uint64_t addr) {
+    static __thread int inside;
+    if (inside || !blur_on()) return 0;
+    uint64_t actor = coop_rd_ptr(c->x[0] + 0x18);
+    int k = -1;
+    for (int j = 0; actor && j < COOP_MAX_PLAYERS && k < 0; j++) if (atomic_load(&blur_live[j].actor) == actor) k = j;
+    if (k < 0) return 0;
+    BlurEv b;
+    uint64_t until;
+    uint32_t s0, s1;
+    int tries = 0;
+    do {
+        s0 = atomic_load(&blur_live[k].seq);
+        b = blur_live[k].ev, until = blur_live[k].until_ns;
+        s1 = atomic_load(&blur_live[k].seq);
+    } while ((s0 != s1 || (s0 & 1)) && ++tries < 100);
+    {   // Test (TOTK_COOP_TEST_BLURWATCH): the stand-in's updates, every 2 s: how many, how many with its owner's event
+        static int on = -1;
+        static _Atomic uint32_t calls, with;
+        static _Atomic uint64_t t0;
+        if (on < 0) on = cfg_get("TOTK_COOP_TEST_BLURWATCH") != NULL;
+        if (on) {
+            uint64_t now = plat_now_ns(), was = atomic_load(&t0);
+            atomic_fetch_add(&calls, 1);
+            if (s0 == s1 && !(s0 & 1) && until && now <= until) atomic_fetch_add(&with, 1);
+            static _Atomic int said_u;
+            if (until && atomic_fetch_add(&said_u, 1) < 20)
+                rt_log("coop: test: blur: update with a held event %.0f ms %s its end (seq %u %u)", fabs((double)(int64_t)(until - now)) / 1e6, now <= until ? "before" : "after", s0, s1);
+            if (!was) atomic_store(&t0, now);
+            else if (now - was > 2000000000ull && atomic_compare_exchange_strong(&t0, &was, now))
+                rt_log("coop: test: blur: %u stand-in SwordBlur updates in 2 s, %u with its owner's event", atomic_exchange(&calls, 0), atomic_exchange(&with, 0));
+        }
+    }
+    if (s0 != s1 || (s0 & 1) || !until || plat_now_ns() > until) return 0;
+    uint64_t c8 = coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x40), x = c8 ? coop_rd_ptr(c8 + 0x18) : 0, g = x ? coop_rd_ptr(x + 0x18) : 0;
+    BlurFake *f = &blur_fake[k][b.serial & 1];
+    if (!g || !coop_rd(g, f->g, BLUR_G)) return 0;
+    memset((uint8_t *)f + BLUR_G, 0, sizeof *f - BLUR_G);
+    int32_t one = 1, size = 8;
+    float w = 1;
+    uint32_t kind = BLUR_EVENT_KIND, hand = b.hand;
+    uint64_t prec = (uint64_t)(uintptr_t)f->rec, pl = (uint64_t)(uintptr_t)f->layer, pn = (uint64_t)(uintptr_t)f->node;
+    uint64_t pe = (uint64_t)(uintptr_t)f->ev, pf = (uint64_t)(uintptr_t)f->frames, pk = (uint64_t)(uintptr_t)f->kind;
+    uint64_t phs = (uint64_t)(uintptr_t)f->hands, pes = (uint64_t)(uintptr_t)f->entries;
+    memcpy(f->g + 0x18, &one, 4), memcpy(f->g + 0x20, &prec, 8);
+    f->rec[0] = pl;
+    memcpy(f->layer + 0x60, &pn, 8), memcpy(f->layer + 0xd0, &w, 4);
+    memcpy(f->node + 0x20, &one, 4), memcpy(f->node + 0x28, &pe, 8), memcpy(f->node + 0xa0, &one, 4);
+    f->ev[0] = 1;
+    memcpy(f->ev + 0x10, &pf, 8), memcpy(f->ev + 0x28, &pk, 8), memcpy(f->ev + 0x30, &phs, 8);
+    memcpy(f->frames + 8, &b.frame, 4), memcpy(f->frames + 0xc, &b.param, 4);
+    memcpy(f->kind + 0x2c, &kind, 4);
+    f->entries[0] = (uint64_t)(uintptr_t)f->hand;
+    memcpy(f->hands, &pes, 8), memcpy(f->hands + 8, &one, 4), memcpy(f->hands + 0xc, &size, 4), memcpy(f->hands + 0x10, &b.start, 4);
+    memcpy(f->hand + 8, &hand, 4);
+    // The made-up graph in the stand-in's own one's place for this one call (a copy of it, so anything else reading
+    // it meanwhile reads the same but for its layers), then its own back.
+    ST64(x + 0x18, (uint64_t)(uintptr_t)f->g);
+    inside = 1;
+    c->pc = addr;
+    rt_dispatch(c);
+    inside = 0;
+    ST64(x + 0x18, g);
+    static _Atomic int said;
+    if (atomic_fetch_add(&said, 1) < 5)
+        rt_log("coop: stand-in: its SwordBlur update ran with its owner's WeaponBlur event (hand %u, frame %.1f from %.1f, event %u)",
+               b.hand, b.frame, b.start, b.serial);
+    return 1;
 }

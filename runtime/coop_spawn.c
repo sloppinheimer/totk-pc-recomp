@@ -960,6 +960,8 @@ int coop_hook(Cpu *c, uint64_t addr) {
         int coop_ground_hook(Cpu *c, uint64_t off);
         return coop_ground_hook(c, addr - MOD_MAIN_BASE);
     }
+    // the SwordBlur component's update (coop_world.c): a stand-in's runs with its owner's WeaponBlur event
+    if (addr == MOD_MAIN_BASE + 0x275954) { int coop_blur_hook(Cpu *c, uint64_t addr); return coop_blur_hook(c, addr); }
     if (addr == MOD_MAIN_BASE + 0x31dbc0) { void coop_hit_delivered(Cpu *c); coop_hit_delivered(c); return 0; }   // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x300a30) { void coop_hit_update(Cpu *c); coop_hit_update(c); return 0; }        // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x50ad74) { void coop_enemy_action(Cpu *c); coop_enemy_action(c); return 0; }    // coop_world.c
