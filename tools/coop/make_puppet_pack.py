@@ -44,6 +44,7 @@ PLAYER_ONLY = ('PlayerRef', 'PlayerCameraTargetRef', 'RiderRef', 'LifterRef', 'S
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 ap.add_argument('--version', choices=('v121', 'v143'), default='v143')
 ap.add_argument('--out', type=Path, help='default build/<version>/romfs-patches')
+ap.add_argument('--romfs', type=Path, help='the extracted RomFS (default build/extracted/<version>/romfs)')
 ap.add_argument('--fields', default='InstanceHeapSize,DisplayRadius,LoadRadius',
                 help='(a test) the fields of the Player ActorInfo row put on the stand-in')
 ap.add_argument('--keep', default='',
@@ -60,7 +61,7 @@ ap.add_argument('--emitter-sublayer', default='',
                 help="(a test, with --target-fix) the stand-in emitter's SubLayerSensor instead of the Player's PerceptionPlayer")
 args = ap.parse_args()
 if args.game_fields is None: args.game_fields = 'DefaultAffiliation' if args.target_fix else ''
-src = root / 'build' / 'extracted' / args.version / 'romfs'
+src = args.romfs or root / 'build' / 'extracted' / args.version / 'romfs'
 out_dir = args.out or root / 'build' / args.version / 'romfs-patches'
 files = {f['path']: f for f in json.load(open(src / 'index.json'))['files']}
 image = open(src / 'romfs.bin', 'rb')

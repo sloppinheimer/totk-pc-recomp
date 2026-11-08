@@ -1,4 +1,102 @@
-# Character mods in co-op (research, 2026-11-04)
+# Character mods in co-op
+
+## Design (2026-11-08)
+
+Each player can play a different character: one player as Riju, another as Link. Each game shows its own Link as its
+player's character, and every other player's stand-in as theirs. Tested with the Playable Riju Mod on 1.4.3, two games on
+one PC (`tools\coop\run_pair.ps1`).
+
+### What works
+
+- **This PC's character** is the character mod switched on in the mods folder; its files are served as Link's own, like
+  any mod. A character mod is a mod folder whose RomFS has `Pack/Actor/Player.pack.zs` or
+  `Model/Link.Link_RaulSkin.bfres.mc`. The Co-op tab lists the character mods with a switch each; switching one on
+  switches the others off, from the next start.
+- **Other players' stand-ins.** `tools/coop/charmod.py sets` gives every character mod in the mods folder, and the game's
+  own Link, a *set* in the mod `mods/zz-coop-characters`, each under a four-character tag made from the character's key:
+  - `PlayerPuppet_<tag>`: a stand-in actor made from that character's `Player.pack`, as `make_puppet_pack.py` makes
+    `PlayerPuppet` from the game's. Its members that `Player.pack` also has go in under names of its own, and so does its
+    animation set (`AS/PlayerPuppet_<tag>.root.asb`);
+  - its body model copied as `Model/<tag>.<fmdb>.bfres.mc`, with the copy's `ModelInfo` pointing at it;
+  - the bare pieces Link wears with no armor (`Armor_999_Head`, `Armor_Default_Upper`, `Armor_Default_Lower`) as
+    `<piece>_<tag>` actors with their own model copies;
+  - the files the character mod *adds* (new names: animations, textures, AI), so that a game where the mod is off has what
+    the stand-in needs;
+  - a row for each new actor in `RSDB/ActorInfo` and `RSDB/GameActorInfo`, inserted in name order in both tables. (The
+    PlayerPuppet note in `make_puppet_pack.py` says an added row crashed the game; inserted in place, in both tables at
+    the same index, rows load and their actors spawn.)
+  `characters.tsv` in that folder lists the sets for `runtime/coop_chars.c`.
+- **The network.** `NetState.character` carries each player's key ("Link", `gb:<GameBanana file id>`, or the mod's folder
+  name) and `char_mod` its GameBanana mod id (net version 28). A stand-in is spawned as its owner's set
+  (`coop_players.c`, `spawn_slot`); for a character this PC has no set for, it stays the plain `PlayerPuppet`.
+- **Armor.** This game only has armor fitted to its own Link's character: the Riju mod replaces 332 armor packs under the
+  game's names. A stand-in of another character wears that character's bare pieces instead of its owner's armor, with
+  no dye. A stand-in of the same character as this game's Link wears its owner's armor as before.
+- **The Co-op tab** shows this PC's character and each player's ("Playable Riju Mod", "Link", or the mod's name and "not
+  on this PC").
+- **Fetching.** For a party member's character from GameBanana that this PC lacks, the tab looks the mod up
+  (`charmod.py info`: GameBanana's API, no download) and asks with the mod's name, file, size and page. Nothing is
+  downloaded before a yes. On a yes, `charmod.py fetch` downloads that file, checks its MD5 against GameBanana's, and
+  refuses an archive with code patches or cheats (`exefs`, `.ips`, `.pchtxt`, `.nso`, `.npdm`, `subsdk*`, `main`,
+  `cheats`) or with a path that would leave the mod folder (absolute, a drive, `..`). It unpacks only what is under the
+  archive's `romfs` folder (zip in Python, 7z and rar through Windows' `tar`) and makes the sets again. The game then
+  switches the new folder off, so it stays the other player's character. A GameBanana link or mod id typed into the tab
+  goes the same way. `charmod.py info --file auto` picks the mod's file for game 1.4 and skips TKMM packages.
+- The new set shows after a restart: the RomFS overlay is read at start.
+
+### What does not work, and why
+
+- **Textures are per game, not per player.** A model names its textures, and the game finds them by name in `TexToGo/`.
+  The Riju mod replaces Link's own textures under their own names (`Link_RaulSkin_Alb`, `Link_Head_Alb`, the belt, the
+  eyes). So in one game only one version of each can exist. A Riju stand-in in a game without the mod has Riju's body
+  shape (her hair, build and outfit cut) with Link's skin and hair colours; a Link stand-in in a game with the mod has
+  Link's shape with Riju's colours. The textures the mod adds under new names are shown correctly.
+  Renaming the textures inside a copied model does not work: any change to the body model's texture names made the
+  game refuse the actor, even pointing one at another texture the game has (bisect of 2026-11-08, below). The cause is
+  not known. A model's `.bfres.mc` is "MCPK", a word, a zstd frame without its magic holding the BFRES, then the mesh
+  data (`FMSH`); a repack that keeps the mesh data loads. A `.txtg` carries a 32-byte value at 0x1c that stays the same
+  for a texture's name when its content changes (50 of 51 textures the Riju mod replaces). It is not an MD5, SHA-1 or
+  SHA-256 of the name, and changing it in a copy did not help either.
+- **Armor fitted to another character** is not shown: copies of the 332 refitted armor packs per character are possible
+  in the same way as the bare pieces, but each would draw with this game's textures, as the body does.
+- **The mod's game changes** (new weapons, Gerudo Town logic, events, GameData, its UI) are not in a set: they belong to
+  whoever has the mod switched on. A party member's weapon that only their mod adds is not shown here.
+- **Code mods.** A mod with ExeFS is refused by the fetch. Installed by hand it works for this PC's own Link as before.
+- The fetch runs the repository's Python (`.venv`, `TOTK_COOP_PYTHON` to change it) and needs oead and zstandard. So it
+  works in a development checkout, where co-op runs, not in a release install.
+
+### Bisect of 2026-11-08 (a stand-in of Link, each step nearer the set; status 3 made, 4 refused)
+
+| Variant | Status |
+|---|---|
+| PlayerPuppet's pack, new name, new table rows | 3 |
+| + its members under names of its own | 3 |
+| + the body model copied under a new project name | 3 |
+| + the copy repacked (first frame recompressed, mesh data kept) | 3 (4 when the mesh data was dropped) |
+| + all its texture names changed (tag in place of the first four characters), the textures copied | 4 |
+| + only the head and eye textures changed | 3 |
+| + only the `Link_RaulSkin*` textures changed | 4 |
+| + only the common textures (`CmnTex_*`) changed | 3 |
+| + only the belt and earring textures changed | 4 |
+| + only `Link_Belt_A_Alb` pointed at the game's `Link_Belt_C_Alb` | 4 |
+| + the copies' 0x1c values changed as well | 4 |
+
+The head, eye and common textures probably only seemed to work because those materials are not loaded when the
+actor is made.
+
+### Testing
+
+```
+.venv\Scripts\python tools\coop\charmod.py sets --mods build\v143\mods
+powershell -ExecutionPolicy Bypass -File tools\coop\run_pair.ps1 -Port 41957 -ScriptA tools\coop\idle_3rd.txt -ScriptB tools\coop\idle_3rd.txt -EnvB "TOTK_MODS_DISABLED=Riju" -ShotsA w24-32:8 -ShotsB w24-32:8 -ShotsDir build\charshots
+```
+
+With the Riju mod as `mods\Riju`, game A plays Riju and game B plays Link. The logs say `coop: characters: ...` and
+`slot 0: PlayerPuppet_<tag> requested`. `TOTK_COOP_TEST_SPAWN=a+b+c@18` spawns several actors 4 s apart (a set's actors
+on their own). `TOTK_MODS_DIR` gives game B a mods folder without the mod and without its set, to see the download
+prompt (`TOTK_MENU_TEST=3600:150` shoots the menu's tabs, the Co-op tab last).
+
+## Research (2026-11-04)
 
 Read-only look at the "Playable Riju Mod" (GameBanana 627813, file rijumod_140_a5b2b.zip, MD5
 aa9918fea8fd0adc5204fcc94ff99ff9, kept in C:\Dev\downloads\riju-mod). Nothing installed or run yet.

@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "coop_chars.h"
 #include "coop_game.h"
 #include "coop_net.h"
 #include "host.h"
@@ -748,7 +749,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
         if (fix && !inside_held && c->x[1]) {
             uint64_t holder = coop_rd_ptr(c->x[1]);
             char hn[16] = "";
-            if (holder && !strcmp(coop_actor_name(holder, hn, sizeof hn), "PlayerPuppet")) {
+            if (holder && coop_char_is_standin(coop_actor_name(holder, hn, sizeof hn))) {
                 uint64_t eq = coop_rd_ptr(coop_rd_ptr(holder + 0x228) + 0x230);
                 uint64_t saved = eq ? coop_rd_ptr(eq + 0x1620) : 0;
                 static __thread _Alignas(16) uint8_t copy[0x800];
@@ -785,7 +786,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
             uint64_t holder = c->x[1] ? coop_rd_ptr(c->x[1]) : 0;
             char hn[48] = "";
             coop_actor_name(holder, hn, sizeof hn);
-            if (!strcmp(hn, "PlayerPuppet") && k++ < 6) {
+            if (coop_char_is_standin(hn) && k++ < 6) {
                 uint64_t comp = c->x[0], wa = coop_rd_ptr(comp + 0x18), eq = coop_rd_ptr(coop_rd_ptr(holder + 0x228) + 0x230);
                 uint32_t af = 0, row = 0, rf = 0;
                 uint8_t b505 = 0, b516 = 0, b1456 = 0;
@@ -822,11 +823,11 @@ int coop_hook(Cpu *c, uint64_t addr) {
         static _Atomic int said_t;
         if (tst && atomic_fetch_add(&said_t, 1) < 30)
             rt_log("coop: test: is-player check from main+%#llx: link's actor '%s', query's '%s'", (unsigned long long)(c->x[30] - MOD_MAIN_BASE), n1, n2);
-        if (strcmp(n1, "PlayerPuppet") && strcmp(n2, "PlayerPuppet")) return 0;
+        if (!coop_char_is_standin(n1) && !coop_char_is_standin(n2)) return 0;
         static _Atomic int said;
         if (atomic_fetch_add(&said, 1) < 5)
             rt_log("coop: stand-in: the game asks whether it is a player (from main+%#llx; %s): yes", (unsigned long long)(c->x[30] - MOD_MAIN_BASE),
-                   !strcmp(n1, "PlayerPuppet") ? "the link" : "the query");
+                   coop_char_is_standin(n1) ? "the link" : "the query");
         c->x[0] = 1;
         return 1;
     }
@@ -1486,11 +1487,24 @@ void coop_tick(struct Cpu *c) {
         static int test_spawned;
         const char *ts = cfg_get("TOTK_COOP_TEST_SPAWN");
         const char *at = ts ? strchr(ts, '@') : NULL;
-        if (k == 1 && at && !test_spawned && frame_step_world_us() / 1e6 >= atof(at + 1)) {
+        // name@t spawns one actor at t world seconds; name1+name2+...@t one after the other, 4 s apart (a test of
+        // several actors in one run: the character sets, tools/coop/charmod.py).
+        static int test_next;
+        if (k == 1 && at && !test_spawned && frame_step_world_us() / 1e6 >= atof(at + 1) + 4.0 * test_next) {
             static char nm[64];
-            snprintf(nm, sizeof nm, "%.*s", (int)(at - ts), ts);
-            names[1] = nm, test_spawned = 1;
-            spawn(c, 1);
+            const char *p = ts;
+            for (int i = 0; i < test_next && p && p < at; i++) p = strchr(p, '+'), p = p && p < at ? p + 1 : NULL;
+            if (!p || p >= at) test_spawned = 1;
+            else {
+                const char *e = strchr(p, '+');
+                if (!e || e > at) e = at;
+                snprintf(nm, sizeof nm, "%.*s", (int)(e - p), p);
+                names[1] = nm, test_next++;
+                last_status[1] = -1;
+                rt_log("coop: test spawn %d: %s", test_next, nm);
+                spawn(c, 1);
+                if (e == at) test_spawned = 1;
+            }
         }
         if (pressed & 1 << k) spawn(c, k);
         if (!rd_ptr((uint64_t)(uintptr_t)handles[k])) continue;
