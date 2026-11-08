@@ -5182,6 +5182,21 @@ void coop_players_tick(Cpu *c) {
         }
         s->shield_placed = (st.flags >> 11) & 1;
         memcpy(s->hold_bone, st.hold_bone, sizeof s->hold_bone), memcpy(s->hold, st.hold, sizeof s->hold);
+        {   // its owner's lightning wait (flags bit 12) on the stand-in's EquipmentUser, as the AI node
+            // OneShotEquipmentUserSetLightningWait sets it (bit 16 of +0x4600, the wait time +0x3f14 to 0), so its metal
+            // gear sparks too; cleared when its owner's is (the tester's list)
+            int want_l = (st.flags >> 12) & 1;
+            uint64_t peq = s->actor && s->state == LIVE ? eq_of_actor(s->actor) : 0;
+            if (peq && eq_points_to(peq, s->actor)) {
+                int has_l = (int)(LD64(peq + 0x4600) >> 16 & 1);
+                if (want_l != has_l) {
+                    if (want_l) __atomic_fetch_or((uint64_t *)(uintptr_t)(peq + 0x4600), 1ull << 16, __ATOMIC_SEQ_CST), ST32(peq + 0x3f14, 0);
+                    else __atomic_fetch_and((uint64_t *)(uintptr_t)(peq + 0x4600), ~(1ull << 16), __ATOMIC_SEQ_CST);
+                    static int said_l;
+                    if (said_l++ < 20) rt_log("coop: stand-in: slot %d: lightning %s its owner", (int)(s - slots), want_l ? "about to strike" : "no longer after");
+                }
+            }
+        }
         if (s->shield_placed) memcpy(s->shield_local, st.shield_pos, 12), quat_mat(st.shield_q, s->shield_rot);
         for (int k = 0; k < COOP_GEAR_SLOTS; k++) {
             memcpy(s->gear_want[k], st.gear[k], 32);
