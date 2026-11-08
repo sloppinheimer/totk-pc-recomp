@@ -2289,6 +2289,16 @@ static void fuse_find_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
 static int fuse_on_held(uint64_t a) {
     float q[3];
     if (!coop_rd(a + COOP_ACTOR_POS, q, 12)) return 1;
+    // An item that is gear now, or being made as gear: a fused material can be a weapon (a stick fused to a sword), and
+    // the stand-in's new Weapon_Spear_109 was taken for its old sword's fused Weapon_Spear_109 and deleted, so the
+    // stand-in held nothing (a play session, 2026-11-08). Never deleted: one in an EquipmentUser, or of a name a
+    // co-op Link's or this Link's gear has.
+    char nm[48];
+    coop_actor_name(a, nm, sizeof nm);
+    for (int k = 0; k < 3; k++) if (nm[0] && !strcmp(nm, my_gear[k])) return 1;
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++)
+        for (int k = 0; k < 3; k++)
+            if (slots[i].actor && nm[0] && (!strcmp(nm, slots[i].gear_want[k]) || !strcmp(nm, slots[i].gear_have[k]))) return 1;
     uint64_t holders[1 + COOP_MAX_PLAYERS];
     int nh = 0;
     holders[nh++] = coop_player_actor();
@@ -2314,6 +2324,7 @@ static void delete_old_item(Cpu *c, int i) {
     }
     coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, old_items[i].actor, COOP_DELETE_REASON, 0, 0);
     for (int k = 0; k < ff.n; k++) {
+        if (fuse_on_held(ff.found[k])) continue;   // (gear of a Link, or of a name a Link's gear has)
         coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, ff.found[k], COOP_DELETE_REASON, 0, 0);
         rt_log("coop: proxy: its old %s's fused %s is deleted with it", old_items[i].name, old_items[i].fuse);
     }
