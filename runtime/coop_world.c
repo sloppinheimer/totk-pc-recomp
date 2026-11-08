@@ -2736,6 +2736,10 @@ static void ground_take(const GroundPacket *p, int n) {
 // to the copy's owner ("CE" packets: the enemy's key, the body's place from the enemy's main body), whose game adds
 // it to that enemy's waiting contacts with the handles made the stand-in's (attacker) and its weapon's.
 #define ECONTACT_KIND 0x4543   // "CE"
+// An arrow's contact (the owner's game adds it with the stand-in's bow as the weapon): like a sword's, so the enemy
+// plays its hit there. Kept on the copy, an arrow only took life off the copy, sent on as lost life, which played no
+// hit: a Stalkoblin never fell apart and its life came back (a play session, 2026-11-07).
+#define ECONTACT_ARROW 0x4541  // "AE"
 int coop_standin_puppet(void);   // coop_players.c
 // The contacts sent go in a packet of each hit update's own (hit updates run on several threads at once). The one
 // received waits in ce_in, under ce_lock (taken on the game thread, added on a hit update's), until its enemy's next
@@ -2749,11 +2753,11 @@ static int ce_owner_of(uint64_t a, uint32_t *key) {
     for (int k = 0; *key && k < FOLLOW_N; k++) if (follow[k].key == *key) return follow[k].owner;
     return 0;
 }
-static void ce_queue(ContactPacket *out, uint64_t a, uint64_t e) {   // out: this hit update's (one enemy's)
+static void ce_queue(ContactPacket *out, uint64_t a, uint64_t e, uint32_t kind) {   // out: this hit update's, of kind
     uint32_t key = 0;
     int owner = ce_owner_of(a, &key);
     if (!owner || !key || out->n >= CONTACT_MAX) return;
-    if (!out->n) out->key = key, out->to = (uint32_t)owner, out->kind = ECONTACT_KIND;
+    if (!out->n) out->key = key, out->to = (uint32_t)owner, out->kind = kind;
     if (!coop_rd(e, out->e[out->n], CONTACT_SZ)) return;
     uint64_t body, mb0 = enemy_body(a);
     memcpy(&body, out->e[out->n] + 0x58, 8);
@@ -2764,7 +2768,8 @@ static void ce_flush(const ContactPacket *out) {
     if (!out->n) return;
     coop_net_hit_send(out, (int)(offsetof(ContactPacket, e) + out->n * CONTACT_SZ));
     static _Atomic int said;
-    if (atomic_fetch_add(&said, 1) < 20) rt_log("coop: contact: %u of this Link's sword on the copy of %08x sent to player %u", out->n, out->key, out->to);
+    if (atomic_fetch_add(&said, 1) < 20)
+        rt_log("coop: contact: %u of this Link's %s on the copy of %08x sent to player %u", out->n, out->kind == ECONTACT_ARROW ? "arrows" : "sword", out->key, out->to);
 }
 uint64_t coop_eq_row_ref(uint64_t actor, int row);   // coop_players.c
 // A CE packet from player `from` (the hit update of its enemy adds it: ce_add).
@@ -2778,7 +2783,8 @@ static void ce_take(const ContactPacket *cp, int from) {
     for (int i = 0; i < nc; i++) if (ids[i] == from) by = co[i];
     uint64_t dc = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x2f8) : 0;
     if (!dc || !by) { rt_log("coop: contact from player %d on %08x: %s", from, cp->key, !dc ? "no such enemy here" : "no stand-in of theirs"); return; }
-    uint64_t by_ref = actor_ref(by), weap = coop_eq_row_ref(by, 0);
+    uint64_t coop_eq_bow_ref(uint64_t actor);   // coop_players.c
+    uint64_t by_ref = actor_ref(by), weap = cp->kind == ECONTACT_ARROW ? coop_eq_bow_ref(by) : coop_eq_row_ref(by, 0);
     plat_mutex_lock(&ce_lock);
     memcpy(ce_in.e, cp->e, cp->n * CONTACT_SZ), memcpy(ce_in.brel, cp->brel, sizeof ce_in.brel);
     ce_in.dc = dc, ce_in.by = by_ref, ce_in.weap = weap, ce_in.at_ns = now;
@@ -2816,7 +2822,7 @@ static void ce_add(uint64_t dc) {
     memcpy((void *)(uintptr_t)(l + 0x18), &cnt, 4);
     char nm[48];
     static int said;
-    if (said++ < 20) rt_log("coop: contact: %d from a stand-in's sword added to %s (weapon %s)", added, coop_actor_name(a, nm, sizeof nm), weap ? "its own" : "none");
+    if (said++ < 20) rt_log("coop: contact: %d from a stand-in added to %s (weapon %s)", added, coop_actor_name(a, nm, sizeof nm), weap ? "its own" : "none");
 }
 static void contacts_filter(uint64_t dc) {
     static int on = -1;
@@ -2842,21 +2848,23 @@ static void contacts_filter(uint64_t dc) {
     }
     if (!ct_is_copy(a)) return;
     int out = 0, keep = 0;
-    ContactPacket ce_out;
-    memset(&ce_out, 0, offsetof(ContactPacket, e));
+    ContactPacket ce_out, ce_arrows;
+    memset(&ce_out, 0, offsetof(ContactPacket, e)), memset(&ce_arrows, 0, offsetof(ContactPacket, e));
     for (int k = 0; k < cnt; k++) {
         uint64_t e = base + (uint64_t)k * CONTACT_SZ, r1 = coop_rd_ptr(e + 0x68), r2 = coop_rd_ptr(e + 0x80);
         uint64_t w = r1 ? coop_rd_ptr(r1 + 0x40) : 0, by = r2 ? coop_rd_ptr(r2 + 0x40) : 0;
         char wn[48] = "", an[48] = "";
         if (w) coop_actor_name(w, wn, sizeof wn);
-        int who = ct_is_link(by), drop = who && !strncmp(wn, "Weapon_", 7);
+        size_t wl = strlen(wn);
+        int arrow = wl >= 5 && !strcmp(wn + wl - 5, "Arrow");   // NormalArrow, FireArrow, ...
+        int who = ct_is_link(by), drop = who && (!strncmp(wn, "Weapon_", 7) || (arrow && who == 1 && coop_standin_puppet()));
         static _Atomic int said;
         if (atomic_fetch_add(&said, 1) < 40)
             rt_log("coop: contact on the copy of %s by %s with %s (kind %u): %s", coop_actor_name(a, an, sizeof an),
                    who == 1 ? "this Link" : who == 2 ? "a co-op Link" : "something else", wn[0] ? wn : "-", LD8(e + 0x90),
                    drop ? "taken out (its owner's game counts it)" : "kept");
         if (drop) {
-            if (who == 1 && coop_standin_puppet()) ce_queue(&ce_out, a, e);
+            if (who == 1 && coop_standin_puppet()) ce_queue(arrow ? &ce_arrows : &ce_out, a, e, arrow ? ECONTACT_ARROW : ECONTACT_KIND);
             out++;
             continue;
         }
@@ -2864,7 +2872,7 @@ static void contacts_filter(uint64_t dc) {
         keep++;
     }
     if (out) memcpy((void *)(uintptr_t)(l + 0x18), &keep, 4);
-    ce_flush(&ce_out);
+    ce_flush(&ce_out), ce_flush(&ce_arrows);
 }
 void coop_hit_update(Cpu *c) {
     contacts_test(c->x[0]);
@@ -3464,7 +3472,7 @@ static void peer_tick(Cpu *c, uint64_t me) {
             }
             int coop_glue_take(const void *p, int n, int from);   // coop_glue.c: "GA" and "GL" packets (Ultrahand glue)
             if (coop_glue_take(&lhp, n, from)) continue;
-            if (n >= (int)offsetof(ContactPacket, e) && cp->kind == ECONTACT_KIND && (int)cp->to == my_id && cp->n <= CONTACT_MAX &&
+            if (n >= (int)offsetof(ContactPacket, e) && (cp->kind == ECONTACT_KIND || cp->kind == ECONTACT_ARROW) && (int)cp->to == my_id && cp->n <= CONTACT_MAX &&
                 n == (int)(offsetof(ContactPacket, e) + cp->n * CONTACT_SZ)) {
                 ce_take(cp, from);
                 continue;

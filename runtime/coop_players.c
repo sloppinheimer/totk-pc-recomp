@@ -1115,7 +1115,7 @@ static void quat_mat(const float q[4], float *r) {
 // Puppet mode, smoothing (TOTK_COOP_PUPPET_DELAY_MS, default 60; 0 = the latest report, predicted): the puppet is
 // shown where its owner was that long ago, interpolated between the two reports around that moment (position
 // linearly, rotation by normalised quaternion blend). Past the newest report it carries on at the owner's velocity
-// for at most 0.1 s. Reports arrive about 30 times a second and frames do not line up with them, so taking the latest
+// for at most 0.1 s. Reports arrive about 60 times a second (coop_net.c) and frames do not line up with them, so taking the latest
 // one each frame moves the puppet in uneven steps (the jitter).
 static int puppet_delay_ms(void) {
     static int d = -1;
@@ -3906,6 +3906,18 @@ static uint64_t eq_item(uint64_t eq, int kind) {
 uint64_t coop_eq_row_ref(uint64_t actor, int row) {
     uint64_t eq = coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x230);
     return eq && row >= 0 && row < 24 ? coop_rd_ptr(eq + GEAR_TABLE + 0x18 * (uint64_t)row) : 0;
+}
+// The reference object of the first EquipmentUser row holding a bow (gear_kind 1), or 0: a stand-in's bow, the
+// weapon of an arrow hit its owner's game sends on (coop_world.c, ce_take).
+uint64_t coop_eq_bow_ref(uint64_t actor) {
+    uint64_t eq = coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x230);
+    for (int row = 0; eq && row < 24; row++) {
+        uint64_t ref = coop_rd_ptr(eq + GEAR_TABLE + 0x18 * (uint64_t)row);
+        char nm[32];
+        coop_actor_name(ref ? coop_rd_ptr(ref + 0x40) : 0, nm, sizeof nm);
+        if (nm[0] && gear_kind(nm) == 1) return ref;
+    }
+    return 0;
 }
 // An item of a Link's (in this Link's or a co-op Link's EquipmentUser) or a copy of another player's object: not an
 // enemy's weapon (coop_world.c, enemy puppets).

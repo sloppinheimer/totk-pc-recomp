@@ -108,9 +108,12 @@ static void net_thread(void *arg) {
         return;
     }
 #ifdef _WIN32
-    DWORD tmo = 10;   // ms: the loop sends about every 33 ms
+    // The state goes out every frame (16 ms, as TotK Online sends its stand-in's pose: read for behaviour only), so the
+    // receive waits at most 4 ms. Every 33 ms with 10 ms waits it went about 24 times a second with gaps to 80 ms,
+    // and the stand-ins moved and animated in steps (a play session, 2026-11-07).
+    DWORD tmo = 4;
 #else
-    struct timeval tmo = {0, 10000};
+    struct timeval tmo = {0, 4000};
 #endif
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tmo, sizeof tmo);
     int rcvbuf = 1 << 20;   // enemy poses come in bursts of up to a dozen packets a frame (coop_world.c)
@@ -128,7 +131,7 @@ static void net_thread(void *arg) {
             snprintf((char *)buf + HEADER, 16, "%s", name ? name : "Player");
             sendto(s, (const char *)buf, HEADER + 16, 0, res->ai_addr, (int)res->ai_addrlen);
         }
-        if (my_id && now - last_state > 33000000ull) {
+        if (my_id && now - last_state >= 16000000ull) {
             last_state = now;
             NetState st;
             plat_mutex_lock(&lock);
@@ -141,9 +144,9 @@ static void net_thread(void *arg) {
                 memcpy(buf + HEADER, &st, sizeof st);
                 sendto(s, (const char *)buf, HEADER + (int)sizeof st, 0, res->ai_addr, (int)res->ai_addrlen);
             }
-            // Once a second (every 30th pass), state or none: keep the relay's seat. (Counted by the states sent, it
+            // Once a second (every 60th pass), state or none: keep the relay's seat. (Counted by the states sent, it
             // went once and never again while there was no state, and the relay let the seat go, code review.)
-            if (++beat % 30 == 0) {
+            if (++beat % 60 == 0) {
                 header(buf, HELLO);
                 memset(buf + HEADER, 0, 16);
                 snprintf((char *)buf + HEADER, 16, "%s", name ? name : "Player");
