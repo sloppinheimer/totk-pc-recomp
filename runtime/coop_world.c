@@ -1313,6 +1313,25 @@ void coop_proxy_pack_mine(uint64_t me) {
     memcpy(pose_latest, out, at), atomic_store(&pose_latest_len, at);
     plat_mutex_unlock(&pose_lock);
 }
+// A PlayerPuppet stand-in, after its model phase (coop_players.c): its owner's final skeleton records (coop_proxy_pack_mine:
+// from the final matrices, so after the owner's arm and hand corrections) at the delayed moment straight into the
+// stand-in's body skeleton; the caller then pushes its model, which makes the world matrices from them and puts its
+// items on their bones. The clips the stand-in plays (coop_anim_apply) leave every hold a little off and a two-handed
+// weapon's left hand off its grip: those corrections are the Player's own, which the stand-in has not (the tester's
+// session, 2026-11-08). 0: not done (no records from that player, or another bone count).
+int coop_standin_put_pose(uint64_t skel, int id) {
+    if (!skel || id < 1 || id > COOP_MAX_PLAYERS || !proxy_records_on()) return 0;
+    static __thread uint8_t in[COOP_POSE_MAX];
+    uint64_t age = 0;
+    int len = coop_net_pose(id, in, sizeof in, &age);
+    if (!len || age >= 2000000000ull) return 0;
+    pose_hist_take(id, in, len, age);
+    int ok = pose_put_delayed(id, 0, skel);
+    static _Atomic int said, said_no;
+    if (ok && atomic_fetch_add(&said, 1) == 0) rt_log("coop: stand-in: its owner's skeleton records go onto it");
+    if (!ok && atomic_fetch_add(&said_no, 1) < 3) rt_log("coop: stand-in: its owner's records not put on (%d bytes)", len);
+    return ok;
+}
 // Proxy mode, from the proxy driver (coop_players.c): the owner's records at the delayed moment straight into the
 // proxy's body skeleton. 0: not done (no records yet: the caller runs the writer with the input pose instead).
 int coop_proxy_put_records(uint64_t skel) {

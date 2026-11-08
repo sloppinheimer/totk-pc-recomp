@@ -708,6 +708,7 @@ static void skel_find(uint64_t actor) {
     if (!found) rt_log("coop: test: no 127-bone skeleton within 3 levels of the stand-in");
 }
 int coop_standin_puppet(void);
+static uint64_t model_of(uint64_t a);
 static int proxied(const Slot *s) {   // (never a PlayerPuppet stand-in: its gear is made once, nothing thaws it)
     return coop_proxy_mode() && !coop_standin_puppet() && s->source == SRC_NET && s->state == LIVE && s->have_want && s->live_ticks > PROXY_WARMUP_TICKS &&
            coop_puppet_pose_obj(body_skeleton(s->actor));
@@ -872,6 +873,13 @@ int coop_players_phase(Cpu *c, uint64_t addr) {
     static int pp_on = -1;   // TOTK_COOP_STANDIN_PHASEPLACE=0: none of it (a test, the sword staying on the back)
     if (pp_on < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_PHASEPLACE"); pp_on = !(e && *e == '0'); }
     if (pp_on && ps && coop_standin_puppet() && addr == MOD_MAIN_BASE + 0x245030 && ps->state == LIVE && ps->source == SRC_NET) {
+        // its owner's final pose (TOTK_COOP_STANDIN_POSE=0: only the clips it plays), then the push that makes its
+        // bones' world matrices from it and puts its items on them
+        static int pose_on = -1;
+        if (pose_on < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_POSE"); pose_on = !(e && *e == '0'); }
+        int coop_standin_put_pose(uint64_t skel, int id);   // coop_world.c
+        uint64_t psk = pose_on ? body_skeleton(ps->actor) : 0, pmodel = model_of(ps->actor);
+        if (psk && pmodel && coop_standin_put_pose(psk, ps->net_id)) coop_guest_call(c, MOD_MAIN_BASE + PROXY_MODEL_PUSH, pmodel, 0, 0, 0);
         hold_place(c, ps);
         shield_place(c, ps);
         static int said_sh, said_in;
