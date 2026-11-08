@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define COOP_MAX_PLAYERS 8
-#define COOP_NET_VERSION 26   // packet header version: games and relays of another version ignore each other
+#define COOP_NET_VERSION 27   // packet header version: games and relays of another version ignore each other
 
 // One player's state, sent about 30 times a second. Positions and directions are world space; the sticks are as the
 // player's own camera saw them, with the camera's horizontal forward and right so a receiver can turn them into its
@@ -28,12 +28,13 @@ typedef struct {
 #define COOP_OBJ_LOCAL 2
 #define COOP_OBJ_FUSED 4   // a material fused to one of the owner's arrows
 #define COOP_OBJ_ONLINK 8  // pos and q are in the owner's Link's frame (its paraglider)
-// One slot of a Link's animation player (TotK Online sends seven to its stand-in; read for behaviour only; ten here:
-// a two-handed weapon's hold plays in slot 8, clip 459 at weight 1, and with seven the stand-in's left hand never
-// reached the spear, a play session 2026-11-08): the clip
+// One slot of a Link's animation player (TotK Online sends seven to its stand-in; read for behaviour only; sixteen
+// here: a two-handed weapon's hold, clip 459 at weight 1 on the upper-body mask, moves between slots 7 and 10 as other
+// layers come and go, and with seven or ten the stand-in lost it and its left hand left the stick; a play session,
+// 2026-11-08): the clip
 // (0xffff none), its weight * 65535, its frame, how many frames a second it moves, and its body mask: where in the
 // animation graph the mask's layer is (bind, an offset, 0 none; coop_world.c anim_bind_off).
-#define COOP_ANIM_SLOTS 10
+#define COOP_ANIM_SLOTS 16
 typedef struct { uint16_t idx, weight; float frame, rate; uint16_t bind, pad; } CoopAnim;
 // A body mask's state as the owner's animation graph set it (TotK Online sends a slot's partial-bind flags; read for
 // behaviour only): where it is (CoopAnim.bind, 0 none), its u16 at +0x1c, its byte flags ([+0x10], nb of them) and

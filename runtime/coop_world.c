@@ -5425,6 +5425,18 @@ void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, int64_t age_n
             if (masks < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_MASKS"); masks = !(e && *e == '0'); }
             uint64_t b = masks ? anim_bind_at(g, in[i].bind) : 0;
             masked += b != 0;
+            if (i >= 7) {   // the slots past TotK Online's seven: a two-handed hold (logged as they change, 40 lines)
+                static uint16_t last_idx[COOP_ANIM_SLOTS];
+                static int said7;
+                if (in[i].idx != last_idx[i] && said7 < 40) {
+                    said7++;
+                    int sent_mask = 0;
+                    rt_log("coop: stand-in: slot %d plays clip %u weight %.2f, its owner's mask at %#x %s", i, in[i].idx, in[i].weight / 65535.0f,
+                           in[i].bind, b ? "bound" : "not found here");
+                    (void)sent_mask;
+                }
+                last_idx[i] = in[i].idx;
+            }
             float tf = in[i].frame + in[i].rate * age;
             float fr = anim_eased(ck, cdt, i, in[i].idx, tf > 0 ? tf : 0, in[i].rate);
             anim_play_bind(c, q, i, in[i].idx, in[i].weight / 65535.0f, fr, b), played++;
@@ -5507,6 +5519,21 @@ void coop_anim_masks_pack(uint64_t me, const CoopAnim *anim, CoopMask *out) {
         uint64_t pb = coop_rd_ptr(b + 0x10), pw = coop_rd_ptr(b + 0x28);
         if ((nb && (!pb || !coop_rd(pb, m->b, nb))) || (nw && (!pw || !coop_rd(pw, m->w, 4 * nw)))) continue;
         m->off = off, m->nb = (uint8_t)nb, m->nw = (uint8_t)nw, n++;
+    }
+    {   // slots whose mask did not fit in the COOP_ANIM_MASKS sent (logged as that changes, 40 lines)
+        static int last_missing = -1, said;
+        int missing = 0;
+        char b[160] = "";
+        for (int i = 0; i < COOP_ANIM_SLOTS; i++) {
+            if (!anim[i].bind || anim[i].idx == 0xffff) continue;
+            int in = 0;
+            for (int k = 0; k < n; k++) in |= out[k].off == anim[i].bind;
+            if (!in) { missing++; size_t l = strlen(b); snprintf(b + l, sizeof b - l, " slot %d at %#x", i, anim[i].bind); }
+        }
+        if (missing != last_missing && said < 40) {
+            said++, last_missing = missing;
+            rt_log("coop: this Link's masks: %d sent, %d slots' masks not sent:%s", n, missing, b[0] ? b : " none");
+        }
     }
 }
 void coop_anim_masks_apply(uint64_t standin, const CoopMask *in) {
