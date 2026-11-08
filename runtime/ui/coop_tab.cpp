@@ -13,6 +13,7 @@ extern "C" {
 #include "cfg.h"
 #include "coop_chars.h"
 #include "coop_net.h"
+#include "host.h"
 #include "mods.h"
 #include "ui_text.h"
 #include "platform/platform.h"
@@ -222,6 +223,7 @@ static void characters_section(float scale) {
             }
             mods_set_enabled(mi, on);
             opt_save_soon();
+            rt_log("coop: characters: %s switched %s as this PC's character (from the next start)", c->name, on ? "on" : "off");
         }
     }
 }

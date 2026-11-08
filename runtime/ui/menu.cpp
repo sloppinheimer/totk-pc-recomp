@@ -63,7 +63,7 @@ bool coop_tags_wanted(void);          // ui/coop_tags.cpp: the other players' na
 void coop_tags_draw(float w, float h, float scale, bool menu_open);
 bool coop_markers_wanted(void);       // ui/coop_markers.cpp: the other players on the map and the minimap
 void coop_markers_draw(float w, float h, float scale, bool menu_open);
-const char *coop_markers_shot(void);
+const char *coop_markers_shot(uint64_t frame);
 int coop_notices_wanted(void);       // coop_notices.c: joins, leaves and fast travels to show (checked each frame)
 void coop_notices_draw(float w, float h, float scale, bool menu_open);   // ui/coop_notices.cpp
 void coop_notices_glyphs(const char *lang, void (*visit)(void *ctx, const char *text), void *ctx);
@@ -1606,7 +1606,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     coop_tags_draw((float)t->width, (float)t->height, scale, open);
     coop_notices_draw((float)t->width, (float)t->height, scale, open);
     ImGui::Render();
-    if (!*shot) *shot = coop_markers_shot();   // TOTK_COOP_TEST_MARKSHOTS (tests)
+    if (!*shot) *shot = coop_markers_shot(frame);   // TOTK_COOP_TEST_MARKSHOTS (tests)
     // TOTK_COOP_TEST_TAGSHOT=<frame>: that frame's swapchain image, overlay and all, to TOTK_MENU_TEST_DIR (tests)
     if (!*shot) *shot = coop_notices_shot();   // (after the markers': it overwrote their shot, merge 53e62d1)
     static long long tag_shot = -2;

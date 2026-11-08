@@ -61,14 +61,26 @@ extern "C" void coop_markers_draw(float w, float h, float scale, bool menu_open)
 
 // TOTK_COOP_TEST_MARKSHOTS=<lo>-<hi>:<step> (world-clock seconds, as TOTK_SHOTS=w...): the swapchain image, overlay
 // and all, saved as mark-<s>.png in TOTK_MENU_TEST_DIR (TOTK_SHOTS saves the game's picture before the overlay).
-extern "C" const char *coop_markers_shot(void) {
-    static int parsed;
+// p<lo>-<hi>:<step> counts presents instead (mark-p<n>.png): the world clock stops while the menu is open, so a shot of
+// the menu driven by an input script needs this.
+extern "C" const char *coop_markers_shot(uint64_t frame) {
+    static int parsed, presents;
     static double lo, hi, step, next;
     if (!parsed) {
         parsed = 1;
         const char *e = cfg_get("TOTK_COOP_TEST_MARKSHOTS");
+        if (e && *e == 'p') presents = 1, e++;
         if (!e || sscanf(e, "%lf-%lf:%lf", &lo, &hi, &step) != 3 || step <= 0) hi = -1;
         next = lo;
+    }
+    if (presents) {
+        double present = (double)frame;
+        if (hi < 0 || present < next || next > hi) return NULL;
+        static char ppath[512];
+        const char *dir = cfg_get("TOTK_MENU_TEST_DIR");
+        snprintf(ppath, sizeof ppath, "%s/mark-p%llu.png", dir ? dir : ".", (unsigned long long)frame);
+        while (next <= present) next += step;
+        return ppath;
     }
     int64_t us = frame_step_world_us();
     if (hi < 0 || us < 0 || us < next * 1e6 || next > hi) return NULL;

@@ -1,0 +1,18 @@
+# The Co-op tab's character switch pressed with the pad (run_pair.ps1 -ScriptB, with TOTK_MODS_DIR naming a mods folder
+# whose only character mod is off; docs/coop/character-mods.md, Testing). The 100% save (third in the Continue list),
+# then in the world (about frame 2400): the menu (Minus+Plus), L to the Co-op tab (it wraps from the first tab), DOWN
+# twice (Show player names has the cursor; then the GameBanana link field, then the switch), A, and the menu closed.
+# The game then writes mods_order naming the mod and mods_disabled without it into totk.ini.
+480 A 4
+700 DOWN 4
+760 DOWN 4
+820 A 4
+980 A 4
+3200 MINUS 20
+3200 PLUS 20
+3300 L 6
+3400 DOWN 6
+3460 DOWN 6
+3600 A 6
+3800 MINUS 20
+3800 PLUS 20
