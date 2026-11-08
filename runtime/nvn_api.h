@@ -115,3 +115,6 @@ void nvn_pool_invalidate(const pool_t *p, uint64_t off, uint64_t size);
 // MemoryPoolFlushMappedRange: the CPU wrote [mem + off, mem + off + size). Weak no-op in nvn_ext.c; a back end that keeps
 // device-side copies of pool memory (vk_memory.c's VRAM mirror) defines it and copies the range again.
 void nvn_pool_flushed(const pool_t *p, uint64_t off, uint64_t size);
+
+// TOTK_TEST_DRAWSKIP (nvn_api_core.c): 1 when a draw's buffer address lies in a pool of a model file named there.
+int nvn_test_skip(uint64_t address);

@@ -1,4 +1,4 @@
-// NVN front end, first slice: device, queue, memory pool, buffer, sync and
+﻿// NVN front end, first slice: device, queue, memory pool, buffer, sync and
 // event objects. Ported from MacNativeGames games/totk/third_party/d2r_gfx/gfx/nvn/hle_nvn.c @ b75be8cf (MIT,
 // Copyright (c) 2026 jhaizhou; origin d2r-mobile), lines 137-253, 534-645 and 1975-2001; Metal, mach, the translation
 // thread and Apple diagnostics dropped. Calls that reached Metal go to gfx_backend() (gfx.h). nvnQueuePresentTexture
@@ -7,6 +7,7 @@
 // Objects are stored in place in the NVN object memory the game provides (nvn_obj.h); every argument is read from the
 // AAPCS64 registers (host.h arg_x / arg_p) and every result returned with ret_x.
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -253,6 +254,70 @@ NVN_API(nvnDeviceSetDepthMode) {
 // void nvnDeviceFinalizeCommandHandle(NVNdevice *d, NVNcommandHandle h)
 NVN_API(nvnDeviceFinalizeCommandHandle) { (void)c; }
 
+// ---------- TOTK_TEST_DRAWSKIP=<name part>[,<name part>...] (docs/coop/character-mods.md, "This PC's character in
+// place"): a memory pool whose storage lies in a model file (a BFRES) whose name contains one of the parts is marked,
+// and the replay skips every indexed draw whose index or first vertex buffer lies in a marked pool (vk_exec_draw.c
+// op_draw_idx). The game makes one pool per model file, its storage the file's own page-aligned copy in memory, so a
+// "FRES    " header on a page at or below the storage, whose file size reaches it, names the pool. The first 40 pools
+// found in a model file are logged, and every marked one. A pool freed stays marked (a test hook).
+#define TEST_MARKS 256
+static struct { uintptr_t lo, hi; } test_mark[TEST_MARKS];
+static int test_nmark;
+static char test_part[256];
+static PlatMutex test_lock;   // (zero storage is a valid lock)
+static int test_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = cfg_value("TOTK_TEST_DRAWSKIP");
+        if (e) snprintf(test_part, sizeof test_part, "%s", e);
+        on = e && *e;
+    }
+    return on;
+}
+// The model file a pool's storage lies in (up to 8 MiB above its header): 1 and its name, else 0.
+static int test_fres_of(uintptr_t g, char *name, size_t nn) {
+    for (uintptr_t a = g & ~(uintptr_t)0xfff, n = 0; n < 0x800 && a; a -= 0x1000, n++) {
+        uint8_t h[0x20];
+        if (!plat_mem_read(a, h, sizeof h)) return 0;
+        if (memcmp(h, "FRES    ", 8)) continue;
+        uint32_t o, size;   // the file name's offset (word 0x10) and the file's size (word 0x1c)
+        memcpy(&o, h + 0x10, 4), memcpy(&size, h + 0x1c, 4);
+        if (g >= a + size) return 0;
+        if (o >= size || !plat_mem_read(a + o, name, nn - 1)) snprintf(name, nn, "?");
+        name[nn - 1] = 0;
+        return 1;
+    }
+    return 0;
+}
+static void test_pool(const pool_t *o) {
+    uintptr_t g = (uintptr_t)o->game_mem;
+    char name[96];
+    int in = test_fres_of(g, name, sizeof name), want = 0;
+    for (const char *t = test_part; in && *t && !want; t += strcspn(t, ",") + (t[strcspn(t, ",")] == ',')) {
+        size_t n = strcspn(t, ",");
+        for (const char *q = name; *q && !want; q++) want = n && !strncmp(q, t, n);
+    }
+    static int logged;
+    if (in && (want || logged < 40)) {
+        logged++;
+        rt_log("nvn: test: drawskip: pool %p size %#llx in model file %s%s", (void *)o->mem, (unsigned long long)o->size,
+               name, want ? ": marked" : "");
+    }
+    if (!want) return;
+    plat_mutex_lock(&test_lock);
+    if (test_nmark < TEST_MARKS) {
+        test_mark[test_nmark].lo = (uintptr_t)o->mem, test_mark[test_nmark].hi = (uintptr_t)o->mem + o->size;
+        __atomic_store_n(&test_nmark, test_nmark + 1, __ATOMIC_RELEASE);
+    }
+    plat_mutex_unlock(&test_lock);
+}
+int nvn_test_skip(uint64_t a) {
+    int n = __atomic_load_n(&test_nmark, __ATOMIC_ACQUIRE);
+    for (int i = 0; i < n; i++)
+        if (a >= test_mark[i].lo && a < test_mark[i].hi) return 1;
+    return 0;
+}
+
 // ---------- Memory pools
 // void nvnMemoryPoolBuilderSetDefaults(NVNmemoryPoolBuilder *b)
 NVN_API(nvnMemoryPoolBuilderSetDefaults) { memset(arg_p(c, 0), 0, sizeof(pool_builder_t)); }
@@ -291,6 +356,7 @@ NVN_API(nvnMemoryPoolInitialize) {
         ok = 0;
     }
     if (ok && pool_gpu_visible(o)) index_add(o);
+    if (ok && test_on()) test_pool(o);
     if (!ok) {
         if (nvn_gpu_only((uintptr_t)o->mem)) gva_free((uintptr_t)o->mem);
         o->magic = 0;

@@ -3155,6 +3155,7 @@ static void op_draw_idx(VkExec *ex, const p_draw_idx *d) {
     c0_binst = (uint32_t)d->base_instance;
     static const uint32_t isize[3] = {1, 2, 4};
     if (d->itype < 0 || d->itype > 2) return warn_once(W_INDEX, "index type %d is unknown: draw skipped", d->itype);
+    if (nvn_test_skip(d->ibuf) || nvn_test_skip(ex->vbuf[0].address)) return;   // TOTK_TEST_DRAWSKIP
     int restart = restart_for(ex, d->prim, d->itype);
     if (d->count <= 0 || !prepare_draw(ex, d->prim, d->count, restart)) return;
     vk_exec_frame.draws++;
