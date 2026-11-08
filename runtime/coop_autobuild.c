@@ -745,9 +745,35 @@ static void sweep_test(Cpu *c, uint64_t me) {
     }
 }
 
+// TOTK_COOP_TEST_GLUENEAR=<s>[,<m>] (with autobuild_glue_3rd.txt-style scripts, which hold the build with Ultrahand from
+// 40.5 s and press A at 43.5 s): at that time a loose fan is made <m> (1.0) beyond the tracked device farthest to this
+// Link's right, at its height: something for the held build to be glued to by hand (the release's own glue).
+static void gluenear_test(Cpu *c, uint64_t me, int n) {
+    static double at = -1, gap = 1.0;
+    static _Alignas(16) uint8_t h[0x40];
+    if (at < 0) { const char *e = cfg_get("TOTK_COOP_TEST_GLUENEAR"); at = 0; if (e && sscanf(e, "%lf,%lf", &at, &gap) < 1) at = 0; }
+    if (at <= 0 || frame_step_world_us() / 1e6 < at) return;
+    at = 0;
+    float lp[3], r[9];
+    if (!coop_rd(me + COOP_ACTOR_POS, lp, 12) || !coop_rd(me + COOP_ACTOR_ROT, r, 36)) return;
+    float rx = r[0], rz = r[6], best = -1e9f, bp[3] = {0};
+    char nm[48];
+    for (int i = 0; i < n; i++) {
+        float p[3];
+        if (!live_device(i, nm, sizeof nm) || strncmp(nm, "SpObj_", 6) || !coop_rd(atomic_load(&tracked[i]) + COOP_ACTOR_POS, p, 12)) continue;
+        float d = (p[0] - lp[0]) * rx + (p[2] - lp[2]) * rz;
+        if (d > best) best = d, memcpy(bp, p, 12);
+    }
+    if (best < -1e8f) return;
+    float pos[3] = {bp[0] + rx * (float)gap, bp[1], bp[2] + rz * (float)gap}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    rt_log("coop: test: gluenear: a loose fan asked for at %.2f %.2f %.2f (%.1f m right of the build's right-most part): %d", pos[0], pos[1],
+           pos[2], gap, coop_request_create(c, "SpObj_WindGenerator_A_01", pos, rot, h));
+}
+
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
     if (!ablog_on()) return;
     sweep_test(c, me);
+    gluenear_test(c, me, atomic_load(&tracked_n));
     static int64_t last, first;
     int64_t now = frame_step_world_us();
     {   // TOTK_COOP_TEST_ABPLACE=<s>: game A's Link put on the flat ground of the fan tests (coop_players.c fanset_test),

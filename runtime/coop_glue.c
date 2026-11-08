@@ -691,11 +691,29 @@ static void glue_test(Cpu *c, uint64_t me) {
                 mm[k][row * 4 + 3] = rr[k][0 * 3 + row] * d[0] + rr[k][1 * 3 + row] * d[1] + rr[k][2 * 3 + row] * d[2];
             }
         }
+        // TOTK_COOP_TEST_GLUECLEAR=1: body +0x68 bit 24 cleared on both first. Every object made by our create request
+        // has it (as the copies do), and a body with it is left out of any edge (main+0xa2d39c): why this test's glue,
+        // on two made objects, gave them no group while glue by hand does (the tester's play log)
+        uint64_t w68[2] = {0, 0};
+        coop_rd(ba + 0x68, &w68[0], 8), coop_rd(bb + 0x68, &w68[1], 8);
+        rt_log("coop: test: glue: bodies' +0x68 %llx %llx", (unsigned long long)w68[0], (unsigned long long)w68[1]);
+        if (cfg_get("TOTK_COOP_TEST_GLUECLEAR"))
+            __atomic_fetch_and((uint64_t *)(uintptr_t)(ba + 0x68), ~(1ull << 24), __ATOMIC_SEQ_CST),
+            __atomic_fetch_and((uint64_t *)(uintptr_t)(bb + 0x68), ~(1ull << 24), __ATOMIC_SEQ_CST);
         uint64_t e = 0;
-        int ok = make_bond(c, obj[0], obj[1], ha, hb, ma, mb, 0, &e);   // in_apply 0: captured as glue made here
+        int ok;
+        if (cfg_get("TOTK_COOP_TEST_GLUEBOND")) {   // =1: the autobuild's bond instead (coop_bonds.c coop_bonds_bond)
+            int coop_bonds_bond(Cpu *c, uint64_t a, uint64_t b);
+            ok = coop_bonds_bond(c, obj[0], obj[1]);
+            rt_log("coop: test: glue: %s bonded to %s as an autobuild bonds: %d", names[0], names[1], ok);
+            glued_at = now, stage = 3;
+            goto bonded;
+        }
+        ok = make_bond(c, obj[0], obj[1], ha, hb, ma, mb, 0, &e);   // in_apply 0: captured as glue made here
         rt_log("coop: test: glue: %s to %s: entry %llx, %s; its constraint object (doScotch's [entry+0x560]) %llx", names[0], names[1],
                (unsigned long long)e, ok ? "glued" : "not glued", (unsigned long long)(e ? coop_rd_ptr(e + 0x560) : 0));
         if (!ok) stage = 9;
+    bonded:;
     }
     {   // their glue components' group (+0x28: an autobuild's devices share one; coop_autobuild.c), 1 s and 4 s after
         static int said;
@@ -709,7 +727,28 @@ static void glue_test(Cpu *c, uint64_t me) {
                    (unsigned long long)edge, (unsigned long long)w[0], (unsigned long long)w[1], (unsigned long long)coop_rd_ptr(edge + 0x70));
         }
     }
-    if (stage == 3 && now > glued_at + 20) {
+    {   // TOTK_COOP_TEST_GLUEON=1: 8 s after the glue, the first one's switch set (component 166 +0x8d bit 3): with one
+        // group both turn on, here and, through the bonds' sync, in the other game; 14 s after, both switched (off)
+        static int on_stage;
+        uint64_t sw[2] = {0, 0};
+        for (int k = 0; k < 2; k++) { uint64_t t = coop_rd_ptr(obj[k] + 0x228); sw[k] = t ? coop_rd_ptr(t + 0x530) : 0; }
+        if (stage == 3 && cfg_get("TOTK_COOP_TEST_GLUEON") && sw[0] && sw[1]) {
+            if (on_stage == 0 && now > glued_at + 8) on_stage = 1, ST8(sw[0] + 0x8d, (uint8_t)(LD8(sw[0] + 0x8d) | 8)), rt_log("coop: test: glue: the first one switched");
+            if (on_stage == 1 && now > glued_at + 14)
+                on_stage = 2, ST8(sw[0] + 0x8d, (uint8_t)(LD8(sw[0] + 0x8d) | 8)), ST8(sw[1] + 0x8d, (uint8_t)(LD8(sw[1] + 0x8d) | 8)),
+                rt_log("coop: test: glue: both switched");
+            static double said_at;
+            if (now - said_at >= 1) {
+                said_at = now;
+                uint32_t v[2] = {0, 0};
+                for (int k = 0; k < 2; k++) { uint64_t t = coop_rd_ptr(obj[k] + 0x228), c11 = t ? coop_rd_ptr(t + 8 * 11) : 0; if (c11) coop_rd(c11 + 0x348, &v[k], 4); }
+                rt_log("coop: test: glue: %.0f s: on %d %d, groups %llx %llx, +0x8d %02x %02x", now - glued_at, !!(v[0] & 0x2000), !!(v[1] & 0x2000),
+                       (unsigned long long)coop_rd_ptr(scotch_comp(obj[0]) + 0x28), (unsigned long long)coop_rd_ptr(scotch_comp(obj[1]) + 0x28),
+                       LD8(sw[0] + 0x8d), LD8(sw[1] + 0x8d));
+            }
+        }
+    }
+    if (stage == 3 && now > glued_at + 20 && !cfg_get("TOTK_COOP_TEST_GLUEBOND")) {
         stage = 4;
         uint64_t comp = scotch_comp(obj[0]);
         uint32_t id = 0;

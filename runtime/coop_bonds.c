@@ -126,6 +126,19 @@ static uint64_t call5(Cpu *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2
     return r;
 }
 
+// Two objects of this game bonded as an autobuild bonds its devices (main+0x1c05a98 from a's glue component to b's main
+// body, bit 24 cleared on both bodies first): the bond the graph joins into one group. For tests (coop_glue.c glue_test,
+// TOTK_COOP_TEST_GLUEBOND). 1: called.
+int coop_bonds_bond(Cpu *c, uint64_t a, uint64_t b) {
+    uint64_t comp = comp_of(a), mb = main_body(a), rb = main_body(b);
+    static _Alignas(16) float wm[12], wr[12];
+    if (!comp || !mb || !rb || !coop_rd(mb + 0x98, wm, sizeof wm) || !coop_rd(rb + 0x98, wr, sizeof wr)) return 0;
+    __atomic_fetch_and((uint64_t *)(uintptr_t)(mb + 0x68), ~BODY_SKIP_BIT, __ATOMIC_SEQ_CST);
+    __atomic_fetch_and((uint64_t *)(uintptr_t)(rb + 0x68), ~BODY_SKIP_BIT, __ATOMIC_SEQ_CST);
+    call5(c, MOD_MAIN_BASE + BOND_BODIES, comp, 0, rb, (uint64_t)(uintptr_t)wm, (uint64_t)(uintptr_t)wr);
+    return 1;
+}
+
 // ---- the owner: its groups, sent once a second
 #define MEMBER_N 128
 static struct { uint64_t actor, group; uint32_t uid; int64_t seen_us; } member[MEMBER_N];
