@@ -206,6 +206,18 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
       sent; two games that changed one value while apart end on the one with the higher stamp, not the later one;
       live changes take the latest value, so a player further along can be moved back by one behind; bool families
       whose names cannot be made from the RomFS (ReadyMadeAutoBuilderDraft.*) are shared.
+- **Stopped, not working: arrow trails on arrow copies** (2026-11-08, the tester's call; the code is not on main: branch
+  claude/coop-arrow-tail-wip, 2daf64e, coop_players.c
+  arrow_tail; `TOTK_COOP_ARROW_TAIL=0` off, `TOTK_COOP_TEST_TAILLOG=1` logs). A shot arrow emits its trail once as its
+  flight starts: the flight update (main+0x1d23a4c, a method of an object at [[arrow+0x228]+0x3d8]+0x340, vtable
+  main+0x3693970) calls main+0x1d24498, which emits "ArrowTail" (or "LongThrow_ArrowTail") through main+0x4f4e40
+  (x8 the two handles out, as a returned struct; x0 the link user [[actor+0x228]+0x68], x1 &name, x2 2) and keeps the
+  handles at +0x1b0, flag +0x1ed. On that branch the copy (moved by the sync, never shot) makes that call once as it starts to
+  fly, runs its own update while it flies and keeps its actor at its shown place then (not 300 m under). The effect
+  is made and stays alive in the pool (handle check as the SwordBlur update's: group bases [main+0x395f388], sizes
+  [main+0x395f390], serial at +0x20), but nothing is drawn (the tester watched, 2026-11-08). The owner's and the copy's
+  pool entries differ only in two flag words: +0x8 0x402 against 0x2 and +0x34 0xf against 0x3. Next: what sets
+  those bits on the owner's (most likely the effect system once the emitter is created and follows its user).
 - **Done: the stand-in's sword trail** (2026-11-07; coop_world.c "The stand-in's sword trail", COOP_NET_VERSION 24;
   `TOTK_COOP_STANDIN_BLUR=0` turns it off). How the game makes a swing's trail, found by a write watch
   (`TOTK_COOP_TEST_HITWATCH=<from>-<to>@0x28:0x4a8`) and the generated C:
