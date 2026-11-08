@@ -284,7 +284,7 @@ static void near_dev_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
 // bool changed: what a neighbouring device reads to turn itself on.
 #define TR_N 120
 #define TR_COMP 256
-static uint64_t (*tr_snap)[TR_COMP + 8][0x200 / 8];
+static uint64_t (*tr_snap)[TR_COMP + 12][0x200 / 8];   // (+8 the actor, +4 component 166 past its first 0x200 bytes)
 static int64_t tr_us[TR_N];
 static int tr_n, tr_dev = -1;
 static uint64_t on_flag(uint64_t actor) {   // a device's on bool (coop_players.c dev_on_flag_at)
@@ -324,8 +324,10 @@ static void trace_tick(int n) {
     }
     uint64_t a = atomic_load(&tracked[tr_dev]), t = coop_rd_ptr(a + 0x228);
     if (tr_n < TR_N && now < msg_from_us + 1500000) {
-        memset(tr_snap[tr_n], 0, sizeof tr_snap[tr_n]);
+        memset(tr_snap[tr_n], 0, sizeof tr_snap[tr_n]);   // (whole rows, the component 166 ones too)
         for (int j = 0; j < 8; j++) coop_rd(a + 0x200 * (uint64_t)j, tr_snap[tr_n][TR_COMP + j], 0x200);   // the actor
+        uint64_t c166 = coop_rd_ptr(t + 0x530);
+        for (int j = 0; j < 4 && c166; j++) coop_rd(c166 + 0x200 * (uint64_t)(j + 1), tr_snap[tr_n][TR_COMP + 8 + j], 0x200);
         for (int j = 0; j < TR_COMP; j++) {
             uint64_t comp = coop_rd_ptr(t + 8 * (uint64_t)j);
             if (comp) coop_rd(comp, tr_snap[tr_n][j], 0x200);
@@ -336,14 +338,16 @@ static void trace_tick(int n) {
         return;
     }
     int said = 0;
-    for (int j = 0; j < TR_COMP + 8; j++)
+    for (int j = 0; j < TR_COMP + 12; j++)
         for (int w = 0; w < 0x200 / 8 && said < 300; w++) {
             int changes = 0;
             for (int k = 1; k < tr_n; k++) changes += tr_snap[k][j][w] != tr_snap[k - 1][j][w];
             if (changes < 1 || changes > 3) continue;
             char line[300];
-            int len = snprintf(line, sizeof line, "coop: abtrace %s %d +%03x: %016llx", j >= TR_COMP ? "actor" : "comp",
-                               j >= TR_COMP ? 0 : j, (j >= TR_COMP ? (j - TR_COMP) * 0x200 : 0) + w * 8, (unsigned long long)tr_snap[0][j][w]);
+            int len = j >= TR_COMP + 8
+                          ? snprintf(line, sizeof line, "coop: abtrace comp 166 +%03x: %016llx", (j - TR_COMP - 8 + 1) * 0x200 + w * 8, (unsigned long long)tr_snap[0][j][w])
+                          : snprintf(line, sizeof line, "coop: abtrace %s %d +%03x: %016llx", j >= TR_COMP ? "actor" : "comp",
+                                     j >= TR_COMP ? 0 : j, (j >= TR_COMP ? (j - TR_COMP) * 0x200 : 0) + w * 8, (unsigned long long)tr_snap[0][j][w]);
             for (int k = 1; k < tr_n && len < (int)sizeof line - 40; k++)
                 if (tr_snap[k][j][w] != tr_snap[k - 1][j][w])
                     len += snprintf(line + len, sizeof line - (size_t)len, " | %.3f s %016llx", tr_us[k] / 1e6, (unsigned long long)tr_snap[k][j][w]);
@@ -387,7 +391,25 @@ static void hit_test(Cpu *c, uint64_t me, int n) {
         float m[12] = {dz, 0, dx, f[0] + ux, 0, 1, 0, f[1] - 0.2f, -dx, 0, dz, f[2] + uz};
         coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
         placed = 1;
+        {   // TOTK_COOP_TEST_ABLOOSE=1: a loose fan made 1.6 m to this Link's right, for its script to push the build into
+            // with Ultrahand (autobuild_glue_3rd.txt): glue by hand
+            static _Alignas(16) uint8_t lh[0x40];
+            if (cfg_get("TOTK_COOP_TEST_ABLOOSE")) {
+                float at[3] = {f[0] + ux + dz * 1.6f, f[1] + 0.3f, f[2] + uz - dx * 1.6f}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+                rt_log("coop: test: abhit: a loose fan asked for at %.2f %.2f %.2f: %d", at[0], at[1], at[2],
+                       coop_request_create(c, "SpObj_WindGenerator_A_01", at, rot, lh));
+            }
+        }
         msg_from_us = (int64_t)((now + 3.5) * 1e6), msg_to_us = (int64_t)((now + 6) * 1e6);
+        {   // TOTK_COOP_TEST_FANHIT (coop_spawn.c) on the build's second fan, which the hit does not touch: the
+            // functions entered with it as an argument just after the hit, not just before (the switch's path)
+            extern uint64_t coop_fan_actor;
+            int fans = 0;
+            // (TOTK_COOP_TEST_FANHITDEV=1: the hit fan itself instead)
+            int want = cfg_get("TOTK_COOP_TEST_FANHITDEV") ? 1 : 2;
+            for (int i = 0; i < n; i++)
+                if (live_device(i, nm, sizeof nm) && !strcmp(nm, "SpObj_WindGenerator_A_01") && ++fans == want) coop_fan_actor = atomic_load(&tracked[i]);
+        }
         rt_log("coop: test: abhit: this Link put 1 m from device %d (a fan at %.2f %.2f %.2f), facing it", fan, f[0], f[1], f[2]);
     }
     int64_t t = frame_step_world_us();
@@ -540,6 +562,43 @@ static void stick_test(Cpu *c, uint64_t me, int n) {
     rt_log("%s", line);
 }
 
+// TOTK_COOP_TEST_ABMSG=<s>,<hex type>[,<s2>,<hex type2>...]: at each time, a message of that type sent to every live
+// tracked fan, as the steering stick's AI node sends 0x6b510003 (main+0x2b76c34 (actor +0x378, {sender id, type, 0},
+// 0)), the sender this Link: whether a message switches a device.
+static void msg_test(Cpu *c, uint64_t me, int n) {
+    const char *e = cfg_get("TOTK_COOP_TEST_ABMSG");
+    static double at[8];
+    static uint32_t type[8];
+    static int k_n = -1, done[8];
+    if (!e) return;
+    if (k_n < 0) {
+        k_n = 0;
+        const char *p = e;
+        while (k_n < 8 && sscanf(p, "%lf,%x", &at[k_n], &type[k_n]) == 2) {
+            k_n++;
+            for (int commas = 0; *p && commas < 2; p++) commas += *p == ',';
+        }
+    }
+    double now = frame_step_world_us() / 1e6;
+    char nm[48];
+    for (int k = 0; k < k_n; k++) {
+        if (done[k] || now < at[k]) continue;
+        done[k] = 1;
+        uint32_t sender = 0;
+        coop_rd(me + 0x380, &sender, 4);
+        int sent = 0;
+        for (int i = 0; i < n; i++) {
+            if (!live_device(i, nm, sizeof nm) || strcmp(nm, "SpObj_WindGenerator_A_01")) continue;
+            static _Alignas(16) uint8_t msg[16];
+            memset(msg, 0, sizeof msg);
+            memcpy(msg, &sender, 4), memcpy(msg + 4, &type[k], 4);
+            coop_guest_call(c, MOD_MAIN_BASE + 0x2b76c34, atomic_load(&tracked[i]) + 0x378, (uint64_t)(uintptr_t)msg, 0, 0);
+            sent++;
+        }
+        rt_log("coop: test: abmsg: message %08x sent to %d fans at %.2f s", type[k], sent, now);
+    }
+}
+
 // Every 2 s while any device is tracked (for 60 s): each one's name, state, flags and glue entries.
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
     if (!ablog_on()) return;
@@ -557,7 +616,7 @@ void coop_autobuild_tick(Cpu *c, uint64_t me) {
     }
     int n = atomic_load(&tracked_n);
     if (n > TRACK_N) n = TRACK_N;
-    if (n) hit_test(c, me, n), part_test(c, n), trace_tick(n), stick_test(c, me, n);
+    if (n) hit_test(c, me, n), part_test(c, n), trace_tick(n), stick_test(c, me, n), msg_test(c, me, n);
     else if ((cfg_get("TOTK_COOP_TEST_ABHIT") || cfg_get("TOTK_COOP_TEST_ABSTICK")) && now > 20000000) {   // (near_dev_fn)
         static NearDev d;
         static int64_t last_scan;
