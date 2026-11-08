@@ -875,6 +875,35 @@ three fans go on (on, energy 10) 0.4 s after the hit; in B only the copy fan the
   AutoBuilderBuildStateRealColorR/G/B (the reader of the param struct, main+0x1d398e4, puts R at +0x44); who applies
   them to a model is not found.
 
+## Device state on the copies, the steering stick, glue by hand (open, 2026-11-08)
+the tester's reports on main 46b510c: flame emitters on in the builder's game and off in the other; the steering stick
+works only for the game that made the contraption (held by player 2 nothing turns on anywhere, held by player 1 only
+player 1's game); a contraption glued by hand shows no glue in the other game and one hit turns on one piece there.
+TotK Online (side-session notes, totk-online-how-it-works.md 3 and 7): one owning game per glued group, handed to the
+game whose player is nearest its middle every few seconds and claimed while a player holds it; copies run their own
+update and are pulled toward the owner's place. It syncs position, life, collision, glue and enemy actions; no device
+state.
+What a device's "on" is, from pair tests with autobuild_3rd.txt (`TOTK_COOP_TEST_ABLOG=1 TOTK_COOP_TEST_ABHIT=36`):
+- The contraption's group object (SpecialPowerReceiverComponent +0x28) does not change at all when a hit turns its
+  fans on (every word logged against the last, every 0.5 s through the hit and the next 20 s).
+- No actor message is sent to the other fans: the two message senders (main+0x2b76c34, the one the stick's AI node
+  "OneShotSendMessageRideOnCombinedControlStick" uses with 0x6b510003 to actor +0x378, and main+0x1c0cc4c) were
+  hooked through the hit; none went to a device's queue.
+- A neighbouring fan turns itself on in its own update: every word of its actor (0x1000) and components (0x200 each)
+  logged every tick through the hit (TOTK_COOP_TEST_ABTRACE) shows the on bool, components 16/17/21/22 +0x170/+0x130/
+  +0xe8/+0x90 going 0x8000 -> 0xa000 and component 166 ([actor+0x228]+0x530, which the bool's writer main+0x9fa28c
+  reads) changing in the same tick, and nothing changing before it in those ranges: what it reads is elsewhere.
+- Writing the on bool with its change count on a bonded copy in the other game (TOTK_COOP_TEST_FANTOGGLE in game B
+  only): once the copy was on (energy 10), it stayed on through every write; the bool alone does not switch a device.
+So no call or write that turns a device on or off is known yet; device state from the owner, and a stick held in the
+other game reaching the owner's devices, both wait on one. A hit does it (the proxy's swing), but cannot be aimed.
+- Glue by hand: glue made again in the other game (coop_glue.c make_bond) uses the request's base class, whose
+  vtable slot 4 answers 0, so createScotch's tail (main+0x1d61858) copies none of the request's four vectors into the
+  entry (+0x51c..+0x548) and does not set entry +0x554 bit 1: likely why no glue shows there. Ultrahand's own request
+  class (0x1b8 bytes, made in main+0x1d5565c) is not decoded. Whether glue by hand gives its pieces the shared group
+  (which coop_bonds.c would then send) is not known: a scripted Ultrahand grab works on a contraption
+  (autobuild_part_3rd.txt) but not on a loose fan right against the Link (glue_hand_3rd.txt: the grab only flashes).
+
 ## Proxy hair and clothes stay blown after a fan (open)
 the tester (2026-11-05): after a fan's wind hits the proxy, its hair and clothes keep flapping as if in wind, on that
 screen only, after the fan is off. Likely cause: the proxy runs none of its own update, and something in it sets the
