@@ -2263,7 +2263,8 @@ static int copy_pending_near(const float *p) {
 // game (a play session, 2026-11-05: "holds Weapon_Shield_030, owner -" four times, then "I move Weapon_Shield_030").
 // It is watched for 30 s; once it is out of the proxy's gear it is deleted, and it is never sent meanwhile.
 // remade: one only watched after its item was made again (deleted once out of the gear, kept while held).
-static struct { uint64_t actor, eq; int k, until, since, remade; char name[48], fuse[32]; } old_items[16];
+static struct { uint64_t actor, eq; int k, until, since, remade; uint32_t id; char name[48], fuse[32]; } old_items[16];
+#define OLD_ITEM_ID 0x380   // an actor's own id (coop_glue.c ACTOR_ID): one made at a freed one's address has another
 static char old_item_fuse[32];   // the next old item's fused material: the gear code sets it before regive_gear
 int old_fuse_name(const char *nm) {   // (a loose one is not sent: old_items_tick deletes it)
     for (int i = 0; i < 16; i++) if (old_items[i].actor && old_items[i].fuse[0] && !strcmp(nm, old_items[i].fuse)) return 1;
@@ -2271,11 +2272,14 @@ int old_fuse_name(const char *nm) {   // (a loose one is not sent: old_items_tic
 }
 static void watch_old_item(uint64_t eq, int k, uint64_t old, int remade) {
     int f = -1;
+    uint32_t oid = 0;
+    coop_rd(old + OLD_ITEM_ID, &oid, 4);
     for (int i = 0; i < 16; i++) {
-        if (old_items[i].actor == old) {   // (since stays: the first time)
+        if (old_items[i].actor == old && old_items[i].id == oid) {   // (since stays: the first time)
             old_items[i].until = prop_tick + 900, old_items[i].remade &= remade;
             return;
         }
+        if (old_items[i].actor == old) old_items[i].actor = 0;   // (another item at that address: the entry is stale)
         if (f < 0 && (!old_items[i].actor || old_items[i].until < prop_tick)) f = i;   // a free entry first (review)
     }
     if (f < 0)
@@ -2283,6 +2287,8 @@ static void watch_old_item(uint64_t eq, int k, uint64_t old, int remade) {
     old_items[f].actor = old, old_items[f].eq = eq, old_items[f].k = k, old_items[f].until = prop_tick + 900, old_items[f].since = prop_tick;
     old_items[f].remade = remade;
     coop_actor_name(old, old_items[f].name, sizeof old_items[f].name);
+    old_items[f].id = 0;
+    coop_rd(old + OLD_ITEM_ID, &old_items[f].id, 4);
     memcpy(old_items[f].fuse, old_item_fuse, sizeof old_items[f].fuse);   // the material fused to it (set by the caller)
     old_item_fuse[0] = 0;
 }
@@ -2454,7 +2460,14 @@ static void old_items_tick(Cpu *c) {
             }
         }
         // (gone, or another actor in its memory: forgotten, not deleted; code review, 2026-11-06)
-        if (!actor_is(old_items[i].actor, old_items[i].name)) { old_items[i].actor = 0; continue; }
+        // ... or a new item of the same name made at its freed address (switching weapons fast: the stand-in's new
+        // stick was taken for the old one and deleted in its hand, with the breaking effect; a play session,
+        // 2026-11-08): its own id differs
+        uint32_t oid = 0;
+        if (!actor_is(old_items[i].actor, old_items[i].name) || !coop_rd(old_items[i].actor + OLD_ITEM_ID, &oid, 4) || oid != old_items[i].id) {
+            old_items[i].actor = 0;
+            continue;
+        }
         if (old_items[i].until < prop_tick) {   // watched 30 s: deleted unless still held (sent as a world object else)
             if (eq_item(old_items[i].eq, old_items[i].k) != old_items[i].actor) {
                 rt_log("coop: proxy: its old %s, unheld 30 s on, is deleted", old_items[i].name);
