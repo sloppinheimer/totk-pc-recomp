@@ -26,10 +26,12 @@
 // stamp is above the one it has for that value, so a late resend of an older value never undoes a newer one and two
 // games that change one value at once both end on the same of the two.
 //
-// Tracking and sharing: from 3 s after this game's Link is in the world, its changes are tracked (captured into the
-// session log below), also while it is alone; they are shared (sent, and the others' taken) while another player is in
-// the session. When sharing stops (nobody else here, or out of the world) what was waiting to be sent or applied is
-// dropped, and packets that come while not sharing are dropped too: the catch-up brings it all when sharing starts.
+// Tracking and sharing: from 3 s after this game's Link is in the world and the world clock runs, and once the writes
+// of its load have settled (settle_tick: a burst of changes in one frame is a load or a reset, not shared), its changes
+// are tracked (captured into the session log below), also while it is alone; they are shared (sent, and the others'
+// taken) while another player is in the session. When sharing stops (nobody else here, out of the world, loading)
+// what was waiting to be sent or applied is dropped, and packets that come while not sharing are dropped too: the
+// catch-up brings it all when sharing starts.
 //
 // Catch-up: every shared change this game made or took while tracking its world is kept in a session log, one entry
 // per value with its latest value and stamp. When a game starts sharing (it joined, a player came back, or its world
@@ -38,8 +40,8 @@
 // what the others changed in the meantime, also alone, and not their whole saves. A caught-up value that would move
 // this game's own progress back (a set flag cleared, a number lowered, a cleared shrine changed) is not taken unless
 // this game changed that value in the session itself (moves_back): a save further along keeps its progress. When this
-// game's tracking starts again and many of the log's values read otherwise, its world was loaded again from a save and
-// the log is cleared (slog_check); after a stage change they still read so and it is kept.
+// game tracks again after a load, the log's changes that no longer read so leave it (slog_check), so the others'
+// catch-up brings them back.
 //
 // Addresses (1.4.3 main; how each was found: docs/coop/proxy-plan.md "Shared world progress", and the hand-over note):
 //   main+0xa72b00  GameDataMgr::calc (x0 = the manager): 1.2.1 main+0xee9704, the same code (the same offsets 0xd0c,
@@ -853,7 +855,7 @@ static void in_clear(void) {
 }
 
 static uint64_t world_since_ns, last_me;
-static int said_start, was_tracking, was_open, bless_pending;
+static int said_start, said_settle, was_tracking, was_settled, was_open, bless_pending;
 #define VERIFY_N 16
 static struct { uint64_t id; uint32_t value; uint8_t type; int from, frames; } verify[VERIFY_N];   // applied, checked after calc
 
@@ -1071,10 +1073,12 @@ static void test_tick(uint64_t gmd, int64_t world_us) {
 }
 
 // ---- capture, apply, verify
-static void capture(uint64_t gmd) {
+// This frame's changes: counted (take 0: nothing is changed), or taken into the session log and outbox (take 1). The
+// bool and key requests are all read (calc writes and clears their queue after this, so one left out is lost), the
+// numbers that differ from their copy.
+static int capture(uint64_t gmd, int take) {
     static _Atomic uint32_t said;
-    int numbers = 0, over = 0;
-    // the bool and key requests: all of them (calc writes and clears the queue after this, so one left out is lost)
+    int count = 0;
     uint64_t b = gmd + TB(VT_BOOL);
     uint32_t cap = g32(b + F_QCAP), n = g32(b + F_QWORD) & 0xfffff;
     uint64_t ents = g64(b + F_QENT);
@@ -1085,6 +1089,8 @@ static void capture(uint64_t gmd) {
         uint8_t v = g8(e) & 1;
         int64_t idx = map_index(gmd, VT_BOOL, h);
         if (idx < 0 || bool_value(gmd, idx) == v || !bool_shared(h)) continue;
+        count++;
+        if (!take) continue;
         local_change(T_BOOL, h, v);
         if (atomic_fetch_add(&said, 1) < 20) rt_log("coop: gamedata: bool %08x = %u in this game, shared", h, v);
     }
@@ -1099,12 +1105,13 @@ static void capture(uint64_t gmd) {
         if (idx < 0 || (uint32_t)idx >= nk) continue;
         uint64_t ke = key_entry(gmd, idx);
         if (g8(ke + K_VALUE) == v || key_personal(gmd, idx)) continue;
+        count++;
+        if (!take) continue;
         local_change(T_KEY, g64(ke), v);
         if (atomic_fetch_add(&said, 1) < 20)
             rt_log("coop: gamedata: key %016llx = %u in this game (reset type %#x), shared", (unsigned long long)g64(ke), v, g32(ke + K_RESET));
     }
-    // the numbers: what changed since the last frame (calc has written this game's requests since); 256 a frame, the
-    // rest is still different from its copy and taken next frame
+    // the numbers: what changed since the last frame (calc has written this game's requests since)
     for (int k = 0; k < 3; k++) {
         NumTab *t = &nt[k];
         uint64_t te = g64(gmd + TB(t->vt) + F_ENT);
@@ -1113,7 +1120,8 @@ static void capture(uint64_t gmd) {
             if (!t->shared[i]) continue;
             uint32_t v = g32(te + (uint64_t)i * t->stride + N_VALUE);
             if (v == t->shadow[i]) continue;
-            if (numbers++ >= 256) { over++; continue; }
+            count++;
+            if (!take) continue;
             t->shadow[i] = v;
             local_change((uint8_t)t->wire, t->hash[i], v);
             if (atomic_fetch_add(&said, 1) < 40) {
@@ -1123,11 +1131,45 @@ static void capture(uint64_t gmd) {
             }
         }
     }
-    if (over) {
-        static uint64_t last;
-        uint64_t now = plat_now_ns();
-        if (now - last > 5000000000ull) { last = now; rt_log("coop: gamedata: %d number changes in one frame left for the next (256 a frame)", over); }
+    return count;
+}
+// The numbers' copies to their values now, nothing taken (a load's or reset's writes, settle_tick).
+static void absorb(uint64_t gmd) {
+    for (int k = 0; k < 3; k++) {
+        NumTab *t = &nt[k];
+        uint64_t te = g64(gmd + TB(t->vt) + F_ENT);
+        if (!te || g32(gmd + TB(t->vt) + F_COUNT) != t->n) continue;
+        for (uint32_t i = 0; i < t->n; i++) t->shadow[i] = g32(te + (uint64_t)i * t->stride + N_VALUE);
     }
+}
+
+// Settling: a save's load (or a reset) writes hundreds of values over a few seconds after the Link is there; they are
+// that save's values, not changes, and must not reach a game on another save (2026-11-07, the tour case on two saves:
+// each game sent its own load's 1300 quest steps, challenge states and counts, and the other applied them). So after
+// tracking starts, and again whenever more than SETTLE_BURST values change in one frame, the values are only copied
+// (absorb) until SETTLE_QUIET_NS pass with no frame of more than SETTLE_FRAME changes; only then are changes taken.
+#define SETTLE_BURST 32
+#define SETTLE_FRAME 4
+#define SETTLE_QUIET_NS 2000000000ull
+static int settled;
+static uint64_t quiet_since;
+static uint32_t settle_absorbed;
+static void settle_start(uint64_t now) { settled = 0, quiet_since = now, settle_absorbed = 0; }
+// 1 when this frame's changes may be taken.
+static int settle_tick(uint64_t gmd, uint64_t now) {
+    int n = capture(gmd, 0);
+    if (settled && n <= SETTLE_BURST) return 1;
+    if (settled) {
+        settle_start(now);
+        rt_log("coop: gamedata: %d values changed in one frame (a load or a reset): not shared; settling again", n);
+    }
+    if (n > SETTLE_FRAME) quiet_since = now;
+    settle_absorbed += (uint32_t)n;
+    absorb(gmd);
+    if (now - quiet_since < SETTLE_QUIET_NS) return 0;
+    settled = 1;
+    rt_log("coop: gamedata: settled: %u values the load wrote taken as this save's, not shared", settle_absorbed);
+    return 0;
 }
 
 // A catch-up value that would move this game's own progress back: a set flag cleared, a number lowered, a cleared
@@ -1240,11 +1282,12 @@ static void verify_tick(uint64_t gmd) {
     }
 }
 
-// Tracking starts again (the world was loaded again, or a stage change took the Link away): was the world reloaded
-// from a save? Then this session's changes no longer read so here and the log is not this world's any more: cleared
-// (the others catch this game up again when it shares). After a stage change within the same world they still read so.
+// Settled again after tracking stopped (a stage change, or the world loaded again from a save): a change of the
+// session log that no longer reads so here was undone by a load, so it is not this world's any more and leaves the
+// log (the others' catch-up brings it back when this game says hello); one that still reads so stays.
 static void slog_check(uint64_t gmd) {
-    uint32_t checked = 0, back = 0;
+    static struct { uint64_t id, stamp; uint32_t value; uint8_t type; } keep[SLOG_N * 3 / 4];
+    uint32_t checked = 0, kept = 0;
     plat_mutex_lock(&slog_lock);
     for (uint32_t i = 0; i < SLOG_N; i++) {
         if (!slog[i].used) continue;
@@ -1253,18 +1296,16 @@ static void slog_check(uint64_t gmd) {
         if (t == T_KEY) { idx = key_index(gmd, slog[i].id); now = idx < 0 ? -1 : g8(key_entry(gmd, idx) + K_VALUE); }
         else if (t == T_BOOL) { idx = map_index(gmd, VT_BOOL, (uint32_t)slog[i].id); now = idx < 0 ? -1 : bool_value(gmd, idx); }
         else { NumTab *x = tab_of(t); idx = x ? map_index(gmd, x->vt, (uint32_t)slog[i].id) : -1; now = idx < 0 ? -1 : num_value(gmd, x, idx); }
-        if (now < 0) continue;
-        checked++, back += now != slog[i].value;
+        checked++;
+        if (now != (int64_t)slog[i].value || kept >= SLOG_N * 3 / 4) continue;
+        keep[kept].id = slog[i].id, keep[kept].stamp = slog[i].stamp, keep[kept].value = slog[i].value, keep[kept].type = t, kept++;
     }
     plat_mutex_unlock(&slog_lock);
-    if (!checked) return;
-    // a few may have moved by themselves while not tracked (time of day flags): a quarter, and at least 4, is a reload
-    if (back >= 4 && back * 4 >= checked) {
-        slog_clear();
-        rt_log("coop: gamedata: the world was loaded again (%u of the session's %u changes read otherwise): session log cleared",
-               back, checked);
-    } else
-        rt_log("coop: gamedata: tracking again: the session's %u changes kept (%u read otherwise)", checked, back);
+    if (kept == checked) { if (checked) rt_log("coop: gamedata: tracking again: the session's %u changes still read so", checked); return; }
+    slog_clear();
+    for (uint32_t i = 0; i < kept; i++) slog_set(keep[i].type, keep[i].id, keep[i].value, keep[i].stamp);
+    rt_log("coop: gamedata: tracking again: %u of the session's %u changes read otherwise (undone by a load): left out of "
+           "the log, the others' catch-up brings them back", checked - kept, checked);
 }
 
 // GameDataMgr::calc's entry (coop_spawn.c coop_hook), x0 = the manager; me: this game's Link (0 outside the world).
@@ -1292,26 +1333,31 @@ void coop_gamedata_calc(uint64_t gmd, uint64_t me) {
         hello_seen[p][0] = hello_seen[p][1] = 0;
         if (cu.on && cu.to == p) cu.on = 0, rt_log("coop: gamedata: player %d left: their catch-up stopped", p);
     }
-    // Tracked from 3 s after this game's Link is there (a save's load writes many values first), once the name tables
-    // are loaded, also while no other player is here (they get those changes when they come: catch-up); shared while
-    // another player is in the session.
-    int track = me && now - world_since_ns > 3000000000ull && atomic_load(&tables_ready) && !is_late;
-    int open = track && others > 0;
+    // Tracked from 3 s after this game's Link is there and the world clock runs, once the name tables are loaded and
+    // the load's writes have settled (settle_tick), also while no other player is here (they get those changes when
+    // they come: catch-up); shared while another player is in the session.
+    int track = me && world_us >= 0 && now - world_since_ns > 3000000000ull && atomic_load(&tables_ready) && !is_late;
+    if (track && !was_tracking) {   // tracking starts (again): copy the numbers (the save's values: not changes)
+        was_tracking = 1;
+        snapshot(gmd);
+        settle_start(now);
+        if (!said_start) said_start = 1, log_start(gmd);
+    }
+    int take = track && settle_tick(gmd, now);
+    if (track && settled && !was_settled) {   // the load is done: were this session's changes undone by it?
+        was_settled = 1;
+        if (said_settle++) slog_check(gmd);
+    }
+    int open = track && settled && others > 0;
     if (was_open && !open) {   // nobody to share with, or not tracking: nothing sent or taken is kept for later
         out_clear(), in_clear(), cu.on = 0;
         for (int k = 0; k < VERIFY_N; k++) verify[k].frames = 0;
-        rt_log("coop: gamedata: sharing stops (%s)", track ? "no other player here" : "out of the world");
+        rt_log("coop: gamedata: sharing stops (%s)", !track ? "out of the world" : !settled ? "the game is loading" : "no other player here");
     }
     atomic_store(&gate, open);
-    atomic_store(&track_gmd, track ? gmd : 0);
-    atomic_store(&tracking, track);
-    if (!track) { was_tracking = was_open = 0; return; }
-    if (!was_tracking) {   // tracking starts (again): copy the numbers (the save's values: not changes)
-        was_tracking = 1;
-        snapshot(gmd);
-        if (!said_start) said_start = 1, log_start(gmd);
-        else slog_check(gmd);
-    }
+    atomic_store(&track_gmd, track && settled ? gmd : 0);
+    atomic_store(&tracking, track && settled);
+    if (!track) { was_tracking = was_open = was_settled = 0; return; }
     if (open && !was_open) {   // sharing starts (again): say hello, so the others catch this game up and it them
         static int hellos;
         out_put(T_HELLO, (uint64_t)(uint32_t)coop_net_id(), 0, stamp_new());
@@ -1319,9 +1365,10 @@ void coop_gamedata_calc(uint64_t gmd, uint64_t me) {
                late && !hellos++ ? " (joined late, the test)" : "");
     }
     was_open = open;
+    if (!settled) return;
     verify_tick(gmd);
     test_tick(gmd, world_us);
-    capture(gmd);
+    if (take) capture(gmd, 1);
     if (open) apply(gmd, now);
     if (bless_pending && !--bless_pending) blessing_tick(gmd);   // after calc wrote the shrine's state
     if (open) out_flush(now);
