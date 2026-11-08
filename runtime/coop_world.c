@@ -3129,7 +3129,22 @@ static _Atomic unsigned born_n;
 void coop_actor_created(uint64_t a) {   // coop_spawn.c, from the getActor hook (any thread)
     if (!a || !coop_net_on()) return;
     char nm[48];
-    if (!coop_world_spawn_kind(coop_actor_name(a, nm, sizeof nm))) return;
+    coop_actor_name(a, nm, sizeof nm);
+    {   // Test (TOTK_COOP_TEST_BORN=1): the first 60 actors handed over, by name and whether the spawn sync keeps it
+        static int on = -1;
+        static _Atomic int said;
+        if (on < 0) on = cfg_get("TOTK_COOP_TEST_BORN") != NULL;
+        static char seen[200][48];
+        static _Atomic int nseen;
+        int dup = 0;
+        for (int i = 0; on && i < atomic_load(&nseen) && i < 200; i++) dup |= !strcmp(seen[i], nm);
+        if (on && !dup && atomic_fetch_add(&said, 1) < 200) {
+            int i = atomic_fetch_add(&nseen, 1);
+            if (i < 200) snprintf(seen[i], sizeof seen[i], "%s", nm);
+            rt_log("coop: test: born %llx '%s' kind %d at %.1f s", (unsigned long long)a, nm, coop_world_spawn_kind(nm), frame_step_world_us() / 1e6);
+        }
+    }
+    if (!coop_world_spawn_kind(nm)) return;
     unsigned i = atomic_fetch_add(&born_n, 1) % BORN_N;
     atomic_store_explicit(&born[i].actor, 0, memory_order_release);
     atomic_store_explicit(&born[i].at_ns, plat_now_ns(), memory_order_relaxed);
@@ -3238,6 +3253,76 @@ static void far_copy_test(Cpu *c) {
     rt_log("coop: test: far copy: %s %08x as if from player %d, at %.1f %.1f %.1f", sp.name, sp.key, other, sp.pos[0], sp.pos[1], sp.pos[2]);
     spawn_take(c, &sp, other);
 }
+// An enemy of this game sent to the others when it is placed nowhere in the map (every game has those) and is no
+// copy of another's (made here for a player, or handed over to this game). From the create queues (born) and, since
+// those never handed over an enemy in play (TOTK_COOP_TEST_BORN: only effects and prefab sets; a Keese in one game only,
+// a play session, 2026-11-07), from the scan of the live enemies too (spawn_scan).
+static int spawn_send(uint64_t a, const char *nm) {
+    uint64_t ph = 0, pp = coop_rd_ptr(a + PLACE_HASH_PTR);
+    if (pp) coop_rd(pp + PLACE_HASH, &ph, 8);
+    if (ph && ph != ~0ull) return 0;   // placed in the map: every game has it
+    if (keyed_of(a)) return 0;         // known by a key already (sent, a copy, or taken over)
+    for (int k = 0; k < 64; k++) if (spawned_mine[k].key && spawned_mine[k].actor == a) return 0;
+    int ours = 0;   // a copy this game made for another
+    for (int k = 0; k < 32 && !ours; k++) if (made[k].state && made[k].actor == a) ours = 1;
+    float p[3], r[9];
+    if (!coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(a + COOP_ACTOR_ROT, r, 36)) return 0;
+    for (int k = 0; k < 32 && !ours; k++)
+        if (made[k].state == 1 && !strcmp(made[k].name, nm) && dist3(made[k].pos, p) < 2) ours = 1, made[k].actor = a;
+    if (ours) return 0;
+    SpawnPacket sp = {.key = enemy_key(nm, p), .kind = SPAWN_KIND};
+    snprintf(sp.name, sizeof sp.name, "%s", nm), memcpy(sp.pos, p, 12), memcpy(sp.rot, r, 36);
+    keyed_set(a, sp.key);
+    int f = -1;
+    for (int k = 0; k < 64 && f < 0; k++) if (!spawned_mine[k].key) f = k;
+    if (f >= 0) spawned_mine[f].key = sp.key, spawned_mine[f].actor = a;   // (full: its going away is not told)
+    coop_net_hit_send(&sp, sizeof sp);
+    rt_log("coop: spawn sync: %s %08x made here at %.1f %.1f %.1f: sent to the others", nm, sp.key, p[0], p[1], p[2]);
+    return 1;
+}
+// Whether another game reports an enemy of that key (its world packet, alive or dead): it has one already.
+static int peer_reports(uint32_t key) {
+    for (int id = 1; key && id <= COOP_MAX_PLAYERS; id++) {
+        if (!remote_ok[id]) continue;
+        for (int i = 0; i < remote_pk[id].count; i++) if (remote_pk[id].e[i].key == key) return 1;
+    }
+    return 0;
+}
+// Twice a second: each live enemy here (dup_count's list) seen in SCAN_SETTLE scans running goes to spawn_send,
+// unless another game already reports its key or runs it (an enemy both games made at one place has one key in
+// both: two games each sending theirs made a copy of the other's, two Bokoblins in each; the suite's hits case,
+// 2026-11-07). The wait (2 s) lets the others' world packets (10 a second) come first. Needs another player here.
+#define SCAN_SETTLE 4
+static void spawn_scan(void) {
+    static uint64_t last;
+    static uint64_t seen[64];
+    static int seen_n[64];
+    static int nseen;
+    uint64_t now = plat_now_ns();
+    if (now - last < 500000000ull) return;
+    last = now;
+    int ids[COOP_MAX_PLAYERS];
+    char names[COOP_MAX_PLAYERS][17];
+    if (coop_net_players(ids, names, COOP_MAX_PLAYERS) <= 0) { nseen = 0; return; }
+    uint64_t next[64];
+    int next_n[64], nnext = 0;
+    for (int i = 0; i < n_all_enemies; i++) {
+        uint64_t a = all_enemies[i];
+        int32_t st = 0;
+        char nm[48];
+        if (!coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || keyed_of(a)) continue;
+        if (!coop_world_spawn_kind(coop_actor_name(a, nm, sizeof nm))) continue;
+        uint32_t key = key_of_actor(a);
+        Follow *f = NULL;
+        for (int k = 0; key && k < FOLLOW_N && !f; k++) if (follow[k].key == key && follow[k].owner) f = &follow[k];
+        if (f || peer_reports(key)) continue;   // the other games have it
+        int was = 0;
+        for (int k = 0; k < nseen; k++) if (seen[k] == a) was = seen_n[k];
+        if (was + 1 >= SCAN_SETTLE) { spawn_send(a, nm); continue; }
+        if (nnext < 64) next[nnext] = a, next_n[nnext++] = was + 1;
+    }
+    memcpy(seen, next, (size_t)nnext * sizeof next[0]), memcpy(seen_n, next_n, (size_t)nnext * sizeof next_n[0]), nseen = nnext;
+}
 static void spawn_tick(Cpu *c) {
     actor_dump_test();
     if (!spawn_on()) return;
@@ -3257,27 +3342,11 @@ static void spawn_tick(Cpu *c) {
         if (!ready && now - at < 3000000000ull) continue;
         uint64_t want = a;   // taken (unless another was handed over into the slot meanwhile)
         if (!atomic_compare_exchange_strong(&born[i].actor, &want, 0) || !ready) continue;
-        uint64_t ph = 0, pp = coop_rd_ptr(a + PLACE_HASH_PTR);   // (place_hash, but all ones logged as it is)
-        if (pp) coop_rd(pp + PLACE_HASH, &ph, 8);
         static int said;
-        if (said++ < 40) rt_log("coop: spawn sync: %s %llx handed over, placement hash %llx", nm, (unsigned long long)a, (unsigned long long)ph);
-        if (ph && ph != ~0ull) continue;   // placed in the map: every game has it
-        int ours = 0;   // a copy this game made for another
-        for (int k = 0; k < 32 && !ours; k++) if (made[k].state && made[k].actor == a) ours = 1;
-        float p[3], r[9];
-        if (!coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(a + COOP_ACTOR_ROT, r, 36)) continue;
-        for (int k = 0; k < 32 && !ours; k++)
-            if (made[k].state == 1 && !strcmp(made[k].name, nm) && dist3(made[k].pos, p) < 2) ours = 1, made[k].actor = a;
-        if (ours) continue;
-        SpawnPacket sp = {.key = enemy_key(nm, p), .kind = SPAWN_KIND};
-        snprintf(sp.name, sizeof sp.name, "%s", nm), memcpy(sp.pos, p, 12), memcpy(sp.rot, r, 36);
-        keyed_set(a, sp.key);
-        int f = -1;
-        for (int k = 0; k < 64 && f < 0; k++) if (!spawned_mine[k].key) f = k;
-        if (f >= 0) spawned_mine[f].key = sp.key, spawned_mine[f].actor = a;   // (full: its going away is not told)
-        coop_net_hit_send(&sp, sizeof sp);
-        rt_log("coop: spawn sync: %s %08x made here at %.1f %.1f %.1f: sent to the others", nm, sp.key, p[0], p[1], p[2]);
+        if (said++ < 40) rt_log("coop: spawn sync: %s %llx handed over", nm, (unsigned long long)a);
+        spawn_send(a, nm);
     }
+    spawn_scan();
     for (int k = 0; k < 32; k++) {   // the copies being made; made ones let go of 10 s on (handed over by then)
         if (made[k].state == 2 && now - made[k].ns > 10000000000ull) made[k].state = 0, made[k].actor = 0;
         if (made[k].state != 1) continue;
@@ -3324,6 +3393,20 @@ static void spawn_take(Cpu *c, const SpawnPacket *sp, int from) {
         }
     if (sp->kind != SPAWN_KIND || memchr(sp->name, 0, sizeof sp->name) == NULL || !coop_world_spawn_kind(sp->name)) return;
     for (int k = 0; k < 32; k++) if (made[k].state && made[k].key == sp->key) return;
+    // This game's own spawner made one of that name at that place (both games run the same spawners): that one
+    // takes the key, no second is made.
+    for (int i = 0; i < n_all_enemies; i++) {
+        uint64_t a = all_enemies[i];
+        int32_t st = 0;
+        float q[3];
+        char nm[48];
+        if (!coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || keyed_of(a) || !coop_rd(a + COOP_ACTOR_POS, q, 12) ||
+            dist3(q, sp->pos) > 3 || strcmp(coop_actor_name(a, nm, sizeof nm), sp->name))
+            continue;
+        keyed_set(a, sp->key);
+        rt_log("coop: spawn sync: %s %08x made in player %d game: this game's own one there takes its key", sp->name, sp->key, from);
+        return;
+    }
     for (int k = 0; k < 32; k++) {
         if (made[k].state) continue;
         memset(made[k].handle, 0, sizeof made[k].handle);
@@ -5177,7 +5260,7 @@ void coop_anim_pack(uint64_t me, CoopAnim *out) {
     AnimSlot s[COOP_ANIM_SLOTS];
     int n = anim_read(anim_player_of(me), s, COOP_ANIM_SLOTS);
     uint64_t g = anim_graph_of(me);
-    static float last_f[COOP_ANIM_SLOTS];
+    static float last_f[COOP_ANIM_SLOTS], last_rate[COOP_ANIM_SLOTS];
     static uint16_t last_i[COOP_ANIM_SLOTS];
     static uint64_t last_ns;
     uint64_t now = plat_now_ns();
@@ -5190,16 +5273,92 @@ void coop_anim_pack(uint64_t me, CoopAnim *out) {
             a.idx = s[i].idx, a.weight = (uint16_t)lroundf(w * 65535), a.frame = s[i].f, a.bind = anim_bind_off(g, s[i].bind);
             a.rate = last_i[i] == s[i].idx && dt > 0 && dt < 0.5f && s[i].f >= last_f[i] ? (s[i].f - last_f[i]) / dt : 0;
             if (a.rate > 600) a.rate = 0;
+            // A clip that looped since the last send (its frame went back) keeps the rate it had: with 0 the other
+            // games held the stand-in's frame until the next state, a stop every loop of a walk (a play session,
+            // "all animations choppy", 2026-11-07).
+            if (last_i[i] == s[i].idx && s[i].f < last_f[i]) a.rate = last_rate[i];
         }
-        last_i[i] = a.idx, last_f[i] = a.frame;
+        last_i[i] = a.idx, last_f[i] = a.frame, last_rate[i] = a.rate;
         out[i] = a;
     }
 }
 // The owner's slots (in, age_ns old) played on a stand-in; a slot the owner left empty is played with weight 0 on
 // the clip the stand-in still has there.
+// The stand-in's animation, measured (every 5 s, at most 60 lines): how often slot 0 is set a second, how many of
+// those set the same frame as the one before (a held frame: the "choppy" look), the mean and largest step between
+// sets, how many new states came, and the oldest state age used. To tell a stand-in fed too rarely from one fed
+// unevenly (a play session, 2026-11-07).
+static void anim_watch(uint16_t idx, float sent, float fr, float age) {
+    static uint64_t t0;
+    static int calls, held, news, said;
+    static float last_fr = -1, last_sent = -1, step_sum, step_max, age_max;
+    static uint16_t last_idx = 0xffff;
+    uint64_t now = plat_now_ns();
+    if (!t0) t0 = now;
+    calls++;
+    if (sent != last_sent || idx != last_idx) news++;
+    if (idx == last_idx && last_fr >= 0) {
+        float d = fr - last_fr;
+        if (d == 0) held++;
+        if (d > 0) { step_sum += d; if (d > step_max) step_max = d; }
+    }
+    if (age > age_max) age_max = age;
+    last_fr = fr, last_sent = sent, last_idx = idx;
+    if (now - t0 >= 5000000000ull) {
+        double sec = (now - t0) / 1e9;
+        if (said++ < 60)
+            rt_log("coop: stand-in anim: %.0f sets/s, %d held (same frame), step mean %.2f max %.2f frames, %.0f new states/s, oldest state %.0f ms",
+                   calls / sec, held, calls > held ? step_sum / (calls - held) : 0, step_max, news / sec, age_max * 1000);
+        t0 = now, calls = held = news = 0, step_sum = step_max = age_max = 0;
+    }
+}
+// Each stand-in's own clock per slot: the frame it showed, carried on at the owner's rate each set and eased toward
+// the owner's (sent frame plus rate times the state's age), so a new state no longer snaps it. States come about 24
+// times a second with gaps up to 80 ms, and taking each one's frame moved the clips by up to 2.5 frames at once,
+// 24 times a second: every animation looked choppy (a play session, anim_watch, 2026-11-07). A new clip, or one
+// over ANIM_SNAP frames off (a loop, a cut), is taken as sent. TOTK_COOP_STANDIN_ANIM_EASE=0: as sent, as before.
+// (Two sets a frame were measured; both ease from the same clock.)
+#define ANIM_SNAP 4.0f
+#define ANIM_EASE_HZ 6.0f   // the share of the gap closed a second
+static struct { uint64_t standin, ns; uint16_t idx[COOP_ANIM_SLOTS]; float f[COOP_ANIM_SLOTS]; } aclock[COOP_MAX_PLAYERS];
+static int anim_clock(uint64_t standin, float *dt) {   // the stand-in's clock, and the seconds since its last set
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_ANIM_EASE"); on = !(e && *e == '0'); }
+    if (!on) return -1;
+    int k = -1, free = -1;
+    for (int j = 0; j < COOP_MAX_PLAYERS && k < 0; j++) {
+        if (aclock[j].standin == standin) k = j;
+        else if (!aclock[j].standin && free < 0) free = j;
+    }
+    uint64_t now = plat_now_ns();
+    if (k < 0) {
+        k = free >= 0 ? free : 0;
+        memset(&aclock[k], 0, sizeof aclock[k]);
+        aclock[k].standin = standin, aclock[k].ns = now;
+        for (int j = 0; j < COOP_ANIM_SLOTS; j++) aclock[k].idx[j] = 0xffff;
+    }
+    float d = (float)((now - aclock[k].ns) / 1e9);
+    *dt = d > 0.1f ? 0.1f : d;
+    aclock[k].ns = now;
+    return k;
+}
+static float anim_eased(int k, float dt, int i, uint16_t idx, float target, float rate) {
+    if (k < 0) return target;
+    float f = aclock[k].f[i];
+    if (aclock[k].idx[i] != idx || fabsf(target - f) > ANIM_SNAP) f = target;
+    else {
+        f += rate * dt;
+        float a = dt * ANIM_EASE_HZ;
+        f += (target - f) * (a > 1 ? 1 : a);
+    }
+    aclock[k].idx[i] = idx, aclock[k].f[i] = f;
+    return f;
+}
 void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, uint64_t age_ns) {
     uint64_t q = anim_caller_of(standin);
     if (!q) return;
+    float cdt = 0;
+    int ck = anim_clock(standin, &cdt);
     AnimSlot have[COOP_ANIM_SLOTS];
     int n = anim_read(anim_player_of(standin), have, COOP_ANIM_SLOTS);
     uint64_t g = anim_graph_of(standin);
@@ -5214,7 +5373,9 @@ void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, uint64_t age_
             if (masks < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_MASKS"); masks = !(e && *e == '0'); }
             uint64_t b = masks ? anim_bind_at(g, in[i].bind) : 0;
             masked += b != 0;
-            anim_play_bind(c, q, i, in[i].idx, in[i].weight / 65535.0f, in[i].frame + in[i].rate * age, b), played++;
+            float fr = anim_eased(ck, cdt, i, in[i].idx, in[i].frame + in[i].rate * age, in[i].rate);
+            anim_play_bind(c, q, i, in[i].idx, in[i].weight / 65535.0f, fr, b), played++;
+            if (i == 0) anim_watch(in[0].idx, in[0].frame, fr, age);
         } else if (i < n && have[i].idx != 0xffff && have[i].w > 0) anim_play(c, q, i, have[i].idx, 0, have[i].f);
     }
     static int said;
