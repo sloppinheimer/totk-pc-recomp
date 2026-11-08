@@ -169,6 +169,15 @@ static int alive_named(uint64_t a, const char *name) {
     char nm[48];
     return a && coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6 && !strcmp(coop_actor_name(a, nm, sizeof nm), name);
 }
+// An actor's id, [actor+0x10], the one an ActorLink keeps and checks against its reference (main+0x155ec): another
+// actor made later in a gone one's memory, with the same name, has another (code review, 2026-11-07). 0: unreadable.
+static uint32_t actor_uid(uint64_t a) {
+    uint32_t id = 0;
+    return a && coop_rd(a + 0x10, &id, 4) ? id : 0;
+}
+static int alive_same(uint64_t a, const char *name, uint32_t uid) {   // still that actor
+    return alive_named(a, name) && uid && actor_uid(a) == uid;
+}
 static uint64_t guest_call7(Cpu *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5,
                             uint64_t a6) {
     uint64_t saved_x[31], sp0 = c->sp;
@@ -185,7 +194,9 @@ static uint64_t guest_call7(Cpu *c, uint64_t fn, uint64_t a0, uint64_t a1, uint6
 static struct { uint64_t entry, a, b, body_a, body_b; uint32_t ha, hb; uint8_t flag; float ma[12], mb[12]; } pend[PEND_N];
 static int pend_n;
 #define MINE_N LIST_N
-static struct { int used, gone_checks; GlueBond g; uint64_t a, b; uint32_t ha, hb; int64_t sent_us; } mine[MINE_N];
+// remake_until: this game parted a or b for another game (part_here), which parts it from this game's own bonds too:
+// until then each check makes this bond again instead of dropping it.
+static struct { int used, gone_checks; GlueBond g; uint64_t a, b; uint32_t ha, hb, ua, ub; int64_t sent_us, remake_from, remake_until; } mine[MINE_N];
 static uint32_t next_bond = 1;
 // Bonds of the other games made here, under glue_lock (the veto reads them on game threads).
 #define THEIRS_N 128
@@ -193,15 +204,15 @@ static struct {
     int used, from, made, tries, missed;
     GlueBond g;
     uint64_t a, b;                 // the two actors here, once found
+    uint32_t ua, ub;               // ... and their ids (actor_uid)
     uint32_t ha, hb;               // their bodies' handles here, once made
     int64_t try_us, check_us;
 } theirs[THEIRS_N];
 static struct { uint64_t a; int64_t until_us; } parting[16];   // actors this game parts for a maker (removal): no veto
 
 static int theirs_pair(uint64_t x, uint64_t y) {   // under glue_lock: a bond of another game's made here on x and y
-    for (int i = 0; i < THEIRS_N; i++)
-        if (theirs[i].used && theirs[i].made &&
-            ((theirs[i].a == x && (!y || theirs[i].b == y)) || (theirs[i].b == x && (!y || theirs[i].a == y))))
+    for (int i = 0; x && y && i < THEIRS_N; i++)
+        if (theirs[i].used && theirs[i].made && ((theirs[i].a == x && theirs[i].b == y) || (theirs[i].b == x && theirs[i].a == y)))
             return i;
     return -1;
 }
@@ -213,6 +224,10 @@ static void capture(Cpu *c) {
     if (!a || !b) return;
     plat_mutex_lock(&glue_lock);
     int remote = theirs_pair(a, b) >= 0;   // this game remaking another's bond itself is not a bond of its own
+    if (!remote && pend_n >= PEND_N) {
+        static _Atomic int said;
+        if (atomic_fetch_add(&said, 1) < 5) rt_log("coop: glue: more than %d bonds made here in one tick; one is not sent", PEND_N);
+    }
     if (!remote && pend_n < PEND_N) {
         __typeof__(pend[0]) *p = &pend[pend_n++];
         p->entry = entry, p->a = a, p->b = b, p->body_a = c->x[3], p->body_b = c->x[4], p->flag = (uint8_t)(c->x[6] & 1);
@@ -230,6 +245,15 @@ static int veto(Cpu *c) {
     uint64_t x = coop_rd_ptr(c->x[0] + 0x18), u = coop_rd_ptr(c->x[1] + 0x100), o = u ? coop_rd_ptr(u + 0x110) : 0;
     uint64_t y = o ? link_actor(o + 0x18) : 0;
     if (!x) return 0;
+    // The other side not known: let through. Taken as "any bond on x", every break on x was refused, ones of this
+    // game's own glue too (code review, 2026-11-07). TotK Online refuses only with both actors known.
+    if (!y) {
+        static _Atomic int said_y;
+        char n1[48];
+        if (atomic_fetch_add(&said_y, 1) < 5)
+            rt_log("coop: glue: a break on %s whose other side is not known is let through", coop_actor_name(x, n1, sizeof n1));
+        return 0;
+    }
     int64_t now = frame_step_world_us();
     plat_mutex_lock(&glue_lock);
     int k = -1, allowed = 0;
@@ -335,7 +359,11 @@ int coop_glue_take(const void *data, int n, int from) {   // coop_world.c peer_t
                 else if (!theirs[i].used && free < 0) free = i;
             }
             if (f >= 0) { theirs[f].missed = 0; continue; }   // known (a resend)
-            if (free < 0) continue;
+            if (free < 0) {
+                static int said;
+                if (said++ < 5) rt_log("coop: glue: bond %u from player %d not kept: %d bonds of the others already", g.bond, from, THEIRS_N);
+                continue;
+            }
             memset(&theirs[free], 0, sizeof theirs[free]);
             theirs[free].used = 1, theirs[free].from = from, theirs[free].g = g;
             rt_log("coop: glue: bond %u from player %d: %s (player %u's %08x) to %s (player %u's %08x)", g.bond, from, g.a.name, g.a.owner,
@@ -391,6 +419,7 @@ static void take_pending(void) {
         memcpy(g.ma, p->ma, sizeof g.ma), memcpy(g.mb, p->mb, sizeof g.mb);
         memset(&mine[f], 0, sizeof mine[f]);
         mine[f].used = 1, mine[f].g = g, mine[f].a = p->a, mine[f].b = p->b, mine[f].ha = p->ha, mine[f].hb = p->hb;
+        mine[f].ua = actor_uid(p->a), mine[f].ub = actor_uid(p->b);
         mine[f].sent_us = frame_step_world_us();
         float pa[3] = {0}, pb[3] = {0};
         coop_rd(p->a + COOP_ACTOR_POS, pa, 12), coop_rd(p->b + COOP_ACTOR_POS, pb, 12);
@@ -403,7 +432,7 @@ static void take_pending(void) {
         send_list();
     }
 }
-static void mine_tick(int64_t now) {
+static void mine_tick(Cpu *c, int64_t now) {
     static int64_t last_us;
     if (now - last_us < 1000000) return;
     last_us = now;
@@ -411,8 +440,19 @@ static void mine_tick(int64_t now) {
     int n = 0, changed = 0;
     for (int i = 0; i < MINE_N; i++) {
         if (!mine[i].used) continue;
-        uint64_t e = find_entry(scotch_comp(mine[i].a), mine[i].ha, mine[i].hb);
-        int gone = !alive_named(mine[i].a, mine[i].g.a.name) || !alive_named(mine[i].b, mine[i].g.b.name);
+        int gone = !alive_same(mine[i].a, mine[i].g.a.name, mine[i].ua) || !alive_same(mine[i].b, mine[i].g.b.name, mine[i].ub);
+        uint64_t e = gone ? 0 : find_entry(scotch_comp(mine[i].a), mine[i].ha, mine[i].hb);
+        if (!gone && !entry_glued(e) && now < mine[i].remake_until) {   // parted with another game's bond: made again
+            if (now >= mine[i].remake_from) {
+                in_apply = 1;   // (not captured as a new bond)
+                int ok = make_bond(c, mine[i].a, mine[i].b, mine[i].ha, mine[i].hb, mine[i].g.ma, mine[i].g.mb, mine[i].g.flag, NULL);
+                in_apply = 0;
+                rt_log("coop: glue: bond %u (%s to %s), parted here with another game's, %s", mine[i].g.bond, mine[i].g.a.name, mine[i].g.b.name,
+                       ok ? "made again" : "not made again yet");
+            }
+            mine[i].gone_checks = 0;
+            continue;
+        }
         mine[i].gone_checks = gone || !entry_glued(e) ? mine[i].gone_checks + 1 : 0;
         if (gone || mine[i].gone_checks >= 2) {
             rt_log("coop: glue: bond %u (%s to %s) is %s here: taken off the list", mine[i].g.bond, mine[i].g.a.name, mine[i].g.b.name,
@@ -435,6 +475,11 @@ static void part_here(Cpu *c, uint64_t a, int64_t now) {   // removeScotch on a,
     for (int i = 0; i < 16; i++) if (parting[i].until_us < parting[f].until_us) f = i;
     parting[f].a = a, parting[f].until_us = now + 2000000;
     plat_mutex_unlock(&glue_lock);
+    // removeScotch parts a from every bond, this game's own too: those are made again from 1 s on (its breaks come as
+    // messages, later; the veto lets breaks on a through for 2 s) until 5 s on. Dropped, they left this game's list and
+    // the others parted them as well (code review, 2026-11-07).
+    for (int i = 0; i < MINE_N; i++)
+        if (mine[i].used && (mine[i].a == a || mine[i].b == a)) mine[i].remake_from = now + 1000000, mine[i].remake_until = now + 5000000;
     in_apply = 1;
     coop_guest_call(c, MOD_MAIN_BASE + REMOVE_SCOTCH, comp, id, 0x2051000a, 0);
     in_apply = 0;
@@ -452,7 +497,7 @@ static void theirs_tick(Cpu *c, int64_t now) {
             rt_log("coop: glue: bond %u from player %d (%s to %s) is gone there%s", theirs[i].g.bond, theirs[i].from, theirs[i].g.a.name,
                    theirs[i].g.b.name, theirs[i].made ? ": parted here" : "");
             // only an actor still the bond's (its pointer is from the last check, up to 2 s old: the object may be gone)
-            if (theirs[i].made && alive_named(theirs[i].a, theirs[i].g.a.name)) part[np++] = theirs[i].a;
+            if (theirs[i].made && alive_same(theirs[i].a, theirs[i].g.a.name, theirs[i].ua)) part[np++] = theirs[i].a;
             theirs[i].used = 0;
         }
         // the other bonds on a parted actor: checked again at once (removeScotch parts it from all of them)
@@ -470,12 +515,13 @@ static void theirs_tick(Cpu *c, int64_t now) {
         GlueBond g = theirs[i].g;
         int made = theirs[i].made, from = theirs[i].from;
         uint64_t a = theirs[i].a, b = theirs[i].b;
+        uint32_t ua = theirs[i].ua, ub = theirs[i].ub;
         int64_t due = made ? theirs[i].check_us + 2000000 : theirs[i].try_us + 1000000;
         plat_mutex_unlock(&glue_lock);
         if (now < due) continue;
         uint64_t coop_obj_find(int owner, uint32_t id, const char *name);   // coop_players.c
-        if (!alive_named(a, g.a.name)) a = coop_obj_find((int)g.a.owner, g.a.id, g.a.name);
-        if (!alive_named(b, g.b.name)) b = coop_obj_find((int)g.b.owner, g.b.id, g.b.name);
+        if (!alive_same(a, g.a.name, ua)) a = coop_obj_find((int)g.a.owner, g.a.id, g.a.name), ua = actor_uid(a);
+        if (!alive_same(b, g.b.name, ub)) b = coop_obj_find((int)g.b.owner, g.b.id, g.b.name), ub = actor_uid(b);
         uint32_t ha = a ? body_handle(body_at(a, g.body_a)) : ~0u, hb = b ? body_handle(body_at(b, g.body_b)) : ~0u;
         int glued = 0, tried = 0;
         uint64_t e = 0;
@@ -491,7 +537,7 @@ static void theirs_tick(Cpu *c, int64_t now) {
         plat_mutex_lock(&glue_lock);
         if (theirs[i].used && theirs[i].from == from && theirs[i].g.bond == g.bond) {
             int was = theirs[i].made;
-            theirs[i].a = a, theirs[i].b = b, theirs[i].ha = ha, theirs[i].hb = hb, theirs[i].made = glued;
+            theirs[i].a = a, theirs[i].b = b, theirs[i].ua = ua, theirs[i].ub = ub, theirs[i].ha = ha, theirs[i].hb = hb, theirs[i].made = glued;
             if (made) theirs[i].check_us = now;
             if (!glued) theirs[i].try_us = now;
             if (tried) theirs[i].tries++;
@@ -537,7 +583,7 @@ void coop_glue_tick(Cpu *c, uint64_t me) {
     left_tick(now);
     glue_test(c, me);
     take_pending();
-    mine_tick(now);
+    mine_tick(c, now);
     theirs_tick(c, now);
 }
 
