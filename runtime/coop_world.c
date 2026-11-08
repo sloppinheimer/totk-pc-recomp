@@ -5390,7 +5390,7 @@ static float anim_eased(int k, float dt, int i, uint16_t idx, float target, floa
     aclock[k].idx[i] = idx, aclock[k].f[i] = f;
     return f;
 }
-void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, uint64_t age_ns) {
+void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, int64_t age_ns) {
     uint64_t q = anim_caller_of(standin);
     if (!q) return;
     float cdt = 0;
@@ -5398,7 +5398,7 @@ void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, uint64_t age_
     AnimSlot have[COOP_ANIM_SLOTS];
     int n = anim_read(anim_player_of(standin), have, COOP_ANIM_SLOTS);
     uint64_t g = anim_graph_of(standin);
-    float age = age_ns < 1000000000ull ? (float)(age_ns / 1e9) : 1;
+    float age = age_ns > 1000000000ll ? 1 : age_ns < -1000000000ll ? -1 : (float)(age_ns / 1e9);
     int played = 0, masked = 0;
     for (int i = 0; i < COOP_ANIM_SLOTS; i++) {
         if (in[i].idx != 0xffff) {
@@ -5409,7 +5409,8 @@ void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, uint64_t age_
             if (masks < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_MASKS"); masks = !(e && *e == '0'); }
             uint64_t b = masks ? anim_bind_at(g, in[i].bind) : 0;
             masked += b != 0;
-            float fr = anim_eased(ck, cdt, i, in[i].idx, in[i].frame + in[i].rate * age, in[i].rate);
+            float tf = in[i].frame + in[i].rate * age;
+            float fr = anim_eased(ck, cdt, i, in[i].idx, tf > 0 ? tf : 0, in[i].rate);
             anim_play_bind(c, q, i, in[i].idx, in[i].weight / 65535.0f, fr, b), played++;
             if (i == 0) anim_watch(in[0].idx, in[0].frame, fr, age);
         } else if (i < n && have[i].idx != 0xffff && have[i].w > 0) anim_play(c, q, i, have[i].idx, 0, have[i].f);

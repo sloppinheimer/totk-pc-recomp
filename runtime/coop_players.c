@@ -50,6 +50,8 @@ typedef struct {
                                        // (arrival time, and the owner's world clock then, -1 none)
     unsigned nhist;                    // under lock
     int primed;                        // a PlayerPuppet stand-in's empty weapon, bow and shield slots given an item once
+    float placed_pos[3];               // where the stand-in was last placed (the physics' own move is measured from it)
+    int have_placed;
     int64_t woff_us;                   // this game's world clock less the owner's, the least delayed estimate
     int have_woff;
     float jit_prev[2][3], jit_sum, jit_max;   // puppet mode: frame-to-frame jerk of the placed position (log)
@@ -672,7 +674,38 @@ static uint64_t body_skeleton(uint64_t actor) {
     static const uint32_t path[8] = {0x48, 0x2a8, 0x20, 0x20, 0, 0xf8, 0x58, 0xb0};
     uint64_t sk = actor;
     for (int k = 0; k < 8 && sk; k++) sk = coop_rd_ptr(sk + path[k]);
+    // A PlayerPuppet's: [[[actor+0x238]+0x3a8]+0x3b0] (TOTK_COOP_TEST_SKELFIND, 2026-11-08: 127 bones, as a Link's)
+    if (!sk && actor) {
+        uint64_t a = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(actor + 0x238) + 0x3a8) + 0x3b0);
+        uint16_t nb = 0;
+        if (a && coop_rd(a + 0x48, &nb, 2) && nb == 127) sk = a;
+    }
     return sk;
+}
+// Test (TOTK_COOP_TEST_SKELFIND=1): once, for the first stand-in, the pointer paths from its actor (3 levels, 0x400
+// bytes each) to an object whose +0x48 u16 is 127 (a Link's body bone count) and whose +0x20 points somewhere: where a
+// PlayerPuppet's body skeleton is (body_skeleton's path is a Player's and gives none on it).
+static void skel_find(uint64_t actor) {
+    static int done;
+    if (done || !cfg_get("TOTK_COOP_TEST_SKELFIND") || !actor) return;
+    done = 1;
+    static uint64_t l0[0x80], l1[0x80], l2[0x80];
+    int found = 0;
+    if (!coop_rd(actor, l0, sizeof l0)) return;
+    for (int a = 0; a < 0x80 && found < 8; a++) {
+        if (l0[a] < 0x100000000ull || l0[a] > 0x800000000ull || !coop_rd(l0[a], l1, sizeof l1)) continue;
+        for (int b = 0; b < 0x80 && found < 8; b++) {
+            if (l1[b] < 0x100000000ull || l1[b] > 0x800000000ull || !coop_rd(l1[b], l2, sizeof l2)) continue;
+            for (int d = 0; d < 0x80 && found < 8; d++) {
+                uint64_t o = l2[d];
+                uint16_t nb = 0;
+                if (o < 0x100000000ull || o > 0x800000000ull || !coop_rd(o + 0x48, &nb, 2) || nb != 127 || !coop_rd_ptr(o + 0x20)) continue;
+                rt_log("coop: test: skeleton of the stand-in at actor +%#x +%#x +%#x (%llx)", a * 8, b * 8, d * 8, (unsigned long long)o);
+                found++;
+            }
+        }
+    }
+    if (!found) rt_log("coop: test: no 127-bone skeleton within 3 levels of the stand-in");
 }
 int coop_standin_puppet(void);
 static int proxied(const Slot *s) {   // (never a PlayerPuppet stand-in: its gear is made once, nothing thaws it)
@@ -869,9 +902,7 @@ static int y_delayed(Slot *s);
 // between bones compare across games. root_y (optional): the root bone's own height in those matrices.
 static __thread int top_bone;   // the bone body_top_root found highest
 static float body_top_root(uint64_t actor, float *root_y) {
-    static const uint32_t path[8] = {0x48, 0x2a8, 0x20, 0x20, 0, 0xf8, 0x58, 0xb0};
-    uint64_t sk = actor;
-    for (int k = 0; k < 8 && sk; k++) sk = coop_rd_ptr(sk + path[k]);
+    uint64_t sk = body_skeleton(actor);
     uint16_t nb = 0;
     uint64_t wb = sk ? coop_rd_ptr(sk + 0x20) : 0;
     static __thread float rec[600][16];
@@ -973,9 +1004,21 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
             memcpy(s->phys_pos, pp, 12), s->have_phys = 1;
             for (int k = 0; k < 3; k++) { float d = fabsf(pp[k] - m[k * 4 + 3]); if (d > dp_max) dp_max = d; }
             for (int r = 0; r < 3; r++) for (int k = 0; k < 3; k++) { float d = fabsf(pr[r * 3 + k] - m[r * 4 + k]); if (d > dr_max) dr_max = d; }
+            // and how far the physics moved it since it was last placed (its own drag, apart from its owner's motion),
+            // vertical and level
+            static __thread float pv_sum, ph_sum, pv_max, ph_max;
+            static __thread int pn;
+            if (s->have_placed) {
+                float dv = pp[1] - s->placed_pos[1], dx = pp[0] - s->placed_pos[0], dz = pp[2] - s->placed_pos[2], dh = sqrtf(dx * dx + dz * dz);
+                pv_sum += fabsf(dv), ph_sum += dh, pn++;
+                if (fabsf(dv) > pv_max) pv_max = fabsf(dv);
+                if (dh > ph_max) ph_max = dh;
+            }
             if (++dn % 60 == 0) {
-                rt_log("coop: puppet: physics vs owner before placement: position %.1f mm, rotation %.4f (max over 60 frames)", dp_max * 1000, dr_max);
-                dp_max = dr_max = 0;
+                rt_log("coop: puppet: physics vs owner before placement: position %.1f mm, rotation %.4f (max over 60 frames); "
+                       "moved by its physics since placed: vertical mean %.1f max %.1f mm, level mean %.1f max %.1f mm",
+                       dp_max * 1000, dr_max, pn ? pv_sum / pn * 1000 : 0, pv_max * 1000, pn ? ph_sum / pn * 1000 : 0, ph_max * 1000);
+                dp_max = dr_max = 0, pv_sum = ph_sum = pv_max = ph_max = 0, pn = 0;
             }
         }
     }
@@ -983,6 +1026,8 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
         pos[r] = m[r * 4 + 3];
         for (int k = 0; k < 3; k++) rot[r * 3 + k] = m[r * 4 + k];
     }
+    memcpy(s->placed_pos, pos, 12), s->have_placed = 1;
+    skel_find(actor);
     if (place & 1) {
         memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_POS), pos, 12);
         memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_ROT), rot, 36);
@@ -994,9 +1039,7 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
     }
     {   // Jitter watch: the puppet's highest body bone (model space, skeleton +0x20, row 3) frame to frame; a jump
         // over 3 cm is logged with what this frame did (whether its body was teleported since, the pose's age).
-        static const uint32_t path[8] = {0x48, 0x2a8, 0x20, 0x20, 0, 0xf8, 0x58, 0xb0};
-        uint64_t sk = actor;
-        for (int k = 0; k < 8 && sk; k++) sk = coop_rd_ptr(sk + path[k]);
+        uint64_t sk = body_skeleton(actor);
         uint16_t nb = 0;
         uint64_t wb = sk ? coop_rd_ptr(sk + 0x20) : 0;
         static __thread float rec[127][16];   // (per thread: two puppets' placing overwrote each other's, code review)
@@ -5061,7 +5104,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         int32_t ast = 0;   // (a live actor: one going away, or another at its address, gets no call; code review)
         if (coop_standin_puppet() && s->state == LIVE && s->actor && age < 2000000000ull && coop_rd(s->actor + COOP_ACTOR_STATE, &ast, 4) &&
             ast >= 2 && ast <= 6 && actor_is(s->actor, "PlayerPuppet")) {   // (the name too: another actor at a freed one's address)
-            void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, uint64_t age_ns);   // coop_world.c
+            void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, int64_t age_ns);   // coop_world.c
             static uint64_t y_was[COOP_MAX_PLAYERS];   // its owner's attack button down: logged (the suite's tour case)
             uint64_t y_now = st.buttons >> 3 & 1;
             if (y_now && !y_was[s - slots]) {
@@ -5071,12 +5114,15 @@ void coop_players_tick(Cpu *c, int numpad3) {
             y_was[s - slots] = y_now;
             void coop_anim_masks_apply(uint64_t standin, const CoopMask *in);   // coop_world.c
             coop_anim_masks_apply(s->actor, st.mask);
-            uint64_t aage = age;   // (the state's age on the owner's clock, as the stand-in is placed)
+            // The state's age on the owner's clock, as the stand-in is placed, less the placing's delay: the clips play
+            // at the same moment of the owner's as the body is shown (TOTK_COOP_PUPPET_DELAY_MS back). Played at the
+            // newest state they ran 60 ms ahead of the body, a jump's take-off before it left the ground and each step
+            // of a slow walk out of time with its motion (a play session, "choppy on jumps and slow walks", 2026-11-08).
+            // Negative: the newest state's frame taken back by its rate (a clip just begun waits at its start).
+            int64_t aage = (int64_t)age;
             int64_t lw2 = frame_step_world_us();
-            if (s->have_woff && st.world_us >= 0 && lw2 >= 0) {
-                int64_t a2 = lw2 - s->woff_us - st.world_us;
-                aage = a2 > 0 ? (uint64_t)a2 * 1000 : 0;
-            }
+            if (s->have_woff && st.world_us >= 0 && lw2 >= 0) aage = (lw2 - s->woff_us - st.world_us) * 1000;
+            aage -= (int64_t)puppet_delay_ms() * 1000000;
             coop_anim_apply(c, s->actor, st.anim, aage);
             void coop_blur_apply(uint64_t standin, const NetState *st, uint64_t age_ns);   // coop_world.c: the sword trail
             coop_blur_apply(s->actor, &st, age);
