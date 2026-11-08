@@ -90,7 +90,8 @@ extern "C" int menu_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res)
     case WM_MOUSEWHEEL:
         if (menu_is_open()) menu_event_wheel(0, (float)GET_WHEEL_DELTA_WPARAM(w) / WHEEL_DELTA);
         return 0;
-    case WM_CHAR:   // typed text for the menu's text boxes (the Co-op tab's name and address)        if (menu_is_open() && w >= 0x20 && w != 0x7f) menu_event_char((unsigned)w);
+    case WM_CHAR:   // typed text for the menu's text boxes (the Co-op tab's name and address)
+        if (menu_is_open() && w >= 0x20 && w != 0x7f) menu_event_char((unsigned)w);
         return 0;
     case WM_SETFOCUS:
     case WM_KILLFOCUS:

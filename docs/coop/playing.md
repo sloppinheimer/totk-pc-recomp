@@ -6,7 +6,8 @@
    asks the host's router (UPnP) to forward UDP port 41900 to this PC for players over the internet: when it works,
    the tab shows the internet address to give them. When the router has UPnP off, or the provider shares one
    address among customers (CGNAT, the tab says so), forward UDP 41900 by hand or use a virtual network (Tailscale,
-   ZeroTier). The forward is removed on Leave; if the game is closed while hosting it expires within an hour.3. The others type that address under **Host's address** and choose **Join**. Players appear in each other's games
+   ZeroTier). The forward is removed on Leave; if the game is closed while hosting it expires within an hour.
+3. The others type that address under **Host's address** and choose **Join**. Players appear in each other's games
    as they connect and disappear when they leave (**Leave the session**, or closing the game). When the host leaves
    the session ends for everyone.
 4. The name and the last address are kept in `totk.ini` (`coop_name`, `coop_join`).
