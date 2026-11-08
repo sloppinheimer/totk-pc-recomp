@@ -268,7 +268,7 @@ static PlatMutex test_lock;   // (zero storage is a valid lock)
 static int test_on(void) {
     static int on = -1;
     if (on < 0) {
-        const char *e = cfg_value("TOTK_TEST_DRAWSKIP");
+        const char *e = cfg_get("TOTK_TEST_DRAWSKIP");
         if (e) snprintf(test_part, sizeof test_part, "%s", e);
         on = e && *e;
     }
