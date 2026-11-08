@@ -917,10 +917,19 @@ other game reaching the owner's devices, both wait on one. A hit does it (the pr
   contraption flown far by the claimer, a claim handed back while it moves, two claimers.
 - Glue by hand: glue made again in the other game (coop_glue.c make_bond) uses the request's base class, whose
   vtable slot 4 answers 0, so createScotch's tail (main+0x1d61858) copies none of the request's four vectors into the
-  entry (+0x51c..+0x548) and does not set entry +0x554 bit 1: likely why no glue shows there. Ultrahand's own request
-  class (0x1b8 bytes, made in main+0x1d5565c) is not decoded. Whether glue by hand gives its pieces the shared group
+  entry (+0x51c..+0x548). Ultrahand's own request is the same class: main+0x1d5565c makes it 0x1b8 bytes, zeroed, with
+  the base constructor main+0x1c0c4ec, and puts the base vtable back when it is done (decoded from the generated C;
+  Ghidra was down), so that is not why no glue shows. UltraHand_Connection_Effect2, an effect actor Ultrahand makes
+  on a contraption, was left out of the world objects that morning (prop_skip) and is copied again: it may be the
+  glue's look (not checked). Whether glue by hand gives its pieces the shared group
   (which coop_bonds.c would then send) is not known: a scripted Ultrahand grab works on a contraption
-  (autobuild_part_3rd.txt) but not on a loose fan right against the Link (glue_hand_3rd.txt: the grab only flashes).
+  (autobuild_part_3rd.txt) but not on loose fans (glue_hand_3rd.txt: the grab only flashes; with the fans 2.5 m ahead
+  of the camera, TOTK_COOP_TEST_GLUE=...,far, too: the camera turns after the Link is put and again in Ultrahand, so the
+  reticle is not on them).
+- The stick's own state: its on bool goes 0 -> 1 when a Link takes it, with actor +0x1d0 = 0x79_00000001 and component
+  166 +0x90 0 -> 3 (TOTK_COOP_TEST_ABTRACE=SpObj_ControlStick_A_01,51.8 in game B). Holding the bool at 1 on the
+  owner's stick with nobody on it (TOTK_COOP_TEST_ABSTICKON) turns nothing on: the bool is an effect of the Link
+  holding it.
 
 ## Proxy hair and clothes stay blown after a fan (open)
 the tester (2026-11-05): after a fan's wind hits the proxy, its hair and clothes keep flapping as if in wind, on that

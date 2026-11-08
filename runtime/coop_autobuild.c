@@ -501,6 +501,26 @@ static void stick_test(Cpu *c, uint64_t me, int n) {
             rt_log("coop: test: abstick: this Link put behind the stick (device %d at %.2f %.2f %.2f)", i, p[0], p[1], p[2]);
         }
     }
+    {   // TOTK_COOP_TEST_ABSTICKON=<s>: from then on, every tick, this game's own stick's on bool held at 1 (its change
+        // count stepped once): whether the stick turns its contraption on without a Link holding it
+        static double on_at = -1;
+        static int stepped;
+        if (on_at < 0) { const char *e = cfg_get("TOTK_COOP_TEST_ABSTICKON"); on_at = e ? atof(e) : 0; }
+        for (int i = 0; on_at > 0 && now >= on_at && i < n; i++) {
+            if (!live_device(i, nm, sizeof nm) || strcmp(nm, "SpObj_ControlStick_A_01")) continue;
+            uint64_t a = atomic_load(&tracked[i]), tbl = coop_rd_ptr(a + 0x228), c0 = tbl ? coop_rd_ptr(tbl) : 0, bb = c0 ? coop_rd_ptr(c0 + 0x10) : 0;
+            uint64_t f = on_flag(a);
+            if (!f || !bb) continue;
+            if (!LD8(f)) {
+                ST8(f, 1);
+                uint64_t chg = coop_rd_ptr(bb + 0x1f0);
+                uint32_t nch = 0, idx = (uint32_t)(f - coop_rd_ptr(bb + 0x1a0));
+                if (!stepped && chg && coop_rd(bb + 0x1e8, &nch, 4) && idx < nch) ST8(chg + idx, (uint8_t)(LD8(chg + idx) + 1)), stepped = 1;
+                rt_log("coop: test: abstick: the stick's on bool set at %.2f s", now);
+            }
+            break;
+        }
+    }
     int64_t t = frame_step_world_us();
     if (t - last < 500000) return;
     last = t;
@@ -513,8 +533,9 @@ static void stick_test(Cpu *c, uint64_t me, int n) {
         k += snprintf(line + k, sizeof line - (size_t)k, " %d %s %s/%u", i, strstr(nm, "Wind") ? "fan" : strstr(nm, "Stick") ? "stick" : nm + 6,
                       on11 ? "on" : "off", e28);
         float sp[3];
+        uint64_t sf = strstr(nm, "Stick") ? on_flag(atomic_load(&tracked[i])) : 0;
         if (strstr(nm, "Stick") && coop_rd(atomic_load(&tracked[i]) + COOP_ACTOR_POS, sp, 12))
-            k += snprintf(line + k, sizeof line - (size_t)k, " at %.2f %.2f %.2f", sp[0], sp[1], sp[2]);
+            k += snprintf(line + k, sizeof line - (size_t)k, " (bool %d) at %.2f %.2f %.2f", sf ? LD8(sf) : -1, sp[0], sp[1], sp[2]);
     }
     rt_log("%s", line);
 }
