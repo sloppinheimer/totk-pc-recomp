@@ -897,6 +897,24 @@ What a device's "on" is, from pair tests with autobuild_3rd.txt (`TOTK_COOP_TEST
   only): once the copy was on (energy 10), it stayed on through every write; the bool alone does not switch a device.
 So no call or write that turns a device on or off is known yet; device state from the owner, and a stick held in the
 other game reaching the owner's devices, both wait on one. A hit does it (the proxy's swing), but cannot be aimed.
+- The steering stick, pair tests (tools/coop/autobuild_stick_3rd.txt builds the Fanboat, the sixth schematic: five
+  fans, a steering stick and wooden parts; `TOTK_COOP_TEST_ABLOG=1 TOTK_COOP_TEST_ABSTICK=50,<player>` puts that
+  player's Link behind its stick, its script's A takes it; autobuild_stick_b_3rd.txt for game B): game A holding its
+  stick turns its fans on in A only; game B holding the copy stick turns B's copies on (they are bonded, coop_bonds.c)
+  and A's stay off. So the stick works in the game that holds it, and the other game's devices do not follow (no
+  switch, above).
+- Claims (coop_bonds.c, TotK Online's way): the game whose Link rides another player's contraption, 2 m nearer it than
+  that player's Link, runs it: its copies are not placed and the owner moves its contraption to them as one body.
+  What went wrong on the way, all in the stick pair test: unfrozen by the claim, a wooden plank's copy went away at once
+  (state 7) and our "a copy went away here" rule made the owner delete its own; bonded copies are now never frozen,
+  and one that goes away while claimed is made again without telling the owner. Each owner part pulled to the
+  claimer's place of it, the owner's contraption came apart, and an autobuilt part pulled off is deleted by the game:
+  the owner now moves only the root, by the rigid move from its own place to the claimer's, at most 0.4 m a tick (a
+  force_to past 0.5 m teleports), and its bonds carry the rest. Standing by a fan the owner had just hit counted as
+  riding it, and the claim pulled the owner's flying contraption back to the late copies: hence the 2 m rule.
+  Result: B holding the copy stick runs B's fans and A's Fanboat follows B's place within 0.2 m, no part lost; A's
+  fans stay off (their state is not sent). The plain hit test (autobuild_3rd.txt) makes no claim. Not tested: a
+  contraption flown far by the claimer, a claim handed back while it moves, two claimers.
 - Glue by hand: glue made again in the other game (coop_glue.c make_bond) uses the request's base class, whose
   vtable slot 4 answers 0, so createScotch's tail (main+0x1d61858) copies none of the request's four vectors into the
   entry (+0x51c..+0x548) and does not set entry +0x554 bit 1: likely why no glue shows there. Ultrahand's own request

@@ -706,6 +706,7 @@ static void beam_end_watch(const float at[3]);
 static void place_copy(Cpu *c, Slot *s, int k);
 static void beam_copy(Cpu *c, Slot *s, int k, float m[12]);
 static void set_driven(uint64_t a);
+int coop_bonds_claimed(uint64_t actor);   // coop_bonds.c: a copy of a contraption this game runs now
 #define COPY_WARMUP 5   // ticks a copy runs its own update after it is made (arrow_copies)
 // Where a Link's bow is drawn: its model's world matrix (model +0x1f8, 3x4 rows), which the model push puts on the
 // hand bone each frame. A nocked arrow is sent and shown in this frame (COOP_OBJ_LOCAL). 1 when it has a bow.
@@ -1725,6 +1726,12 @@ static void arrow_copies(Cpu *c, Slot *s) {
                 char nm[48];
                 if (!coop_rd(s->mir[k].actor + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 ||
                     strcmp(coop_actor_name(s->mir[k].actor, nm, sizeof nm), s->mir[k].name)) {
+                    if (coop_bonds_claimed(s->mir[k].actor)) {   // part of a contraption run here: made again, not passed on
+                        rt_log("coop: slot %d: the copy of object %u (%s) went away here (state %d) while this game ran its contraption; made again",
+                               (int)(s - slots), s->mir[k].id, s->mir[k].name, st);
+                        s->mir[k].state = 1, s->mir[k].actor = 0, s->mir[k].ticks = 0;
+                        continue;
+                    }
                     rt_log("coop: slot %d: the copy of object %u (%s) went away here (state %d); the owner is told",
                            (int)(s - slots), s->mir[k].id, s->mir[k].name, st);
                     take_note(s->net_id, s->mir[k].id);
@@ -1751,6 +1758,8 @@ static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc) {
     // other player's bow could be picked up again and again, and a fused arrow's kept falling asleep and did not
     // show (a play session, 2026-11-05).
     // (a paraglider's copy from its first tick: it went away by itself about 0.5 s after it was made, glide.txt)
+    int coop_bonds_member(uint64_t actor);   // coop_bonds.c: bonded into a contraption here
+    if (coop_bonds_member(actor)) return 0;   // (one rigid contraption: all its parts run their update, placed or not)
     return copy_of(actor, &s, &k) && (s->mir[k].ticks >= COPY_WARMUP || (s->mir[k].flags & COOP_OBJ_ONLINK)) &&
            strncmp(s->mir[k].name, "SpObj_", 6) && !pickable(s->mir[k].name) && !s->mir[k].blowing && strcmp(s->mir[k].name, "PlayerBeam") &&
            strcmp(s->mir[k].name, "LightningStrike");   // (a strike's copy plays out by itself)
@@ -1802,6 +1811,7 @@ static void place_copy(Cpu *c, Slot *s, int k) {
         s->mir[k].state = 0, s->mir[k].actor = 0;
         return;
     }
+    if (coop_bonds_claimed(actor)) return;   // this game runs that contraption now: its copies move by themselves
     // An arrow's copy asks to sleep in its first tick (reason 0, through main+0x55251c: TOTK_COOP_TEST_ARROWWATCH)
     // and sleeps from the third (actor state 6, its model's +0x244 6), where this game's own arrows stay awake (4); a
     // sleeping arrow is not drawn (a play session, 2026-11-05). It is woken as the actor state machine
@@ -3694,6 +3704,25 @@ void coop_copy_remake(Cpu *c, uint64_t a) {
     if (copy_alive(s, k)) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, a, COOP_DELETE_REASON, 0, 0), set_driven(a);
     s->mir[k].state = 1, s->mir[k].actor = 0, s->mir[k].ticks = 0;
 }
+// For coop_bonds.c's claims: what this Link rides (another player's object: its owner and number), what another
+// player's Link rides, and an object of this game's moved to where the player running its contraption has it.
+int coop_ride_now(int *owner, uint32_t *id) {
+    if (!ride_owner_now || ride_owner_now == COOP_RIDE_MOUNT) return 0;
+    *owner = ride_owner_now, *id = ride_id_now;
+    return 1;
+}
+int coop_player_rides(int net_id, int *owner, uint32_t *id) {
+    Slot *s = slot_for(SRC_NET, net_id);
+    if (!s || s->state != LIVE || !s->ride_owner || s->ride_owner == COOP_RIDE_MOUNT) return 0;
+    *owner = s->ride_owner, *id = s->ride_id;
+    return 1;
+}
+void coop_obj_force(Cpu *c, uint64_t a, const float pos[3], const float q[4]) { force_to(c, a, pos, q); }
+int coop_player_pos(int net_id, float out[3]) {   // where another player's Link (its stand-in) is here
+    Slot *s = slot_for(SRC_NET, net_id);
+    return s && s->state == LIVE && s->actor && coop_rd(s->actor + COOP_ACTOR_POS, out, 12);
+}
+void coop_mat_quat(const float r[9], float q[4]) { mat_quat(r, q); }
 int coop_obj_ident(uint64_t a, int *owner, uint32_t *id) {
     if (!a) return 0;
     for (int e = 0; e < PROPS_N; e++)
@@ -3814,7 +3843,7 @@ static void ride_carry(Cpu *c, uint64_t me) {
                 memcpy(put, np, 12);
             }
         }
-        if (mv > 1e-6f && !nocarry) {
+        if (mv > 1e-6f && !nocarry && !coop_bonds_claimed(on->actor)) {   // (a claimed copy carries it by its own physics)
             float m[12];
             for (int i = 0; i < 3; i++) {
                 for (int j = 0; j < 3; j++) m[i * 4 + j] = nr[i * 3 + j];

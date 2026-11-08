@@ -66,7 +66,7 @@ static uint64_t link_actor(uint64_t link) {   // an ActorLink (coop_glue.c link_
     return coop_rd_ptr(ref + 0x40);
 }
 
-#define TRACK_N 32
+#define TRACK_N 128   // (an autobuild screen scrolled through makes previews of each schematic it passes)
 static _Atomic uint64_t tracked[TRACK_N];
 static _Atomic int tracked_n;
 
@@ -303,14 +303,21 @@ static uint64_t on_flag(uint64_t actor) {   // a device's on bool (coop_players.
     }
 }
 static void trace_tick(int n) {
-    if (!cfg_get("TOTK_COOP_TEST_ABTRACE") || msg_from_us == INT64_MAX) return;
+    // (TOTK_COOP_TEST_ABTRACE=<name>,<from s>: the first live tracked device of that name, from that time)
+    const char *te = cfg_get("TOTK_COOP_TEST_ABTRACE");
+    static char want[48];
+    static double from_s = -1;
+    if (!te) return;
+    if (from_s < 0) { from_s = 0; if (sscanf(te, "%47[^,],%lf", want, &from_s) != 2) want[0] = 0, from_s = 0; }
+    if (from_s > 0 && msg_from_us == INT64_MAX) msg_from_us = (int64_t)(from_s * 1e6);
+    if (msg_from_us == INT64_MAX) return;
     int64_t now = frame_step_world_us();
     if (now < msg_from_us || tr_n < 0) return;
     char nm[48];
     if (tr_dev < 0) {
         int fans = 0;
         for (int i = 0; i < n && tr_dev < 0; i++)
-            if (live_device(i, nm, sizeof nm) && !strcmp(nm, "SpObj_WindGenerator_A_01") && ++fans == 2) tr_dev = i;
+            if (live_device(i, nm, sizeof nm) && (want[0] ? !strcmp(nm, want) : !strcmp(nm, "SpObj_WindGenerator_A_01") && ++fans == 2)) tr_dev = i;
         if (tr_dev < 0) return;
         tr_snap = calloc(TR_N, sizeof *tr_snap);
         if (!tr_snap) { tr_n = -1; return; }
@@ -464,6 +471,54 @@ static void part_test(Cpu *c, int n) {
            (unsigned long long)comp, (unsigned long long)(comp ? coop_rd_ptr(comp + 0x28) : 0));
 }
 
+// TOTK_COOP_TEST_ABSTICK=<s>,<player>: at that world time the game that joined as <player> (1 or 2) puts its Link
+// 0.7 m behind the build's steering stick (its own or its copy), facing the way the stick faces, for its script's A to
+// take it; from then for 20 s, every 0.5 s, each tracked device's on state, in both games.
+static void stick_test(Cpu *c, uint64_t me, int n) {
+    static double at = -1;
+    static int who, placed;
+    static int64_t last;
+    if (at < 0) {
+        const char *e = cfg_get("TOTK_COOP_TEST_ABSTICK");
+        at = 0;
+        if (e && sscanf(e, "%lf,%d", &at, &who) != 2) at = 0;
+    }
+    double now = frame_step_world_us() / 1e6;
+    if (at <= 0 || now < at || now > at + 20) return;
+    char nm[48];
+    if (!placed && coop_net_id() == who) {
+        for (int i = 0; i < n && !placed; i++) {
+            if (!live_device(i, nm, sizeof nm) || strcmp(nm, "SpObj_ControlStick_A_01")) continue;
+            uint64_t a = atomic_load(&tracked[i]);
+            float p[3], r[9];
+            if (!coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(a + COOP_ACTOR_ROT, r, 36)) continue;
+            float fx = r[2], fz = r[8], l = sqrtf(fx * fx + fz * fz);
+            if (l < 0.1f) fx = 0, fz = 1, l = 1;
+            fx /= l, fz /= l;
+            float m[12] = {fz, 0, fx, p[0] - 0.7f * fx, 0, 1, 0, p[1] + 0.1f, -fx, 0, fz, p[2] - 0.7f * fz};
+            coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
+            placed = 1;
+            rt_log("coop: test: abstick: this Link put behind the stick (device %d at %.2f %.2f %.2f)", i, p[0], p[1], p[2]);
+        }
+    }
+    int64_t t = frame_step_world_us();
+    if (t - last < 500000) return;
+    last = t;
+    char line[600];
+    int k = snprintf(line, sizeof line, "coop: test: abstick: %.1f s:", now);
+    for (int i = 0; i < n && k < (int)sizeof line - 40; i++) {
+        if (!live_device(i, nm, sizeof nm) || strncmp(nm, "SpObj_", 6)) continue;
+        uint32_t on11, e28;
+        dev_on(atomic_load(&tracked[i]), &on11, &e28);
+        k += snprintf(line + k, sizeof line - (size_t)k, " %d %s %s/%u", i, strstr(nm, "Wind") ? "fan" : strstr(nm, "Stick") ? "stick" : nm + 6,
+                      on11 ? "on" : "off", e28);
+        float sp[3];
+        if (strstr(nm, "Stick") && coop_rd(atomic_load(&tracked[i]) + COOP_ACTOR_POS, sp, 12))
+            k += snprintf(line + k, sizeof line - (size_t)k, " at %.2f %.2f %.2f", sp[0], sp[1], sp[2]);
+    }
+    rt_log("%s", line);
+}
+
 // Every 2 s while any device is tracked (for 60 s): each one's name, state, flags and glue entries.
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
     if (!ablog_on()) return;
@@ -481,8 +536,8 @@ void coop_autobuild_tick(Cpu *c, uint64_t me) {
     }
     int n = atomic_load(&tracked_n);
     if (n > TRACK_N) n = TRACK_N;
-    if (n) hit_test(c, me, n), part_test(c, n), trace_tick(n);
-    else if (cfg_get("TOTK_COOP_TEST_ABHIT") && now > 20000000) {   // (near_dev_fn)
+    if (n) hit_test(c, me, n), part_test(c, n), trace_tick(n), stick_test(c, me, n);
+    else if ((cfg_get("TOTK_COOP_TEST_ABHIT") || cfg_get("TOTK_COOP_TEST_ABSTICK")) && now > 20000000) {   // (near_dev_fn)
         static NearDev d;
         static int64_t last_scan;
         if (now - last_scan > 1000000) {

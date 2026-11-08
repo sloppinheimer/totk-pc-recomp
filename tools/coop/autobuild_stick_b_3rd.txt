@@ -1,0 +1,9 @@
+# Game B for tools/coop/autobuild_stick_3rd.txt: the 100% save; with TOTK_COOP_TEST_ABSTICK=50,2 its Link is put
+# behind the copy of A's steering stick at 50 s, and A at 52 s takes it.
+480 A 4
+700 DOWN 4
+760 DOWN 4
+820 A 4
+980 A 4
+@52000 A 150
+@53000 LSTICK 0 20000 4000

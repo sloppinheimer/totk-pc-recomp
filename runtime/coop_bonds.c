@@ -24,6 +24,8 @@
 //   bond is known. A part taken off an autobuilt contraption with Ultrahand is deleted by the game itself (state 11;
 //   autobuild_part_3rd.txt), and its copy with it.
 // Only copies are bonded (a game's own objects are left as they are). TOTK_COOP_BONDS=0 turns it off.
+#include <math.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,6 +42,8 @@
 #define BOND_BODIES 0x1c05a98      // (component, body index, other body, world matrix, other's world matrix)
 #define BODY_SKIP_BIT (1ull << 24) // body +0x68: a bond skips such a body (main+0xa2d39c)
 #define BONDS_KIND 0x4243          // "CB"
+#define CLAIM_KIND 0x4c43          // "CL" (claims, below)
+static int claim_take(const void *data, int n, int from);
 
 int coop_own_sent_objects(uint64_t *out, int max);   // coop_players.c
 int coop_is_copy(uint64_t a);
@@ -187,6 +191,7 @@ int coop_bonds_take(const void *data, int n, int from) {   // coop_world.c peer_
     if (n < 16) return 0;
     uint32_t kind = 0, cnt = 0;
     memcpy(&kind, data, 4), memcpy(&cnt, (const uint8_t *)data + 4, 4);
+    if (kind == CLAIM_KIND) return claim_take(data, n, from);
     if (kind != BONDS_KIND) return 0;
     if (cnt > ENTRY_N || n != (int)(offsetof(BondPacket, e) + cnt * sizeof(BondEntry)) || !bonds_on()) return 1;
     static BondPacket p;
@@ -239,12 +244,188 @@ static void bond_pairs(Cpu *c, int64_t now) {
     }
 }
 
+// ---- claims: the game whose Link rides a contraption of another player's runs it (TotK Online's exclusive claim,
+// read for behaviour only: there the player holding a glued group with Ultrahand owns it). While this Link rides a copy
+// of player P's contraption (one of P's groups, as its "CB" packets list them) and P's own Link is not on it, this game
+// claims the whole group: its copies are no longer put at P's places (coop_players.c place_copy), frozen copies run
+// their update again (copy_place) and the Link rides them by their own physics (ride_carry); their places go to P
+// twenty times a second ("CL" packets), and P moves its contraption there as one body by speed (held_tick). So a steering stick held here steers the contraption in both games. Let go 2 s after the
+// Link leaves it. Its devices' on state is not sent (no way to set it is known: re-notes "Device state on the copies").
+typedef struct { uint32_t id; char name[NAME_N]; float pos[3], q[4]; } ClaimEntry;
+#define CLAIM_N ((COOP_HIT_MAX - 16) / (int)sizeof(ClaimEntry))
+typedef struct { uint32_t kind, n, owner, pad; ClaimEntry e[CLAIM_N]; } ClaimPacket;
+_Static_assert(sizeof(ClaimPacket) <= COOP_HIT_MAX, "claim packet fits");
+int coop_ride_now(int *owner, uint32_t *id);   // coop_players.c
+int coop_player_rides(int net_id, int *owner, uint32_t *id);
+int coop_player_pos(int net_id, float out[3]);
+void coop_obj_force(Cpu *c, uint64_t a, const float pos[3], const float q[4]);
+void coop_mat_quat(const float r[9], float q[4]);
+#define CLAIMED_N 32
+static _Atomic uint64_t claimed[CLAIMED_N];   // this game's copies of the contraption it claims (read on game threads too)
+static struct { int from; uint32_t group; int64_t until_us; } claim;
+int coop_bonds_claimed(uint64_t actor) {
+    for (int i = 0; actor && i < CLAIMED_N; i++)
+        if (atomic_load_explicit(&claimed[i], memory_order_relaxed) == actor) return 1;
+    return 0;
+}
+int coop_bonds_member(uint64_t actor) {   // a copy bonded here into another player's contraption (any thread: a read)
+    for (int k = 0; actor && k < PAIR_N; k++)
+        if (pair[k].used && pair[k].tries && (pair[k].ma == actor || pair[k].ra == actor)) return 1;
+    return 0;
+}
+static int in_group(int from, uint32_t group, uint32_t id) {   // one of player from's objects of that group, by number
+    for (int k = 0; k < PAIR_N; k++)
+        if (pair[k].used && pair[k].from == from && pair[k].group == group && (pair[k].m.id == id || pair[k].root.id == id)) return 1;
+    return 0;
+}
+static void claim_tick(int64_t now) {
+    int ro = 0, po = 0;
+    uint32_t rid = 0, pid = 0;
+    if (coop_ride_now(&ro, &rid)) {
+        uint32_t g = 0;
+        int found = 0;
+        for (int k = 0; k < PAIR_N && !found; k++)
+            if (pair[k].used && pair[k].from == ro && (pair[k].m.id == rid || pair[k].root.id == rid)) g = pair[k].group, found = 1;
+        int owner_on = coop_player_rides(ro, &po, &pid) && po == ro && in_group(ro, g, pid);
+        // ... and this Link 2 m nearer it than the owner's (TotK Online gives a group to the nearest player): standing
+        // by a fan the owner had just hit counted as riding it, and the claim pulled the owner's flying contraption
+        // back to this game's late copies (autobuild_3rd.txt pair test)
+        float me_p[3], op[3], cp[3];
+        uint64_t me = coop_player_actor(), cpy = 0;
+        for (int k = 0; k < PAIR_N && !cpy; k++)
+            if (pair[k].used && pair[k].from == ro && pair[k].group == g) cpy = pair[k].ra;
+        int nearer = 0;
+        if (me && cpy && coop_rd(me + COOP_ACTOR_POS, me_p, 12) && coop_rd(cpy + COOP_ACTOR_POS, cp, 12)) {
+            float dm = (me_p[0] - cp[0]) * (me_p[0] - cp[0]) + (me_p[2] - cp[2]) * (me_p[2] - cp[2]), d_o = 1e9f;
+            if (coop_player_pos(ro, op)) d_o = (op[0] - cp[0]) * (op[0] - cp[0]) + (op[2] - cp[2]) * (op[2] - cp[2]);
+            nearer = sqrtf(dm) + 2.0f < sqrtf(d_o) || (claim.until_us && claim.from == ro && claim.group == g);   // (kept once claimed)
+        }
+        if (found && !owner_on && nearer) {
+            if (!claim.until_us || claim.from != ro || claim.group != g)
+                rt_log("coop: bonds: claimed player %d's contraption (its group %08x): this Link rides it", ro, g);
+            claim.from = ro, claim.group = g, claim.until_us = now + 2000000;
+        }
+    }
+    if (claim.until_us && now > claim.until_us) {
+        rt_log("coop: bonds: player %d's contraption let go", claim.from);
+        claim.until_us = 0;
+    }
+    int n = 0;   // the claimed copies, root and members
+    static ClaimPacket p;
+    memset(&p, 0, offsetof(ClaimPacket, e));
+    p.kind = CLAIM_KIND, p.owner = (uint32_t)claim.from;
+    for (int k = 0; k < PAIR_N && claim.until_us; k++) {
+        if (!pair[k].used || pair[k].from != claim.from || pair[k].group != claim.group) continue;
+        uint64_t two[2] = {pair[k].ra, pair[k].ma};
+        const BondObj *ob[2] = {&pair[k].root, &pair[k].m};
+        uint32_t uid[2] = {pair[k].ru, pair[k].mu};
+        for (int j = 0; j < 2; j++) {
+            int dup = 0;
+            for (int i = 0; i < n; i++) dup |= atomic_load(&claimed[i]) == two[j];
+            if (dup || n >= CLAIMED_N || n >= CLAIM_N || !alive(two[j], uid[j])) continue;
+            atomic_store(&claimed[n], two[j]);
+            ClaimEntry *e = &p.e[n];
+            float r[9];
+            e->id = ob[j]->id;
+            memcpy(e->name, ob[j]->name, NAME_N);
+            if (coop_rd(two[j] + COOP_ACTOR_POS, e->pos, 12) && coop_rd(two[j] + COOP_ACTOR_ROT, r, 36)) coop_mat_quat(r, e->q);
+            n++;
+        }
+    }
+    for (int i = n; i < CLAIMED_N; i++) atomic_store(&claimed[i], 0);
+    static int64_t sent_us;
+    if (n && now - sent_us >= 50000) {
+        sent_us = now, p.n = (uint32_t)n;
+        coop_net_hit_send(&p, (int)(offsetof(ClaimPacket, e) + (size_t)n * sizeof(ClaimEntry)));
+    }
+}
+// The owner's side: where the claiming player has this game's objects; moved there each tick while heard (0.5 s).
+#define HELD_N 64
+static struct { int from; ClaimEntry e; int64_t heard_us; } held[HELD_N];
+static struct { int from; uint32_t id; } held_root[8];   // each claimer's first entry (its root): the others move with it
+static int claim_take(const void *data, int n, int from) {
+    uint32_t cnt = 0;
+    memcpy(&cnt, (const uint8_t *)data + 4, 4);
+    if (cnt > CLAIM_N || n != (int)(offsetof(ClaimPacket, e) + cnt * sizeof(ClaimEntry)) || !bonds_on()) return 1;
+    static ClaimPacket p;
+    memcpy(&p, data, (size_t)n);
+    if ((int)p.owner != coop_net_id()) return 1;
+    int64_t now = frame_step_world_us();
+    if (cnt) {
+        int r = -1;
+        for (int k = 0; k < 8 && r < 0; k++) if (held_root[k].from == from || !held_root[k].from) r = k;
+        if (r >= 0) held_root[r].from = from, held_root[r].id = p.e[0].id;
+    }
+    for (uint32_t i = 0; i < cnt; i++) {
+        p.e[i].name[NAME_N - 1] = 0;
+        int f = -1, free = -1;
+        for (int k = 0; k < HELD_N && f < 0; k++) {
+            if (held[k].heard_us && held[k].from == from && held[k].e.id == p.e[i].id) f = k;
+            else if (free < 0 && (!held[k].heard_us || now - held[k].heard_us > 500000)) free = k;
+        }
+        if (f < 0 && (f = free) < 0) continue;
+        if (!held[f].heard_us || now - held[f].heard_us > 500000)
+            rt_log("coop: bonds: player %d runs my %s (%08x) now: moved where it has it", from, p.e[i].name, p.e[i].id);
+        held[f].from = from, held[f].e = p.e[i], held[f].heard_us = now;
+    }
+    return 1;
+}
+// Moved as one body: the claimer's place of the root against this game's own place of it gives one rigid move, put on
+// the root's own place here (and, with TOTK_COOP_CLAIM_ALL=1, on every part's). Each part put at the claimer's place of it pulled this game's contraption apart (the
+// claimer's copies sit a little differently), and an autobuilt part pulled off is deleted by the game: the whole
+// contraption went in two seconds (autobuild_stick_3rd.txt pair test).
+static void quat_rot(const float q[4], float r[9]) {   // x y z w, rows (as coop_players.c quat_mat)
+    float x = q[0], y = q[1], z = q[2], w = q[3];
+    r[0] = 1 - 2 * (y * y + z * z), r[1] = 2 * (x * y - z * w), r[2] = 2 * (x * z + y * w);
+    r[3] = 2 * (x * y + z * w), r[4] = 1 - 2 * (x * x + z * z), r[5] = 2 * (y * z - x * w);
+    r[6] = 2 * (x * z - y * w), r[7] = 2 * (y * z + x * w), r[8] = 1 - 2 * (x * x + y * y);
+}
+static void held_tick(Cpu *c, int64_t now) {
+    for (int k = 0; k < HELD_N; k++)
+        if (held[k].heard_us && now - held[k].heard_us > 500000) held[k].heard_us = 0;
+    for (int g = 0; g < 8; g++) {
+        if (!held_root[g].from) continue;
+        int from = held_root[g].from, rk = -1;
+        for (int k = 0; k < HELD_N && rk < 0; k++)
+            if (held[k].heard_us && held[k].from == from && held[k].e.id == held_root[g].id) rk = k;
+        uint64_t ra = rk >= 0 ? coop_obj_find(coop_net_id(), held[rk].e.id, held[rk].e.name) : 0;
+        float pa[3], Ra[9], Rb[9], Rt[9], tt[3];
+        if (!ra || !coop_rd(ra + COOP_ACTOR_POS, pa, 12) || !coop_rd(ra + COOP_ACTOR_ROT, Ra, 36)) continue;
+        quat_rot(held[rk].e.q, Rb);
+        for (int i = 0; i < 3; i++)   // Rt = Rb Ra^T, tt = pb - Rt pa
+            for (int j = 0; j < 3; j++) Rt[i * 3 + j] = Rb[i * 3] * Ra[j * 3] + Rb[i * 3 + 1] * Ra[j * 3 + 1] + Rb[i * 3 + 2] * Ra[j * 3 + 2];
+        for (int i = 0; i < 3; i++) tt[i] = held[rk].e.pos[i] - (Rt[i * 3] * pa[0] + Rt[i * 3 + 1] * pa[1] + Rt[i * 3 + 2] * pa[2]);
+        for (int k = 0; k < HELD_N; k++) {
+            // The root alone, the others carried by their bonds: with every part moved (TOTK_COOP_CLAIM_ALL=1), one
+            // teleported part (force_to, more than 0.5 m off) broke off and was deleted (autobuild_stick_3rd.txt).
+            static int root_only = -1;
+            if (root_only < 0) root_only = cfg_get("TOTK_COOP_CLAIM_ALL") == NULL;
+            if (!held[k].heard_us || held[k].from != from || (root_only && k != rk)) continue;
+            uint64_t a = k == rk ? ra : coop_obj_find(coop_net_id(), held[k].e.id, held[k].e.name);
+            float pj[3], Rj[9], pt[3], R2[9], q[4];
+            if (!a || !coop_rd(a + COOP_ACTOR_POS, pj, 12) || !coop_rd(a + COOP_ACTOR_ROT, Rj, 36)) continue;
+            for (int i = 0; i < 3; i++) {
+                pt[i] = Rt[i * 3] * pj[0] + Rt[i * 3 + 1] * pj[1] + Rt[i * 3 + 2] * pj[2] + tt[i];
+                for (int j = 0; j < 3; j++) R2[i * 3 + j] = Rt[i * 3] * Rj[j] + Rt[i * 3 + 1] * Rj[3 + j] + Rt[i * 3 + 2] * Rj[6 + j];
+            }
+            coop_mat_quat(R2, q);
+            // at most 0.4 m a tick: force_to teleports past 0.5 m, and a teleported part broke off its contraption
+            float d[3] = {pt[0] - pj[0], pt[1] - pj[1], pt[2] - pj[2]}, l = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            if (l > 0.4f)
+                for (int i = 0; i < 3; i++) pt[i] = pj[i] + d[i] * 0.4f / l;
+            coop_obj_force(c, a, pt, q);
+        }
+    }
+}
+
 void coop_bonds_tick(Cpu *c) {   // coop_world.c peer_tick
     if (!bonds_on() || !coop_net_on()) return;
     int64_t now = frame_step_world_us();
     static int64_t last;
     if (now - last >= 1000000) last = now, send_groups(now);
     bond_pairs(c, now);
+    claim_tick(now);
+    held_tick(c, now);
     static const char *ta = (const char *)1;   // test (TOTK_COOP_TEST_ABACTOR=<hex offset>,<hex mask>): ORed into each bonded copy's actor
     if (ta == (const char *)1) ta = cfg_get("TOTK_COOP_TEST_ABACTOR");
     unsigned long long off = 0, mask = 0;
