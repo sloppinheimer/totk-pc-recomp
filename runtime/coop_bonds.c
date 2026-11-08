@@ -146,7 +146,9 @@ static void send_groups(int64_t now) {
     static BondPacket p;
     memset(&p, 0, sizeof p);
     p.kind = BONDS_KIND;
-    static int said;
+    // Logged when a group's members change (by a hash of their numbers), not only the first sends: a contraption glued
+    // by hand grows part by part, and the first ten sends of the tester's play log came before its third part
+    static struct { uint64_t group, hash; } said_g[32];
     for (int k = 0; k < MEMBER_N; k++) {   // each group with two or more members listed, whole, in member order
         if (!member[k].actor || now - member[k].seen_us > 3000000 || !alive(member[k].actor, member[k].uid)) continue;
         int first = 1, count = 0;
@@ -161,7 +163,8 @@ static void send_groups(int64_t now) {
             p.n = 0;
             if (count > ENTRY_N) continue;
         }
-        char names[256] = "";
+        char names[512] = "";
+        uint64_t hash = 0;
         for (int j = 0; j < MEMBER_N; j++) {
             if (!member[j].actor || member[j].group != member[k].group || now - member[j].seen_us > 3000000 || !alive(member[j].actor, member[j].uid)) continue;
             BondEntry *e = &p.e[p.n];
@@ -170,10 +173,16 @@ static void send_groups(int64_t now) {
             e->o.owner = (uint32_t)owner, e->group = (uint32_t)(member[k].group >> 3);
             e->flags = dev_switch(member[j].actor) ? 2u | (uint32_t)dev_is_on(member[j].actor) : 0;
             coop_actor_name(member[j].actor, e->o.name, sizeof e->o.name);
-            if (said < 10 && strlen(names) < 200) snprintf(names + strlen(names), sizeof names - strlen(names), " %s", e->o.name);
+            hash = hash * 1000003 + e->o.id;
+            if (strlen(names) < 440) snprintf(names + strlen(names), sizeof names - strlen(names), " %s", e->o.name);
             p.n++;
         }
-        if (said < 10) said++, rt_log("coop: bonds: a contraption of mine, sent:%s", names);
+        int g = -1, oldest = 0;
+        for (int i = 0; i < 32 && g < 0; i++) if (said_g[i].group == member[k].group) g = i;
+        if (g < 0) g = oldest, memmove(&said_g[1], &said_g[0], 31 * sizeof said_g[0]), said_g[0].group = member[k].group, said_g[0].hash = 0;
+        static int said;
+        if (said_g[g].hash != hash && said < 200)
+            said++, said_g[g].hash = hash, rt_log("coop: bonds: a contraption of mine (%d parts), sent:%s", count, names);
     }
     if (p.n) coop_net_hit_send(&p, (int)(offsetof(BondPacket, e) + p.n * sizeof(BondEntry)));
 }

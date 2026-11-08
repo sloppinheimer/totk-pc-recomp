@@ -978,7 +978,65 @@ other game reaching the owner's devices, both wait on one. A hit does it (the pr
   autobuild_two_3rd.txt, `TOTK_COOP_TEST_ABPLACE=34 TOTK_COOP_TEST_ABHIT=50`): bit 3 set on one fan of the unhit
   contraption (+0x8d 0x61 -> 0x69, +0x60 1) turned all three of its fans on (on, energy 10) within 2 s; the hit
   contraption was unchanged. On an on fan (+0x8d 0x71) bit 3 did not turn it off: off is not known yet (bit 1's
-  branch, main+0x4a45ac, is the next thing to try). Not tried yet: B's copies, other device kinds, the stick.
+  branch, main+0x4a45ac, only clears bit 1). Off, found next:
+- **Off is the same bit, set on every device that is on.** A contraption turning off (the build's fan hit a second
+  time, build/ab_twohits.txt-style script: autobuild_3rd.txt with Y at 48 s and 50 s; traced with
+  TOTK_COOP_TEST_ABTRACE=SpObj_WindGenerator_A_01,47.9) shows the same as on: component 166 asked for state 4 (+0x28
+  8 -> 4 -> 8), and +0x8d's bit 4 (0x10) goes 0x71 -> 0x61 (bit 4 is the device's own on mark; bit 3 is set and taken
+  within one tick, between two snapshots). Bit 3 set on one on fan turns it off for 0.5 s (energy 0), and the others,
+  still on, turn it on again; set on all three at once (TOTK_COOP_TEST_DEV8DALL=1) they go off by 1 s and stay off,
+  and set again on all they come back on (autobuild_3rd.txt, `TOTK_COOP_TEST_ABHIT=36`, DEVHIT=46,52). So bit 3 is a
+  toggle a hit sets, and a contraption is switched by setting it on every device not yet as wanted.
+- **Sync (coop_bonds.c dev_follow).** The owner's "CB" entries carry each member's state (flags: 2 a device with the
+  switch, +0x60 set; 1 on: [comp 11]+0x348 bit 0x2000), sent at once when one changes (checked 10 times a second).
+  The other game, once its bonded copies have differed from the owner for 0.8 s, sets bit 3 on each copy device not
+  yet as wanted, then waits 2.5 s before it would again. A claimer sends its copies' state in "CL" (flags) and the
+  owner's devices follow it the same way. TOTK_COOP_DEVICE_SYNC=0 turns it off; TOTK_COOP_TEST_DEVSYNCLOG=1 logs each
+  followed group every 0.5 s. Pair tests (port 41991):
+  - A holds its stick (autobuild_stick_3rd.txt with B at 62 s to let go, `TOTK_COOP_TEST_ABSTICK=50,1`, B idle): A's
+    fans on at 52.5 s; B "player 1's contraption turned on here", its copies on; A lets go, A's fans off at 63.5 s, B
+    "turned off here", copies off. Before, B's copies stayed off.
+  - B holds A's copy stick (autobuild_stick_b_3rd.txt with B at 62 s, `TOTK_COOP_TEST_ABSTICK=50,2`): B claims it,
+    its copies on; A "my contraption run by player 2 turned on here", A's fans on at 55.5 s; B lets go, A's fans off
+    at 67.5 s.
+  - A hits its fan on, off, on (Y at 40, 48 and 50 s): B's copies followed each time through the stand-in's swing and
+    the sync switched nothing (no "turned" line): no double toggle.
+  Not covered: a device alone (only groups of two or more are sent; its copy follows through the stand-in's swing
+  only), and a copy device asleep (below).
+- **Zonai device kinds and the switch** (TOTK_COOP_TEST_DEVSWEEP=30 with TOTK_COOP_TEST_DEVSWEEPNUDGE=1: each kind made
+  loose by this Link, moved 5 cm by speed, bit 3 set, 3 s, set again, 3 s; one game). Component 166 sits at
+  [actor+0x228]+0x530 on every kind; +0x64 is the kind's number. Bit 6 of +0x8d (0x40) reads as "awake": a device at
+  rest with 0x21 there did not take the bit (the first run, without the nudge: fan, flame, frost), the nudge woke flame
+  and frost. Only fans were tested as copies in the other game.
+
+  | Kind | Actor | +0x64 | +0x60 | Switch on | Switch off | Notes |
+  |---|---|---|---|---|---|---|
+  | Fan | SpObj_WindGenerator_A_01 | 15 | 1 | yes | yes (all at once) | contraption and pair tests; alone at rest it did not take the bit |
+  | Wheel | SpObj_FastWheel_A_01 | 17 | 1 | yes | not seen | drove off and was gone (state 11) before the second switch |
+  | Rocket | SpObj_Rocket_A_01 | 10 | 1 | yes | off by itself | burns out on its own |
+  | Flame emitter | SpObj_FlameThrower_A_01 | 2 | 1 | yes | yes | only once awake |
+  | Frost emitter | SpObj_SnowMachine_A_01 | 3 | 1 | yes | yes | only once awake |
+  | Shock emitter | SpObj_ElectricBoxGenerator | 8 | 1 | yes | yes | |
+  | Beam emitter | SpObj_Beamos_A_01 | 1 | 1 | no | - | +0x8d 0x21 (asleep) both runs; untested awake |
+  | Light | SpObj_FlashLight_A_01 | 11 | 1 | yes | yes | |
+  | Cannon | SpObj_Cannon_A_01 | 21 | 1 | yes | yes | |
+  | Balloon | SpObj_BalloonEnvelope_A_01 | 4 | 0 | no switch | - | lit by fire, not a powered device |
+  | Spring | SpObj_SpringPiston_A_01 | 22 | 1 | yes | - | fires once |
+  | Sled | SpObj_SlipBoard_A_01 | 12 | 0 | no switch | - | |
+  | Steering stick | SpObj_ControlStick_A_01 | 16 | 0 | no switch | - | turns its contraption on by its rider |
+  | Battery | SpObj_EnergyBank_A_01 | 23 | 1 | no | - | +0x64 0x17 is the kind main+0x4a3500 skips |
+  | Cart | SpObj_Cart_A_01 | 14 | 0 | no switch | - | |
+  | Wing | SpObj_LiftGeneratorWing_A_01 | 5 | 0 | no switch | - | |
+  | Hydrant | SpObj_WaterPump_A_01 | 20 | 1 | no | - | took the bit asleep (0x21 -> 0x20), stayed off |
+  | Time bomb | SpObj_TimerBomb_A_01 | 24 | 1 | yes | - | arms once |
+
+- **Glue by hand and groups.** the tester's play log (build\v143play, player 2's game, which glued by hand) shows that
+  the first glue by hand (stick to wing) gave both parts one group in the owner's game, which it sent ("a
+  contraption of mine, sent: SpObj_LiftGeneratorWing_A_01 SpObj_ControlStick_A_01"). So glue by hand does make the
+  group the packet and the switch work on. Its later parts (cannon, battery, fans, flame emitter) are not in that log:
+  the line was printed for the first ten sends only. It is now printed whenever a group's parts change ("(N parts)"),
+  so the next play log shows whether they joined. Glue by hand is still not done by script (above), so the sync on a
+  hand-glued contraption is untested.
 - A PlayerPuppet cannot take a steering stick: it has no Player component (make_puppet_pack.py), and the Link takes
   the stick by its A button in its own state machine, not by a call. In the stick pair (autobuild_stick_3rd.txt,
   `TOTK_COOP_TEST_ABSTICK=50,1`, game B idle) A's stand-in in B stands 0.7 m behind the copy stick, where A's Link
