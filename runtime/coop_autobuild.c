@@ -599,6 +599,46 @@ static void msg_test(Cpu *c, uint64_t me, int n) {
     }
 }
 
+// TOTK_COOP_TEST_DEVHIT=<s>[,<s>...] (up to 8): at each time, the contact kept from the first hit on a device here
+// (coop_world.c coop_dev_hit) put on the build's first fan: whether a contact alone starts (or stops) it and its
+// contraption.
+static void devhit_test(int n) {
+    const char *e = cfg_get("TOTK_COOP_TEST_DEVHIT");
+    static double at[8];
+    static int k_n = -1, done[8];
+    if (!e) return;
+    if (k_n < 0) {
+        k_n = 0;
+        for (const char *p = e; k_n < 8 && *p;) {
+            at[k_n++] = atof(p);
+            while (*p && *p != ',') p++;
+            if (*p) p++;
+        }
+    }
+    double now = frame_step_world_us() / 1e6;
+    char nm[48];
+    int coop_dev_hit(uint64_t device);   // coop_world.c
+    for (int k = 0; k < k_n; k++) {
+        if (done[k] || now < at[k]) continue;
+        done[k] = 1;
+        int pick = -1;   // the first fan of a contraption that is off (the two-contraption test's unhit one), else the first fan
+        for (int i = 0; i < n; i++) {
+            if (!live_device(i, nm, sizeof nm) || strcmp(nm, "SpObj_WindGenerator_A_01")) continue;
+            uint64_t a = atomic_load(&tracked[i]), t = coop_rd_ptr(a + 0x228), comp = t ? coop_rd_ptr(t + 0x480) : 0;
+            uint32_t on11, e28;
+            dev_on(a, &on11, &e28);
+            if (pick < 0) pick = i;
+            if (!on11 && comp && coop_rd_ptr(comp + 0x28)) pick = i;   // (the last such: the second contraption's)
+        }
+        if (pick >= 0) {
+            uint32_t on11, e28;
+            dev_on(atomic_load(&tracked[pick]), &on11, &e28);
+            rt_log("coop: test: devhit: %.2f s: device %d (on %#x) %s", now, pick, on11,
+                   coop_dev_hit(atomic_load(&tracked[pick])) ? "asked" : "asked before a contact is kept (put on at the first one)");
+        }
+    }
+}
+
 // Every 2 s while any device is tracked (for 60 s): each one's name, state, flags and glue entries.
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
     if (!ablog_on()) return;
@@ -616,7 +656,7 @@ void coop_autobuild_tick(Cpu *c, uint64_t me) {
     }
     int n = atomic_load(&tracked_n);
     if (n > TRACK_N) n = TRACK_N;
-    if (n) hit_test(c, me, n), part_test(c, n), trace_tick(n), stick_test(c, me, n), msg_test(c, me, n);
+    if (n) hit_test(c, me, n), part_test(c, n), trace_tick(n), stick_test(c, me, n), msg_test(c, me, n), devhit_test(n);
     else if ((cfg_get("TOTK_COOP_TEST_ABHIT") || cfg_get("TOTK_COOP_TEST_ABSTICK")) && now > 20000000) {   // (near_dev_fn)
         static NearDev d;
         static int64_t last_scan;
