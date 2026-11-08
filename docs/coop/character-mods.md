@@ -134,9 +134,17 @@ hides the Player's model is known yet.
   `[[actor+0x608]+0x8]+0x2c8` and `[[actor+0x608]+0x1a8]+0x190`.
 - The first two of those floats are the armor dye's blend: at 0 the worn tunic shows its save dye (10, pink), the pink
   tunic seen once after a stand-in was made again.
-- Likely the scope hides Link through the camera (first-person view), not a model flag, so it is a poor probe. Next:
-  Ghidra on the model unit's or material's visibility setters (the GhidraMCP backend was not running for this), or a
-  cutscene that hides Link as the probe.
+- A trace tick by tick (`TOTK_COOP_TEST_MODELTRACE=17,20,24,28` with `tools/coop/scope_3rd.txt`: the scope on at 20 s,
+  off at 24 s): 1551 objects up to three pointers from the Player read every tick; 492 bytes changed exactly twice, at
+  the scope's start and end. Most are pointer lists emptied and refilled (under `[actor+0x4e8]`, `[actor+0x48]/0x18`)
+  and float bytes; the ones that look like states switch at 20.0 s and back at 24.0 s:
+  `[[actor+0x238]+0xc8]+0x1d4` 1 → 2, `[[[actor+0x88]+0x1a0]+0x70]+0x1ec` 1 → 2, `[[[actor+0x88]+0x1c0]+0x70]+0x128`
+  and `[[[actor+0x88]+0x1c0]+0xa8]+0x118` 2 → 3, `[[actor+0x130]+0x1a0]+0x88` 0 → 0x34, plus
+  `[[actor+0x4d8]+0x138]+0x135` 3 → 1 and `[[actor+0x190]+0x8]+0x135` 0x20 → 0x1f a few frames later. All seven held at
+  their scope values together (`TOTK_COOP_TEST_HIDESELF`) left Link drawn while he walked.
+- Likely the scope changes the camera and the HUD state and Link is out of a first-person view, not hidden, so it is a
+  poor probe. Next: a moment that hides Link in a third-person view (the start of Ascend under a ceiling, a cutscene),
+  or Ghidra on the model unit's or material's visibility setters (the GhidraMCP backend was not running for this).
 
 **Slots are not freed.** A stand-in made again under an actor name the game loaded before opens none of its files
 again: after Riju (slot JS01) → Link → Riju in one run (`TOTK_COOP_TEST_CHARKEY=Link@40,gb:1600822@70`), the second
