@@ -53,7 +53,7 @@ uint64_t coop_obj_find(int owner, uint32_t id, const char *name);
 
 #define NAME_N 40
 typedef struct { uint32_t owner, id; char name[NAME_N]; } BondObj;
-typedef struct { uint32_t group, pad; BondObj o; } BondEntry;
+typedef struct { uint32_t group, flags; BondObj o; } BondEntry;   // flags: 2 a device with the switch, 1 it is on
 #define ENTRY_N ((COOP_HIT_MAX - 16) / (int)sizeof(BondEntry))
 typedef struct { uint32_t kind, n, pad[2]; BondEntry e[ENTRY_N]; } BondPacket;
 _Static_assert(sizeof(BondPacket) <= COOP_HIT_MAX, "bond packet fits");
@@ -71,6 +71,43 @@ static uint64_t main_body(uint64_t a) {   // [[[actor+0x228]+0x50]+0x20]+0x150
     uint64_t t = a ? coop_rd_ptr(a + 0x228) : 0, ph = t ? coop_rd_ptr(t + 0x50) : 0, ctl = ph ? coop_rd_ptr(ph + 0x20) : 0;
     return ctl ? coop_rd_ptr(ctl + 0x150) : 0;
 }
+// ---- a Zonai device's on state and its switch (re-notes "Device state on the copies"). On: [comp 11]+0x348 bit 0x2000
+// (as the fan tests read it). Switch: bit 3 of byte +0x8d of component 166 ([actor+0x228]+0x530), the bit a hit sets;
+// the device's update (main+0x4a3500, when +0x60 is set) takes it, toggles the device and clears it. Set on one device
+// of an off contraption it turns them all on; to turn one off it has to be set on every device that is on, at once
+// (one alone is turned on again by the others; autobuild_3rd.txt with TOTK_COOP_TEST_DEV8D).
+static int dev_is_on(uint64_t a) {
+    uint64_t t = a ? coop_rd_ptr(a + 0x228) : 0, c11 = t ? coop_rd_ptr(t + 8 * 11) : 0;
+    uint32_t v = 0;
+    return c11 && coop_rd(c11 + 0x348, &v, 4) && (v & 0x2000);
+}
+static uint64_t dev_switch(uint64_t a) {   // component 166, when the device takes the switch (+0x60 set), else 0
+    uint64_t t = a ? coop_rd_ptr(a + 0x228) : 0, c166 = t ? coop_rd_ptr(t + 0x530) : 0;
+    uint8_t b60 = 0;
+    return c166 && coop_rd(c166 + 0x60, &b60, 1) && b60 ? c166 : 0;
+}
+// A contraption whose devices should be on or off as another game has them: dev_follow toggles the ones that are not,
+// once they have differed for 0.8 s (the other player's stand-in swing may toggle a copy itself first: a hit in the
+// owner's game reaches the copy through it) and at most once every 2.5 s (a device takes about 1 s to turn on).
+typedef struct { int64_t differ_us, toggled_us; } Follow;
+static int dev_follow(uint64_t *dev, int n, int want_on, Follow *f, int64_t now, const char *what) {
+    int on = 0, sw = 0;
+    for (int i = 0; i < n; i++)
+        if (dev_switch(dev[i])) sw++, on |= dev_is_on(dev[i]);
+    if (!sw || on == want_on) { f->differ_us = 0; return 0; }
+    if (!f->differ_us) f->differ_us = now;
+    if (now - f->differ_us < 800000 || now - f->toggled_us < 2500000) return 0;
+    int k = 0;
+    for (int i = 0; i < n; i++) {
+        uint64_t c166 = dev_switch(dev[i]);
+        if (c166 && dev_is_on(dev[i]) == on) __atomic_fetch_or((uint8_t *)(uintptr_t)(c166 + 0x8d), 0x08, __ATOMIC_SEQ_CST), k++;
+    }
+    f->toggled_us = now, f->differ_us = 0;
+    static int said;
+    if (said < 40) said++, rt_log("coop: bonds: %s turned %s here (%d of %d devices switched)", what, want_on ? "on" : "off", k, n);
+    return 1;
+}
+
 static uint32_t actor_uid(uint64_t a) {   // [actor+0x10]: another actor made later in a gone one's memory has another
     uint32_t id = 0;
     return a && coop_rd(a + 0x10, &id, 4) ? id : 0;
@@ -131,6 +168,7 @@ static void send_groups(int64_t now) {
             int owner = 0;
             if (!coop_obj_ident(member[j].actor, &owner, &e->o.id)) continue;
             e->o.owner = (uint32_t)owner, e->group = (uint32_t)(member[k].group >> 3);
+            e->flags = dev_switch(member[j].actor) ? 2u | (uint32_t)dev_is_on(member[j].actor) : 0;
             coop_actor_name(member[j].actor, e->o.name, sizeof e->o.name);
             if (said < 10 && strlen(names) < 200) snprintf(names + strlen(names), sizeof names - strlen(names), " %s", e->o.name);
             p.n++;
@@ -187,6 +225,63 @@ static void take_group(int from, uint32_t group, BondEntry *e, int n, int64_t no
         pair[f].heard_us = now, pair[f].group = group;
     }
 }
+#define GST_N 32
+static struct { int from; uint32_t group; int owner_on, flagged; int64_t heard_us; Follow f; } gst[GST_N];
+static void group_state(int from, uint32_t group, const BondEntry *e, int n, int64_t now) {
+    int on = 0, flagged = 0, f = -1, free = -1;
+    for (int i = 0; i < n; i++) flagged |= (e[i].flags & 2) != 0, on |= (e[i].flags & 3) == 3;
+    for (int k = 0; k < GST_N && f < 0; k++) {
+        if (gst[k].heard_us && gst[k].from == from && gst[k].group == group) f = k;
+        else if (free < 0 && (!gst[k].heard_us || now - gst[k].heard_us > 5000000)) free = k;
+    }
+    if (f < 0) {
+        if ((f = free) < 0) return;
+        memset(&gst[f], 0, sizeof gst[f]);
+        gst[f].from = from, gst[f].group = group;
+    }
+    gst[f].owner_on = on, gst[f].flagged = flagged, gst[f].heard_us = now;
+}
+static int group_copies(int from, uint32_t group, uint64_t *out, int max) {   // this game's bonded copies of that group
+    int n = 0;
+    for (int k = 0; k < PAIR_N; k++) {
+        if (!pair[k].used || !pair[k].tries || pair[k].from != from || pair[k].group != group) continue;
+        uint64_t two[2] = {pair[k].ra, pair[k].ma};
+        for (int j = 0; j < 2; j++) {
+            int dup = 0;
+            for (int i = 0; i < n; i++) dup |= out[i] == two[j];
+            if (!dup && n < max) out[n++] = two[j];
+        }
+    }
+    return n;
+}
+static int claimed_group(int from, uint32_t group);
+static int device_sync(void) {   // TOTK_COOP_DEVICE_SYNC=0: devices' on and off not followed
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_DEVICE_SYNC"); on = !(e && *e == '0'); }
+    return on;
+}
+static void follow_owners(int64_t now) {   // this game's copies of each group on or off as their owner has them
+    for (int k = 0; device_sync() && k < GST_N; k++) {
+        if (!gst[k].heard_us || now - gst[k].heard_us > 3000000 || !gst[k].flagged || claimed_group(gst[k].from, gst[k].group)) continue;
+        uint64_t dev[64];
+        int n = group_copies(gst[k].from, gst[k].group, dev, 64);
+        char what[64];
+        snprintf(what, sizeof what, "player %d's contraption", gst[k].from);
+        if (n) dev_follow(dev, n, gst[k].owner_on, &gst[k].f, now, what);
+        static int log = -1;   // TOTK_COOP_TEST_DEVSYNCLOG=1: every 0.5 s, the owner's state and how many copies are on
+        static int64_t logged[GST_N];
+        if (log < 0) log = cfg_get("TOTK_COOP_TEST_DEVSYNCLOG") != NULL;
+        if (log && n && now - logged[k] >= 500000) {
+            int on = 0, sw = 0;
+            for (int i = 0; i < n; i++)
+                if (dev_switch(dev[i])) sw++, on += dev_is_on(dev[i]);
+            logged[k] = now;
+            rt_log("coop: test: devsync: %.1f s: player %d's group %08x: owner %s, %d of %d copy devices on", now / 1e6, gst[k].from,
+                   gst[k].group, gst[k].owner_on ? "on" : "off", on, sw);
+        }
+    }
+}
+
 int coop_bonds_take(const void *data, int n, int from) {   // coop_world.c peer_tick: 1 if it was a bond packet
     if (n < 16) return 0;
     uint32_t kind = 0, cnt = 0;
@@ -201,6 +296,7 @@ int coop_bonds_take(const void *data, int n, int from) {   // coop_world.c peer_
         uint32_t j = i;
         while (j < cnt && p.e[j].group == p.e[i].group) p.e[j].o.name[NAME_N - 1] = 0, j++;
         take_group(from, p.e[i].group, &p.e[i], (int)(j - i), now);
+        group_state(from, p.e[i].group, &p.e[i], (int)(j - i), now);
         i = j;
     }
     return 1;
@@ -250,10 +346,10 @@ static void bond_pairs(Cpu *c, int64_t now) {
 // claims the whole group: its copies are no longer put at P's places (coop_players.c place_copy), frozen copies run
 // their update again (copy_place) and the Link rides them by their own physics (ride_carry); their places go to P
 // twenty times a second ("CL" packets), and P moves its contraption there as one body by speed (held_tick). So a steering stick held here steers the contraption in both games. Let go 2 s after the
-// Link leaves it. Its devices' on state is not sent (no way to set it is known: re-notes "Device state on the copies").
+// Link leaves it. Its devices' on or off goes with the claim ("CL" flags) and the owner's devices follow (dev_follow).
 typedef struct { uint32_t id; char name[NAME_N]; float pos[3], q[4]; } ClaimEntry;
 #define CLAIM_N ((COOP_HIT_MAX - 16) / (int)sizeof(ClaimEntry))
-typedef struct { uint32_t kind, n, owner, pad; ClaimEntry e[CLAIM_N]; } ClaimPacket;
+typedef struct { uint32_t kind, n, owner, flags; ClaimEntry e[CLAIM_N]; } ClaimPacket;   // flags: 2 sent, 1 its devices on
 _Static_assert(sizeof(ClaimPacket) <= COOP_HIT_MAX, "claim packet fits");
 int coop_ride_now(int *owner, uint32_t *id);   // coop_players.c
 int coop_player_rides(int net_id, int *owner, uint32_t *id);
@@ -263,6 +359,7 @@ void coop_mat_quat(const float r[9], float q[4]);
 #define CLAIMED_N 32
 static _Atomic uint64_t claimed[CLAIMED_N];   // this game's copies of the contraption it claims (read on game threads too)
 static struct { int from; uint32_t group; int64_t until_us; } claim;
+static int claimed_group(int from, uint32_t group) { return claim.until_us && claim.from == from && claim.group == group; }
 int coop_bonds_claimed(uint64_t actor) {
     for (int i = 0; actor && i < CLAIMED_N; i++)
         if (atomic_load_explicit(&claimed[i], memory_order_relaxed) == actor) return 1;
@@ -333,6 +430,12 @@ static void claim_tick(int64_t now) {
         }
     }
     for (int i = n; i < CLAIMED_N; i++) atomic_store(&claimed[i], 0);
+    int sw = 0, on = 0;   // the claimed copies' devices on or off (a stick held here turns them on): the owner's follow
+    for (int i = 0; i < n; i++) {
+        uint64_t a = atomic_load(&claimed[i]);
+        if (dev_switch(a)) sw = 1, on |= dev_is_on(a);
+    }
+    p.flags = sw ? 2u | (uint32_t)on : 0;
     static int64_t sent_us;
     if (n && now - sent_us >= 50000) {
         sent_us = now, p.n = (uint32_t)n;
@@ -342,7 +445,7 @@ static void claim_tick(int64_t now) {
 // The owner's side: where the claiming player has this game's objects; moved there each tick while heard (0.5 s).
 #define HELD_N 64
 static struct { int from; ClaimEntry e; int64_t heard_us; } held[HELD_N];
-static struct { int from; uint32_t id; } held_root[8];   // each claimer's first entry (its root): the others move with it
+static struct { int from; uint32_t id, flags; Follow f; } held_root[8];   // (with the claimer's device state, flags)   // each claimer's first entry (its root): the others move with it
 static int claim_take(const void *data, int n, int from) {
     uint32_t cnt = 0;
     memcpy(&cnt, (const uint8_t *)data + 4, 4);
@@ -354,7 +457,7 @@ static int claim_take(const void *data, int n, int from) {
     if (cnt) {
         int r = -1;
         for (int k = 0; k < 8 && r < 0; k++) if (held_root[k].from == from || !held_root[k].from) r = k;
-        if (r >= 0) held_root[r].from = from, held_root[r].id = p.e[0].id;
+        if (r >= 0) held_root[r].from = from, held_root[r].id = p.e[0].id, held_root[r].flags = p.flags;
     }
     for (uint32_t i = 0; i < cnt; i++) {
         p.e[i].name[NAME_N - 1] = 0;
@@ -389,6 +492,17 @@ static void held_tick(Cpu *c, int64_t now) {
         for (int k = 0; k < HELD_N && rk < 0; k++)
             if (held[k].heard_us && held[k].from == from && held[k].e.id == held_root[g].id) rk = k;
         uint64_t ra = rk >= 0 ? coop_obj_find(coop_net_id(), held[rk].e.id, held[rk].e.name) : 0;
+        if (rk >= 0 && (held_root[g].flags & 2) && device_sync()) {   // this game's devices of it as the claimer has them
+            uint64_t dev[64];
+            int nd = 0;
+            for (int k = 0; k < HELD_N && nd < 64; k++) {
+                uint64_t a = held[k].heard_us && held[k].from == from ? coop_obj_find(coop_net_id(), held[k].e.id, held[k].e.name) : 0;
+                if (a) dev[nd++] = a;
+            }
+            char what[64];
+            snprintf(what, sizeof what, "my contraption run by player %d", from);
+            if (nd) dev_follow(dev, nd, held_root[g].flags & 1, &held_root[g].f, now, what);
+        }
         float pa[3], Ra[9], Rb[9], Rt[9], tt[3];
         if (!ra || !coop_rd(ra + COOP_ACTOR_POS, pa, 12) || !coop_rd(ra + COOP_ACTOR_ROT, Ra, 36)) continue;
         quat_rot(held[rk].e.q, Rb);
@@ -422,7 +536,17 @@ void coop_bonds_tick(Cpu *c) {   // coop_world.c peer_tick
     if (!bonds_on() || !coop_net_on()) return;
     int64_t now = frame_step_world_us();
     static int64_t last;
+    static int64_t checked;
+    static uint64_t sent_on;
+    if (now - checked >= 100000) {   // a member device turned on or off: the groups sent now, not at the next second
+        checked = now;
+        uint64_t h = 0;
+        for (int k = 0; k < MEMBER_N; k++)
+            if (member[k].actor && dev_is_on(member[k].actor)) h = h * 31 + member[k].actor;
+        if (h != sent_on) sent_on = h, last = 0;
+    }
     if (now - last >= 1000000) last = now, send_groups(now);
+    follow_owners(now);
     bond_pairs(c, now);
     claim_tick(now);
     held_tick(c, now);

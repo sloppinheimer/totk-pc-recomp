@@ -407,7 +407,7 @@ static void hit_test(Cpu *c, uint64_t me, int n) {
                        coop_request_create(c, "SpObj_WindGenerator_A_01", at, rot, lh));
             }
         }
-        msg_from_us = (int64_t)((now + 3.5) * 1e6), msg_to_us = (int64_t)((now + 6) * 1e6);
+        if (msg_from_us == INT64_MAX) msg_from_us = (int64_t)((now + 3.5) * 1e6), msg_to_us = (int64_t)((now + 6) * 1e6);   // (unless ABTRACE gave a time)
         {   // TOTK_COOP_TEST_FANHIT (coop_spawn.c) on the build's second fan, which the hit does not touch: the
             // functions entered with it as an argument just after the hit, not just before (the switch's path)
             extern uint64_t coop_fan_actor;
@@ -647,11 +647,26 @@ static void devhit_test(int n) {
         const char *bits = cfg_get("TOTK_COOP_TEST_DEV8D");   // =<hex>: instead, those bits set in its component 166 +0x8d
         if (pick >= 0 && bits) {
             devhit_pick = pick;
-            uint64_t a = atomic_load(&tracked[pick]), t = coop_rd_ptr(a + 0x228), c166 = t ? coop_rd_ptr(t + 0x530) : 0;
-            uint8_t b = 0, b60 = 0;
-            if (c166 && coop_rd(c166 + 0x8d, &b, 1) && coop_rd(c166 + 0x60, &b60, 1)) {
+            // (TOTK_COOP_TEST_DEV8DALL=1: every live tracked device of its contraption that is on as it is, at once)
+            uint64_t pa = atomic_load(&tracked[pick]), pt = coop_rd_ptr(pa + 0x228), pc = pt ? coop_rd_ptr(pt + 0x480) : 0;
+            uint64_t pg = pc ? coop_rd_ptr(pc + 0x28) : 0, done_a[TRACK_N];
+            uint32_t pon, pe;
+            dev_on(pa, &pon, &pe);
+            int nd = 0, all = cfg_get("TOTK_COOP_TEST_DEV8DALL") != NULL;
+            for (int i = 0; i < n; i++) {
+                if (i != pick && (!all || !live_device(i, nm, sizeof nm))) continue;
+                uint64_t a = atomic_load(&tracked[i]), t = coop_rd_ptr(a + 0x228), c166 = t ? coop_rd_ptr(t + 0x530) : 0;
+                uint64_t gc = t ? coop_rd_ptr(t + 0x480) : 0;
+                uint32_t on, e;
+                dev_on(a, &on, &e);
+                if (i != pick && (!pg || !gc || coop_rd_ptr(gc + 0x28) != pg || on != pon)) continue;
+                int dup = 0;
+                for (int j = 0; j < nd; j++) dup |= done_a[j] == a;
+                uint8_t b = 0, b60 = 0;
+                if (dup || !c166 || !coop_rd(c166 + 0x8d, &b, 1) || !coop_rd(c166 + 0x60, &b60, 1)) continue;
+                done_a[nd++] = a;
                 ST8(c166 + 0x8d, (uint8_t)(b | strtoul(bits, NULL, 16)));
-                rt_log("coop: test: dev8d: %.2f s: device %d's component 166 +0x8d %02x -> %02x (+0x60 %02x)", now, pick, b,
+                rt_log("coop: test: dev8d: %.2f s: device %d's component 166 +0x8d %02x -> %02x (+0x60 %02x)", now, i, b,
                        (unsigned)(b | strtoul(bits, NULL, 16)), b60);
             }
         } else if (pick >= 0) {
