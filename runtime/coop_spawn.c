@@ -769,9 +769,16 @@ void coop_ctl_enter(void) {
 void coop_ctl_leave(void) {
     if (!--ctl_depth) plat_mutex_unlock(&coop_ctl_lock);
 }
+// When this Link last held something with Ultrahand: the beam's part object (x0) +0x18 is 5 while it holds, 3 while it
+// aims (main+0x916860). coop_players.c: an autobuilt copy that comes apart is passed on to its owner only then.
+_Atomic int64_t coop_ultrahand_hold_us;
 static int beam_hook(Cpu *c, uint64_t addr) {
     static __thread int inside;
     if (inside) return 0;
+    {
+        int32_t st = 0;
+        if (rd(c->x[0] + 0x18, &st, 4) && st == 5) atomic_store(&coop_ultrahand_hold_us, frame_step_world_us());
+    }
     if (!plat_mutex_trylock(&beam_lock)) {
         if (atomic_fetch_add(&beam_waits, 1) < 5) rt_log("coop: the Ultrahand beam was drawn by two threads at once; one waits");
         coop_lock_wait(&beam_lock);

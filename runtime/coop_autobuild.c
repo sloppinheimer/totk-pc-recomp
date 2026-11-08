@@ -943,8 +943,48 @@ static void failspam_test(Cpu *c, uint64_t me) {
     }
 }
 
+// TOTK_COOP_TEST_ABDECK=<s>[,<name>]: at that time this Link put 1.2 m above the first live tracked device of that name
+// (SpObj_ControlStick_A_01: a contraption's deck), 0.8 m behind it; then for 25 s, every 0.25 s, its place against that
+// device's (in the device's frame) and how much that moved since the last: a rider on a contraption another player
+// drives (stays on? jitters?).
+static void deck_test(Cpu *c, uint64_t me, int n) {
+    static double at = -1;
+    static char want[48] = "SpObj_ControlStick_A_01";
+    static int dev = -1;
+    static float last[3];
+    static double next;
+    if (at < 0) { const char *e = cfg_get("TOTK_COOP_TEST_ABDECK"); at = 0; if (e) at = atof(e), sscanf(e, "%*f,%47s", want); }
+    double now = frame_step_world_us() / 1e6;
+    if (at <= 0 || now < at || now > at + 25) return;
+    char nm[48];
+    if (dev < 0) {
+        for (int i = 0; i < n && dev < 0; i++) if (live_device(i, nm, sizeof nm) && !strcmp(nm, want)) dev = i;
+        if (dev < 0) return;
+        float p[3], r[9];
+        uint64_t a = atomic_load(&tracked[dev]);
+        if (!coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(a + COOP_ACTOR_ROT, r, 36)) { dev = -1; return; }
+        float m[12] = {1, 0, 0, p[0] - 0.8f * r[2], 0, 1, 0, p[1] + 1.2f, 0, 0, 1, p[2] - 0.8f * r[8]};
+        coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
+        rt_log("coop: test: abdeck: this Link put on device %d (%s) at %.2f %.2f %.2f", dev, want, p[0], p[1], p[2]);
+        next = now + 0.25;
+        return;
+    }
+    if (now < next) return;
+    next = now + 0.25;
+    float p[3], r[9], lp[3];
+    uint64_t a = atomic_load(&tracked[dev]);
+    if (!coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(a + COOP_ACTOR_ROT, r, 36) || !coop_rd(me + COOP_ACTOR_POS, lp, 12)) return;
+    float d[3] = {lp[0] - p[0], lp[1] - p[1], lp[2] - p[2]}, rel[3];
+    for (int i = 0; i < 3; i++) rel[i] = r[0 + i] * d[0] + r[3 + i] * d[1] + r[6 + i] * d[2];   // in the device's frame (rows)
+    float dm = sqrtf((rel[0] - last[0]) * (rel[0] - last[0]) + (rel[1] - last[1]) * (rel[1] - last[1]) + (rel[2] - last[2]) * (rel[2] - last[2]));
+    rt_log("coop: test: abdeck: %.2f s: device at %.2f %.2f %.2f; this Link in its frame %.2f %.2f %.2f (moved %.2f m)", now, p[0], p[1], p[2],
+           rel[0], rel[1], rel[2], dm);
+    memcpy(last, rel, 12);
+}
+
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
     if (!ablog_on()) return;
+    deck_test(c, me, atomic_load(&tracked_n) < TRACK_N ? atomic_load(&tracked_n) : TRACK_N);
     failspam_test(c, me);
     if (cfg_get("TOTK_COOP_TEST_FANHITAB") && atomic_load(&tracked_n) > 1) {   // FANHIT on the build's first fan from
         extern uint64_t coop_fan_actor;                                        // when it is made (the confirm's calls)

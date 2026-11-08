@@ -32,6 +32,24 @@ evidence), guess.
   it from its enter function main+0x231fa58 (`coop_NodeGenericRequestCreateActor_enter`); the strings "Pack/Actor/",
   ".pack", "ActorMgr" inside it. Confidence: likely (not called by us yet).
 
+## A rider, copies coming apart, the green bit (2026-11-08 evening)
+- A rider (TOTK_COOP_TEST_ABDECK=<s>[,<name>]: this Link put on a device of the contraption, its place in the device's
+  frame logged every 0.25 s): game B's Link on A's Fanboat while A holds the stick stayed put to 1-2 cm (one 0.2 m
+  step) for 20 s; the Fanboat did not travel on the stairs, so a rider on a moving contraption is not tested.
+- B's Link put on the deck before A took the stick claimed it (the claim rule), and its "off" kept coming after A's
+  own Link took the stick: A's fans went on and off again. The owner now follows a claimer's device state only for 5 s
+  after it changes (coop_bonds.c held_root follow_until): A's fans stayed on.
+- Copies of autobuilt parts came apart in B when A's stand-in landed on the copy (A's Link put behind the stick), and
+  each one's "went away" made A delete its own part: A lost a plank and a fan. Now (coop_players.c) an autobuilt
+  part's copy that comes apart is passed on to its owner only if this game's Link held something with Ultrahand in
+  the last 2 s (the beam's part object +0x18 == 5, coop_spawn.c beam_hook); otherwise it is made again. A part pulled
+  off by either player still brings the whole contraption down in both games.
+- Marked with all of main+0x1c07114, the Fanboat's copies came apart 11 times in a minute with the stand-in on the
+  deck; with bit 0 of +0x150 alone (the mod's bit: green, destroyed when broken apart), twice, made again and green.
+  The bit alone is the default now (TOTK_COOP_TEST_GREEN=full for the whole call).
+- Bonded copies other than their group's root are no longer placed each tick (coop_bonds.c coop_bonds_carried): the
+  bonds carry them (TOTK_COOP_PLACE_ALL=1 for every part). Not shown to change the breaks above.
+
 ## Glue by hand in the other game (2026-11-08 evening, the tester's live session)
 - the tester glued fan 3 to fan 1 by hand in game 1 (logs of build143 and build143play, 16:33): game 1 sent bond 1
   and "a contraption of mine (2 parts)"; its glue entry was "no longer glued here: taken off the list" a few seconds
@@ -1073,6 +1091,15 @@ other game reaching the owner's devices, both wait on one. A hit does it (the pr
   | Wing | SpObj_LiftGeneratorWing_A_01 | 5 | 0 | no switch | - | |
   | Hydrant | SpObj_WaterPump_A_01 | 20 | 1 | not seen | - | at 0x21 took the bit and stayed off; made at 0x61 it was deleted by the game (state 7 -> 11) in two runs |
   | Time bomb | SpObj_TimerBomb_A_01 | 24 | 1 | yes | - | arms once |
+  | Homing cart | SpObj_Chaser_A_01 | 7 | 1 | yes | yes | alone, followed in the other game (GLUENONE pair test) |
+  | Stabilizer | SpObj_TiltingDoll_A_01 | 26 | 1 | no | - | took the bit at 0x21, stayed off |
+  | Mirror | SpObj_LightMirror_A_01 | 9 | 0 | no switch | - | |
+  | Portable pot | SpObj_CookSetOnFire_A_01 | 13 | 0 | no switch | - | on (0x2000) from the start: lit |
+  | Hover stone | SpObj_FloatingStone_A_01 | 19 | 1 | yes | yes | |
+  | Construct head | SpObj_GolemHead_A_01 | 25 | 1 | yes | yes | alone, followed in the other game |
+  | Stake | SpObj_Pile_A_01 | 6 | 0 | no switch | - | |
+  (The capsule hydrant is SpObj_WaterPump_A_01, the only WaterPump actor; made 3 m ahead on the stairs it was deleted
+  by the game in three runs out of four.)
 
 - What +0x8d bit 6 (0x40) means is not known. It is not "awake" after all: moving a device by speed did not set it
   (a beam emitter at 0x21 stayed so), and the same kind was 0x61 or 0x21 from one run to the next as it was made at

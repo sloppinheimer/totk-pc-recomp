@@ -1799,6 +1799,17 @@ static void arrow_copies(Cpu *c, Slot *s) {
                         s->mir[k].state = 1, s->mir[k].actor = 0, s->mir[k].ticks = 0;
                         continue;
                     }
+                    // An autobuilt part's copy come apart with nobody here holding it with Ultrahand: an accident of
+                    // this game's (the other player's stand-in put inside the contraption broke a plank off, and the
+                    // whole contraption went in both games: autobuild_stick_3rd.txt pair test); made again, not passed
+                    // on. Taken apart by this game's Link (Ultrahand holding in the last 2 s), the owner's comes apart too.
+                    extern _Atomic int64_t coop_ultrahand_hold_us;   // coop_spawn.c beam_hook
+                    if ((s->mir[k].flags & COOP_OBJ_AUTOBUILT) && frame_step_world_us() - atomic_load(&coop_ultrahand_hold_us) > 2000000) {
+                        rt_log("coop: slot %d: the copy of autobuilt %u (%s) came apart here (state %d) with no Ultrahand on it here; made again",
+                               (int)(s - slots), s->mir[k].id, s->mir[k].name, st);
+                        s->mir[k].state = 1, s->mir[k].actor = 0, s->mir[k].ticks = 0;
+                        continue;
+                    }
                     rt_log("coop: slot %d: the copy of object %u (%s) went away here (state %d); the owner is told",
                            (int)(s - slots), s->mir[k].id, s->mir[k].name, st);
                     take_note(s->net_id, s->mir[k].id);
@@ -1879,6 +1890,8 @@ static void place_copy(Cpu *c, Slot *s, int k) {
         return;
     }
     if (coop_bonds_claimed(actor)) return;   // this game runs that contraption now: its copies move by themselves
+    int coop_bonds_carried(uint64_t actor);   // coop_bonds.c
+    if (coop_bonds_carried(actor)) return;    // bonded to its group's root, which is placed: the bonds carry it
     // An arrow's copy asks to sleep in its first tick (reason 0, through main+0x55251c: TOTK_COOP_TEST_ARROWWATCH)
     // and sleeps from the third (actor state 6, its model's +0x244 6), where this game's own arrows stay awake (4); a
     // sleeping arrow is not drawn (a play session, 2026-11-05). It is woken as the actor state machine
