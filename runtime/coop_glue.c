@@ -612,7 +612,7 @@ static void glue_test(Cpu *c, uint64_t me) {
     static uint64_t obj[2];
     static double glued_at;
     static int make_only;   // stage 2: when both were there; stage 3 on: when they were glued
-    static int stack;
+    static int stack, far;
     if (!spec) {
         spec = cfg_get("TOTK_COOP_TEST_GLUE") ? cfg_get("TOTK_COOP_TEST_GLUE") : "";
         const char *who = cfg_get("TOTK_COOP_NAME");
@@ -623,7 +623,9 @@ static void glue_test(Cpu *c, uint64_t me) {
             snprintf(names[1], sizeof names[1], "%s", comma + 1);
             char *third = strchr(names[1], ',');   // <n1>,<n2>,make: made only, for a player to glue by hand
             // <n1>,<n2>,stack: made only, the second 0.7 m above the first (it falls on it), for a scripted Ultrahand glue
-            if (third) make_only = !strcmp(third + 1, "make") || (stack = !strcmp(third + 1, "stack")), *third = 0;
+            // <n1>,<n2>,far: made only, 2.5 m ahead of the camera, the second 1.2 m right of the first (a scripted Ultrahand
+            // aims at the first, glue_hand_3rd.txt)
+            if (third) make_only = !strcmp(third + 1, "make") || (stack = !strcmp(third + 1, "stack")) || (far = !strcmp(third + 1, "far")), *third = 0;
         } else if (*spec) {
             rt_log("coop: test: glue: TOTK_COOP_TEST_GLUE wants two names, a comma between");
             spec = "";
@@ -636,8 +638,11 @@ static void glue_test(Cpu *c, uint64_t me) {
     if (stage == 0 && now > 30) {   // forward: the rotation's third column; right: its first
         static const float rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
         for (int k = 0; k < 2; k++) {
-            float s = stack ? 0 : k ? 0.4f : -0.4f;
-            float at[3] = {p[0] + r[2] * 1.5f + r[0] * s, p[1] + 0.5f + (stack && k ? 0.7f : 0), p[2] + r[8] * 1.5f + r[6] * s};
+            float s = stack ? 0 : far ? (k ? 1.2f : 0) : k ? 0.4f : -0.4f, ahead = far ? 2.5f : 1.5f;
+            float cr[9];   // (far: ahead of the camera, which Ultrahand aims with; it looks along -Z, X its right)
+            uint64_t cam = far ? coop_resident_named("PlayerCamera", NULL) : 0;
+            if (cam && coop_rd(cam + COOP_ACTOR_ROT, cr, sizeof cr)) r[2] = -cr[2], r[8] = -cr[8], r[0] = cr[0], r[6] = cr[6];
+            float at[3] = {p[0] + r[2] * ahead + r[0] * s, p[1] + 0.5f + (stack && k ? 0.7f : 0), p[2] + r[8] * ahead + r[6] * s};
             if (!coop_request_create(c, names[k], at, rot, handle[k])) { rt_log("coop: test: glue: %s not asked for", names[k]); stage = 9; return; }
             rt_log("coop: test: glue: %s asked for at %.2f %.2f %.2f", names[k], at[0], at[1], at[2]);
         }

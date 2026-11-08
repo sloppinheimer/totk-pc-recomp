@@ -875,6 +875,62 @@ three fans go on (on, energy 10) 0.4 s after the hit; in B only the copy fan the
   AutoBuilderBuildStateRealColorR/G/B (the reader of the param struct, main+0x1d398e4, puts R at +0x44); who applies
   them to a model is not found.
 
+## Device state on the copies, the steering stick, glue by hand (open, 2026-11-08)
+the tester's reports on main 46b510c: flame emitters on in the builder's game and off in the other; the steering stick
+works only for the game that made the contraption (held by player 2 nothing turns on anywhere, held by player 1 only
+player 1's game); a contraption glued by hand shows no glue in the other game and one hit turns on one piece there.
+TotK Online (side-session notes, totk-online-how-it-works.md 3 and 7): one owning game per glued group, handed to the
+game whose player is nearest its middle every few seconds and claimed while a player holds it; copies run their own
+update and are pulled toward the owner's place. It syncs position, life, collision, glue and enemy actions; no device
+state.
+What a device's "on" is, from pair tests with autobuild_3rd.txt (`TOTK_COOP_TEST_ABLOG=1 TOTK_COOP_TEST_ABHIT=36`):
+- The contraption's group object (SpecialPowerReceiverComponent +0x28) does not change at all when a hit turns its
+  fans on (every word logged against the last, every 0.5 s through the hit and the next 20 s).
+- No actor message is sent to the other fans: the two message senders (main+0x2b76c34, the one the stick's AI node
+  "OneShotSendMessageRideOnCombinedControlStick" uses with 0x6b510003 to actor +0x378, and main+0x1c0cc4c) were
+  hooked through the hit; none went to a device's queue.
+- A neighbouring fan turns itself on in its own update: every word of its actor (0x1000) and components (0x200 each)
+  logged every tick through the hit (TOTK_COOP_TEST_ABTRACE) shows the on bool, components 16/17/21/22 +0x170/+0x130/
+  +0xe8/+0x90 going 0x8000 -> 0xa000 and component 166 ([actor+0x228]+0x530, which the bool's writer main+0x9fa28c
+  reads) changing in the same tick, and nothing changing before it in those ranges: what it reads is elsewhere.
+- Writing the on bool with its change count on a bonded copy in the other game (TOTK_COOP_TEST_FANTOGGLE in game B
+  only): once the copy was on (energy 10), it stayed on through every write; the bool alone does not switch a device.
+So no call or write that turns a device on or off is known yet; device state from the owner, and a stick held in the
+other game reaching the owner's devices, both wait on one. A hit does it (the proxy's swing), but cannot be aimed.
+- The steering stick, pair tests (tools/coop/autobuild_stick_3rd.txt builds the Fanboat, the sixth schematic: five
+  fans, a steering stick and wooden parts; `TOTK_COOP_TEST_ABLOG=1 TOTK_COOP_TEST_ABSTICK=50,<player>` puts that
+  player's Link behind its stick, its script's A takes it; autobuild_stick_b_3rd.txt for game B): game A holding its
+  stick turns its fans on in A only; game B holding the copy stick turns B's copies on (they are bonded, coop_bonds.c)
+  and A's stay off. So the stick works in the game that holds it, and the other game's devices do not follow (no
+  switch, above).
+- Claims (coop_bonds.c, TotK Online's way): the game whose Link rides another player's contraption, 2 m nearer it than
+  that player's Link, runs it: its copies are not placed and the owner moves its contraption to them as one body.
+  What went wrong on the way, all in the stick pair test: unfrozen by the claim, a wooden plank's copy went away at once
+  (state 7) and our "a copy went away here" rule made the owner delete its own; bonded copies are now never frozen,
+  and one that goes away while claimed is made again without telling the owner. Each owner part pulled to the
+  claimer's place of it, the owner's contraption came apart, and an autobuilt part pulled off is deleted by the game:
+  the owner now moves only the root, by the rigid move from its own place to the claimer's, at most 0.4 m a tick (a
+  force_to past 0.5 m teleports), and its bonds carry the rest. Standing by a fan the owner had just hit counted as
+  riding it, and the claim pulled the owner's flying contraption back to the late copies: hence the 2 m rule.
+  Result: B holding the copy stick runs B's fans and A's Fanboat follows B's place within 0.2 m, no part lost; A's
+  fans stay off (their state is not sent). The plain hit test (autobuild_3rd.txt) makes no claim. Not tested: a
+  contraption flown far by the claimer, a claim handed back while it moves, two claimers.
+- Glue by hand: glue made again in the other game (coop_glue.c make_bond) uses the request's base class, whose
+  vtable slot 4 answers 0, so createScotch's tail (main+0x1d61858) copies none of the request's four vectors into the
+  entry (+0x51c..+0x548). Ultrahand's own request is the same class: main+0x1d5565c makes it 0x1b8 bytes, zeroed, with
+  the base constructor main+0x1c0c4ec, and puts the base vtable back when it is done (decoded from the generated C;
+  Ghidra was down), so that is not why no glue shows. UltraHand_Connection_Effect2, an effect actor Ultrahand makes
+  on a contraption, was left out of the world objects that morning (prop_skip) and is copied again: it may be the
+  glue's look (not checked). Whether glue by hand gives its pieces the shared group
+  (which coop_bonds.c would then send) is not known: a scripted Ultrahand grab works on a contraption
+  (autobuild_part_3rd.txt) but not on loose fans (glue_hand_3rd.txt: the grab only flashes; with the fans 2.5 m ahead
+  of the camera, TOTK_COOP_TEST_GLUE=...,far, too: the camera turns after the Link is put and again in Ultrahand, so the
+  reticle is not on them).
+- The stick's own state: its on bool goes 0 -> 1 when a Link takes it, with actor +0x1d0 = 0x79_00000001 and component
+  166 +0x90 0 -> 3 (TOTK_COOP_TEST_ABTRACE=SpObj_ControlStick_A_01,51.8 in game B). Holding the bool at 1 on the
+  owner's stick with nobody on it (TOTK_COOP_TEST_ABSTICKON) turns nothing on: the bool is an effect of the Link
+  holding it.
+
 ## Proxy hair and clothes stay blown after a fan (open)
 the tester (2026-11-05): after a fan's wind hits the proxy, its hair and clothes keep flapping as if in wind, on that
 screen only, after the fan is off. Likely cause: the proxy runs none of its own update, and something in it sets the

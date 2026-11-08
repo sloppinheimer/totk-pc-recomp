@@ -772,6 +772,10 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
   one unit in both), two contraptions (a hit turns on only the one hit). Not tested: contraptions glued by hand,
   flying one.
   TOTK_COOP_BONDS=0 off. Re-notes "Autobuild copies".
+  Claims (2026-11-08): the game whose Link rides another player's contraption (2 m nearer it than its owner's Link)
+  runs it, and the owner's contraption follows as one body (TotK Online's ownership claim). Pair test: a steering
+  stick held in game B steers the contraption in both; its devices run in B only (device state is not sent: re-notes
+  "Device state on the copies").
 - **Zonai devices** on the other screens: copies of devices run their own logic, and a player's attack makes their
   proxy swing in the other games, so a hit turns the copy on there too (a fan in the pair test). Effects are the
   copies' own (not yet looked at on screen). Not covered: devices turned on other ways (arrows, a steering stick,
