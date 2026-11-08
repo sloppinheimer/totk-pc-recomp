@@ -673,6 +673,31 @@ static void create_dump(Cpu *c) {
            s1, s2, (unsigned long long)f[0], (unsigned long long)(f[0] - MOD_MAIN_BASE), (unsigned long long)vt[0], (unsigned long long)vt[1],
            (unsigned long long)vt[2], (unsigned long long)vt[3], flag, (unsigned long long)po[0], (unsigned long long)po[1], (unsigned long long)po[2],
            (unsigned long long)po[3], (unsigned long long)po[4], (unsigned long long)po[5], (unsigned long long)po[6], (unsigned long long)po[7]);
+    {   // the caller's frame chain and its kept registers (main+0x1d3b470's x19 / x26 / x27: the build's objects)
+        char ch[300];
+        int k = 0;
+        uint64_t fp = c->x[29];
+        for (int d = 0; d < 10 && fp && k < (int)sizeof ch - 24; d++) {
+            uint64_t next = rd_ptr(fp), ret = rd_ptr(fp + 8);
+            if (!ret) break;
+            k += snprintf(ch + k, sizeof ch - (size_t)k, " <- main+%llx", (unsigned long long)(ret - MOD_MAIN_BASE));
+            if (next <= fp) break;
+            fp = next;
+        }
+        uint64_t v19[4] = {0}, v26[4] = {0}, v27[4] = {0};
+        rd(c->x[19], v19, 32), rd(c->x[26], v26, 32), rd(c->x[27], v27, 32);
+        char path[80] = "";
+        rd(c->x[19] + 0x14, path, 79);
+        extern uint64_t coop_ab_obj;   // (coop_autobuild.c: TOTK_COOP_TEST_REBUILD calls main+0x1d3b470 on it again)
+        if (c->x[30] - MOD_MAIN_BASE == 0x1d3bb98 && !coop_ab_obj) coop_ab_obj = c->x[19], rt_log("coop: test: createdump: the build's object %llx, path '%s'", (unsigned long long)c->x[19], path);
+        char s1920[48] = "";
+        rd(rd_ptr(c->x[26] + 0x1920), s1920, 47);
+        rt_log("coop: test: createdump: chain%s; x19 %llx {%llx %llx %llx %llx} x26 %llx {%llx %llx %llx %llx} [x26+0x1920] '%s' x27 %llx {%llx %llx %llx %llx}",
+               ch, (unsigned long long)c->x[19], (unsigned long long)v19[0], (unsigned long long)v19[1], (unsigned long long)v19[2],
+               (unsigned long long)v19[3], (unsigned long long)c->x[26], (unsigned long long)v26[0], (unsigned long long)v26[1],
+               (unsigned long long)v26[2], (unsigned long long)v26[3], s1920, (unsigned long long)c->x[27], (unsigned long long)v27[0],
+               (unsigned long long)v27[1], (unsigned long long)v27[2], (unsigned long long)v27[3]);
+    }
     for (int i = 0; i < 8 && w[0x58 / 8]; i++) {   // strings the +0x58 object's words point at
         char t[40] = "";
         if (po[i] > 0x1000000 && rd(po[i], t, 39) && t[0] > 0x20 && t[0] < 0x7f) rt_log("coop: test: createdump: +0x58 word %d -> '%s'", i, t);

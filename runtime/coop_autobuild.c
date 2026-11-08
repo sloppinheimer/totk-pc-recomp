@@ -814,8 +814,31 @@ static void compdump_test(int n) {
     }
 }
 
+// TOTK_COOP_TEST_REBUILD=<s> (with TOTK_COOP_TEST_CREATEDUMP, after an autobuild): main+0x1d3b470, the build step the
+// Autobuild ability's update (main+0x9a2c00) runs, called again at that time on the object it ran on: whether the
+// game's own build can be run from code (the other game's copies made as the game makes them)
+uint64_t coop_ab_obj;
+static void rebuild_test(Cpu *c) {
+    static double at = -1;
+    if (at < 0) { const char *e = cfg_get("TOTK_COOP_TEST_REBUILD"); at = e ? atof(e) : 0; }
+    if (at <= 0 || frame_step_world_us() / 1e6 < at) return;
+    at = 0;
+    if (!coop_ab_obj) { rt_log("coop: test: rebuild: no build's object kept"); return; }
+    uint64_t cnt = 0;
+    coop_rd(coop_ab_obj + 0x3c50, &cnt, 8);
+    uint8_t hd[16] = {0};
+    coop_rd(cnt, hd, 16);
+    rt_log("coop: test: rebuild: main+0x1d3b470 on %llx ([+0x3c50] %llx: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x)",
+           (unsigned long long)coop_ab_obj, (unsigned long long)cnt, hd[0], hd[1], hd[2], hd[3], hd[4], hd[5], hd[6], hd[7], hd[8], hd[9], hd[10], hd[11]);
+    const char *nb = cfg_get("TOTK_COOP_TEST_REBUILDN");   // =<n>: byte +9 (main+0x1d3b470 builds only when it is not 0) set so first
+    if (cnt && nb) ST8(cnt + 9, (uint8_t)atoi(nb)), rt_log("coop: test: rebuild: its +9 set to %s", nb);
+    coop_guest_call(c, MOD_MAIN_BASE + 0x1d3b470, coop_ab_obj, 0, 0, 0);
+    rt_log("coop: test: rebuild: returned");
+}
+
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
     if (!ablog_on()) return;
+    rebuild_test(c);
     compdump_test(atomic_load(&tracked_n) < TRACK_N ? atomic_load(&tracked_n) : TRACK_N);
     sweep_test(c, me);
     gluenear_test(c, me, atomic_load(&tracked_n));

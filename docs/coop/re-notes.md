@@ -1069,6 +1069,32 @@ other game reaching the owner's devices, both wait on one. A hit does it (the pr
   glue. Both the glue's look and B's own world objects need a real glue by hand first: one by the tester in a logged
   session (the "(N parts)" line and coop_glue's "made here") is the way to get it.
 
+## Running the game's own Autobuild in the other game (feasibility, open, 2026-11-08)
+the tester's idea: the other game builds the owner's blueprint itself, so the parts come out green and as one unit.
+- Where the parts are made: the Autobuild ability's update (main+0x9a2c00, a large state machine, called through a
+  vtable) fills per-part records and then calls main+0x1d3b470(obj) directly (at main+0x9a70ec, on a job thread:
+  frame chain main+0x9a70ec <- 0x75d9c <- 0x74218 <- 0xacf8dc). main+0x1d3b470 makes each part with requestCreateActor
+  (main+0x1d3bb98), with the create argument and callback in "The green tint" below.
+- obj (0x1ec715548 in every run: a pooled object) holds the blueprint's path at +0x14,
+  'Game/BluePrint/CombinedActorInfo/Obj_AutoBuilderDraft_00.cai' for the first schematic. [obj+0x3c50] points into
+  it at the blueprint as loaded, a CombinedActorInfo in memory: magic "CmbAct", a byte 2 at +8, a byte at +9 that
+  main+0x1d3b470 must find non-zero to build anything, and part records from +0xc, 0x118 bytes each, each with the
+  part's transform (main+0x1d3b470 walks them with x27). So the layout is the .cai's (for the Autobuild screen's own
+  schematics; history designs not looked at).
+- The same path makes the screen's previews: more parts (a stick, fans, rockets) were made through main+0x1d3bb98
+  while the script scrolled, some on another thread's stack.
+- Calling it again (TOTK_COOP_TEST_REBUILD=40 with TOTK_COOP_TEST_CREATEDUMP=1, tools/coop/autobuild_noy_3rd.txt: autobuild_3rd.txt
+  without its sword swings) on the kept obj, 10 s after the build: it returns at once and makes nothing; byte +9 reads
+  0 after the build, and setting it to 1 or 4 first (TOTK_COOP_TEST_REBUILDN) makes nothing either. The caller sets
+  more per part just before the call (bytes +0xd7 and +0x117 of each record cleared, words written to an output
+  list), so main+0x1d3b470 alone is not the whole build.
+- Not answered yet: the cost (where zonaite, battery or capsules are taken: in main+0x9a2c00 before the call, as far
+  as can be seen), what is tied to the Link (obj is the ability's), mapping the made parts to the owner's numbers, and
+  whether the parts made this way are green at all in the other game (the tint may be put on after main+0x1d3b470
+  returns: the same create arguments on copies give none). Ghidra was down; this is read from the generated C.
+- Verdict so far: plausible, not shown. The next step is to drive main+0x9a2c00's confirm state (or replay its
+  per-part preparation before main+0x1d3b470) in game A a second time, and only then in game B.
+
 ## The green tint of autobuilt parts (open, 2026-11-08 afternoon)
 - What the autobuild passes when it makes a part (TOTK_COOP_TEST_CREATEDUMP=1, coop_spawn.c create_dump on
   requestCreateActor; the autobuild's call is main+0x1d3bb98 in main+0x1d3b470) against coop_game.c request_create:
