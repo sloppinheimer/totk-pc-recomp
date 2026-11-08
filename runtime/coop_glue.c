@@ -702,6 +702,11 @@ static void glue_test(Cpu *c, uint64_t me) {
             __atomic_fetch_and((uint64_t *)(uintptr_t)(bb + 0x68), ~(1ull << 24), __ATOMIC_SEQ_CST);
         uint64_t e = 0;
         int ok;
+        if (cfg_get("TOTK_COOP_TEST_GLUENONE")) {   // =1: not glued at all (two devices alone, for TOTK_COOP_TEST_GLUEON)
+            rt_log("coop: test: glue: left alone, not glued");
+            glued_at = now, stage = 3;
+            goto bonded;
+        }
         if (cfg_get("TOTK_COOP_TEST_GLUEBOND")) {   // =1: the autobuild's bond instead (coop_bonds.c coop_bonds_bond)
             int coop_bonds_bond(Cpu *c, uint64_t a, uint64_t b);
             ok = coop_bonds_bond(c, obj[0], obj[1]);
@@ -748,7 +753,7 @@ static void glue_test(Cpu *c, uint64_t me) {
             }
         }
     }
-    if (stage == 3 && now > glued_at + 20 && !cfg_get("TOTK_COOP_TEST_GLUEBOND")) {
+    if (stage == 3 && now > glued_at + 20 && !cfg_get("TOTK_COOP_TEST_GLUEBOND") && !cfg_get("TOTK_COOP_TEST_GLUENONE")) {
         stage = 4;
         uint64_t comp = scotch_comp(obj[0]);
         uint32_t id = 0;

@@ -197,6 +197,19 @@ static void send_groups(int64_t now) {
         if (said_g[g].hash != hash && said < 200)
             said++, said_g[g].hash = hash, rt_log("coop: bonds: a contraption of mine (%d parts), sent:%s", count, names);
     }
+    // A device alone (with the switch, in no group) is sent too, group 0: its copy follows its on and off (one hit
+    // there reaches it only if the stand-in's swing lands)
+    for (int i = 0; i < n; i++) {   // (own, n: this game's sent objects, above)
+        uint64_t a = own[i], comp = comp_of(a);
+        if (coop_is_copy(a) || !dev_switch(a) || (comp && coop_rd_ptr(comp + SPR_GROUP))) continue;
+        if ((int)p.n >= ENTRY_N) coop_net_hit_send(&p, (int)(offsetof(BondPacket, e) + p.n * sizeof(BondEntry))), p.n = 0;
+        BondEntry *e = &p.e[p.n];
+        int owner = 0;
+        if (!coop_obj_ident(a, &owner, &e->o.id)) continue;
+        e->o.owner = (uint32_t)owner, e->group = 0, e->flags = 2u | (uint32_t)dev_is_on(a);
+        coop_actor_name(a, e->o.name, sizeof e->o.name);
+        p.n++;
+    }
     if (p.n) coop_net_hit_send(&p, (int)(offsetof(BondPacket, e) + p.n * sizeof(BondEntry)));
 }
 
@@ -277,12 +290,36 @@ static int group_copies(int from, uint32_t group, uint64_t *out, int max) {   //
     return n;
 }
 static int claimed_group(int from, uint32_t group);
+#define SST_N 64
+static struct { int from, owner_on; BondObj o; int64_t heard_us; Follow f; } sst[SST_N];   // devices alone, by owner
+static void single_state(int from, const BondEntry *e, int64_t now) {
+    int f = -1, free = -1;
+    for (int k = 0; k < SST_N && f < 0; k++) {
+        if (sst[k].heard_us && sst[k].from == from && sst[k].o.id == e->o.id && sst[k].o.owner == e->o.owner) f = k;
+        else if (free < 0 && (!sst[k].heard_us || now - sst[k].heard_us > 5000000)) free = k;
+    }
+    if (f < 0) {
+        if ((f = free) < 0) return;
+        memset(&sst[f], 0, sizeof sst[f]);
+        sst[f].from = from, sst[f].o = e->o;
+    }
+    sst[f].owner_on = (e->flags & 3) == 3, sst[f].heard_us = now;
+}
 static int device_sync(void) {   // TOTK_COOP_DEVICE_SYNC=0: devices' on and off not followed
     static int on = -1;
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_DEVICE_SYNC"); on = !(e && *e == '0'); }
     return on;
 }
+int coop_bonds_member(uint64_t actor);
 static void follow_owners(int64_t now) {   // this game's copies of each group on or off as their owner has them
+    for (int k = 0; device_sync() && k < SST_N; k++) {
+        if (!sst[k].heard_us || now - sst[k].heard_us > 3000000) continue;
+        uint64_t a = coop_obj_find((int)sst[k].o.owner, sst[k].o.id, sst[k].o.name);
+        if (!a || !coop_is_copy(a) || coop_bonds_member(a)) continue;
+        char what[80];
+        snprintf(what, sizeof what, "player %d's %s", sst[k].from, sst[k].o.name);
+        dev_follow(&a, 1, sst[k].owner_on, &sst[k].f, now, what);
+    }
     for (int k = 0; device_sync() && k < GST_N; k++) {
         if (!gst[k].heard_us || now - gst[k].heard_us > 3000000 || !gst[k].flagged || claimed_group(gst[k].from, gst[k].group)) continue;
         uint64_t dev[64];
@@ -315,6 +352,7 @@ int coop_bonds_take(const void *data, int n, int from) {   // coop_world.c peer_
     memcpy(&p, data, (size_t)n);
     int64_t now = frame_step_world_us();
     for (uint32_t i = 0; i < cnt;) {   // runs of one group
+        if (!p.e[i].group) { p.e[i].o.name[NAME_N - 1] = 0, single_state(from, &p.e[i], now), i++; continue; }   // a device alone
         uint32_t j = i;
         while (j < cnt && p.e[j].group == p.e[i].group) p.e[j].o.name[NAME_N - 1] = 0, j++;
         take_group(from, p.e[i].group, &p.e[i], (int)(j - i), now);
@@ -562,9 +600,12 @@ void coop_bonds_tick(Cpu *c) {   // coop_world.c peer_tick
     static uint64_t sent_on;
     if (now - checked >= 100000) {   // a member device turned on or off: the groups sent now, not at the next second
         checked = now;
-        uint64_t h = 0;
+        uint64_t h = 0, own[256];
         for (int k = 0; k < MEMBER_N; k++)
             if (member[k].actor && dev_is_on(member[k].actor)) h = h * 31 + member[k].actor;
+        int no = coop_own_sent_objects(own, 256);   // (devices alone too)
+        for (int i = 0; i < no; i++)
+            if (dev_switch(own[i]) && dev_is_on(own[i])) h = h * 31 + own[i];
         if (h != sent_on) sent_on = h, last = 0;
     }
     if (now - last >= 1000000) last = now, send_groups(now);

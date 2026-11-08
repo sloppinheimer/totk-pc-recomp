@@ -1017,26 +1017,53 @@ other game reaching the owner's devices, both wait on one. A hit does it (the pr
   | Flame emitter | SpObj_FlameThrower_A_01 | 2 | 1 | yes | yes | only once awake |
   | Frost emitter | SpObj_SnowMachine_A_01 | 3 | 1 | yes | yes | only once awake |
   | Shock emitter | SpObj_ElectricBoxGenerator | 8 | 1 | yes | yes | |
-  | Beam emitter | SpObj_Beamos_A_01 | 1 | 1 | no | - | +0x8d 0x21 (asleep) both runs; untested awake |
+  | Beam emitter | SpObj_Beamos_A_01 | 1 | 1 | yes | yes | made 3 m ahead (+0x8d 0x61): both ways, twice (DEVSWEEPKINDS); at 0x21 it did not take the bit |
   | Light | SpObj_FlashLight_A_01 | 11 | 1 | yes | yes | |
   | Cannon | SpObj_Cannon_A_01 | 21 | 1 | yes | yes | |
   | Balloon | SpObj_BalloonEnvelope_A_01 | 4 | 0 | no switch | - | lit by fire, not a powered device |
   | Spring | SpObj_SpringPiston_A_01 | 22 | 1 | yes | - | fires once |
   | Sled | SpObj_SlipBoard_A_01 | 12 | 0 | no switch | - | |
   | Steering stick | SpObj_ControlStick_A_01 | 16 | 0 | no switch | - | turns its contraption on by its rider |
-  | Battery | SpObj_EnergyBank_A_01 | 23 | 1 | no | - | +0x64 0x17 is the kind main+0x4a3500 skips |
+  | Battery | SpObj_EnergyBank_A_01 | 23 | 1 | no | - | +0x64 0x17 is the kind main+0x4a3500 skips; +0x8d 0x20 in three runs: passive |
   | Cart | SpObj_Cart_A_01 | 14 | 0 | no switch | - | |
   | Wing | SpObj_LiftGeneratorWing_A_01 | 5 | 0 | no switch | - | |
-  | Hydrant | SpObj_WaterPump_A_01 | 20 | 1 | no | - | took the bit asleep (0x21 -> 0x20), stayed off |
+  | Hydrant | SpObj_WaterPump_A_01 | 20 | 1 | not seen | - | at 0x21 took the bit and stayed off; made at 0x61 it was deleted by the game (state 7 -> 11) in two runs |
   | Time bomb | SpObj_TimerBomb_A_01 | 24 | 1 | yes | - | arms once |
 
+- What +0x8d bit 6 (0x40) means is not known. It is not "awake" after all: moving a device by speed did not set it
+  (a beam emitter at 0x21 stayed so), and the same kind was 0x61 or 0x21 from one run to the next as it was made at
+  other places (3 m ahead on the In-isa stairs: 0x61). Devices at 0x21 left the bit (fan, flame, frost in the first
+  sweep), but a spring and a time bomb at 0x21 went on with it. dev_follow does not try to wake a device.
+- **A device alone** (with the switch, in no group) is sent in "CB" too, group 0, one entry each, and its copy follows
+  it the same way (coop_bonds.c single_state). Test: TOTK_COOP_TEST_GLUE=SpObj_WindGenerator_A_01,SpObj_WindGenerator_A_01
+  with TOTK_COOP_TEST_GLUENONE=1 TOTK_COOP_TEST_GLUEON=1 (glue_pair_3rd.txt in A, idle B): the two fans not glued, the
+  first switched on at 8 s, both switched at 14 s (the first off, the second on); B: "player 1's
+  SpObj_WindGenerator_A_01 turned on here" for the first, then on for the second and off for the first.
 - **Glue by hand and groups.** the tester's play log (build\v143play, player 2's game, which glued by hand) shows that
   the first glue by hand (stick to wing) gave both parts one group in the owner's game, which it sent ("a
   contraption of mine, sent: SpObj_LiftGeneratorWing_A_01 SpObj_ControlStick_A_01"). So glue by hand does make the
   group the packet and the switch work on. Its later parts (cannon, battery, fans, flame emitter) are not in that log:
   the line was printed for the first ten sends only. It is now printed whenever a group's parts change ("(N parts)"),
-  so the next play log shows whether they joined. Glue by hand is still not done by script (above), so the sync on a
-  hand-glued contraption is untested.
+  so the next play log shows whether they joined.
+- Glue by hand by script, again (TOTK_COOP_TEST_GLUENEAR=<s>,<m>: a loose fan made <m> past the held build's part
+  farthest to the Link's right; build/glue_near*.txt-style scripts from autobuild_glue_3rd.txt, D-pad up to push the
+  held build, A to let go; game screenshots with -ShotsA): the hold works in some runs ("Move forward/back" shown) and
+  not in others (the reticle on the stand-in, which Ultrahand highlights). No glue was made in four runs. The green
+  glow seen past the build was the stand-in, highlighted.
+- The game's own glue call (coop_glue.c make_bond: createScotch and doScotch, as Ultrahand) on two made fans: the
+  entry is made and gone within 4 s ("the edge 0" at 4 s), and no group comes; their bodies' +0x68 bit 24 is clear
+  (0x100009400), so that is not the cause (TOTK_COOP_TEST_GLUECLEAR changes nothing). Glue by hand also loses its
+  entry about 2 s on (the tester's log: "no longer glued here: taken off the list" after each glue) and yet makes a group:
+  what turns a hand glue's entry into a lasting bond after the release is not found.
+- The autobuild's bond on two of the owner's objects (TOTK_COOP_TEST_GLUEBOND=1, coop_bonds.c coop_bonds_bond:
+  main+0x1c05a98, as coop_bonds bonds copies) gives them one group in the owner's game at once ("a contraption of
+  mine (2 parts)"); B bonds its copies ("share a group here"); with TOTK_COOP_TEST_GLUEON=1 the owner's first fan
+  switched on turns both on in A, and B "turned on here (2 of 2)"; both switched off at 14 s, B "turned off here",
+  0 of 2 on. So a group that reaches "CB" is followed whatever made it; whether glue by hand's later parts join the
+  owner's group is what the new log line will show.
+- Not done: the glue's look in the other game (createScotch's request with Ultrahand's attachment points; no
+  decoding of them found), and bonding world objects the other game has itself (coop_bonds bonds copies only: a
+  plank from the map glued by hand would stay loose in the other game).
 - A PlayerPuppet cannot take a steering stick: it has no Player component (make_puppet_pack.py), and the Link takes
   the stick by its A button in its own state machine, not by a call. In the stick pair (autobuild_stick_3rd.txt,
   `TOTK_COOP_TEST_ABSTICK=50,1`, game B idle) A's stand-in in B stands 0.7 m behind the copy stick, where A's Link
