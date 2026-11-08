@@ -2737,40 +2737,40 @@ static void ground_take(const GroundPacket *p, int n) {
 // it to that enemy's waiting contacts with the handles made the stand-in's (attacker) and its weapon's.
 #define ECONTACT_KIND 0x4543   // "CE"
 int coop_standin_puppet(void);   // coop_players.c
-static ContactPacket ce_out;
-static int ce_out_n;
-static uint64_t ce_out_dc;
-static struct { _Atomic int n; uint64_t dc, by, weap; uint32_t brel[CONTACT_MAX]; _Alignas(16) uint8_t e[CONTACT_MAX][CONTACT_SZ]; } ce_in;
+// The contacts sent go in a packet of each hit update's own (hit updates run on several threads at once). The one
+// received waits in ce_in, under ce_lock (taken on the game thread, added on a hit update's), until its enemy's next
+// hit update, or CE_WAIT_NS: an enemy that died or went to sleep has no hit update, and the next packet would wait
+// behind it for good (code review, 2026-11-07).
+#define CE_WAIT_NS 1000000000ull
+static PlatMutex ce_lock = PLAT_MUTEX_INIT;
+static struct { _Atomic int n; uint64_t dc, by, weap, at_ns; uint32_t brel[CONTACT_MAX]; _Alignas(16) uint8_t e[CONTACT_MAX][CONTACT_SZ]; } ce_in;
 static int ce_owner_of(uint64_t a, uint32_t *key) {
     *key = key_of_actor(a);
     for (int k = 0; *key && k < FOLLOW_N; k++) if (follow[k].key == *key) return follow[k].owner;
     return 0;
 }
-static void ce_queue(uint64_t dc, uint64_t a, uint64_t e) {
+static void ce_queue(ContactPacket *out, uint64_t a, uint64_t e) {   // out: this hit update's (one enemy's)
     uint32_t key = 0;
     int owner = ce_owner_of(a, &key);
-    if (!owner || !key) return;
-    if (ce_out_dc != dc || ce_out.key != key) ce_out_n = 0;
-    if (ce_out_n >= CONTACT_MAX) return;
-    if (!ce_out_n) memset(&ce_out, 0, offsetof(ContactPacket, e)), ce_out.key = key, ce_out.to = (uint32_t)owner, ce_out.kind = ECONTACT_KIND;
-    ce_out_dc = dc;
-    if (!coop_rd(e, ce_out.e[ce_out_n], CONTACT_SZ)) return;
+    if (!owner || !key || out->n >= CONTACT_MAX) return;
+    if (!out->n) out->key = key, out->to = (uint32_t)owner, out->kind = ECONTACT_KIND;
+    if (!coop_rd(e, out->e[out->n], CONTACT_SZ)) return;
     uint64_t body, mb0 = enemy_body(a);
-    memcpy(&body, ce_out.e[ce_out_n] + 0x58, 8);
-    ce_out.brel[ce_out_n] = body && mb0 && body >= mb0 && body - mb0 < 0x20000 ? (uint32_t)(body - mb0) + 1 : 0;
-    ce_out_n++, ce_out.n = (uint32_t)ce_out_n;
+    memcpy(&body, out->e[out->n] + 0x58, 8);
+    out->brel[out->n] = body && mb0 && body >= mb0 && body - mb0 < 0x20000 ? (uint32_t)(body - mb0) + 1 : 0;
+    out->n++;
 }
-static void ce_flush(void) {
-    if (!ce_out_n) return;
-    coop_net_hit_send(&ce_out, (int)(offsetof(ContactPacket, e) + ce_out.n * CONTACT_SZ));
-    static int said;
-    if (said++ < 20) rt_log("coop: contact: %d of this Link's sword on the copy of %08x sent to player %u", ce_out_n, ce_out.key, ce_out.to);
-    ce_out_n = 0;
+static void ce_flush(const ContactPacket *out) {
+    if (!out->n) return;
+    coop_net_hit_send(out, (int)(offsetof(ContactPacket, e) + out->n * CONTACT_SZ));
+    static _Atomic int said;
+    if (atomic_fetch_add(&said, 1) < 20) rt_log("coop: contact: %u of this Link's sword on the copy of %08x sent to player %u", out->n, out->key, out->to);
 }
 uint64_t coop_eq_row_ref(uint64_t actor, int row);   // coop_players.c
 // A CE packet from player `from` (the hit update of its enemy adds it: ce_add).
 static void ce_take(const ContactPacket *cp, int from) {
-    if (!cp->n || cp->n > CONTACT_MAX || atomic_load(&ce_in.n)) return;
+    uint64_t now = plat_now_ns();
+    if (!cp->n || cp->n > CONTACT_MAX || (atomic_load(&ce_in.n) && now - ce_in.at_ns < CE_WAIT_NS)) return;
     uint64_t a = 0, co[COOP_MAX_PLAYERS];
     int ids[COOP_MAX_PLAYERS], nc = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
     for (int i = 0; i < KNOWN_N && !a; i++) if (mine_known[i].key == cp->key) a = mine_known[i].actor;
@@ -2778,33 +2778,45 @@ static void ce_take(const ContactPacket *cp, int from) {
     for (int i = 0; i < nc; i++) if (ids[i] == from) by = co[i];
     uint64_t dc = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x2f8) : 0;
     if (!dc || !by) { rt_log("coop: contact from player %d on %08x: %s", from, cp->key, !dc ? "no such enemy here" : "no stand-in of theirs"); return; }
+    uint64_t by_ref = actor_ref(by), weap = coop_eq_row_ref(by, 0);
+    plat_mutex_lock(&ce_lock);
     memcpy(ce_in.e, cp->e, cp->n * CONTACT_SZ), memcpy(ce_in.brel, cp->brel, sizeof ce_in.brel);
-    ce_in.dc = dc, ce_in.by = actor_ref(by), ce_in.weap = coop_eq_row_ref(by, 0);
+    ce_in.dc = dc, ce_in.by = by_ref, ce_in.weap = weap, ce_in.at_ns = now;
     atomic_store(&ce_in.n, (int)cp->n);
+    plat_mutex_unlock(&ce_lock);
 }
 static void ce_add(uint64_t dc) {
-    if (!atomic_load(&ce_in.n) || dc != ce_in.dc) return;
-    int n = atomic_exchange(&ce_in.n, 0);
+    if (!atomic_load(&ce_in.n)) return;
+    uint8_t ein[CONTACT_MAX][CONTACT_SZ];
+    uint32_t brel[CONTACT_MAX];
+    uint64_t by, weap;
+    plat_mutex_lock(&ce_lock);
+    int n = atomic_load(&ce_in.n);
+    if (!n || dc != ce_in.dc) { plat_mutex_unlock(&ce_lock); return; }
+    memcpy(ein, ce_in.e, (size_t)n * CONTACT_SZ), memcpy(brel, ce_in.brel, sizeof brel);
+    by = ce_in.by, weap = ce_in.weap;
+    atomic_store(&ce_in.n, 0);
+    plat_mutex_unlock(&ce_lock);
     uint64_t a = coop_rd_ptr(dc + 0x198), l = contact_list(dc), base;
     int32_t cnt = 0, cap = 0;
     if (!l || !coop_rd(l + 0x18, &cnt, 4) || !coop_rd(l + 8, &cap, 4) || !(base = coop_rd_ptr(l + 0x10)) || cnt < 0) return;
     int added = 0;
     for (int k = 0; k < n && cnt < cap; k++, cnt++, added++) {
-        uint8_t *e = ce_in.e[k];
-        uint64_t refs[2] = {ce_in.weap ? ce_in.weap : ce_in.by, ce_in.by};
+        uint8_t *e = ein[k];
+        uint64_t refs[2] = {weap ? weap : by, by};
         for (int hk = 0; hk < 2; hk++) {
             uint32_t ser = 0xffffffffu;
             if (refs[hk]) coop_rd(refs[hk] + 0x48, &ser, 4);
             memcpy(e + (hk ? 0x80 : 0x68), &refs[hk], 8), memcpy(e + (hk ? 0x88 : 0x70), &ser, 4);
         }
-        uint64_t mb = enemy_body(a), body = ce_in.brel[k] && mb ? mb + ce_in.brel[k] - 1 : mb;
+        uint64_t mb = enemy_body(a), body = brel[k] && mb ? mb + brel[k] - 1 : mb;
         memcpy(e + 0x58, &body, 8);
         memcpy((void *)(uintptr_t)(base + (uint64_t)cnt * CONTACT_SZ), e, CONTACT_SZ);
     }
     memcpy((void *)(uintptr_t)(l + 0x18), &cnt, 4);
     char nm[48];
     static int said;
-    if (said++ < 20) rt_log("coop: contact: %d from a stand-in's sword added to %s (weapon %s)", added, coop_actor_name(a, nm, sizeof nm), ce_in.weap ? "its own" : "none");
+    if (said++ < 20) rt_log("coop: contact: %d from a stand-in's sword added to %s (weapon %s)", added, coop_actor_name(a, nm, sizeof nm), weap ? "its own" : "none");
 }
 static void contacts_filter(uint64_t dc) {
     static int on = -1;
@@ -2830,6 +2842,8 @@ static void contacts_filter(uint64_t dc) {
     }
     if (!ct_is_copy(a)) return;
     int out = 0, keep = 0;
+    ContactPacket ce_out;
+    memset(&ce_out, 0, offsetof(ContactPacket, e));
     for (int k = 0; k < cnt; k++) {
         uint64_t e = base + (uint64_t)k * CONTACT_SZ, r1 = coop_rd_ptr(e + 0x68), r2 = coop_rd_ptr(e + 0x80);
         uint64_t w = r1 ? coop_rd_ptr(r1 + 0x40) : 0, by = r2 ? coop_rd_ptr(r2 + 0x40) : 0;
@@ -2842,7 +2856,7 @@ static void contacts_filter(uint64_t dc) {
                    who == 1 ? "this Link" : who == 2 ? "a co-op Link" : "something else", wn[0] ? wn : "-", LD8(e + 0x90),
                    drop ? "taken out (its owner's game counts it)" : "kept");
         if (drop) {
-            if (who == 1 && coop_standin_puppet()) ce_queue(dc, a, e);
+            if (who == 1 && coop_standin_puppet()) ce_queue(&ce_out, a, e);
             out++;
             continue;
         }
@@ -2850,7 +2864,7 @@ static void contacts_filter(uint64_t dc) {
         keep++;
     }
     if (out) memcpy((void *)(uintptr_t)(l + 0x18), &keep, 4);
-    ce_flush();
+    ce_flush(&ce_out);
 }
 void coop_hit_update(Cpu *c) {
     contacts_test(c->x[0]);
@@ -5288,6 +5302,9 @@ void coop_anim_masks_apply(uint64_t standin, const CoopMask *in) {
         if (!in[k].off) continue;
         uint64_t b = anim_bind_at(g, in[k].off);
         uint32_t nb = 0, nw = 0;
+        // (at most 16 of each, as CoopMask holds and as coop_anim_masks_pack sends: a larger count from the network
+        // would run past hb, hw and the packet's own arrays; code review, 2026-11-07)
+        if (in[k].nb > 16 || in[k].nw > 16) continue;
         if (!b || !coop_rd(b + 8, &nb, 4) || !coop_rd(b + 0x20, &nw, 4) || nb != in[k].nb || nw != in[k].nw) continue;   // (another shape)
         uint64_t pb = coop_rd_ptr(b + 0x10), pw = coop_rd_ptr(b + 0x28);
         uint8_t hb[16];

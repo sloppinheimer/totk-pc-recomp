@@ -451,7 +451,8 @@ static void theirs_tick(Cpu *c, int64_t now) {
             if (++theirs[i].missed < 2) continue;
             rt_log("coop: glue: bond %u from player %d (%s to %s) is gone there%s", theirs[i].g.bond, theirs[i].from, theirs[i].g.a.name,
                    theirs[i].g.b.name, theirs[i].made ? ": parted here" : "");
-            if (theirs[i].made && theirs[i].a) part[np++] = theirs[i].a;
+            // only an actor still the bond's (its pointer is from the last check, up to 2 s old: the object may be gone)
+            if (theirs[i].made && alive_named(theirs[i].a, theirs[i].g.a.name)) part[np++] = theirs[i].a;
             theirs[i].used = 0;
         }
         // the other bonds on a parted actor: checked again at once (removeScotch parts it from all of them)
@@ -508,9 +509,32 @@ static void theirs_tick(Cpu *c, int64_t now) {
             plat_mutex_unlock(&glue_lock);
     }
 }
+// The bonds of a player who left: no longer theirs to keep or part (no more lists come), so they are let go of once a
+// second. The glue stays as it is here, and the veto no longer guards it. A player who comes back with the same id
+// starts its bond numbers again from 1, which would otherwise be taken as resends of these.
+static void left_tick(int64_t now) {
+    static int64_t last_us;
+    if (now - last_us < 1000000) return;
+    last_us = now;
+    int ids[COOP_MAX_PLAYERS];
+    char names[COOP_MAX_PLAYERS][17];
+    int n = coop_net_players(ids, names, COOP_MAX_PLAYERS);
+    if (!coop_net_id()) return;   // not in a session (no relay answer yet): nothing known of who is here
+    plat_mutex_lock(&glue_lock);
+    for (int i = 0; i < THEIRS_N; i++) {
+        if (!theirs[i].used) continue;
+        int here = 0;
+        for (int k = 0; k < n; k++) here |= ids[k] == theirs[i].from;
+        if (here) continue;
+        rt_log("coop: glue: bond %u from player %d let go of: the player left", theirs[i].g.bond, theirs[i].from);
+        theirs[i].used = 0;
+    }
+    plat_mutex_unlock(&glue_lock);
+}
 void coop_glue_tick(Cpu *c, uint64_t me) {
     if (!glue_on()) return;
     int64_t now = frame_step_world_us();
+    left_tick(now);
     glue_test(c, me);
     take_pending();
     mine_tick(now);

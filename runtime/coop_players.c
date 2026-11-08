@@ -4829,7 +4829,7 @@ void coop_players_tick(Cpu *c, int numpad3) {
         if (!s && !(s = slot_new(SRC_NET, id))) continue;
         int32_t ast = 0;   // (a live actor: one going away, or another at its address, gets no call; code review)
         if (coop_standin_puppet() && s->state == LIVE && s->actor && age < 2000000000ull && coop_rd(s->actor + COOP_ACTOR_STATE, &ast, 4) &&
-            ast >= 2 && ast <= 6) {
+            ast >= 2 && ast <= 6 && actor_is(s->actor, "PlayerPuppet")) {   // (the name too: another actor at a freed one's address)
             void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, uint64_t age_ns);   // coop_world.c
             static uint64_t y_was[COOP_MAX_PLAYERS];   // its owner's attack button down: logged (the suite's tour case)
             uint64_t y_now = st.buttons >> 3 & 1;
