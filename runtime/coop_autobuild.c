@@ -395,7 +395,10 @@ static void hit_test(Cpu *c, uint64_t me, int n) {
         if (l < 0.1f) ux = 1, uz = 0, l = 1;
         ux /= l, uz /= l;
         float dx = -ux, dz = -uz;   // facing the fan
-        float m[12] = {dz, 0, dx, f[0] + ux, 0, 1, 0, f[1] - 0.2f, -dx, 0, dz, f[2] + uz};
+        // (TOTK_COOP_TEST_ABHIT_DIST=<m>: that far from it instead of 1 m; a stand-in put inside the build shoves it)
+        const char *ds = cfg_get("TOTK_COOP_TEST_ABHIT_DIST");
+        float dist = ds ? (float)atof(ds) : 1.0f;
+        float m[12] = {dz, 0, dx, f[0] + ux * dist, 0, 1, 0, f[1] - 0.2f, -dx, 0, dz, f[2] + uz * dist};
         coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
         placed = 1;
         {   // TOTK_COOP_TEST_ABLOOSE=1: a loose fan made 1.6 m to this Link's right, for its script to push the build into
@@ -1366,7 +1369,17 @@ static uint32_t bp_shape(const uint8_t *r) {   // the structure: names and bonds
 int coop_contraption_made(uint64_t a);
 // The owner's contraptions as last recorded: the actor that is record part 0 (the copy's root), for the pose stream
 #define OWN_C 16
-static struct { uint32_t key; uint64_t root, parts[21]; int np; int64_t seen; } own_c[OWN_C];
+// auth: the player whose game runs the contraption now (0: this game); seq rises at each change (auth_take). While
+// another game runs it, its root pose comes here (pose, pose_us: that game's clock) and the root follows it.
+static struct {
+    uint32_t key;
+    uint64_t root, parts[21];
+    int np;
+    int64_t seen;
+    int auth, seq;
+    float pose[2][12];
+    int64_t pose_us[2], pose_local_us, asked_us, auth_us;
+} own_c[OWN_C];
 // The owner: every 2 s, each own contraption recorded and sent (from coop_autobuild_seq_calc, actor phase 0).
 static void bp_send(Cpu *c) {
     static int64_t last;
@@ -1434,6 +1447,7 @@ static void bp_send(Cpu *c) {
                     else if (fr < 0 && now - own_c[q].seen > 5000000) fr = q;
                 }
                 if (f2 < 0) f2 = fr;
+                if (f2 >= 0 && own_c[f2].key != p.key) memset(&own_c[f2], 0, sizeof own_c[f2]);   // (a new contraption: run here)
                 if (f2 >= 0) own_c[f2].key = p.key, own_c[f2].root = pick, own_c[f2].seen = now;
             }
             for (int q = 0; q < OWN_C; q++)   // (each record part's actor, for the device states sent with the pose)
@@ -1475,8 +1489,10 @@ static struct {
     uint32_t sw, on;      // the owner's devices: which record parts have a switch, which are on
     int remake;           // a new shape came for a made copy: the copy deleted and made again
     int64_t toggled_us;   // the last toggle asked of the copy (bp_follow)
-    float pose[2][12];    // the owner's root body matrix, the last two received, and when (owner's world clock)
+    float pose[2][12];    // the root body matrix of the game that runs it, the last two received, and when (its clock)
     int64_t pose_us[2], pose_local_us;
+    int auth, seq;        // the player whose game runs the contraption now (0: its owner), and its change count
+    int64_t heard_us, asked_us, auth_us;   // the owner's last pose packet here; the last ask for it; the last change
 } bp_in[BP_IN];
 static PlatMutex bp_lock = PLAT_MUTEX_INIT;
 int coop_contraption_take(const void *data, int n, int from) {   // coop_world.c peer_tick: 1 when it was ours
@@ -1516,17 +1532,27 @@ static void made_remove(uint64_t a);
 static int group_toggle(const uint64_t *parts, int n, int prefer);
 static void mark_ours(uint64_t comp);
 #define MV_KIND 0x564d4243u   // "CBMV"
-typedef struct { uint32_t kind, key; int64_t us; float m[12]; uint32_t sw, on; } MvPacket;   // sw / on: bit r, record part r has a switch / is on
+// Sent by the game that runs the contraption (its pose, flags bit 0) and by its owner (its devices, bit 1).
+typedef struct { uint32_t kind, key; int64_t us; float m[12]; uint32_t sw, on, owner, flags; } MvPacket;   // sw / on: bit r, record part r has a switch / is on
+static void pose_push(float pose[2][12], int64_t us[2], int64_t *local, const MvPacket *p) {
+    if (p->us <= us[1]) return;
+    memcpy(pose[0], pose[1], sizeof pose[0]), us[0] = us[1];
+    memcpy(pose[1], p->m, sizeof p->m), us[1] = p->us, *local = frame_step_world_us();
+}
 int coop_contraption_pose_take(const void *data, int n, int from) {
     const MvPacket *p = (const MvPacket *)data;
     if (n != (int)sizeof(MvPacket) || p->kind != MV_KIND) return 0;
     if (!contraption_on()) return 1;
     plat_mutex_lock(&bp_lock);
-    for (int k = 0; k < BP_IN; k++)
-        if (bp_in[k].from == from && bp_in[k].key == p->key && p->us > bp_in[k].pose_us[1]) {
-            memcpy(bp_in[k].pose[0], bp_in[k].pose[1], sizeof bp_in[k].pose[0]), bp_in[k].pose_us[0] = bp_in[k].pose_us[1];
-            memcpy(bp_in[k].pose[1], p->m, sizeof p->m), bp_in[k].pose_us[1] = p->us, bp_in[k].pose_local_us = frame_step_world_us();
-            bp_in[k].sw = p->sw, bp_in[k].on = p->on;
+    if ((int)p->owner == coop_net_id()) {   // my contraption, run by another game: its pose
+        for (int q = 0; q < OWN_C; q++)
+            if (own_c[q].key == p->key && own_c[q].auth == from && (p->flags & 1)) pose_push(own_c[q].pose, own_c[q].pose_us, &own_c[q].pose_local_us, p);
+    } else
+        for (int k = 0; k < BP_IN; k++) {
+            if (bp_in[k].from != (int)p->owner || bp_in[k].key != p->key) continue;
+            if ((p->flags & 2) && from == bp_in[k].from) bp_in[k].sw = p->sw, bp_in[k].on = p->on, bp_in[k].heard_us = frame_step_world_us();
+            if ((p->flags & 1) && from == (bp_in[k].auth ? bp_in[k].auth : bp_in[k].from))
+                pose_push(bp_in[k].pose, bp_in[k].pose_us, &bp_in[k].pose_local_us, p);
         }
     plat_mutex_unlock(&bp_lock);
     return 1;
@@ -1554,11 +1580,64 @@ static void bp_pose_send(void) {   // the owner, from the co-op tick
         int32_t rst = 0;
         if (!coop_rd(own_c[q].root + 0x24, &rst, 4) || rst < 2 || rst > 6) { own_c[q].root = 0, own_c[q].np = 0; continue; }   // (gone)
         uint64_t body = main_body_of(own_c[q].root);
-        MvPacket p = {MV_KIND, own_c[q].key, now, {0}, 0, 0};
+        MvPacket p = {MV_KIND, own_c[q].key, now, {0}, 0, 0, (uint32_t)coop_net_id(), 2u | (own_c[q].auth ? 0u : 1u)};
         for (int r = 0; r < own_c[q].np; r++)
             if (part_switch(own_c[q].parts[r])) p.sw |= 1u << r, p.on |= (uint32_t)part_on(own_c[q].parts[r]) << r;
         if (body && coop_rd(body + 0x98, p.m, sizeof p.m)) coop_net_hit_send(&p, sizeof p);
     }
+    for (int k = 0; k < BP_IN; k++) {   // another player's contraption this game runs now: its pose
+        plat_mutex_lock(&bp_lock);
+        int mine = bp_in[k].made == 2 && bp_in[k].ncopy && bp_in[k].auth == coop_net_id();
+        uint64_t root = mine ? bp_in[k].copy[0] : 0;
+        MvPacket p = {MV_KIND, bp_in[k].key, now, {0}, 0, 0, (uint32_t)bp_in[k].from, 1};
+        plat_mutex_unlock(&bp_lock);
+        uint64_t body = main_body_of(root);
+        if (body && coop_rd(body + 0x98, p.m, sizeof p.m)) coop_net_hit_send(&p, sizeof p);
+    }
+}
+// A root body driven toward a pose by velocity: the sender's speed from its last two poses, the gap closed in a sixth
+// of a second, the turn left by the angular velocity (small angles). cur: where the body is now.
+static int drive_root(Cpu *c, uint64_t root, float pose[2][12], const int64_t us[2], int64_t local, int64_t now, float cur[12], float v[3]) {
+    uint64_t body = main_body_of(root);
+    v[0] = v[1] = v[2] = 0;
+    if (!body || !coop_rd(body + 0x98, cur, 12 * sizeof(float))) return 0;
+    const float *m0 = pose[0], *m1 = pose[1];
+    double odt = us[0] && us[1] > us[0] ? (us[1] - us[0]) / 1e6 : 0;
+    if (odt > 0.005 && odt < 0.5) for (int i = 0; i < 3; i++) v[i] = (m1[i * 4 + 3] - m0[i * 4 + 3]) / (float)odt;
+    double ahead = (now - local) / 1e6;
+    if (ahead > 0.3) ahead = 0.3;
+    if (ahead < 0) ahead = 0;
+    _Alignas(16) float lin[4] = {0}, ang[4] = {0};
+    for (int i = 0; i < 3; i++) lin[i] = v[i] + (m1[i * 4 + 3] + v[i] * (float)ahead - cur[i * 4 + 3]) * 6.0f;
+    float e[9];   // R_err = R_target * R_current^T
+    for (int r = 0; r < 3; r++)
+        for (int q = 0; q < 3; q++) e[r * 3 + q] = m1[r * 4] * cur[q * 4] + m1[r * 4 + 1] * cur[q * 4 + 1] + m1[r * 4 + 2] * cur[q * 4 + 2];
+    ang[0] = 0.5f * (e[7] - e[5]) * 6.0f, ang[1] = 0.5f * (e[2] - e[6]) * 6.0f, ang[2] = 0.5f * (e[3] - e[1]) * 6.0f;
+    coop_guest_call(c, MOD_MAIN_BASE + 0x567750, body, (uint64_t)(uintptr_t)lin, 0, 0);   // SetLinearVelocity
+    coop_guest_call(c, MOD_MAIN_BASE + 0x25a1f0, body, (uint64_t)(uintptr_t)ang, 0, 0);   // SetAngularVelocity
+    return 1;
+}
+// The parts whose motion another game runs (copies run elsewhere, my contraptions run elsewhere): their devices'
+// pushes are skipped here (coop_phase0_hook), the game that runs them pushes. Rebuilt each co-op tick (bp_follow).
+#define DRIVEN_N 64
+static _Atomic uint64_t driven[DRIVEN_N];
+static int contraption_driven(uint64_t a) {
+    for (int i = 0; a && i < DRIVEN_N; i++)
+        if (atomic_load_explicit(&driven[i], memory_order_relaxed) == a) return 1;
+    return 0;
+}
+static void driven_rebuild(void) {
+    uint64_t l[DRIVEN_N];
+    int n = 0, me = coop_net_id();
+    plat_mutex_lock(&bp_lock);
+    for (int k = 0; k < BP_IN; k++)
+        if (bp_in[k].made == 2 && bp_in[k].auth != me)
+            for (int r = 0; r < bp_in[k].ncopy && r < 21 && n < DRIVEN_N; r++) l[n++] = bp_in[k].copy[r];
+    for (int q = 0; q < OWN_C; q++)
+        if (own_c[q].auth && own_c[q].root)
+            for (int r = 0; r < own_c[q].np && n < DRIVEN_N; r++) l[n++] = own_c[q].parts[r];
+    plat_mutex_unlock(&bp_lock);
+    for (int i = 0; i < DRIVEN_N; i++) atomic_store_explicit(&driven[i], i < n ? l[i] : 0, memory_order_relaxed);
 }
 static void bp_follow(Cpu *c) {   // the other games, from the co-op tick: each copy's root driven toward its owner's
     int64_t now = frame_step_world_us();
@@ -1567,7 +1646,7 @@ static void bp_follow(Cpu *c) {   // the other games, from the co-op tick: each 
     last = now;
     if (dt > 0.1) dt = 0.1;
     for (int k = 0; k < BP_IN; k++) {   // a copy whose owner sent no pose for 3 s (its contraption gone there): deleted
-        if (bp_in[k].made == 2 && bp_in[k].ncopy && bp_in[k].pose_local_us && now - bp_in[k].pose_local_us > 3000000) {
+        if (bp_in[k].made == 2 && bp_in[k].ncopy && bp_in[k].heard_us && now - bp_in[k].heard_us > 3000000) {
             for (int i = 0; i < bp_in[k].ncopy && i < 21; i++)
                 if (bp_in[k].copy[i]) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, bp_in[k].copy[i], COOP_DELETE_REASON, 0, 0), made_remove(bp_in[k].copy[i]);
             rt_log("coop: contraption: player %d's %08x: no pose for 3 s, its copy (%d parts) deleted", bp_in[k].from, bp_in[k].key, bp_in[k].ncopy);
@@ -1576,38 +1655,38 @@ static void bp_follow(Cpu *c) {   // the other games, from the co-op tick: each 
             plat_mutex_unlock(&bp_lock);
         }
     }
-    for (int k = 0; k < BP_IN; k++) {
-        float m0[12], m1[12];
-        int64_t u0, u1, lu;
+    driven_rebuild();
+    for (int q = 0; q < OWN_C; q++) {   // my contraption run by another game: its root follows that game's pose
+        float pose[2][12], cur[12], v[3];
+        int64_t us[2], lu;
         uint64_t root;
         plat_mutex_lock(&bp_lock);
-        int ok = bp_in[k].made == 2 && bp_in[k].ncopy && bp_in[k].pose_us[1] && now - bp_in[k].pose_local_us < 1000000;
-        if (ok) memcpy(m0, bp_in[k].pose[0], sizeof m0), memcpy(m1, bp_in[k].pose[1], sizeof m1), u0 = bp_in[k].pose_us[0], u1 = bp_in[k].pose_us[1],
-                lu = bp_in[k].pose_local_us, root = bp_in[k].copy[0];
+        int ok = own_c[q].auth && own_c[q].root && own_c[q].pose_us[1] && now - own_c[q].pose_local_us < 1000000;
+        if (ok) memcpy(pose, own_c[q].pose, sizeof pose), memcpy(us, own_c[q].pose_us, sizeof us), lu = own_c[q].pose_local_us, root = own_c[q].root;
         plat_mutex_unlock(&bp_lock);
-        if (!ok) continue;
-        uint64_t body = main_body_of(root);
-        float cur[12];
-        if (!body || !coop_rd(body + 0x98, cur, sizeof cur)) continue;
-        // the owner's velocity from its last two poses, and where it is now (its last pose carried forward, at most 0.3 s)
-        float v[3] = {0, 0, 0};
-        double odt = u0 && u1 > u0 ? (u1 - u0) / 1e6 : 0;
-        if (odt > 0.005 && odt < 0.5) for (int i = 0; i < 3; i++) v[i] = (m1[i * 4 + 3] - m0[i * 4 + 3]) / (float)odt;
-        double ahead = (now - lu) / 1e6;
-        if (ahead > 0.3) ahead = 0.3;
-        if (ahead < 0) ahead = 0;
-        _Alignas(16) float lin[4] = {0}, ang[4] = {0};
-        for (int i = 0; i < 3; i++) {
-            float want = m1[i * 4 + 3] + v[i] * (float)ahead;
-            lin[i] = v[i] + (want - cur[i * 4 + 3]) * 6.0f;   // the owner's speed and a sixth of a second to close the gap
+        if (!ok || !drive_root(c, root, pose, us, lu, now, cur, v)) continue;
+        static int64_t said_own;
+        if (now - said_own > 500000) {
+            said_own = now;
+            float d[3] = {pose[1][3] - cur[3], pose[1][7] - cur[7], pose[1][11] - cur[11]};
+            rt_log("coop: contraption: mine %08x, run by player %d: root at %.2f %.2f %.2f, theirs %.2f %.2f %.2f (off %.2f m), its speed %.2f %.2f %.2f",
+                   own_c[q].key, own_c[q].auth, cur[3], cur[7], cur[11], pose[1][3], pose[1][7], pose[1][11], sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]),
+                   v[0], v[1], v[2]);
         }
-        // the turn left to the owner's orientation: R_err = R_target * R_current^T; its vector part (small angles)
-        float e[9];
-        for (int r = 0; r < 3; r++)
-            for (int q = 0; q < 3; q++) e[r * 3 + q] = m1[r * 4] * cur[q * 4] + m1[r * 4 + 1] * cur[q * 4 + 1] + m1[r * 4 + 2] * cur[q * 4 + 2];
-        ang[0] = 0.5f * (e[7] - e[5]) * 6.0f, ang[1] = 0.5f * (e[2] - e[6]) * 6.0f, ang[2] = 0.5f * (e[3] - e[1]) * 6.0f;
-        coop_guest_call(c, MOD_MAIN_BASE + 0x567750, body, (uint64_t)(uintptr_t)lin, 0, 0);   // SetLinearVelocity
-        coop_guest_call(c, MOD_MAIN_BASE + 0x25a1f0, body, (uint64_t)(uintptr_t)ang, 0, 0);   // SetAngularVelocity
+    }
+    for (int k = 0; k < BP_IN; k++) {
+        float pose[2][12], cur[12] = {0}, v[3] = {0, 0, 0};
+        int64_t us[2], lu;
+        uint64_t root;
+        plat_mutex_lock(&bp_lock);
+        int made = bp_in[k].made == 2 && bp_in[k].ncopy, here = bp_in[k].auth == coop_net_id();
+        int ok = made && !here && bp_in[k].pose_us[1] && now - bp_in[k].pose_local_us < 1000000;
+        if (ok) memcpy(pose, bp_in[k].pose, sizeof pose), memcpy(us, bp_in[k].pose_us, sizeof us), lu = bp_in[k].pose_local_us, root = bp_in[k].copy[0];
+        plat_mutex_unlock(&bp_lock);
+        if (!made) continue;
+        if (ok && !drive_root(c, root, pose, us, lu, now, cur, v)) continue;
+        float *m1 = pose[1];
+        if (!ok) memset(pose, 0, sizeof pose);
         {   // the devices: the copy's group on or off as the owner's, by one toggle request (DeviceSwitch +0x8d bit 3, as a
             // hit asks; the group takes it to every member, main+0x32f610), asked again only after 1.5 s
             uint32_t sw, on;
@@ -1632,7 +1711,7 @@ static void bp_follow(Cpu *c) {   // the other games, from the co-op tick: each 
             }
         }
         static int64_t said;
-        if (now - said > 500000) {
+        if (ok && now - said > 500000) {
             said = now;
             float d[3] = {m1[3] - cur[3], m1[7] - cur[7], m1[11] - cur[11]};
             char ons[32] = "";
@@ -1642,6 +1721,95 @@ static void bp_follow(Cpu *c) {   // the other games, from the co-op tick: each 
                    bp_in[k].from, bp_in[k].key, cur[3], cur[7], cur[11], m1[3], m1[7], m1[11], sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), v[0], v[1], v[2]);
         }
     }
+}
+// Who runs a contraption (docs/coop/contraption-sync.md section 5). The game whose player holds a part of it with
+// Ultrahand (the part's SPR +0x20 bit 16, set while held: research ultrahand/) asks for it ("CBAU", every 0.3 s while
+// held); the game that runs it hands it over at once unless its own player holds a part, and tells every game (a
+// grant, with the change count one higher). The game that runs it sends the root pose; the others drive their root
+// toward it. The owner takes it back when the game that runs it sends no pose for 3 s. The devices' on or off stays
+// with the owner, and the battery with whoever turned them on.
+#define AU_KIND 0x55414243u   // "CBAU"
+typedef struct { uint32_t kind, owner, key, who; int32_t seq, grant; } AuPacket;
+static int part_held(uint64_t a) {
+    uint64_t spr = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x480) : 0;
+    uint64_t f = 0;
+    return spr && coop_rd(spr + 0x20, &f, 8) && (f & 0x10000);
+}
+static int any_held(const uint64_t *parts, int n) {
+    for (int r = 0; r < n && r < 21; r++) if (part_held(parts[r])) return 1;
+    return 0;
+}
+static void auth_set(uint32_t owner, uint32_t key, int who, int seq) {   // (bp_lock held)
+    int me = coop_net_id();
+    int64_t now = frame_step_world_us();
+    if ((int)owner == me) {
+        for (int q = 0; q < OWN_C; q++)
+            if (own_c[q].key == key && seq > own_c[q].seq) {
+                own_c[q].seq = seq, own_c[q].auth = who == me ? 0 : who, own_c[q].auth_us = now;
+                memset(own_c[q].pose_us, 0, sizeof own_c[q].pose_us), own_c[q].pose_local_us = now;   // (another sender's clock)
+                rt_log("coop: contraption: mine %08x is run by %s now (change %d)", key, who == me ? "this game" : "another player's game", seq);
+            }
+    } else
+        for (int k = 0; k < BP_IN; k++)
+            if (bp_in[k].from == (int)owner && bp_in[k].key == key && seq > bp_in[k].seq) {
+                bp_in[k].seq = seq, bp_in[k].auth = who == (int)owner ? 0 : who, bp_in[k].auth_us = now;
+                memset(bp_in[k].pose_us, 0, sizeof bp_in[k].pose_us), bp_in[k].pose_local_us = now;
+                rt_log("coop: contraption: player %u's %08x is run by player %d now (change %d)%s", owner, key, who, seq, who == me ? ": this game" : "");
+            }
+}
+int coop_contraption_auth_take(const void *data, int n, int from) {
+    const AuPacket *p = (const AuPacket *)data;
+    if (n != (int)sizeof(AuPacket) || p->kind != AU_KIND) return 0;
+    if (!contraption_on()) return 1;
+    int me = coop_net_id();
+    plat_mutex_lock(&bp_lock);
+    if (p->grant) auth_set(p->owner, p->key, (int)p->who, p->seq);
+    else {   // asked: handed over when this game runs it and its player holds none of it
+        int runs = 0, seq = 0, held = 0;
+        if ((int)p->owner == me) {
+            for (int q = 0; q < OWN_C; q++)
+                if (own_c[q].key == p->key && own_c[q].root && !own_c[q].auth) runs = 1, seq = own_c[q].seq, held = any_held(own_c[q].parts, own_c[q].np);
+        } else
+            for (int k = 0; k < BP_IN; k++)
+                if (bp_in[k].from == (int)p->owner && bp_in[k].key == p->key && bp_in[k].made == 2 && bp_in[k].auth == me)
+                    runs = 1, seq = bp_in[k].seq, held = any_held(bp_in[k].copy, bp_in[k].ncopy);
+        if (runs && !held) {
+            AuPacket g = {AU_KIND, p->owner, p->key, (uint32_t)from, seq + 1, 1};
+            auth_set(p->owner, p->key, from, seq + 1);
+            coop_net_hit_send(&g, sizeof g);
+            rt_log("coop: contraption: player %d asked to run player %u's %08x: handed over", from, p->owner, p->key);
+        } else if (runs) {
+            static int64_t said;
+            int64_t now = frame_step_world_us();
+            if (now - said > 1000000) said = now, rt_log("coop: contraption: player %d asked to run player %u's %08x: held here, kept", from, p->owner, p->key);
+        }
+    }
+    plat_mutex_unlock(&bp_lock);
+    return 1;
+}
+static void auth_tick(void) {   // from the co-op tick
+    int me = coop_net_id();
+    int64_t now = frame_step_world_us();
+    AuPacket out[OWN_C + BP_IN];
+    int no = 0;
+    plat_mutex_lock(&bp_lock);
+    for (int q = 0; q < OWN_C; q++) {
+        if (!own_c[q].root || !own_c[q].auth) continue;
+        if (now - own_c[q].pose_local_us > 3000000 && now - own_c[q].auth_us > 3000000) {   // the game running it went quiet: taken back
+            out[no++] = (AuPacket){AU_KIND, (uint32_t)me, own_c[q].key, (uint32_t)me, own_c[q].seq + 1, 1};
+            rt_log("coop: contraption: mine %08x: no pose from player %d for 3 s: run here again", own_c[q].key, own_c[q].auth);
+            auth_set((uint32_t)me, own_c[q].key, me, own_c[q].seq + 1);
+        } else if (now - own_c[q].asked_us > 300000 && any_held(own_c[q].parts, own_c[q].np))
+            own_c[q].asked_us = now, out[no++] = (AuPacket){AU_KIND, (uint32_t)me, own_c[q].key, (uint32_t)me, own_c[q].seq, 0};
+    }
+    for (int k = 0; k < BP_IN; k++)
+        if (bp_in[k].made == 2 && bp_in[k].ncopy && bp_in[k].auth != me && now - bp_in[k].asked_us > 300000 && any_held(bp_in[k].copy, bp_in[k].ncopy)) {
+            bp_in[k].asked_us = now, out[no++] = (AuPacket){AU_KIND, (uint32_t)bp_in[k].from, bp_in[k].key, (uint32_t)me, bp_in[k].seq, 0};
+            static int64_t said;
+            if (now - said > 1000000) said = now, rt_log("coop: contraption: player %d's %08x held here: asked to run it", bp_in[k].from, bp_in[k].key);
+        }
+    plat_mutex_unlock(&bp_lock);
+    for (int i = 0; i < no; i++) coop_net_hit_send(&out[i], sizeof out[i]);
 }
 // Toggling a contraption's devices as a hit does: on, one member's request (DeviceSwitch +0x8d bit 3); off, the
 // request on every member that is on (the switch update turns a group off only so: research devices/README.md)
@@ -2203,11 +2371,11 @@ int coop_phase0_hook(Cpu *c, uint64_t addr) {
     if (inner) { inner = 0; return 0; }
     // A part of another player's contraption made here (TOTK_COOP_CONTRAPTION): its fan pushes nothing (the owner's game
     // moves the contraption; the wind capsule and the look still run), and its on/off node charges no gauge
-    if (off == APPLY_IMPULSE_FN && contraption_on() && coop_contraption_made(node_actor(c->x[0]))) return 1;
+    if (off == APPLY_IMPULSE_FN && contraption_on() && contraption_driven(node_actor(c->x[0]))) return 1;
     if (contraption_on()) {
         if (in_list(body_setters, 6, off) && in_copy_force) return 1;   // (a copy's device moving its own body: not here)
-        if (in_list(motor_nodes, 2, off) && coop_contraption_made(node_actor(c->x[0]))) return 1;
-        if (in_list(force_nodes, 10, off) && coop_contraption_made(node_actor(c->x[0]))) {
+        if (in_list(motor_nodes, 2, off) && contraption_driven(node_actor(c->x[0]))) return 1;
+        if (in_list(force_nodes, 10, off) && contraption_driven(node_actor(c->x[0]))) {
             inner = 1;
             return wrap_call(c, addr, &in_copy_force, 1);
         }
@@ -2539,7 +2707,7 @@ static void phase0_tick(Cpu *c, int n) {
 
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
     playerdiff_test(me);
-    if (contraption_on()) bp_pose_send(), bp_follow(c), abpush_test(c), abon_test(), cptoggle_test();
+    if (contraption_on()) auth_tick(), bp_pose_send(), bp_follow(c), abpush_test(c), abon_test(), cptoggle_test();
     if (!ablog_on()) return;
     deck_test(c, me, atomic_load(&tracked_n) < TRACK_N ? atomic_load(&tracked_n) : TRACK_N);
     failspam_test(c, me);

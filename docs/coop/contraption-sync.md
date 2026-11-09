@@ -483,3 +483,24 @@ TOTK_COOP_CONTRAPTION=1 (coop_autobuild.c, "Contraption copies made by the game'
 - Pair tests: the toggle test as before (on at 46 s, off at 54 s, the copy follows). Part-off: 4 of 4 made in one
   group; the fan pulled off; the old copy deleted, the 3-part copy made 3 of 3 in one group, its root 0.00 m from the
   owner's; the loose fan copied. Normal start, no settings: both games load, 59 fps, no contraption lines.
+
+## Phase 4, first step: the authority moves on grab (2026-11-09)
+- Each contraption has one game that runs it (its authority, at first its owner) and a change count. A held part's
+  SPR +0x20 bit 16 is set while Ultrahand holds it (research ultrahand/), and the co-op Links have no abilities, so a
+  held part is always held by the game's own player. The game whose player holds a part of a contraption it does not
+  run asks for it ("CBAU", every 0.3 s while held). The game that runs it hands it over at once unless its own player
+  holds a part, and tells every game (a grant with the count one higher; older counts are dropped).
+- The game that runs it sends the root pose ("CBMV" bit 0); every other game drives its root toward it by velocity.
+  That now includes the owner (coop_autobuild.c drive_root, shared with the copies). The owner keeps sending its
+  devices' on and off (bit 1): toggles still go to the owner, and the battery stays with the player who turned them
+  on. The pushes of devices are skipped on every part another game runs (contraption_driven), the copy's and the
+  owner's alike. The owner takes the authority back if the game running it sends no pose for 3 s.
+- Not yet: the authority on the steering stick or glue, a part taken off by the game that runs a contraption it does
+  not own (the owner's record still decides the shape), and the owner taking it back by grabbing it (written, not run).
+- Pair test (autobuild_noy_3rd.txt in A, autobuild_carry_b_3rd.txt in B, B with TOTK_COOP_TEST_ABHIT=46,
+  TOTK_COOP_TEST_ABHIT_B=46, TOTK_COOP_TEST_ABHIT_DIST=2.2): B grabbed its copy of A's Fanplane, A handed it over
+  (change 1). B lifted it 3 m and carried it; A's followed within 0.03 to 0.12 m, and 0.55 m at worst while falling
+  after B let go. At rest, A's was 0.02 m from B's, all four parts in one group.
+- Found on the way: with the test's Link put 1 m from a fan, its stand-in in the other game appeared inside the
+  contraption and shoved it 9 m off its place (the stand-in is a static body moved by teleport; section 5's
+  "stand-ins must push" item). TOTK_COOP_TEST_ABHIT_DIST puts the Link further away.
