@@ -511,3 +511,26 @@ TOTK_COOP_CONTRAPTION=1 (coop_autobuild.c, "Contraption copies made by the game'
   by the fan furthest along +x: put by the first fan found, which differs between runs, B's Ultrahand missed in one run.
 - Seen once, not again: after B's carry, A's contraption stopped 1.0 m from B's pose at rest, while A's own Link had
   just been put next to it by the test (likely blocked by that Link; open).
+
+## Phase 4, second step: the steering stick; devices and battery with the game that runs it (2026-11-09)
+- Steering a stick counts as touching the contraption, as a grab does. The stick's rider sources (component 129,
+  [actor+0x228]+0x408: count +0x20, array of pointers +0x28) are read as main+0x42cbdc reads them: a source with state
+  +0x18 == 2, +0x74 <= 0 and a live handle gives the rider ([[src+8]+0x40]). When it is this game's Link, the game asks
+  to run the contraption, and while it steers it hands the contraption to nobody else.
+- The stick turns the devices on in the rider's game by its own message (0x6b510003), not by a toggle request, so the
+  devices' on and off now belong to the game that runs the contraption, as section 4 planned. That game sends them with
+  its pose ("CBMV" bit 1). Every other game, the owner's too, toggles its group to match. A toggle asked on a part
+  another game runs goes to that game ("CBTG" names the owner and the game that runs it). The owner's packets, when it
+  does not run the contraption, only say that it still has it (a copy is deleted after 3 s without them).
+- Battery: only the game that runs a contraption charges for its devices. The on/off nodes of parts another game runs
+  have their charges dropped (contraption_driven, which also skips their pushes). So the player who runs it pays,
+  which is the activator for a stick or a grab. A hit on a copy is still paid by the game that runs the contraption,
+  not by the hitter (open).
+- Pair test (autobuild_stick_3rd.txt in A, autobuild_stick_b_3rd.txt in B, both with TOTK_COOP_TEST_ABLOG=1 and
+  TOTK_COOP_TEST_ABSTICK=50,2): B took its copy's stick at 52 s, the rider was seen ("steered by this Link"), A handed
+  the Fanboat over (change 1). B's stick turned B's fans on; A's fans followed (on, power 10), and A dropped its fans'
+  charges ("a charge from a copy's device not made") while B's game charged. A's Fanboat stayed 0.01 m from B's. It did
+  not travel (it sits on stairs, as in the older stick tests), so steering a moving contraption is not tested.
+- Again after the change: the toggle test (a toggle on B's copy sent to A, which runs it, on and off), part-off, the
+  carry test (largest gap 0.21 m, at rest 0.04 m), and a normal start.
+- Not yet: what happens when the rider gets off (the stick's off path was not found, research devices2/control/).
