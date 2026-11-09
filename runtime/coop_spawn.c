@@ -916,7 +916,11 @@ int coop_hook(Cpu *c, uint64_t addr) {
     if (addr == MOD_MAIN_BASE + 0x916860) return beam_hook(c, addr);
     // actor lifetime (coop_life.c): the delete and death requests, BondMaker, and the confirm's Zonaite charge
     if (addr == MOD_MAIN_BASE + 0x63baa8 || addr == MOD_MAIN_BASE + 0x63b6b0 || addr == MOD_MAIN_BASE + 0x1953184 ||
-        addr == MOD_MAIN_BASE + 0x1b4b738 || addr == MOD_MAIN_BASE + 0x1916830 || addr == MOD_MAIN_BASE + 0x209b754) {
+        addr == MOD_MAIN_BASE + 0x1b4b738 || addr == MOD_MAIN_BASE + 0x1916830 || addr == MOD_MAIN_BASE + 0x209b754 ||
+        addr == MOD_MAIN_BASE + 0x2995024 || addr == MOD_MAIN_BASE + 0x2995068 || addr == MOD_MAIN_BASE + 0x2999fe8 ||
+        addr == MOD_MAIN_BASE + 0x18ac48 || addr == MOD_MAIN_BASE + 0x8aaab0 || addr == MOD_MAIN_BASE + 0x1c042bc ||
+        addr == MOD_MAIN_BASE + 0x1cf54d4 || addr == MOD_MAIN_BASE + 0x190f034 ||
+        addr == MOD_MAIN_BASE + 0x1c0c9b0) {
         int coop_life_hook(Cpu *c, uint64_t addr);
         return coop_life_hook(c, addr);
     }

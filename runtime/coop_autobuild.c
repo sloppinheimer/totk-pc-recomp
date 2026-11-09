@@ -1491,6 +1491,8 @@ static void bp_send(Cpu *c) {
             p.chunk = (uint16_t)k, p.len = (uint16_t)len;
             memcpy(p.d, rec + off, (size_t)len);
             coop_net_hit_send(&p, (int)(offsetof(BpPacket, d) + (size_t)len));
+            void mirror_record(const BpPacket *p, int len);
+            mirror_record(&p, (int)(offsetof(BpPacket, d) + (size_t)len));
         }
         static struct { uint32_t key, shape; } said[16];
         int s = -1;
@@ -1526,6 +1528,10 @@ static struct {
     int succ_from;        // made 4: it became that player's contraption with that key; deleted once that one is made
     uint32_t succ_key;
     int64_t changed_us;   // made 2: since when its shape here differs from the record (adopt_tick)
+    float hm[3][12];      // the runner's last three root samples (newest last) and their times (its clock): prediction
+    int64_t hus[3];
+    int64_t clock_off, clock_off_at;   // min(arrival here - sample time) over the last 10 s (follow_rigid)
+    struct FollowState *fs;            // the rigid-field drive's state (follow_rigid), made on first use
 } bp_in[BP_IN];
 static PlatMutex bp_lock = PLAT_MUTEX_INIT;
 int coop_contraption_take(const void *data, int n, int from) {   // coop_world.c peer_tick: 1 when it was ours
@@ -1599,6 +1605,13 @@ int coop_contraption_pose_take(const void *data, int n, int from) {
             if (from == bp_in[k].from) bp_in[k].heard_us = frame_step_world_us();   // (its owner still has it)
             if (from != (bp_in[k].auth ? bp_in[k].auth : bp_in[k].from)) continue;
             if (p->flags & 2) bp_in[k].sw = p->sw, bp_in[k].on = p->on, bp_in[k].act = (int)p->act;
+            if ((p->flags & 1) && p->us > bp_in[k].hus[2]) {   // (the history for follow_rigid: newest last)
+                memmove(bp_in[k].hm[0], bp_in[k].hm[1], 2 * sizeof bp_in[k].hm[0]), memmove(bp_in[k].hus, bp_in[k].hus + 1, 2 * sizeof bp_in[k].hus[0]);
+                memcpy(bp_in[k].hm[2], p->m, sizeof p->m), bp_in[k].hus[2] = p->us;
+                int64_t off = frame_step_world_us() - p->us, t = frame_step_world_us();
+                if (!bp_in[k].clock_off_at || off < bp_in[k].clock_off || t - bp_in[k].clock_off_at > 10000000)
+                    bp_in[k].clock_off = off, bp_in[k].clock_off_at = t;
+            }
             if (p->flags & 1) pose_push(bp_in[k].pose, bp_in[k].pose_us, &bp_in[k].pose_local_us, p);
         }
     plat_mutex_unlock(&bp_lock);
@@ -1617,10 +1630,11 @@ static int part_on(uint64_t a) {   // the device's on bool ([comp 11] +0x348 bit
     uint32_t v = 0;
     return c11 && coop_rd(c11 + 0x348, &v, 4) && (v & 0x2000);
 }
+static void mirror_pose(const MvPacket *p);
 static void bp_pose_send(void) {   // the owner, from the co-op tick
     static int64_t last;
     int64_t now = frame_step_world_us();
-    if (now - last < 50000) return;
+    if (now - last < 33000) return;   // (30 a second, plan 12.4)
     last = now;
     for (int q = 0; q < OWN_C; q++) {
         if (!own_c[q].root || now - own_c[q].seen > 5000000) continue;
@@ -1632,7 +1646,7 @@ static void bp_pose_send(void) {   // the owner, from the co-op tick
             if (part_switch(own_c[q].parts[r])) p.sw |= 1u << r, p.on |= (uint32_t)part_on(own_c[q].parts[r]) << r;
         if (!own_c[q].auth && !(p.on & p.sw) && now - own_c[q].act_us > 2000000) own_c[q].act = 0;
         p.act = (uint32_t)(own_c[q].act ? own_c[q].act : coop_net_id());
-        if (body && coop_rd(body + 0x98, p.m, sizeof p.m)) coop_net_hit_send(&p, sizeof p);
+        if (body && coop_rd(body + 0x98, p.m, sizeof p.m)) coop_net_hit_send(&p, sizeof p), mirror_pose(&p);
     }
     for (int k = 0; k < BP_IN; k++) {   // another player's contraption this game runs now: its pose
         plat_mutex_lock(&bp_lock);
@@ -1727,8 +1741,16 @@ static void driven_rebuild(void) {
     for (int i = 0; i < DRIVEN_N; i++) atomic_store_explicit(&driven[i], i < n ? l[i] : 0, memory_order_relaxed);
     for (int i = 0; i < DRIVEN_N; i++) atomic_store_explicit(&nocharge[i], i < nb ? b[i] : 0, memory_order_relaxed);
 }
+static void mirror_tick(Cpu *c, int64_t now);
+static int follow_rigid(Cpu *c, int k, int64_t now, float *err_out);
+static int follow_mode(void) {   // TOTK_COOP_FOLLOW=root: HEAD's root drive; else the rigid field (plan section 3)
+    static int m = -1;
+    if (m < 0) { const char *e = cfg_get("TOTK_COOP_FOLLOW"); m = e && !strcmp(e, "root") ? 0 : 1; }
+    return m;
+}
 static void bp_follow(Cpu *c) {   // the other games, from the co-op tick: each copy's root driven toward its owner's
     int64_t now = frame_step_world_us();
+    mirror_tick(c, now);
     static int64_t last;
     double dt = last && now > last ? (now - last) / 1e6 : 1 / 30.0;
     last = now;
@@ -1770,11 +1792,18 @@ static void bp_follow(Cpu *c) {   // the other games, from the co-op tick: each 
         uint64_t root;
         plat_mutex_lock(&bp_lock);
         int made = (bp_in[k].made == 2 || bp_in[k].made == 4) && bp_in[k].ncopy, here = bp_in[k].made == 2 && bp_in[k].auth == coop_net_id();
+        // (the rigid field drives a copy from the claim of its parts, plan 3.5 "assembling": one made in the air is
+        // held where the runner's is instead of falling until it counts as made)
+        if (!made && bp_in[k].made == 1 && bp_in[k].ncopy && follow_mode() == 1) made = 1;
         int ok = made && !here && bp_in[k].pose_us[1] && now - bp_in[k].pose_local_us < 1000000;
         if (ok) memcpy(pose, bp_in[k].pose, sizeof pose), memcpy(us, bp_in[k].pose_us, sizeof us), lu = bp_in[k].pose_local_us, root = bp_in[k].copy[0];
         plat_mutex_unlock(&bp_lock);
         if (!made) continue;
-        if (ok && !drive_root(c, root, pose, us, lu, now, cur, v)) continue;
+        if (ok && follow_mode() == 1) {   // the rigid field (follow_rigid logs its own state)
+            float err = 0;
+            follow_rigid(c, k, now, &err);
+            ok = 0;
+        } else if (ok && !drive_root(c, root, pose, us, lu, now, cur, v)) continue;
         float *m1 = pose[1];
         if (!ok) memset(pose, 0, sizeof pose);
         if (!here) {   // the devices as where it runs (the game that runs it decides them)
@@ -1799,6 +1828,362 @@ static void bp_follow(Cpu *c) {   // the other games, from the co-op tick: each 
                    bp_in[k].from, bp_in[k].key, cur[3], cur[7], cur[11], m1[3], m1[7], m1[11], sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), v[0], v[1], v[2]);
         }
     }
+}
+// ---- The rigid-field follower drive (docs/coop/contraption-sync-v3.md section 3) -----------------------------------
+// A follower copy is moved as one rigid body: each frame one linear and one angular velocity (V, W) are taken from the
+// runner's root, predicted to the runner's present, plus a bounded correction toward it; every part's main body gets
+// v_j = V + W x (x_j - x_root) and w_j = W, from where the parts are in this game, so the bonds between them see no
+// relative motion and nothing in the copy is strained (unlike per-part targets, which disagree with the copy's own
+// layout). Gravity: what a step takes off the written vertical velocity is measured (the observer) and added back.
+// Rest: a copy whose runner rests and which sits where it should is not written, so its bodies may sleep.
+typedef struct FollowState {
+    float v_written[21][3]; // the velocity written to each part's main body last frame
+    int have_written;
+    float gc;               // the vertical part of comp, for the log
+    float comp[3];          // what one physics step takes off the written velocity (gravity, damping), added back, filtered
+    float integ[3];         // the integral term (m/s)
+    int rest;               // 1: resting (nothing written)
+    int64_t still_since;    // since when the runner's root has been still (its clock)
+    int64_t last_us;
+} FollowState;
+
+static void mat_mul3(const float a[9], const float b[9], float o[9]) {
+    for (int r = 0; r < 3; r++)
+        for (int q = 0; q < 3; q++) o[r * 3 + q] = a[r * 3] * b[q] + a[r * 3 + 1] * b[3 + q] + a[r * 3 + 2] * b[6 + q];
+}
+static void rot_of(const float m[12], float r[9]) {   // the 3x3 of a 3x4 row-major body matrix
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) r[i * 3 + j] = m[i * 4 + j];
+}
+// The rotation vector (axis * angle) of R, valid up to 180 degrees.
+static void log_rot(const float r[9], float w[3]) {
+    float tr = r[0] + r[4] + r[8], c = (tr - 1) * 0.5f;
+    if (c > 1) c = 1;
+    if (c < -1) c = -1;
+    float ang = acosf(c);
+    float v[3] = {r[7] - r[5], r[2] - r[6], r[3] - r[1]}, sn = sinf(ang);
+    if (ang < 1e-4f) { w[0] = v[0] * 0.5f, w[1] = v[1] * 0.5f, w[2] = v[2] * 0.5f; return; }
+    if (sn > 1e-3f) { float k = ang / (2 * sn); w[0] = v[0] * k, w[1] = v[1] * k, w[2] = v[2] * k; return; }
+    // near 180 degrees: the axis from the diagonal
+    float ax[3] = {sqrtf(fmaxf(0, (r[0] + 1) * 0.5f)), sqrtf(fmaxf(0, (r[4] + 1) * 0.5f)), sqrtf(fmaxf(0, (r[8] + 1) * 0.5f))};
+    if (r[1] < 0) ax[1] = -ax[1];
+    if (r[2] < 0) ax[2] = -ax[2];
+    w[0] = ax[0] * ang, w[1] = ax[1] * ang, w[2] = ax[2] * ang;
+}
+static void exp_rot(const float w[3], float r[9]) {   // Rodrigues
+    float a = sqrtf(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+    if (a < 1e-6f) { float id[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}; memcpy(r, id, sizeof id); return; }
+    float k[3] = {w[0] / a, w[1] / a, w[2] / a}, c = cosf(a), sn = sinf(a), t = 1 - c;
+    r[0] = c + k[0] * k[0] * t, r[1] = k[0] * k[1] * t - k[2] * sn, r[2] = k[0] * k[2] * t + k[1] * sn;
+    r[3] = k[1] * k[0] * t + k[2] * sn, r[4] = c + k[1] * k[1] * t, r[5] = k[1] * k[2] * t - k[0] * sn;
+    r[6] = k[2] * k[0] * t - k[1] * sn, r[7] = k[2] * k[1] * t + k[0] * sn, r[8] = c + k[2] * k[2] * t;
+}
+static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
+static void clamp_vec(float v[3], float max) {
+    float n = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (n > max && n > 0) for (int i = 0; i < 3; i++) v[i] *= max / n;
+}
+static int mirror_of(int from);
+static void mirror_measure(int k, int64_t now, const char *mode, float err_p, float err_deg);
+
+// One frame of the rigid field for copy k (bp_in). 1 when it wrote velocities.
+static int follow_rigid(Cpu *c, int k, int64_t now, float *err_out) {
+    float hm[3][12];
+    int64_t hus[3], off;
+    uint64_t parts[21];
+    int np, from;
+    plat_mutex_lock(&bp_lock);
+    memcpy(hm, bp_in[k].hm, sizeof hm), memcpy(hus, bp_in[k].hus, sizeof hus), off = bp_in[k].clock_off;
+    np = bp_in[k].ncopy < 21 ? bp_in[k].ncopy : 21, from = bp_in[k].from;
+    memcpy(parts, bp_in[k].copy, sizeof parts);
+    if (!bp_in[k].fs) bp_in[k].fs = calloc(1, sizeof(FollowState));
+    FollowState *fs = bp_in[k].fs;
+    plat_mutex_unlock(&bp_lock);
+    if (!fs || !hus[2] || !np) return 0;
+    // the sample's age: in the self-mirror both clocks are this game's; elsewhere the arrival offset's minimum (the
+    // jitter is taken out, the base delay is not: plan 3.2 adds the runner's heartbeat, P2)
+    double age = mirror_of(from) ? (now - hus[2]) / 1e6 : (now - (hus[2] + off)) / 1e6;
+    double tau = clampf((float)age, 0, 0.25f);
+    // the runner's velocity, acceleration and turn rate from its last samples
+    float v_r[3] = {0}, a_r[3] = {0}, w_r[3] = {0};
+    double d1 = hus[1] && hus[2] > hus[1] ? (hus[2] - hus[1]) / 1e6 : 0, d0 = hus[0] && hus[1] > hus[0] ? (hus[1] - hus[0]) / 1e6 : 0;
+    if (d1 > 0.005 && d1 < 0.5) {
+        for (int i = 0; i < 3; i++) v_r[i] = (hm[2][i * 4 + 3] - hm[1][i * 4 + 3]) / (float)d1;
+        float r1[9], r2[9], r1t[9], dr[9];
+        rot_of(hm[1], r1), rot_of(hm[2], r2);
+        for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) r1t[i * 3 + j] = r1[j * 3 + i];
+        mat_mul3(r2, r1t, dr), log_rot(dr, w_r);
+        for (int i = 0; i < 3; i++) w_r[i] /= (float)d1;
+        if (d0 > 0.005 && d0 < 0.5)
+            for (int i = 0; i < 3; i++) {
+                float v0 = (hm[1][i * 4 + 3] - hm[0][i * 4 + 3]) / (float)d0;
+                a_r[i] = (v_r[i] - v0) / (float)(0.5 * (d0 + d1));
+            }
+        clamp_vec(a_r, 2 * 29.0f);   // (2 g at this game's gravity, X1)
+    }
+    // the prediction: where the runner's root is now
+    float p_star[3], v_star[3], r_star[9], r_now[9];
+    for (int i = 0; i < 3; i++) p_star[i] = hm[2][i * 4 + 3] + v_r[i] * (float)tau + 0.5f * a_r[i] * (float)(tau * tau), v_star[i] = v_r[i] + a_r[i] * (float)tau;
+    {
+        float wt[3] = {w_r[0] * (float)tau, w_r[1] * (float)tau, w_r[2] * (float)tau}, dr[9];
+        exp_rot(wt, dr), rot_of(hm[2], r_now), mat_mul3(dr, r_now, r_star);
+    }
+    // where the copy is: its root body
+    uint64_t rb = main_body_of(parts[0]);
+    float root[12];
+    if (!rb || !coop_rd(rb + 0x98, root, sizeof root)) return 0;
+    float e_p[3] = {p_star[0] - root[3], p_star[1] - root[7], p_star[2] - root[11]}, rf[9], rft[9], re[9], e_r[3];
+    rot_of(root, rf);
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) rft[i * 3 + j] = rf[j * 3 + i];
+    mat_mul3(r_star, rft, re), log_rot(re, e_r);
+    float ep = sqrtf(e_p[0] * e_p[0] + e_p[1] * e_p[1] + e_p[2] * e_p[2]), er = sqrtf(e_r[0] * e_r[0] + e_r[1] * e_r[1] + e_r[2] * e_r[2]);
+    *err_out = ep;
+    double dt = fs->last_us && now > fs->last_us ? (now - fs->last_us) / 1e6 : 1 / 60.0;
+    if (dt > 0.1) dt = 0.1;
+    fs->last_us = now;
+    // the step observer: what the last physics step took off the velocity written (gravity, the bodies' damping,
+    // contacts), the parts' mean, on each axis; added back so the copy moves at the velocity it is given
+    if (fs->have_written) {
+        float sum[3] = {0};
+        int n = 0;
+        for (int j = 0; j < np; j++) {
+            uint64_t b = main_body_of(parts[j]);
+            float vb[3];
+            if (b && coop_rd(b + 0xf8, vb, sizeof vb)) for (int i = 0; i < 3; i++) sum[i] += vb[i] - fs->v_written[j][i], n += i == 0;
+        }
+        for (int i = 0; n && i < 3; i++) {
+            float d = clampf(sum[i] / n, -1.5f, i == 1 ? 0.0f : 1.5f);   // (m/s a frame; gravity never pushes up)
+            fs->comp[i] += (-d - fs->comp[i]) * 0.2f;                     // (about 5 frames)
+        }
+        fs->gc = fs->comp[1];
+    }
+    // sideways the step's loss is the bodies' air damping only while the build moves; on the ground at rest it is
+    // friction, and adding that back pushed the copy to and fro
+    float vn_now = sqrtf(v_r[0] * v_r[0] + v_r[2] * v_r[2]);
+    if (vn_now < 0.5f) fs->comp[0] *= 0.8f, fs->comp[2] *= 0.8f;
+    // rest: the runner still for 0.5 s and the copy where it should be: nothing written, bodies may sleep
+    float vn = sqrtf(v_r[0] * v_r[0] + v_r[1] * v_r[1] + v_r[2] * v_r[2]), wn = sqrtf(w_r[0] * w_r[0] + w_r[1] * w_r[1] + w_r[2] * w_r[2]);
+    if (vn < 0.05f && wn < 0.05f) { if (!fs->still_since) fs->still_since = hus[2]; }
+    else fs->still_since = 0;
+    int runner_rests = fs->still_since && hus[2] - fs->still_since >= 500000;
+    const float deg = 180.0f / 3.14159265f;
+    // (a wide band: a copy resting on the ground a few centimetres from where the runner's rests cannot be pushed
+    // there through its contacts, and trying makes it chatter; plan RK2)
+    if (fs->rest && (!runner_rests || ep > 0.25f || er * deg > 8)) fs->rest = 0;
+    else if (!fs->rest && runner_rests && ep < 0.10f && er * deg < 4) fs->rest = 1;
+    mirror_measure(k, now, fs->rest ? "rest" : "track", ep, er * deg);
+    if (fs->rest) { fs->have_written = 0; for (int i = 0; i < 3; i++) fs->integ[i] *= (float)(1 - dt); return 0; }
+    // the field: V, W with bounded corrections (gains fall with speed)
+    float kp = vn <= 5 ? 5 : vn >= 15 ? 2.5f : 5 - 2.5f * (vn - 5) / 10, kr = wn <= 2 ? 5 : wn >= 6 ? 3 : 5 - 2 * (wn - 2) / 4;
+    float cv[3], cw[3];
+    for (int i = 0; i < 3; i++) {
+        fs->integ[i] = clampf(fs->integ[i] + 3.0f * e_p[i] * (float)dt, -1.0f, 1.0f);
+        cv[i] = kp * e_p[i] + fs->integ[i], cw[i] = kr * e_r[i];
+    }
+    clamp_vec(cv, 3.0f), clamp_vec(cw, 2.5f);
+    _Alignas(16) float V[4] = {v_star[0] + cv[0] + fs->comp[0], v_star[1] + cv[1] + fs->comp[1], v_star[2] + cv[2] + fs->comp[2], 0}, W[4] = {w_r[0] + cw[0], w_r[1] + cw[1], w_r[2] + cw[2], 0};
+    for (int j = 0; j < np; j++) {
+        uint64_t b = main_body_of(parts[j]);
+        float m[12];
+        if (!b || !coop_rd(b + 0x98, m, sizeof m)) continue;
+        float d[3] = {m[3] - root[3], m[7] - root[7], m[11] - root[11]};
+        _Alignas(16) float vj[4] = {V[0] + W[1] * d[2] - W[2] * d[1], V[1] + W[2] * d[0] - W[0] * d[2], V[2] + W[0] * d[1] - W[1] * d[0], 0};
+        coop_guest_call(c, MOD_MAIN_BASE + 0x567750, b, (uint64_t)(uintptr_t)vj, 0, 0);   // SetLinearVelocity
+        coop_guest_call(c, MOD_MAIN_BASE + 0x25a1f0, b, (uint64_t)(uintptr_t)W, 0, 0);    // SetAngularVelocity
+        fs->v_written[j][0] = vj[0], fs->v_written[j][1] = vj[1], fs->v_written[j][2] = vj[2];
+    }
+    fs->have_written = 1;
+    static int64_t said;
+    if (now - said > 500000) {
+        said = now;
+        rt_log("coop: follow: %.2f s copy %08x: error %.3f m %.1f deg, age %.3f s, v* %.2f %.2f %.2f, V %.2f %.2f %.2f, gc %.3f, I %.2f %.2f %.2f",
+               now / 1e6, bp_in[k].key, ep, er * deg, age, v_star[0], v_star[1], v_star[2], V[0], V[1], V[2], fs->gc, fs->integ[0], fs->integ[1], fs->integ[2]);
+    }
+    return 1;
+}
+
+// ---- The self-mirror lab (plan P1: X2, T1). TOTK_COOP_TEST_MIRROR=<dz>[,<delay ms>,<jitter ms>,<loss %>]: this game's
+// own contraption records and root poses are also handed to its own copy path as if from a player MIRROR_ID, the
+// copy made <dz> m aside along z and the poses delayed, jittered and some dropped, so a copy follows the original in one
+// game, where both are known exactly. TOTK_COOP_TEST_MIRROR_SCENE=<t>: from that world second the original is moved
+// through a fixed scene (mirror_scene) and the copy's errors are logged per part of the scene.
+#define MIRROR_ID 7
+static struct { int on; float dz; int delay_ms, jitter_ms, loss; float dy; } mir = {-1, 6, 100, 20, 10, 0};
+static int mirror_on(void) {
+    if (mir.on < 0) {
+        const char *e = cfg_get("TOTK_COOP_TEST_MIRROR");
+        mir.on = e != NULL;
+        if (e) sscanf(e, "%f,%d,%d,%d,%f", &mir.dz, &mir.delay_ms, &mir.jitter_ms, &mir.loss, &mir.dy);
+        if (mir.on) rt_log("coop: mirror: on, %.1f m aside, delay %d ms +- %d, %d%% lost, drive %s", mir.dz, mir.delay_ms, mir.jitter_ms, mir.loss,
+                           follow_mode() ? "rigid field" : "root only");
+    }
+    return mir.on;
+}
+static int mirror_of(int from) { return from == MIRROR_ID && mirror_on(); }
+static uint32_t mir_rng = 12345;
+static uint32_t mir_rand(void) { mir_rng = mir_rng * 1664525u + 1013904223u; return mir_rng >> 8; }
+void mirror_record(const BpPacket *p, int len) {
+    if (!mirror_on()) return;
+    static double from = -1;   // TOTK_COOP_TEST_MIRROR_FROM=<s>: no record handed on before that world second
+    if (from < 0) { const char *e = cfg_get("TOTK_COOP_TEST_MIRROR_FROM"); from = e ? atof(e) : 0; }
+    if (frame_step_world_us() / 1e6 < from) return;
+    static BpPacket q;
+    memcpy(&q, p, (size_t)len);
+    q.centre[2] += mir.dz, q.centre[1] += mir.dy;
+    memset(q.ids, 0, sizeof q.ids);   // (none of the mirror player's objects)
+    coop_contraption_take(&q, len, MIRROR_ID);
+}
+static struct { MvPacket p; int64_t due; } mq[96];
+static int mq_n;
+static void mirror_pose(const MvPacket *p) {
+    if (!mirror_on() || mq_n == 96) return;
+    if ((int)(mir_rand() % 100) < mir.loss) return;
+    MvPacket q = *p;
+    q.m[11] += mir.dz, q.m[7] += mir.dy, q.owner = MIRROR_ID;
+    int j = mir.jitter_ms ? (int)(mir_rand() % (uint32_t)(2 * mir.jitter_ms + 1)) - mir.jitter_ms : 0;
+    mq[mq_n].p = q, mq[mq_n].due = frame_step_world_us() + (int64_t)(mir.delay_ms + j) * 1000, mq_n++;
+}
+
+// The scene the original goes through (relative to TOTK_COOP_TEST_MIRROR_SCENE), written to every part of it as one
+// rigid motion about its root; at rest and after the drop it is left to its own physics.
+static const struct { double t; const char *name; float v[3], w[3]; int mode; } scene[] = {   // mode 0 free, 1 driven, 3 kicked once
+    {0, "rest", {0}, {0}, 0},
+    {4, "lift", {0, 0.75f, 0}, {0}, 1},
+    {6, "carry 3", {3, 0, 0}, {0}, 1},
+    {10, "held in air", {0}, {0}, 1},
+    {11, "carry 8", {-8, 0, 0}, {0}, 1},
+    {14, "held in air", {0}, {0}, 1},
+    {15, "turn", {0}, {0, 1.5f, 0}, 1},
+    {18, "drop and tumble", {0}, {3, 0, 0}, 3},
+    {25, "rest after", {0}, {0}, 0},
+    {31, "end", {0}, {0}, -1},
+};
+static int scene_at(double t) {
+    int i = 0;
+    while (scene[i + 1].mode != -1 && t >= scene[i + 1].t) i++;
+    return t >= scene[i + 1].t ? -1 : i;
+}
+static int mirror_original(uint64_t parts[21]) {   // this game's first own contraption with 2 parts or more
+    for (int q = 0; q < OWN_C; q++)
+        if (own_c[q].root && own_c[q].np >= 2) { memcpy(parts, own_c[q].parts, sizeof own_c[q].parts); return own_c[q].np; }
+    return 0;
+}
+static void rigid_write(Cpu *c, const uint64_t *parts, int n, const float v[3], const float w[3]) {
+    float root[12];
+    uint64_t rb = main_body_of(parts[0]);
+    if (!rb || !coop_rd(rb + 0x98, root, sizeof root)) return;
+    _Alignas(16) float W[4] = {w[0], w[1], w[2], 0};
+    for (int j = 0; j < n; j++) {
+        uint64_t b = main_body_of(parts[j]);
+        float m[12];
+        if (!b || !coop_rd(b + 0x98, m, sizeof m)) continue;
+        float d[3] = {m[3] - root[3], m[7] - root[7], m[11] - root[11]};
+        _Alignas(16) float vj[4] = {v[0] + w[1] * d[2] - w[2] * d[1], v[1] + w[2] * d[0] - w[0] * d[2], v[2] + w[0] * d[1] - w[1] * d[0], 0};
+        coop_guest_call(c, MOD_MAIN_BASE + 0x567750, b, (uint64_t)(uintptr_t)vj, 0, 0);
+        coop_guest_call(c, MOD_MAIN_BASE + 0x25a1f0, b, (uint64_t)(uintptr_t)W, 0, 0);
+    }
+}
+static double scene_t0 = -1;
+static const char *scene_name = "";
+static void mirror_scene(Cpu *c, int64_t now) {
+    if (scene_t0 == -1) { const char *e = cfg_get("TOTK_COOP_TEST_MIRROR_SCENE"); scene_t0 = e ? atof(e) : -2; }
+    if (scene_t0 < 0) return;
+    double t = now / 1e6 - scene_t0;
+    uint64_t parts[21];
+    int n = mirror_original(parts);
+    if (t < 0 || !n) return;
+    int i = scene_at(t);
+    static int last_i = -2;
+    if (i != last_i) {
+        last_i = i;
+        rt_log("coop: mirror: scene %.1f s: %s", t, i >= 0 ? scene[i].name : "over");
+        if (i >= 0 && scene[i].mode == 3) rigid_write(c, parts, n, scene[i].v, scene[i].w);   // (the kick, once)
+    }
+    scene_name = i >= 0 ? scene[i].name : "";
+    if (i >= 0 && scene[i].mode == 1) {   // (a step takes 29 m/s^2 x 1/60 s off the vertical velocity written: added, X1)
+        // changes of speed ramped over 0.5 s from the previous part of the scene, as a carry speeds up
+        float r = (float)((t - scene[i].t) / 0.5);
+        if (r > 1) r = 1;
+        int pi = i > 0 && scene[i - 1].mode == 1 ? i - 1 : -1;
+        float v[3], w[3];
+        for (int a = 0; a < 3; a++) {
+            float v0 = pi >= 0 ? scene[pi].v[a] : 0, w0 = pi >= 0 ? scene[pi].w[a] : 0;
+            v[a] = v0 + (scene[i].v[a] - v0) * r, w[a] = w0 + (scene[i].w[a] - w0) * r;
+        }
+        v[1] += 29.0f / 60;
+        rigid_write(c, parts, n, v, w);
+    }
+}
+// The copy against the original, both in this game: the root's offset from where it should be (the original's root
+// moved dz aside) and the parts' layout about the root, per part of the scene: the 95th percentile and the maximum.
+#define MS_N 4096
+static struct { char name[24]; float track[MS_N], layout[MS_N]; int n; float group_changes, deaths; } ms;
+static void ms_flush(void) {
+    if (!ms.n) return;
+    float t[MS_N], l[MS_N];
+    memcpy(t, ms.track, sizeof(float) * ms.n), memcpy(l, ms.layout, sizeof(float) * ms.n);
+    for (int a = 1; a < ms.n; a++) for (int b = a; b > 0 && t[b] < t[b - 1]; b--) { float x = t[b]; t[b] = t[b - 1], t[b - 1] = x; }
+    for (int a = 1; a < ms.n; a++) for (int b = a; b > 0 && l[b] < l[b - 1]; b--) { float x = l[b]; l[b] = l[b - 1], l[b - 1] = x; }
+    int i95 = (int)(ms.n * 0.95);
+    rt_log("coop: mirror: %-16s %4d frames: tracking p95 %.3f m, max %.3f m; layout p95 %.4f m, max %.4f m", ms.name, ms.n, t[i95], t[ms.n - 1], l[i95], l[ms.n - 1]);
+    ms.n = 0;
+}
+static void mirror_measure(int k, int64_t now, const char *mode, float err_p, float err_deg) {
+    (void)now, (void)mode, (void)err_p, (void)err_deg;
+    if (!mirror_of(bp_in[k].from)) return;
+    uint64_t orig[21];
+    int no = mirror_original(orig), nc = bp_in[k].ncopy < 21 ? bp_in[k].ncopy : 21;
+    if (!no || no != nc) return;
+    float ro[12], rc[12];
+    if (!coop_rd(main_body_of(orig[0]) + 0x98, ro, sizeof ro) || !coop_rd(main_body_of(bp_in[k].copy[0]) + 0x98, rc, sizeof rc)) return;
+    float dtr[3] = {rc[3] - ro[3], rc[7] - (ro[7] + mir.dy), rc[11] - (ro[11] + mir.dz)};
+    float track = sqrtf(dtr[0] * dtr[0] + dtr[1] * dtr[1] + dtr[2] * dtr[2]), layout = 0;
+    for (int j = 1; j < no; j++) {   // each part's place in its root's frame, copy against original
+        float mo[12], mc[12];
+        if (!coop_rd(main_body_of(orig[j]) + 0x98, mo, sizeof mo) || !coop_rd(main_body_of(bp_in[k].copy[j]) + 0x98, mc, sizeof mc)) continue;
+        float lo[3], lc[3], d_o[3] = {mo[3] - ro[3], mo[7] - ro[7], mo[11] - ro[11]}, d_c[3] = {mc[3] - rc[3], mc[7] - rc[7], mc[11] - rc[11]};
+        for (int a = 0; a < 3; a++) lo[a] = ro[a] * d_o[0] + ro[4 + a] * d_o[1] + ro[8 + a] * d_o[2], lc[a] = rc[a] * d_c[0] + rc[4 + a] * d_c[1] + rc[8 + a] * d_c[2];
+        float e = sqrtf((lo[0] - lc[0]) * (lo[0] - lc[0]) + (lo[1] - lc[1]) * (lo[1] - lc[1]) + (lo[2] - lc[2]) * (lo[2] - lc[2]));
+        if (e > layout) layout = e;
+    }
+    if (strcmp(ms.name, scene_name)) { ms_flush(); snprintf(ms.name, sizeof ms.name, "%s", scene_name); }
+    if (*scene_name && ms.n < MS_N) ms.track[ms.n] = track, ms.layout[ms.n] = layout, ms.n++;
+    static uint64_t last_group;
+    uint64_t spr = coop_rd_ptr(coop_rd_ptr(bp_in[k].copy[0] + 0x228) + 0x480), g = spr ? coop_rd_ptr(spr + 0x28) : 0;
+    uint32_t gn = 0;
+    if (g) coop_rd(g + 0x58, &gn, 4);
+    if (g != last_group || (int)gn != nc) {
+        static uint32_t last_gn;
+        if (g != last_group || gn != last_gn)
+            rt_log("coop: mirror: %.2f s the copy's root group %llx of %u (of %d parts)", now / 1e6, (unsigned long long)g, gn, nc);
+        last_group = g, last_gn = gn;
+    }
+}
+static void mirror_tick(Cpu *c, int64_t now) {
+    if (!mirror_on()) return;
+    {   // the original's parts' main body flags, once (the copy's: coop_life.c, X3)
+        static int said;
+        uint64_t parts[21];
+        int n = mirror_original(parts);
+        if (n && !said++)
+            for (int j = 0; j < n; j++) {
+                uint64_t b = main_body_of(parts[j]), f = 0;
+                if (b) coop_rd(b + 0x68, &f, 8);
+                rt_log("coop: mirror: the original's part %d body flags %#llx", j, (unsigned long long)f);
+            }
+    }
+    for (int i = 0; i < mq_n;)   // the poses due now, to the copy path as the mirror player's
+        if (mq[i].due <= now) {
+            MvPacket p = mq[i].p;
+            mq[i] = mq[--mq_n];
+            coop_contraption_pose_take(&p, sizeof p, MIRROR_ID);
+        } else
+            i++;
+    mirror_scene(c, now);
+    if (scene_t0 > 0 && now / 1e6 > scene_t0 + 31 && ms.n) ms_flush();
+    // the root drive's case (TOTK_COOP_FOLLOW=root) has no follow_rigid to measure from: here
+    if (follow_mode() == 0)
+        for (int k = 0; k < BP_IN; k++)
+            if (bp_in[k].made == 2 && mirror_of(bp_in[k].from)) mirror_measure(k, now, "root", 0, 0);
 }
 // Who runs a contraption (docs/coop/contraption-sync.md section 5). The game whose player holds a part of it with
 // Ultrahand (the part's SPR +0x20 bit 16, set while held: research ultrahand/) asks for it ("CBAU", every 0.3 s while
@@ -2225,6 +2610,7 @@ int coop_contraption_made(uint64_t a) {
 }
 // Making one (from coop_autobuild_seq_calc, actor phase 0), one at a time, over several frames.
 static struct { int slot, st; int64_t t; uint64_t parts[21]; int n; } mk = {-1, 0, 0, {0}, 0};
+static int64_t x3_watch_until;   // (TOTK_COOP_TEST_X3WATCH)
 static void bp_make(Cpu *c) {
     int64_t now = frame_step_world_us();
     // The Autobuild ability is a game manager made at boot whatever the save ([main+0x3a62ef0], coop_life.c): no need
@@ -2362,10 +2748,39 @@ static void bp_make(Cpu *c) {
             __atomic_fetch_or((uint32_t *)(uintptr_t)(spr + 0x27c), 1u, __ATOMIC_SEQ_CST);
             ST64(spr + 0x20, (LD64(spr + 0x20) & ~(1ull << 51)) | (1ull << 28));
             __atomic_fetch_and((uint32_t *)(uintptr_t)(mk.parts[i] + 0x5ac), ~4u, __ATOMIC_SEQ_CST);
+            // Green at the confirm, as the game's own confirm gives it. Given only once the parts shared a group, the
+            // parts were not yet one contraption to the collision filter in the first frames: a fan's own spinning
+            // blade (a kinematic body) pressed the wing it is glued to, the wing died of PhysicsKinematicCollision
+            // (death kind 15) and every other part of the broken-off rule (contraption-sync-v3.md section 23, P1). The
+            // broken-off kill this order used to avoid is refused for copies by G4 (coop_life.c).
+            __atomic_fetch_or((uint32_t *)(uintptr_t)(spr + 0x150), 1u, __ATOMIC_SEQ_CST);
         }
         rt_log("coop: contraption: player %d's %08x: confirmed (%llu)", bp_in[k].from, bp_in[k].key, (unsigned long long)(r & 1));
+        {   // TOTK_COOP_TEST_X3: the new copy's parts watched for 8 s (coop_life.c: what removes their edges)
+            static int x3 = -1;
+            if (x3 < 0) x3 = cfg_get("TOTK_COOP_TEST_X3") != NULL;
+            void coop_life_watch_parts(const uint64_t *parts, int n, int64_t until_us);
+            if (x3) coop_life_watch_parts(mk.parts, mk.n, now + 8000000);
+            // TOTK_COOP_TEST_X3WATCH=<part>: a write watch on that part's glue component +0x158..+0x188 (its two queues,
+            // counts at +0x168 and +0x180) for 3 s: which game functions queue work there (the edge removals X3 found
+            // come from the +0x170 queue). Diagnosis only: the watch makes the co-op's own reads of that page fail.
+            const char *w = cfg_get("TOTK_COOP_TEST_X3WATCH");
+            int wp = w ? atoi(w) : -1;
+            uint64_t wspr = wp >= 0 && wp < mk.n && mk.parts[wp] ? coop_rd_ptr(coop_rd_ptr(mk.parts[wp] + 0x228) + 0x480) : 0;
+            if (wspr) {
+                int coop_watch_arm(uint64_t addr, uint64_t len);
+                extern int coop_watch_writes;
+                coop_watch_writes = 1;
+                rt_log("coop: x3: write watch on part %d's glue %llx +0x158: %d", wp, (unsigned long long)wspr, coop_watch_arm(wspr + 0x158, 0x30));
+                x3_watch_until = now + 3000000;
+            }
+        }
         mk.st = 3, mk.t = now;
         return;
+    }
+    if (x3_watch_until && now >= x3_watch_until) {
+        void coop_watch_disarm(void);
+        coop_watch_disarm(), x3_watch_until = 0;
     }
     if (mk.st == 3) {   // green once grouped; done after 3 s
         int grouped = 0;
@@ -2408,6 +2823,21 @@ static void bp_make(Cpu *c) {
     }
 }
 
+// A part of a copy this game does not run: a follower's, or one still being made (contraption-sync-v3.md, G3 and G4:
+// such a part takes no game rule's death). Read from any thread: the copy lists change under bp_lock.
+int coop_contraption_follower(uint64_t a) {
+    if (!a || !coop_contraption_made(a)) return 0;
+    int me = coop_net_id(), yes = 0;
+    plat_mutex_lock(&bp_lock);
+    for (int k = 0; k < BP_IN && !yes; k++) {
+        if (!bp_in[k].from) continue;
+        int runs_here = bp_in[k].made == 2 && bp_in[k].auth == me && me;
+        for (int r = 0; r < bp_in[k].ncopy && r < 21 && !yes; r++) yes = bp_in[k].copy[r] == a && !runs_here;
+    }
+    for (int i = 0; i < mk.n && !yes; i++) yes = mk.parts[i] == a && mk.st;
+    plat_mutex_unlock(&bp_lock);
+    return yes;
+}
 // TOTK_COOP_TEST_REBUILDGOIN=gamedata: the rebuild's confirm (and the history writer, TOTK_COOP_TEST_SERIAL) run from
 // GameDataMgr::calc instead, at actor phase 0 (coop_spawn.c coop_hook)
 void coop_autobuild_seq_calc(Cpu *c) {

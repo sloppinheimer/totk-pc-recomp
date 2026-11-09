@@ -130,14 +130,184 @@ static void x15_counts(void) {
         rt_log("coop: x15: %.1f s group table %d slots; bond pool %d free, %d used", now / 1e6, slots, fr, used), s0 = slots, f0 = fr, u0 = used;
 }
 
+// ---- X3 (plan 15.3): what separates bonded parts. While a watch window is open (coop_life_watch_parts, from the copy
+// maker: the copy's parts, from its confirm for a few seconds) every call of the edge-removal paths is logged once per
+// caller chain (and again at each power of two), with which watched part's actor, body or glue component its first
+// three arguments name: ConnectionGraph::removeEdge main+0x2995024 and its detach main+0x2995068, main+0x2999fe8 (the
+// edge's own removal), main+0x18ac48 (a flush detaching every edge of a body: request bit 22), main+0x8aaab0 (what
+// queues that bit), removeScotch main+0x1c042bc, and the glue-edge break main+0x1cf54d4.
+#define X3_N 21
+static struct { uint64_t actor[X3_N], body[X3_N], spr[X3_N]; int n; int64_t until; } x3w;
+static PlatMutex x3_lock = PLAT_MUTEX_INIT;
+void coop_life_watch_parts(const uint64_t *parts, int n, int64_t until_us) {
+    plat_mutex_lock(&x3_lock);
+    x3w.n = n < X3_N ? n : X3_N, x3w.until = until_us;
+    for (int i = 0; i < x3w.n; i++) {
+        uint64_t a = parts[i];
+        x3w.actor[i] = a;
+        x3w.body[i] = a ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x50) + 0x20) + 0x150) : 0;
+        x3w.spr[i] = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x480) : 0;
+    }
+    plat_mutex_unlock(&x3_lock);
+    rt_log("coop: x3: watching %d parts until %.2f s", n, until_us / 1e6);
+}
+static int x3_names(uint64_t v, char *out, size_t sz) {   // which watched thing v is (or points 0x150 into a body of)
+    for (int i = 0; v && i < x3w.n; i++) {
+        if (v == x3w.actor[i]) return snprintf(out, sz, "(part %d actor)", i);
+        if (v == x3w.body[i]) return snprintf(out, sz, "(part %d body)", i);
+        if (v == x3w.body[i] + 0x150) return snprintf(out, sz, "(part %d body+0x150)", i);
+        if (v == x3w.spr[i]) return snprintf(out, sz, "(part %d glue)", i);
+    }
+    return 0;
+}
+static void x3_hook(Cpu *c, uint64_t off) {
+    char who[3][32] = {"", "", ""};
+    int any = 0;
+    plat_mutex_lock(&x3_lock);
+    int open = x3w.n && frame_step_world_us() <= x3w.until;
+    for (int a = 0; open && a < 3; a++) any |= x3_names(c->x[a], who[a], sizeof who[a]) > 0;
+    plat_mutex_unlock(&x3_lock);
+    if (!open) return;
+    uint64_t lr[4];
+    lr_chain(c, lr);
+    static struct { uint64_t off, lr0, lr1; uint32_t n; } seen[128];
+    static PlatMutex sl = PLAT_MUTEX_INIT;
+    plat_mutex_lock(&sl);
+    int at = -1;
+    for (int i = 0; i < 128 && at < 0; i++) {
+        if (seen[i].off == off && seen[i].lr0 == lr[0] && seen[i].lr1 == lr[1]) at = i;
+        else if (!seen[i].off) seen[i].off = off, seen[i].lr0 = lr[0], seen[i].lr1 = lr[1], at = i;
+    }
+    uint32_t n = at >= 0 ? ++seen[at].n : 0;
+    plat_mutex_unlock(&sl);
+    if (n == 1 || any || (n & (n - 1)) == 0)
+        rt_log("coop: x3: %.3f s main+%#llx (call %u from this chain) lr main+%#llx <- %#llx <- %#llx <- %#llx; x0 %llx %s, x1 %llx %s, x2 %llx %s",
+               frame_step_world_us() / 1e6, (unsigned long long)off, n, (unsigned long long)lr[0], (unsigned long long)lr[1],
+               (unsigned long long)lr[2], (unsigned long long)lr[3], (unsigned long long)c->x[0], who[0], (unsigned long long)c->x[1], who[1],
+               (unsigned long long)c->x[2], who[2]);
+}
+
+// X3: the bond-strain check main+0x190f034(dt in s0, strand x0, ..., &actor A x4, &actor B x5), run each frame for each
+// glued bond in a glue component's +0x170 list. The strand keeps a strain value at +0x1d4: while the distance between
+// its two pivots (plus an angle term) exceeds a threshold scaled by the parts' bond strength it rises, at 1 the edge is
+// removed (main+0x2999fe8); below it falls 10 a second. +0x1e2 set exempts the strand. Logged, while the watch window is
+// open, for strands of watched parts: each strand once, then whenever its strain rises.
+static void x3_strain(Cpu *c) {
+    uint64_t st = c->x[0], aa = coop_rd_ptr(c->x[4]), ab = coop_rd_ptr(c->x[5]);
+    char wa[32] = "", wb[32] = "";
+    plat_mutex_lock(&x3_lock);
+    int open = x3w.n && frame_step_world_us() <= x3w.until;
+    int ours = open && (x3_names(aa, wa, sizeof wa) | x3_names(ab, wb, sizeof wb));
+    plat_mutex_unlock(&x3_lock);
+    if (!ours) return;
+    float s0;
+    uint32_t s0b = (uint32_t)c->v[0];
+    memcpy(&s0, &s0b, 4);
+    float acc = 0, prev_err = 0, min_err = 0;
+    uint8_t exempt = 0, flags = 0, e0 = 0;
+    coop_rd(st + 0x1d4, &acc, 4), coop_rd(st + 0x1d8, &prev_err, 4), coop_rd(st + 0x1dc, &min_err, 4);
+    coop_rd(st + 0x1e2, &exempt, 1), coop_rd(st + 0x28, &flags, 1), coop_rd(st + 0x1e0, &e0, 1);
+    static struct { uint64_t st; float acc; } seen[64];
+    static PlatMutex sl = PLAT_MUTEX_INIT;
+    plat_mutex_lock(&sl);
+    int at = -1, say = 0;
+    for (int i = 0; i < 64 && at < 0; i++) {
+        if (seen[i].st == st) at = i;
+        else if (!seen[i].st) seen[i].st = st, seen[i].acc = -1, at = i;
+    }
+    if (at >= 0 && (seen[at].acc < 0 || acc > seen[at].acc + 0.01f)) say = 1;
+    if (at >= 0) seen[at].acc = acc;
+    plat_mutex_unlock(&sl);
+    if (say) {   // (each actor's main body: its flags at +0x68, as the original's are logged by the mirror)
+        uint64_t ba = aa ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(aa + 0x228) + 0x50) + 0x20) + 0x150) : 0;
+        uint64_t bb = ab ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(ab + 0x228) + 0x50) + 0x20) + 0x150) : 0;
+        uint64_t fa = 0, fb = 0;
+        if (ba) coop_rd(ba + 0x68, &fa, 8);
+        if (bb) coop_rd(bb + 0x68, &fb, 8);
+        rt_log("coop: x3: body flags %#llx and %#llx", (unsigned long long)fa, (unsigned long long)fb);
+    }
+    if (say)
+        rt_log("coop: x3: %.3f s strand %llx between %s and %s: strain %.3f, last error %.3f m (lowest %.3f), +0x28 %#x, +0x1e0 %u, "
+               "exempt %u, dt %.4f", frame_step_world_us() / 1e6, (unsigned long long)st, wa[0] ? wa : "another actor", wb[0] ? wb : "another actor",
+               acc, prev_err, min_err, flags, e0, exempt, (double)s0);
+}
+
+// X3: messages posted to an actor's queue, main+0x1c0c9b0(the receiver's queue: actor+0x378, x1, &{sender id, message id,
+// flag}, &arg). The glue messages 0x20510000..0x2051000f (0x2051000c breaks a glue edge, main+0x1c0bf20 handles them)
+// posted to a watched part are logged with the poster's chain: the poster, not the queue's later delivery.
+static void x3_message(Cpu *c) {
+    uint32_t id = 0;
+    if (!coop_rd(c->x[2] + 4, &id, 4) || (id & 0xfffffff0u) != 0x20510000u) return;
+    char who[32] = "";
+    plat_mutex_lock(&x3_lock);
+    int open = x3w.n && frame_step_world_us() <= x3w.until, ours = open && x3_names(c->x[0] - 0x378, who, sizeof who) > 0;
+    plat_mutex_unlock(&x3_lock);
+    if (!ours) return;
+    uint64_t lr[4];
+    lr_chain(c, lr);
+    int32_t sender = 0;
+    coop_rd(c->x[2], &sender, 4);
+    rt_log("coop: x3: %.3f s message %#x to %s from actor id %d: lr main+%#llx <- %#llx <- %#llx <- %#llx", frame_step_world_us() / 1e6, id, who,
+           sender, (unsigned long long)lr[0], (unsigned long long)lr[1], (unsigned long long)lr[2], (unsigned long long)lr[3]);
+}
+
+// G4 (contraption-sync-v3.md section 4): a part of a copy this game does not run takes no death from this game's own
+// rules: every death request on it (main+0x1953184, and the death component main+0x1b4b738 the inlined lapse calls
+// directly) is refused, and so are the deletes the green kill and the lapse fall back to (from main+0x272178,
+// main+0x2f9264, main+0x2f7528). The game that runs the contraption decides its parts' deaths (P4 replays them here).
+// TOTK_COOP_G4=0: off (a test). Each refusal is counted by (kind, caller) and logged the first time and at powers of two.
+int coop_contraption_follower(uint64_t a);
+static int g4_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_G4"); on = !(e && *e == '0'); }
+    return on;
+}
+static int g4_refuse(Cpu *c, const char *what, uint64_t actor, uint64_t arg) {
+    if (!g4_on() || !coop_contraption_follower(actor)) return 0;
+    uint64_t lr[4];
+    lr_chain(c, lr);
+    static struct { uint64_t lr; uint64_t arg; uint32_t n; } seen[64];
+    static PlatMutex sl = PLAT_MUTEX_INIT;
+    plat_mutex_lock(&sl);
+    uint32_t n = 0;
+    for (int i = 0; i < 64; i++) {
+        if (seen[i].lr == lr[0] && seen[i].arg == arg) { n = ++seen[i].n; break; }
+        if (!seen[i].lr) { seen[i].lr = lr[0], seen[i].arg = arg, n = seen[i].n = 1; break; }
+    }
+    plat_mutex_unlock(&sl);
+    if (n && (n & (n - 1)) == 0) {
+        char nm[48];
+        rt_log("coop: g4: %s %llu of a follower part %llx '%s' refused (%u from main+%#llx <- %#llx)", what, (unsigned long long)arg,
+               (unsigned long long)actor, coop_actor_name(actor, nm, sizeof nm), n, (unsigned long long)lr[0], (unsigned long long)lr[1]);
+    }
+    c->x[0] = 0;
+    return 1;
+}
+
 int coop_life_hook(Cpu *c, uint64_t addr) {
     uint64_t off = addr - MOD_MAIN_BASE;
+    if (off == 0x2995024 || off == 0x2995068 || off == 0x2999fe8 || off == 0x18ac48 || off == 0x8aaab0 || off == 0x1c042bc ||
+        off == 0x1cf54d4) {
+        x3_hook(c, off);
+        return 0;
+    }
+    if (off == 0x190f034) { x3_strain(c); return 0; }
+    if (off == 0x1c0c9b0) { x3_message(c); return 0; }
     if (off == ITEM_CHANGE) {
         if (!free_confirm) return 0;
         static int said;
         if (!said++) rt_log("coop: autobuild: a copy's confirm charged nothing (main+%#x skipped)", ITEM_CHANGE);
         c->x[0] = 0;
         return 1;   // (the confirm ignores the result)
+    }
+    if (off == DEATH_REQUEST && g4_refuse(c, "death", c->x[0], c->x[1])) return 1;
+    if (off == DEATH_COMPONENT) {   // (x0 the component; its actor at +0x8)
+        uint64_t a = coop_rd_ptr(c->x[0] + 8);
+        if (g4_refuse(c, "death (component)", a, c->x[1])) return 1;
+    }
+    if (off == DELETE_DEFER || off == DELETE_REQUEST) {   // only the fallbacks of the green kill and the lapse
+        uint64_t lr = c->x[30] - MOD_MAIN_BASE;
+        if ((lr == 0x272178 || lr == 0x2f9264 || lr == 0x2f7528) && g4_refuse(c, "delete", c->x[0], c->x[1])) return 1;
     }
     if (!x15_on()) return 0;
     x15_counts();

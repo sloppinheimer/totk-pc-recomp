@@ -1159,3 +1159,46 @@ Deferred to P2: the registry and its snapshot pool, which have no user before P2
   its own incarnation.
 
 Next is P1: the self-mirror lab, X2 (the rigid velocity field against HEAD's root drive), X3, X14b, X4 and X5.
+
+## 24. P1 results so far (2026-11-09)
+Built: the self-mirror lab (TOTK_COOP_TEST_MIRROR=<dz>,<delay ms>,<jitter ms>,<loss %>,<dy>: one game hands its own
+records and root poses to its own copy path as a player 7, the copy made aside, the poses delayed, jittered and partly
+dropped; TOTK_COOP_TEST_MIRROR_SCENE=<s> moves the original through rest, lift, carries at 3 and 8 m/s, a turn, a drop
+with a tumble and rest, and logs the copy's tracking and layout per part of the scene); the rigid-field drive
+(coop_autobuild.c follow_rigid; TOTK_COOP_FOLLOW=root keeps HEAD's root drive); the X3 hooks (edge removals, the
+bond-strain check, glue messages posted to a part); G4 (coop_life.c: a follower part takes no game-rule death).
+
+- **Why copies came apart: their green came late.** The copy maker gave the confirm's mark without the green bit and
+  added green only once the parts shared a group. For the first frames the parts were not one contraption to the
+  game's collision filter: a fan's own spinning blade (a kinematic body) pressed the wing it is glued to, the wing died
+  of PhysicsKinematicCollision (death kind 15, from the actor update at main+0x27b300), its glue edges broke as it died
+  (main+0x455e10 from the part update), and every other part then died of the broken-off rule (kind 20). Green at the
+  confirm, as the game's own confirm gives it, removes the chain: 0 refused deaths and 0 bond strain afterwards, the
+  copy grouped whole. The deaths it once avoided are refused for copies by G4.
+- **X3, what separates bonds:** glued bonds are breakable strands in each glue component's +0x170 list. Each frame
+  main+0x190f034 compares the distance between a strand's two pivots with a threshold scaled by the parts' bond strength;
+  the strain at strand+0x1d4 rises while it is over and the edge is removed at 1; strand+0x1e2 exempts a strand. A copy
+  made inside the ground strained its bonds to 1 in three frames (errors of 1.5 to 2.4 m). The other path is a dying
+  part breaking its own edges. With green at the confirm and the copy in free space, 0 removals.
+- **X2, rigid field against HEAD's root drive** (mirror 15 m aside and 12 m up, 100 ms delay, 20 ms jitter, 10 % loss,
+  speed changes ramped over 0.5 s; tracking p95 / layout p95):
+
+  | Part of the scene | rigid field | root drive | plan (X2 a) |
+  |---|---|---|---|
+  | held still in the air | 0.023 m / 0.2 mm | 0.091 m / 0.2 mm | 0.03 m |
+  | carry 3 m/s | 0.074 m / 1.7 mm | 0.351 m / 1.7 mm | 0.10 m |
+  | carry 8 m/s | 0.165 m / 1.7 mm | 0.971 m / 1.8 mm | 0.25 m |
+  | turn 1.5 rad/s | 0.120 m / 6.7 mm | 0.215 m / 7.6 mm | - |
+  | drop and tumble | 0.383 m / 3.0 mm (max 4 cm) | 0.540 m / 2.8 mm | 0.4 m |
+  | at rest after | 0.007 m / 0.5 mm | 0.093 m / 0.8 mm | 0.03 m |
+
+  The rigid field meets the plan's lines here and is now the default. Two changes made it so: a step observer on all
+  three axes (what a physics step takes off the velocity written: gravity, damping), and an integral gain of 3. On the
+  ground at rest the sideways part of the observer read friction and made the copy chatter; it is now used only while
+  the build moves, and the rest band is wider (enter under 10 cm and 4 degrees, leave over 25 cm or 8 degrees, or when
+  the runner moves).
+- **Pair test** (A builds its Fanplane and turns its fans on and off; B follows): B made the copy whole, followed it
+  within 3 cm, then rested next to it within millimetres, its devices switched with A's.
+
+Still to do in P1: X4's remaining guard cases (the lapse, a damaged part promoted), X5 (device gates), X14b (stand-in
+collision ignore), and T2 (a Link riding a follower).
