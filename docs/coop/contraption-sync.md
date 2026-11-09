@@ -437,3 +437,13 @@ TOTK_COOP_CONTRAPTION=1 (coop_autobuild.c, "Contraption copies made by the game'
 - Not done: other thrust devices (rocket, wheel, sled, balloon, wing, hover stone, stabilizer: research devices2/),
   a toggle asked on a copy (a hit on the copy's fan in game B) taken to the owner, and the devices' state in a record
   made while they are on.
+
+## Phase 1, fourth step: the copy's parts by the owner's numbers (2026-11-09)
+- A part made from a record answers to its owner's object number both ways: coop_obj_ident gives the owner and number
+  from the record's part list, coop_obj_find gives the made part, and coop_is_copy counts it as a copy (coop_players.c,
+  coop_autobuild.c coop_contraption_ident / coop_contraption_find). Claims, glue and hit messages that name the
+  owner's object reach it.
+- coop_bonds.c leaves alone a group whose parts are made here from a record (they are bonded, switched and followed by
+  the record path); without that, its older copy sync would bond and switch the same parts.
+- Pair test: each of the four made parts said "player 1's object <n>" for its own number, each number found its part,
+  each counted as a copy; following and the device toggle unchanged.

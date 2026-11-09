@@ -385,8 +385,11 @@ int coop_bonds_take(const void *data, int n, int from) {   // coop_world.c peer_
         if (!p.e[i].group) { p.e[i].o.name[NAME_N - 1] = 0, single_state(from, &p.e[i], now), i++; continue; }   // a device alone
         uint32_t j = i;
         while (j < cnt && p.e[j].group == p.e[i].group) p.e[j].o.name[NAME_N - 1] = 0, j++;
-        take_group(from, p.e[i].group, &p.e[i], (int)(j - i), now);
-        group_state(from, p.e[i].group, &p.e[i], (int)(j - i), now);
+        // (a contraption made here by the Autobuild from its owner's record, coop_autobuild.c, is bonded, switched and
+        // followed there: its group is not taken here)
+        int coop_contraption_owns(int from, uint32_t id), theirs = 0;
+        for (uint32_t q = i; q < j && !theirs; q++) theirs = coop_contraption_owns(from, p.e[q].o.id);
+        if (!theirs) take_group(from, p.e[i].group, &p.e[i], (int)(j - i), now), group_state(from, p.e[i].group, &p.e[i], (int)(j - i), now);
         i = j;
     }
     return 1;

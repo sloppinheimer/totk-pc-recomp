@@ -3798,7 +3798,8 @@ int coop_own_sent_objects(uint64_t *out, int max) {
 int coop_is_copy(uint64_t a) {
     Slot *cs;
     int ck;
-    return copy_of(a, &cs, &ck);
+    int coop_contraption_made(uint64_t a);   // coop_autobuild.c: a part made from another player's record is a copy too
+    return copy_of(a, &cs, &ck) || coop_contraption_made(a);
 }
 void coop_copy_remake(Cpu *c, uint64_t a) {
     Slot *s;
@@ -3837,6 +3838,8 @@ int coop_obj_ident(uint64_t a, int *owner, uint32_t *id) {
     Slot *cs;
     int ck;
     if (copy_of(a, &cs, &ck)) { *owner = cs->net_id, *id = cs->mir[ck].id; return 1; }
+    int coop_contraption_ident(uint64_t a, int *owner, uint32_t *id);   // coop_autobuild.c: a part made from a record
+    if (coop_contraption_ident(a, owner, id)) return 1;
     for (int k = 0; k < 128; k++)
         if (key_found[k].actor == a && key_found[k].last) { *owner = key_found[k].from, *id = COOP_OBJ_KEYED | key_found[k].key; return 1; }
     uint32_t coop_actor_world_key(uint64_t a);   // coop_world.c
@@ -3854,6 +3857,9 @@ uint64_t coop_obj_find(int owner, uint32_t id, const char *name) {
             if (props[e].actor && props[e].made && props[e].id == id && actor_is(props[e].actor, name)) return props[e].actor;
         return 0;
     }
+    uint64_t coop_contraption_find(int owner, uint32_t id);   // coop_autobuild.c: a part made here from that player's record
+    uint64_t made = owner != coop_net_id() ? coop_contraption_find(owner, id) : 0;
+    if (made) return made;
     for (int i = 0; i < COOP_MAX_PLAYERS; i++) {   // a copy here of that player's object (a keyed one too, where this game lacks it)
         if (slots[i].state == FREE || slots[i].source != SRC_NET) continue;
         if (!(id & COOP_OBJ_KEYED) && slots[i].net_id != owner) continue;

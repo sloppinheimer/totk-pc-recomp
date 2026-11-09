@@ -1656,6 +1656,30 @@ static void abpush_test(Cpu *c) {
         break;
     }
 }
+// A part made here from another player's record, by that player's numbers both ways: claims, glue and hit messages
+// that name the owner's object find the made part (coop_players.c coop_obj_find / coop_obj_ident / coop_is_copy)
+int coop_contraption_ident(uint64_t a, int *owner, uint32_t *id) {
+    if (!a || !contraption_on()) return 0;
+    int got = 0;
+    plat_mutex_lock(&bp_lock);
+    for (int k = 0; k < BP_IN && !got; k++)
+        for (int r = 0; r < bp_in[k].ncopy && r < 21 && !got; r++)
+            if (bp_in[k].copy[r] == a && bp_in[k].ids[r]) *owner = bp_in[k].from, *id = bp_in[k].ids[r], got = 1;
+    plat_mutex_unlock(&bp_lock);
+    return got;
+}
+uint64_t coop_contraption_find(int owner, uint32_t id) {
+    if (!id || !contraption_on()) return 0;
+    uint64_t a = 0;
+    plat_mutex_lock(&bp_lock);
+    for (int k = 0; k < BP_IN && !a; k++)
+        if (bp_in[k].from == owner)
+            for (int r = 0; r < bp_in[k].ncopy && r < 21 && !a; r++)
+                if (bp_in[k].ids[r] == id) a = bp_in[k].copy[r];
+    plat_mutex_unlock(&bp_lock);
+    int32_t st = 0;
+    return a && coop_rd(a + 0x24, &st, 4) && st >= 2 && st <= 6 ? a : 0;   // (alive)
+}
 // 1: player from's object id is a part of a contraption this game makes with its Autobuild (its old copy not wanted)
 int coop_contraption_owns(int from, uint32_t id) {
     if (!contraption_on() || !id) return 0;
@@ -1756,6 +1780,9 @@ static void bp_make(Cpu *c) {
             made_add(mk.parts[i]);
         }
         mk.n = ne < 21 ? ne : 21, mk.st = 2;
+        plat_mutex_lock(&bp_lock);   // (known by the owner's numbers from now on)
+        memcpy(bp_in[k].copy, mk.parts, sizeof bp_in[k].copy), bp_in[k].ncopy = mk.n;
+        plat_mutex_unlock(&bp_lock);
         return;
     }
     if (mk.st == 2) {   // the confirm, as the ability makes it, with no cost
@@ -1812,8 +1839,23 @@ static void bp_make(Cpu *c) {
         }
         if (now - mk.t > 3000000) {
             rt_log("coop: contraption: player %d's %08x: made, %d of %d parts in one group", bp_in[k].from, bp_in[k].key, grouped, mk.n);
-            memcpy(bp_in[k].copy, mk.parts, sizeof bp_in[k].copy), bp_in[k].ncopy = mk.n;
             bp_in[k].made = 2, mk.st = 0;
+            {   // the owner's numbers both ways, checked once
+                int coop_obj_ident(uint64_t a, int *owner, uint32_t *id);
+                uint64_t coop_obj_find(int owner, uint32_t id, const char *name);
+                int coop_is_copy(uint64_t a);
+                for (int r = 0; r < mk.n; r++) {
+                    char nm[48] = "";
+                    int ow = 0;
+                    uint32_t id = 0;
+                    coop_actor_name(mk.parts[r], nm, sizeof nm);
+                    int ok = coop_obj_ident(mk.parts[r], &ow, &id);
+                    uint64_t back = coop_obj_find(bp_in[k].from, bp_in[k].ids[r], nm);
+                    rt_log("coop: contraption: part %d %s: player %d's object %u; this part says %d/%u (%d), the object finds %s, a copy %d", r, nm,
+                           bp_in[k].from, bp_in[k].ids[r], ow, id, ok, back == mk.parts[r] ? "this part" : back ? "another actor" : "nothing",
+                           coop_is_copy(mk.parts[r]));
+                }
+            }
         }
     }
 }
