@@ -90,6 +90,10 @@ static uint64_t dev_switch(uint64_t a) {   // component 166, when the device tak
 // once they have differed for 0.8 s (the other player's stand-in swing may toggle a copy itself first: a hit in the
 // owner's game reaches the copy through it) and at most once every 2.5 s (a device takes about 1 s to turn on).
 typedef struct { int64_t differ_us, toggled_us; } Follow;
+// Copies follow their owner's state only for this long after it changes (or is first heard): followed all the time, a
+// copy switched here (a hit of this game's Link, the other's stand-in swing) and the owner's state fought, and two
+// glued fans in a play session were switched off again every 2.5 s, 30 times (flicker-battery-1916 logs).
+#define FOLLOW_US 6000000
 static int dev_follow(uint64_t *dev, int n, int want_on, Follow *f, int64_t now, const char *what) {
     int on = 0, sw = 0;
     for (int i = 0; i < n; i++)
@@ -261,7 +265,7 @@ static void take_group(int from, uint32_t group, BondEntry *e, int n, int64_t no
     }
 }
 #define GST_N 32
-static struct { int from; uint32_t group; int owner_on, flagged; int64_t heard_us; Follow f; } gst[GST_N];
+static struct { int from; uint32_t group; int owner_on, flagged, prev; int64_t heard_us, follow_until; Follow f; } gst[GST_N];
 static void group_state(int from, uint32_t group, const BondEntry *e, int n, int64_t now) {
     int on = 0, flagged = 0, f = -1, free = -1;
     for (int i = 0; i < n; i++) flagged |= (e[i].flags & 2) != 0, on |= (e[i].flags & 3) == 3;
@@ -272,9 +276,10 @@ static void group_state(int from, uint32_t group, const BondEntry *e, int n, int
     if (f < 0) {
         if ((f = free) < 0) return;
         memset(&gst[f], 0, sizeof gst[f]);
-        gst[f].from = from, gst[f].group = group;
+        gst[f].from = from, gst[f].group = group, gst[f].prev = -1;
     }
     gst[f].owner_on = on, gst[f].flagged = flagged, gst[f].heard_us = now;
+    if (on != gst[f].prev) gst[f].prev = on, gst[f].follow_until = now + FOLLOW_US;   // followed after a change only
 }
 static int group_copies(int from, uint32_t group, uint64_t *out, int max) {   // this game's bonded copies of that group
     int n = 0;
@@ -291,7 +296,7 @@ static int group_copies(int from, uint32_t group, uint64_t *out, int max) {   //
 }
 static int claimed_group(int from, uint32_t group);
 #define SST_N 64
-static struct { int from, owner_on; BondObj o; int64_t heard_us; Follow f; } sst[SST_N];   // devices alone, by owner
+static struct { int from, owner_on, prev; BondObj o; int64_t heard_us, follow_until; Follow f; } sst[SST_N];   // devices alone
 static void single_state(int from, const BondEntry *e, int64_t now) {
     int f = -1, free = -1;
     for (int k = 0; k < SST_N && f < 0; k++) {
@@ -301,9 +306,10 @@ static void single_state(int from, const BondEntry *e, int64_t now) {
     if (f < 0) {
         if ((f = free) < 0) return;
         memset(&sst[f], 0, sizeof sst[f]);
-        sst[f].from = from, sst[f].o = e->o;
+        sst[f].from = from, sst[f].o = e->o, sst[f].prev = -1;
     }
     sst[f].owner_on = (e->flags & 3) == 3, sst[f].heard_us = now;
+    if (sst[f].owner_on != sst[f].prev) sst[f].prev = sst[f].owner_on, sst[f].follow_until = now + FOLLOW_US;
 }
 static int device_sync(void) {   // TOTK_COOP_DEVICE_SYNC=0: devices' on and off not followed
     static int on = -1;
@@ -315,7 +321,7 @@ static void follow_owners(int64_t now) {   // this game's copies of each group o
     for (int k = 0; device_sync() && k < SST_N; k++) {
         if (!sst[k].heard_us || now - sst[k].heard_us > 3000000) continue;
         uint64_t a = coop_obj_find((int)sst[k].o.owner, sst[k].o.id, sst[k].o.name);
-        if (!a || !coop_is_copy(a) || coop_bonds_member(a)) continue;
+        if (!a || !coop_is_copy(a) || coop_bonds_member(a) || now >= sst[k].follow_until) continue;
         char what[80];
         snprintf(what, sizeof what, "player %d's %s", sst[k].from, sst[k].o.name);
         dev_follow(&a, 1, sst[k].owner_on, &sst[k].f, now, what);
@@ -326,7 +332,7 @@ static void follow_owners(int64_t now) {   // this game's copies of each group o
         int n = group_copies(gst[k].from, gst[k].group, dev, 64);
         char what[64];
         snprintf(what, sizeof what, "player %d's contraption", gst[k].from);
-        if (n) dev_follow(dev, n, gst[k].owner_on, &gst[k].f, now, what);
+        if (n && now < gst[k].follow_until) dev_follow(dev, n, gst[k].owner_on, &gst[k].f, now, what);
         static int log = -1;   // TOTK_COOP_TEST_DEVSYNCLOG=1: every 0.5 s, the owner's state and how many copies are on
         static int64_t logged[GST_N];
         if (log < 0) log = cfg_get("TOTK_COOP_TEST_DEVSYNCLOG") != NULL;

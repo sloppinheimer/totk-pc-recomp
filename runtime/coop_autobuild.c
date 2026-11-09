@@ -982,7 +982,43 @@ static void deck_test(Cpu *c, uint64_t me, int n) {
     memcpy(last, rel, 12);
 }
 
+// TOTK_COOP_TEST_PLAYERDIFF=<s1>,<s2>: this Link's actor (0x1000 bytes) and components (0x400 each) kept at s1 and s2;
+// each 32-bit word that changed is logged as an int and a float: where the Link's battery lives (Zonai devices it ran
+// in between drew it down)
+static void playerdiff_test(uint64_t me) {
+    static double t1 = -1, t2;
+    static uint8_t (*snap)[257][0x400];
+    static int stage;
+    if (t1 < 0) { const char *e = cfg_get("TOTK_COOP_TEST_PLAYERDIFF"); t1 = 0; if (e && sscanf(e, "%lf,%lf", &t1, &t2) != 2) t1 = 0; }
+    double now = frame_step_world_us() / 1e6;
+    if (t1 <= 0 || stage >= 2 || now < (stage ? t2 : t1)) return;
+    if (!snap) snap = calloc(2, sizeof *snap);
+    if (!snap) { t1 = 0; return; }
+    uint64_t t = coop_rd_ptr(me + 0x228);
+    for (int j = 0; j < 4; j++) coop_rd(me + 0x400 * (uint64_t)j, snap[stage][256 - 4 + j], 0x400);   // (the actor in the last rows)
+    for (int j = 0; j < 252; j++) { uint64_t comp = t ? coop_rd_ptr(t + 8 * (uint64_t)j) : 0; if (comp) coop_rd(comp, snap[stage][j], 0x400); }
+    if (++stage < 2) return;
+    int said = 0;
+    for (int j = 0; j < 256 && said < 400; j++)
+        for (int w = 0; w < 0x400; w += 4) {
+            uint32_t a, b;
+            memcpy(&a, &snap[0][j][w], 4), memcpy(&b, &snap[1][j][w], 4);
+            if (a == b) continue;
+            float fa, fb;
+            memcpy(&fa, &a, 4), memcpy(&fb, &b, 4);
+            if (fabsf(fa) > 1e6f || fabsf(fb) > 1e6f || (a >> 20) == 0x1a || (a >> 20) == 0x19) continue;   // (pointers, noise)
+            // TOTK_COOP_TEST_PLAYERDIFFDOWN=1: only floats in (0, 5000) that went down by 0.01..500 (a battery drawn)
+            if (cfg_get("TOTK_COOP_TEST_PLAYERDIFFDOWN") && !(fa > 0 && fa < 5000 && fb < fa && fa - fb > 0.01f && fa - fb < 500 && fb >= 0)) continue;
+            rt_log("coop: test: playerdiff %s %d (%llx) +%03x: %08x -> %08x (%g -> %g)", j >= 252 ? "actor" : "comp", j >= 252 ? (j - 252) : j,
+                   (unsigned long long)(j >= 252 ? me : coop_rd_ptr(coop_rd_ptr(me + 0x228) + 8 * (uint64_t)j)),
+                   j >= 252 ? (j - 252) * 0x400 + w : w, a, b, fa, fb);
+            said++;
+        }
+    rt_log("coop: test: playerdiff: %d words", said);
+}
+
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
+    playerdiff_test(me);
     if (!ablog_on()) return;
     deck_test(c, me, atomic_load(&tracked_n) < TRACK_N ? atomic_load(&tracked_n) : TRACK_N);
     failspam_test(c, me);
@@ -1033,18 +1069,22 @@ void coop_autobuild_tick(Cpu *c, uint64_t me) {
         if (e && st == 0 && sscanf(e, "%llx,%llx,%lf,%lf", &at, &len, &from, &to) == 4) st = 1;
         // (=c166,<from s>,<to s>: the first live fan's component 166 +0x28, its state, which a hit sets 8 -> 4)
         if (e && st == 0 && !strncmp(e, "c166,", 5) && sscanf(e + 5, "%lf,%lf", &from, &to) == 2) st = 4;
+        // (=c28,<from s>,<to s>: the first live fan's component 28 +0x398, its draw on the battery: every read and write)
+        static int c28;
+        if (e && st == 0 && !strncmp(e, "c28,", 4) && sscanf(e + 4, "%lf,%lf", &from, &to) == 2) st = 4, c28 = 1;
         if (st == 4 && now / 1e6 >= from) {
             char nm[48];
             for (int i = 0; i < n && st == 4; i++) {
                 if (!live_device(i, nm, sizeof nm) || strcmp(nm, "SpObj_WindGenerator_A_01")) continue;
-                uint64_t t = coop_rd_ptr(atomic_load(&tracked[i]) + 0x228), c166 = t ? coop_rd_ptr(t + 0x530) : 0;
-                if (c166) at = c166 + 0x28, len = 8, st = 1, rt_log("coop: test: abwatch: device %d's component 166 +0x28 (%llx)", i, at);
+                uint64_t t = coop_rd_ptr(atomic_load(&tracked[i]) + 0x228), c166 = t ? coop_rd_ptr(t + (c28 ? 8 * 28 : 0x530)) : 0;
+                if (c166) at = c166 + (c28 ? 0x398 : 0x28), len = c28 ? 4 : 8, st = 1,
+                          rt_log("coop: test: abwatch: device %d's component %d +%#x (%llx)", i, c28 ? 28 : 166, c28 ? 0x398 : 0x28, at);
             }
         }
         int coop_watch_arm(uint64_t addr, uint64_t len);   // coop_watch_win.c
         void coop_watch_disarm(void);
         extern int coop_watch_writes;
-        if (st == 1 && now / 1e6 >= from) { coop_watch_writes = 1; st = coop_watch_arm(at, len) ? 2 : 3; }
+        if (st == 1 && now / 1e6 >= from) { coop_watch_writes = !c28; st = coop_watch_arm(at, len) ? 2 : 3; }
         if (st == 2 && now / 1e6 >= to) { coop_watch_disarm(); st = 3; }
     }
     static int64_t seen_at;

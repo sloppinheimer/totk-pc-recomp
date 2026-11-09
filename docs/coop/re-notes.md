@@ -32,6 +32,20 @@ evidence), guess.
   it from its enter function main+0x231fa58 (`coop_NodeGenericRequestCreateActor_enter`); the strings "Pack/Actor/",
   ".pack", "ActorMgr" inside it. Confidence: likely (not called by us yet).
 
+## Flicker and the battery (a play session flicker-battery-1916, 2026-11-08 night)
+- Flicker: player 1 glued two fans by hand, turned them on, then off; game 2 then switched its copies off again every
+  2.5 s, about 30 times, while player 2's swings (and player 1's stand-in) toggled them there too: the sync enforced
+  the owner's state all the time and fought every toggle made in game 2. Copies now follow the owner only for 6 s
+  after its state changes or is first heard (coop_bonds.c FOLLOW_US, groups and devices alone). Pair test (glue test,
+  `TOTK_COOP_TEST_GLUEBOND=1 TOTK_COOP_TEST_GLUEON=1 TOTK_COOP_TEST_GLUEONFOR=8`): B switched on once and off once,
+  then stayed off for 40 s.
+- Battery, open: copies switched on in game B draw B's battery (game screenshots: B's gauge from about 8 cells to 4
+  while A's fans ran). Holding component 28 +0x398 at 0 on the copies from our tick did not stop it. A read watch on
+  that word (TOTK_COOP_TEST_ABWATCH=c28,<from>,<to>, with ABLOG and an ABHIT never reached so near devices are tracked)
+  shows main+0x245030, 0x1de340 (twice a frame), 0x1dfa6c, 0x3020e0 and 0x32f610 reading it every frame; which one
+  takes the energy from the Link is not found yet. The battery is not in the Link's actor or its components
+  (TOTK_COOP_TEST_PLAYERDIFF with PLAYERDIFFDOWN found no word going down).
+
 ## A rider, copies coming apart, the green bit (2026-11-08 evening)
 - A rider (TOTK_COOP_TEST_ABDECK=<s>[,<name>]: this Link put on a device of the contraption, its place in the device's
   frame logged every 0.25 s): game B's Link on A's Fanboat while A holds the stick stayed put to 1-2 cm (one 0.2 m
