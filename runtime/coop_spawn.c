@@ -912,6 +912,10 @@ static void phase_sample(uint64_t addr) {
     }
 }
 int coop_hook(Cpu *c, uint64_t addr) {
+    if (addr == MOD_MAIN_BASE + 0x40a240) {   // the body-pair collision predicate (hot): stand-ins off contraptions (coop_life.c)
+        int coop_life_veto(Cpu *c);
+        return coop_life_veto(c);
+    }
     phase_sample(addr);
     if (addr == MOD_MAIN_BASE + 0x916860) return beam_hook(c, addr);
     if (addr == MOD_MAIN_BASE + 0x567750 || addr == MOD_MAIN_BASE + 0x25a1f0 || addr == MOD_MAIN_BASE + 0x40e490 ||

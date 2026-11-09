@@ -5744,6 +5744,12 @@ void coop_players_tick(Cpu *c) {
     }
 }
 
+int coop_players_all(uint64_t *out, int max) {   // every live stand-in actor (contraption sync I16)
+    int n = 0;
+    for (int i = 0; i < COOP_MAX_PLAYERS && n < max; i++)
+        if (slots[i].state == LIVE && slots[i].actor) out[n++] = slots[i].actor;
+    return n;
+}
 uint64_t coop_players_first(void) {
     for (int i = 0; i < COOP_MAX_PLAYERS; i++)
         if (slots[i].state == LIVE) return slots[i].actor;

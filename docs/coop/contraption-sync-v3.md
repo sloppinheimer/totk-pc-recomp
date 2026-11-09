@@ -1282,3 +1282,33 @@ channel loses nothing. No failure since came from the design. The failures came 
 
 State when this was written: milestone 1's hand-overs pass in the gate; device off, the veto and the registry are open;
 that work is not committed.
+
+## 26. Milestone 1, first run (2026-11-09, late)
+One gate run (tag m1a), every clean line 0. carry and partoff passed; tog and stick did not.
+
+**Confirmed by the run**
+- **Stand-in veto (I16).** A rigid body's collision filter record is `[body+0x140] + 8`; the veto had read `+0x148`,
+  which is another class. With the right record it refused 26 and 78 stand-in pairs in two scenarios (0 before).
+- **Record part order.** The history writer sorts the group's members by name and keeps the group's order among equal
+  names. bp_send makes the same order and checks count and names; the nearest-within-4 m matching is gone. Every
+  record lined up and every copy was made.
+- **One key mint.** A copy taken over after it changed shape here is entered under a key bp_send then uses. That path
+  had announced a key made from the group pointer, which bp_send stopped using.
+
+**Refuted by the run: device on/off by the request pair at the group's fold.** The group of an idle Fanplane already
+reads state 1 while its fans are off, so "group state 1" is not "devices on" and the code found nothing to do. The
+reading behind it had stopped before the part that turns a device on, which is the mistake 25.2 point 1 is there to
+prevent. The earlier switching (the hit's toggle bit) is back in place: on works, off is unreliable.
+
+**What is known and what is not** (research notes sync-v3/m1_device_off_and_filter.md)
+- Known: a hit sets the group flag [0x1a] in `group+0x880` (main+0x1c02a98) and then the member's toggle bit. The
+  fold turns that flag, with flag bit 22 of `group+0x878`, into bit 27, and the group's sender then sends OFF (or ON
+  with bit 21) to every member when bits 27, 10 and 26 are set. The toggle bit alone only ever asks "on".
+- Not known: what bits 22, 10, 26 and 21 stand for and who sets them, and how the on/off node turns its message bits
+  and the switch state into the on bool. This is one read of main+0x9f9088, 0x9fa28c, 0x9fad68, 0x9fb82c and the hit
+  code main+0x18d2b48, start to finish, before device switching is written again.
+
+**The registry cannot be milestone 1 on its own.** coop_autobuild.c keeps two tables, "mine" and "copies of theirs",
+and only a build's first owner sends its records. 6.2's single table needs whoever runs a build to send its versions,
+which is P4. So 25.4 changes: milestone 1 is what this section confirmed plus device switching; the registry moves to
+milestone 2 with P4, as one rewrite of the contraption half of coop_autobuild.c into its own file.

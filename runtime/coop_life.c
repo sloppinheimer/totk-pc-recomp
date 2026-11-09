@@ -354,3 +354,70 @@ int coop_life_v3(Cpu *c, uint64_t off) {
     (void)c, (void)off;
     return 0;
 }
+
+// I16 (contraption-sync-v3.md section 9, X14b): a stand-in never collides with a contraption part, in any game. The game
+// decides every body pair through one predicate, main+0x40a240(filter, record A, record B, flags) -> 1 collide / 0 not,
+// called for two rigid bodies by main+0x6ab7d8 with each one's collision filter record, [body+0x140] + 8 (the record the
+// body's serialiser main+0x29aef20 names collision_filter; main+0x75fc94 passes [x+0x148] + 8 of another class).
+// The hook answers 0 for a pair of one stand-in body and one part body, and leaves every other pair to the game: the
+// stand-in still stands on the ground and the parts still meet everything else. The two sets of holders are rebuilt
+// each co-op tick (coop_life_veto_rebuild) and read here, on physics job threads, without a lock: two buffers and an
+// index. A remote player's weight on a build is not given by its stand-in's body (plan 9: an explicit force, P6).
+// TOTK_COOP_I16=0: off.
+#define VETO_S 32
+#define VETO_P 160
+static struct { uint64_t s[VETO_S], p[VETO_P]; int ns, np; } veto_buf[2];
+static _Atomic int veto_cur = -1;
+static _Atomic uint32_t veto_count, veto_seen;   // pairs refused; pairs with a stand-in body at all (the sets match)
+static int veto_has(const uint64_t *l, int n, uint64_t v) {
+    for (int i = 0; i < n; i++) if (l[i] == v) return 1;
+    return 0;
+}
+static int actor_holders(uint64_t a, uint64_t *out, int max) {   // the holders of an actor's bodies: main body, then the list
+    uint64_t ctl = a ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x50) + 0x20) : 0;
+    if (!ctl) return 0;
+    int n = 0;
+    uint64_t b = coop_rd_ptr(ctl + 0x150), h = b ? coop_rd_ptr(b + 0x140) : 0;
+    if (h && n < max) out[n++] = h;
+    int32_t cnt = 0;
+    uint64_t list = coop_rd_ptr(ctl + 0x118);
+    if (list && coop_rd(ctl + 0x110, &cnt, 4) && cnt > 0 && cnt <= 16)
+        for (int i = 0; i < cnt && n < max; i++) {
+            uint64_t r = coop_rd_ptr(list + 8 * (uint64_t)i), hh = r ? coop_rd_ptr(r + 0x140) : 0;
+            if (hh && !veto_has(out, n, hh)) out[n++] = hh;
+        }
+    return n;
+}
+void coop_life_veto_rebuild(const uint64_t *parts, int nparts) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_I16"); on = !(e && *e == '0'); }
+    if (!on) return;
+    int coop_players_all(uint64_t *out, int max);
+    uint64_t sa[8];
+    int ns = coop_players_all(sa, 8), w = atomic_load(&veto_cur) == 0 ? 1 : 0;
+    veto_buf[w].ns = veto_buf[w].np = 0;
+    for (int i = 0; i < ns; i++) veto_buf[w].ns += actor_holders(sa[i], veto_buf[w].s + veto_buf[w].ns, VETO_S - veto_buf[w].ns);
+    for (int i = 0; i < nparts && veto_buf[w].np < VETO_P; i++) veto_buf[w].np += actor_holders(parts[i], veto_buf[w].p + veto_buf[w].np, VETO_P - veto_buf[w].np);
+    atomic_store(&veto_cur, veto_buf[w].ns && veto_buf[w].np ? w : -1);
+    static int64_t said;
+    int64_t now = frame_step_world_us();
+    if (now - said > 10000000 && veto_buf[w].ns && veto_buf[w].np) {
+        said = now;
+        rt_log("coop: i16: %d stand-in bodies kept off %d contraption part bodies; %u pairs refused so far, %u stand-in pairs looked at",
+               veto_buf[w].ns, veto_buf[w].np, atomic_load(&veto_count), atomic_load(&veto_seen));
+    }
+}
+int coop_life_veto(Cpu *c) {   // main+0x40a240's entry: 1 when the pair is refused (x0 = 0, the caller reads no collision)
+    int cur = atomic_load_explicit(&veto_cur, memory_order_acquire);
+    if (cur < 0) return 0;
+    const uint64_t ha = c->x[1] - 8, hb = c->x[2] - 8;
+    const uint64_t *s = veto_buf[cur].s, *p = veto_buf[cur].p;
+    int ns = veto_buf[cur].ns, np = veto_buf[cur].np;
+    int as = veto_has(s, ns, ha), bs = !as && veto_has(s, ns, hb);
+    if (!as && !bs) return 0;
+    atomic_fetch_add_explicit(&veto_seen, 1, memory_order_relaxed);
+    if (!veto_has(p, np, as ? hb : ha)) return 0;
+    atomic_fetch_add_explicit(&veto_count, 1, memory_order_relaxed);
+    c->x[0] = 0;
+    return 1;
+}

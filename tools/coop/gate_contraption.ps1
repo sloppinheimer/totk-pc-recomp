@@ -15,7 +15,7 @@ $on = 'TOTK_COOP_CONTRAPTION=1;TOTK_COOP_TEST_ABLOG=1'   # (ABLOG turns the ABHI
 $runs = @(
   @{ n = 'tog'; s = 120; a = 'tools\coop\autobuild_noy_3rd.txt'; b = 'tools\coop\idle_3rd.txt'
      ea = "$on;TOTK_COOP_TEST_CTRLOAD=25,3"; eb = "$on;TOTK_COOP_TEST_CPTOGGLE=46,54;TOTK_COOP_TEST_CTRLOAD=25,3"
-     stop = 'B:its devices off where it runs, on here: toggled||B:ctr test: sent [6-9]\d control'; grace = 2 }
+     stop = 'B:its devices off where it runs, on here: set off||B:ctr test: sent [6-9]\d control'; grace = 2 }
   @{ n = 'carry'; s = 125; a = 'tools\coop\autobuild_noy_3rd.txt'; b = 'tools\coop\autobuild_carry_b_3rd.txt'
      ea = $on; eb = "$on;TOTK_COOP_TEST_ABHIT=46;TOTK_COOP_TEST_ABHIT_B=46;TOTK_COOP_TEST_ABHIT_DIST=2.2;TOTK_COOP_TEST_ABHIT_FANX=1"
      stop = 'B:asked to run it||A:handed over'; grace = 10 }
@@ -27,7 +27,7 @@ $runs = @(
      stop = 'A:handed over||A:fan on/10'; grace = 5 }
 )
 if ($Only.Count) { $runs = @($runs | Where-Object { $Only -contains $_.n }) }
-$slots = @(@{ adir = 'build\v143'; bdir = 'build\v143c'; port = 41991; tag = '' }, @{ adir = 'build\v143d'; bdir = 'build\v143e'; port = 41992; tag = '2' })
+$slots = @(@{ adir = 'build\v143'; bdir = 'build\v143c'; port = 41991; tag = ''; row = 0 }, @{ adir = 'build\v143d'; bdir = 'build\v143e'; port = 41992; tag = '2'; row = 1 })
 $t0 = Get-Date
 for ($i = 0; $i -lt $runs.Count; $i += 2) {
   $batch = @()
@@ -36,6 +36,7 @@ for ($i = 0; $i -lt $runs.Count; $i += 2) {
     $argv = @('-ExecutionPolicy', 'Bypass', '-File', 'tools\coop\run_pair.ps1', '-Seconds', $r.s, '-ScriptA', $r.a, '-ScriptB', $r.b,
               '-ADir', $sl.adir, '-BDir', $sl.bdir, '-Port', $sl.port, '-EnvA', $r.ea, '-EnvB', $r.eb, '-StopWhen', $r.stop, '-StopGrace', $r.grace)
     if ($sl.tag) { $argv += @('-Tag', $sl.tag) }
+    $argv += @('-Row', $sl.row)
     $argv = @($argv | ForEach-Object { if ("$_" -match '\s') { '"' + $_ + '"' } else { "$_" } })   # (Start-Process joins them with spaces)
     $batch += @{ r = $r; sl = $sl; p = (Start-Process powershell -ArgumentList $argv -WindowStyle Hidden -PassThru -RedirectStandardOutput "build\$($Tag)_$($r.n).out") }
     Start-Sleep 5   # (the two pairs' games start a little apart)

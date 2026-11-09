@@ -21,10 +21,12 @@
 #   -ADir build\v143d -Tag 2: a second pair beside another one: A runs from that folder (made of links to build\v143 like
 #    -BDir), the profiles and the relay log are named after the tag, and only this pair's games are stopped (give each
 #    pair its own -ADir, -BDir and -Port)
+#   -Row 1: the two windows placed side by side on that row of a 2x2 grid (A left, B right; row 0 at the top), so two
+#    pairs can be watched at once
 param([int]$Seconds = 90, [string]$ScriptA = "tools\coop\walk.txt", [string]$ScriptB = "tools\coop\idle.txt", [string]$FakeGearA = "", [string]$FakeDyeA = "", [string]$FakeHandA = "",
       [string]$ShotsA = "", [string]$ShotsB = "", [string]$ShotsDir = "", [int]$QuitBAfter = 0, [string]$FakeAtA = "", [string]$SpawnA = "", [string]$SpawnB = "", [string]$Profile = "build\profile-v143", [switch]$ShotsSmall, [string]$BDir = "build\v143b",
       [string]$MarkShotsA = "", [string]$MarkShotsB = "", [switch]$MarkSelf, [string]$EnvA = "", [string]$EnvB = "", [int]$Port = 41900,
-      [string]$StopWhen = "", [int]$StopGrace = 3, [string]$ADir = "build\v143", [string]$Tag = "")
+      [string]$StopWhen = "", [int]$StopGrace = 3, [string]$ADir = "build\v143", [string]$Tag = "", [int]$Row = 0)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
@@ -80,12 +82,26 @@ foreach ($g in @(@{dir = $a; prof = "build\prof-coop-a$Tag"; script = $ScriptA; 
     $games += Start-Quiet (Join-Path $g.dir 'totk.exe') '' $g.dir
     Start-Sleep 3
 }
+Add-Type -Namespace W -Name Pos -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool SetWindowPos(System.IntPtr h, System.IntPtr after, int x, int y, int cx, int cy, uint flags);
+[DllImport("user32.dll")] public static extern bool GetWindowRect(System.IntPtr h, int[] r);
+'@ -ErrorAction SilentlyContinue
+$placed = @($false, $false)
 $deadline = (Get-Date).AddSeconds($Seconds)
 $bStart = Get-Date
 $stops = @($StopWhen -split '\|\|' | Where-Object { $_ -match '^[AB]:' })
 $logs = @{ A = (Join-Path $a 'logs\totk.log'); B = (Join-Path $b 'logs\totk.log') }
 while ((Get-Date) -lt $deadline -and ($games | Where-Object { -not $_.HasExited })) {
     Start-Sleep 1
+    for ($i = 0; $i -lt 2; $i++) {   # (each window once it exists: A left, B right, on this pair's row; not activated)
+        if ($placed[$i]) { continue }
+        $games[$i].Refresh()
+        $h = $games[$i].MainWindowHandle
+        if ($h -eq [IntPtr]::Zero) { continue }
+        # (by the window's own size, so the grid closes up whatever the display scaling: A at the row's left, B against A)
+        $r = New-Object int[] 4; [void][W.Pos]::GetWindowRect($h, $r); $w = $r[2] - $r[0]; $hh = $r[3] - $r[1]
+        [void][W.Pos]::SetWindowPos($h, [IntPtr]::Zero, $i * $w, $Row * $hh, 0, 0, 0x15); $placed[$i] = $true
+    }
     if ($stops.Count -and ((Get-Date) - $bStart).TotalSeconds -ge 15) {
         $all = $true
         foreach ($st in $stops) {
