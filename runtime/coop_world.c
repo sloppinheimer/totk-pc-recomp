@@ -3604,6 +3604,8 @@ static void peer_tick(Cpu *c, uint64_t me) {
             if (coop_contraption_toggle_take(&lhp, n, from)) continue;
             int coop_contraption_auth_take(const void *p, int n, int from);   // coop_autobuild.c: "CBAU" who runs a contraption
             if (coop_contraption_auth_take(&lhp, n, from)) continue;
+            int coop_contraption_adopt_take(const void *p, int n, int from);   // coop_autobuild.c: "CBOW" a contraption given away
+            if (coop_contraption_adopt_take(&lhp, n, from)) continue;
             int coop_bonds_take(const void *p, int n, int from);   // coop_bonds.c: "CB" packets (contraptions)
             if (coop_bonds_take(&lhp, n, from)) continue;
             if (n >= (int)offsetof(ContactPacket, e) && (cp->kind == ECONTACT_KIND || cp->kind == ECONTACT_ARROW) && (int)cp->to == my_id && cp->n <= CONTACT_MAX &&

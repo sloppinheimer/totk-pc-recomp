@@ -549,3 +549,25 @@ TOTK_COOP_CONTRAPTION=1 (coop_autobuild.c, "Contraption copies made by the game'
 - Pair test (the toggle test with TOTK_COOP_TEST_ABLOG=1): B toggled A's Fanplane on from its copy; A dropped its fans'
   charges, and B's gauge fell 48000 to 46128 in about 6 s (about 312 a second, the usual drain of three fans). After B
   toggled them off, B's copy dropped its charges again.
+
+## Phase 4, fourth step: a shape changed by another player makes the contraption theirs (2026-11-09)
+- When the player of a game that does not own a contraption changes its shape (a part glued on or taken off while
+  that game runs it, or while its Ultrahand held something in the last 2 s), that game takes the contraption as its
+  own (coop_autobuild.c adopt_tick). Its version's group differing from the record (member count, or a part in another
+  group) for 1 s is the change. Its parts leave the made registry, the object scan takes them as that game's own
+  objects, and bp_send records the group and sends it under the group's key. Every other game is told ("CBOW": owner,
+  key, new owner, new key). It keeps its version, driven by the new owner's pose, until the new owner's record has
+  been made there, then deletes it (the old owner deletes its own parts, kept out of the "destroyed here" notice). A
+  game does not send a contraption whose parts it gave away, even under a new key.
+- So whoever reshapes a contraption owns it from then on, and the record path does the rest: no per-part glue or
+  removal between games. A changed shape caused by nobody here (a copy that came apart by accident) is not taken.
+- Pair test (autobuild_carry_b_3rd.txt in B with TOTK_COOP_TEST_ABPART=53,2, which now takes a fan off in the game
+  named): B grabbed A's Fanplane (change 1), a fan was taken off B's copy at 53 s, and B took it as its own 3d6688e0
+  and sent it (3 parts, 2 bonds). A kept its version following B's, made B's (3 of 3 in one group), deleted its own,
+  and followed B's to 0.06 m. No loose copies appeared in A. The fan's removal also reached A's own contraption by the
+  forwarded message (the copy's part answers to the owner's object number); before the fix above, A then sent what
+  was left of its own as a new contraption, which B made and deleted 3 s later.
+- Glue by hand is not scripted: an Ultrahand glue made by a test script did not take, in this run as in older ones
+  (re-notes.md, "Glue by hand, again"), so a part glued on goes through the same path untested. The test makes the
+  loose fan for that test along the Link's +x, which is its left.
+- Again after the change: the toggle, part-off, carry and stick tests, and a normal start.
