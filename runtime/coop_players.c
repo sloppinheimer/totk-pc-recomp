@@ -1736,8 +1736,10 @@ static void arrow_copies(Cpu *c, Slot *s) {
         // A part of a contraption this game makes with its own Autobuild from the owner's record (coop_autobuild.c,
         // TOTK_COOP_CONTRAPTION=1): no copy of its own; one made before the record came is deleted
         int coop_contraption_owns(int from, uint32_t id);
+        void coop_deleted_here(uint64_t a);
         if (s->mir[k].state != 0 && coop_contraption_owns(s->net_id, s->mir[k].id)) {
             if (s->mir[k].state == 3 && s->mir[k].actor) {
+                coop_deleted_here(s->mir[k].actor);
                 rt_log("coop: slot %d: the copy of %s (%u) deleted: its contraption is made here by the Autobuild", (int)(s - slots), s->mir[k].name, s->mir[k].id);
                 coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0), set_driven(s->mir[k].actor);
             }
@@ -2249,6 +2251,9 @@ static struct { uint64_t actor, eq; int k, until, since, remade; uint32_t id; ch
 static char old_item_fuse[32];   // the next old item's fused material: the gear code sets it before regive_gear
 static uint64_t dkilled[64];   // set off here for another game's notice, or deleted here by this code: not told as destroyed
 static int dkilled_n, dtick;
+// An actor this code deletes (a copy, a part made from another player's record): never told as destroyed, so the
+// other game does not destroy its own original by that key (coop_autobuild.c; Phase 1 pair test, 2026-11-09)
+void coop_deleted_here(uint64_t a) { if (a) dkilled[dkilled_n++ % 64] = a; }
 int old_fuse_name(const char *nm) {   // (a loose one is not sent: old_items_tick deletes it)
     for (int i = 0; i < 16; i++) if (old_items[i].actor && old_items[i].fuse[0] && !strcmp(nm, old_items[i].fuse)) return 1;
     return 0;
@@ -2768,8 +2773,9 @@ static void dwatch_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
     float p[3];
     Slot *cs;
     int ck;
+    int coop_contraption_made(uint64_t a);   // (a part made here from another player's record is theirs, not this game's)
     if (prop_skip(nm) || is_beam(nm) || !strncmp(nm, "Parasail", 8) || copy_of(a, &cs, &ck) || coop_is_resident(a) || old_item(a) ||
-        !coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+        coop_contraption_made(a) || is_preview(a) || !coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
     if ((p[0] - me[0]) * (p[0] - me[0]) + (p[1] - me[1]) * (p[1] - me[1]) + (p[2] - me[2]) * (p[2] - me[2]) > 400) return;
     for (int i = 0; i < 32; i++) if (my_arrows[i].actor == a) return;
     int free = -1;

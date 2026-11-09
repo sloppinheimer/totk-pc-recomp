@@ -1456,6 +1456,7 @@ static struct {
     uint64_t copy[21];    // the parts made here, in record order (copy[0] the root)
     int ncopy;
     uint32_t sw, on;      // the owner's devices: which record parts have a switch, which are on
+    int remake;           // a new shape came for a made copy: the copy deleted and made again
     int64_t toggled_us;   // the last toggle asked of the copy (bp_follow)
     float pose[2][12];    // the owner's root body matrix, the last two received, and when (owner's world clock)
     int64_t pose_us[2], pose_local_us;
@@ -1476,13 +1477,16 @@ int coop_contraption_take(const void *data, int n, int from) {   // coop_world.c
         else if (free < 0 && !bp_in[k].from) free = k;
     }
     if (f < 0) f = free >= 0 ? free : (int)(p->key % BP_IN), memset(&bp_in[f], 0, sizeof bp_in[f]), bp_in[f].from = from, bp_in[f].key = p->key;
-    if (bp_in[f].shape != p->shape && !bp_in[f].made) bp_in[f].shape = p->shape, bp_in[f].have = 0, bp_in[f].complete = 0;
+    // a new shape (a part glued on or taken off there): put together, then the copy made again (bp_make)
+    if (bp_in[f].shape != p->shape && bp_in[f].made != 1) bp_in[f].shape = p->shape, bp_in[f].have = 0, bp_in[f].complete = 0,
+                                                             bp_in[f].remake = bp_in[f].made == 2;
     if (bp_in[f].shape == p->shape && !bp_in[f].complete) {
         memcpy(bp_in[f].rec + p->chunk * BP_CHUNK, p->d, p->len);
         memcpy(bp_in[f].ids, p->ids, sizeof p->ids), memcpy(bp_in[f].centre, p->centre, sizeof p->centre);
         bp_in[f].have |= 1u << p->chunk;
         if (bp_in[f].have == (1u << BP_CHUNKS) - 1) {
             bp_in[f].complete = 1;
+            if (bp_in[f].remake) bp_in[f].made = 0;
             rt_log("coop: contraption: player %d's %08x (shape %08x): its record came whole", from, p->key, p->shape);
         }
     }
@@ -1491,6 +1495,9 @@ int coop_contraption_take(const void *data, int n, int from) {   // coop_world.c
 }
 // The owner's root pose, about 20 times a second ("CBMV" hit packets): the copy drives its root toward it by velocity
 // (bp_follow), the bonds carry the rest; a body moved by velocity carries a Link standing on it (Phase 0 item 1).
+static void made_remove(uint64_t a);
+static int group_toggle(const uint64_t *parts, int n, int prefer);
+static void mark_ours(uint64_t comp);
 #define MV_KIND 0x564d4243u   // "CBMV"
 typedef struct { uint32_t kind, key; int64_t us; float m[12]; uint32_t sw, on; } MvPacket;   // sw / on: bit r, record part r has a switch / is on
 int coop_contraption_pose_take(const void *data, int n, int from) {
@@ -1527,6 +1534,8 @@ static void bp_pose_send(void) {   // the owner, from the co-op tick
     last = now;
     for (int q = 0; q < OWN_C; q++) {
         if (!own_c[q].root || now - own_c[q].seen > 5000000) continue;
+        int32_t rst = 0;
+        if (!coop_rd(own_c[q].root + 0x24, &rst, 4) || rst < 2 || rst > 6) { own_c[q].root = 0, own_c[q].np = 0; continue; }   // (gone)
         uint64_t body = main_body_of(own_c[q].root);
         MvPacket p = {MV_KIND, own_c[q].key, now, {0}, 0, 0};
         for (int r = 0; r < own_c[q].np; r++)
@@ -1540,6 +1549,16 @@ static void bp_follow(Cpu *c) {   // the other games, from the co-op tick: each 
     double dt = last && now > last ? (now - last) / 1e6 : 1 / 30.0;
     last = now;
     if (dt > 0.1) dt = 0.1;
+    for (int k = 0; k < BP_IN; k++) {   // a copy whose owner sent no pose for 3 s (its contraption gone there): deleted
+        if (bp_in[k].made == 2 && bp_in[k].ncopy && bp_in[k].pose_local_us && now - bp_in[k].pose_local_us > 3000000) {
+            for (int i = 0; i < bp_in[k].ncopy && i < 21; i++)
+                if (bp_in[k].copy[i]) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, bp_in[k].copy[i], COOP_DELETE_REASON, 0, 0), made_remove(bp_in[k].copy[i]);
+            rt_log("coop: contraption: player %d's %08x: no pose for 3 s, its copy (%d parts) deleted", bp_in[k].from, bp_in[k].key, bp_in[k].ncopy);
+            plat_mutex_lock(&bp_lock);
+            bp_in[k].ncopy = 0, bp_in[k].made = 3, memset(bp_in[k].copy, 0, sizeof bp_in[k].copy);
+            plat_mutex_unlock(&bp_lock);
+        }
+    }
     for (int k = 0; k < BP_IN; k++) {
         float m0[12], m1[12];
         int64_t u0, u1, lu;
@@ -1586,8 +1605,8 @@ static void bp_follow(Cpu *c) {   // the other games, from the co-op tick: each 
                     copy_on |= part_on(bp_in[k].copy[r]);
                 }
             if (sw && first >= 0 && owner_on != copy_on && now - tog > 1500000) {
-                uint64_t d = part_switch(bp_in[k].copy[first]);
-                __atomic_fetch_or((uint8_t *)(uintptr_t)(d + 0x8d), 8, __ATOMIC_SEQ_CST);
+                for (int r = 0; r < bp_in[k].ncopy && r < 21; r++) if (part_switch(bp_in[k].copy[r])) mark_ours(part_switch(bp_in[k].copy[r]));
+                group_toggle(bp_in[k].copy, bp_in[k].ncopy, first);
                 plat_mutex_lock(&bp_lock);
                 bp_in[k].toggled_us = now;
                 plat_mutex_unlock(&bp_lock);
@@ -1607,6 +1626,59 @@ static void bp_follow(Cpu *c) {   // the other games, from the co-op tick: each 
         }
     }
 }
+// Toggling a contraption's devices as a hit does: on, one member's request (DeviceSwitch +0x8d bit 3); off, the
+// request on every member that is on (the switch update turns a group off only so: research devices/README.md)
+static int group_toggle(const uint64_t *parts, int n, int prefer) {
+    int any_on = 0;
+    for (int r = 0; r < n; r++) if (part_switch(parts[r]) && part_on(parts[r])) any_on = 1;
+    int set = 0;
+    for (int r = 0; r < n; r++) {
+        uint64_t d = part_switch(parts[r]);
+        if (!d || (any_on && !part_on(parts[r])) || (!any_on && set) || (!any_on && prefer >= 0 && r != prefer && part_switch(parts[prefer]))) continue;
+        __atomic_fetch_or((uint8_t *)(uintptr_t)(d + 0x8d), 8, __ATOMIC_SEQ_CST), set++;
+    }
+    return any_on;
+}
+// A toggle asked on a copy goes to the owner ("CBTG": the contraption and the record part); the owner toggles its own
+#define TG_KIND 0x47544243u   // "CBTG"
+typedef struct { uint32_t kind, key, to, part; } TgPacket;
+#define OURS_N 16
+static struct { _Atomic uint64_t comp; _Atomic int64_t until; } ours[OURS_N];   // requests this game's follow made
+static void mark_ours(uint64_t comp) {
+    int64_t now = frame_step_world_us();
+    for (int i = 0; i < OURS_N; i++)
+        if (atomic_load(&ours[i].comp) == comp || atomic_load(&ours[i].until) < now) { atomic_store(&ours[i].comp, comp), atomic_store(&ours[i].until, now + 500000); return; }
+}
+static int copy_toggle_ours(uint64_t comp) {
+    int64_t now = frame_step_world_us();
+    for (int i = 0; i < OURS_N; i++)
+        if (atomic_load(&ours[i].comp) == comp && atomic_load(&ours[i].until) >= now) { atomic_store(&ours[i].until, 0); return 1; }
+    return 0;
+}
+static void copy_toggle_asked(uint64_t comp, uint64_t actor) {
+    TgPacket p = {TG_KIND, 0, 0, 0};
+    int found = 0;
+    plat_mutex_lock(&bp_lock);
+    for (int k = 0; k < BP_IN && !found; k++)
+        for (int r = 0; r < bp_in[k].ncopy && r < 21 && !found; r++)
+            if (bp_in[k].copy[r] == actor) p.key = bp_in[k].key, p.to = (uint32_t)bp_in[k].from, p.part = (uint32_t)r, found = 1;
+    plat_mutex_unlock(&bp_lock);
+    if (!found) return;
+    coop_net_hit_send(&p, sizeof p);
+    rt_log("coop: contraption: a toggle asked on player %u's %08x part %u here: sent to its owner (switch %llx)", p.to, p.key, p.part, (unsigned long long)comp);
+}
+int coop_contraption_toggle_take(const void *data, int n, int from) {   // the owner: a toggle asked on its copy elsewhere
+    const TgPacket *p = (const TgPacket *)data;
+    if (n != (int)sizeof(TgPacket) || p->kind != TG_KIND) return 0;
+    if (!contraption_on() || (int)p->to != coop_net_id()) return 1;
+    for (int q = 0; q < OWN_C; q++)
+        if (own_c[q].key == p->key && own_c[q].np) {
+            int was_on = group_toggle(own_c[q].parts, own_c[q].np, (int)p->part);
+            rt_log("coop: contraption: player %d toggled my %08x (part %u): it was %s", from, p->key, p->part, was_on ? "on" : "off");
+            break;
+        }
+    return 1;
+}
 // TOTK_COOP_TEST_ABON=<s>[,<s2>]: the owner's first contraption's devices toggled at that time (and again at s2) by
 // the toggle request a hit makes (DeviceSwitch +0x8d bit 3), to see the copy follow; every 0.5 s from then for 8 s the
 // owner's on states are logged
@@ -1617,12 +1689,10 @@ static void abon_test(void) {
     double t = frame_step_world_us() / 1e6;
     if (at <= 0 || t < at) return;
     for (int q = 0; q < OWN_C && done < (at2 > 0 && t >= at2 ? 2 : 1); q++)
-        for (int r = 0; r < own_c[q].np; r++) {
-            uint64_t d = part_switch(own_c[q].parts[r]);
-            if (!d) continue;
-            __atomic_fetch_or((uint8_t *)(uintptr_t)(d + 0x8d), 8, __ATOMIC_SEQ_CST);
-            rt_log("coop: test: abon: %.2f s the toggle request set on part %d of mine %08x", t, r, own_c[q].key);
-            done++, q = OWN_C;
+        if (own_c[q].np) {
+            int was = group_toggle(own_c[q].parts, own_c[q].np, -1);
+            rt_log("coop: test: abon: %.2f s mine %08x toggled (it was %s)", t, own_c[q].key, was ? "on" : "off");
+            done++;
             break;
         }
     static double next;
@@ -1636,6 +1706,24 @@ static void abon_test(void) {
         rt_log("%s", line);
         break;
     }
+}
+// TOTK_COOP_TEST_CPTOGGLE=<s>[,<s2>] (the copy's game): at that time (and s2) the toggle request set on the first
+// switched part of the first copy made here, as a hit on it would: it should go to the owner, not toggle here
+static void cptoggle_test(void) {
+    static double at = -1, at2;
+    static int done;
+    if (at < 0) at = cfg_at("TOTK_COOP_TEST_CPTOGGLE", &at2);
+    double t = frame_step_world_us() / 1e6;
+    if (at <= 0 || t < at || done >= (at2 > 0 && t >= at2 ? 2 : 1)) return;
+    for (int k = 0; k < BP_IN; k++)
+        for (int r = 0; bp_in[k].made == 2 && r < bp_in[k].ncopy; r++) {
+            uint64_t d = part_switch(bp_in[k].copy[r]);
+            if (!d) continue;
+            __atomic_fetch_or((uint8_t *)(uintptr_t)(d + 0x8d), 8, __ATOMIC_SEQ_CST);
+            rt_log("coop: test: cptoggle: %.2f s the toggle request set on copy part %d of player %d's %08x", t, r, bp_in[k].from, bp_in[k].key);
+            done++;
+            return;
+        }
 }
 // TOTK_COOP_TEST_ABPUSH=<s>,<vx>,<vy>,<vz>: the owner's first contraption's root given that velocity every tick for
 // 3 s from that time (a moving contraption for the pose stream to follow, with no player input)
@@ -1703,6 +1791,14 @@ static void made_add(uint64_t a) {
         if (!have && atomic_compare_exchange_strong(&made_parts[i], &have, a)) return;
     }
 }
+void coop_deleted_here(uint64_t a);   // coop_players.c: not told to the others as destroyed
+static void made_remove(uint64_t a) {
+    coop_deleted_here(a);
+    for (int i = 0; a && i < MADE_N; i++) {
+        uint64_t have = a;
+        atomic_compare_exchange_strong(&made_parts[i], &have, 0);
+    }
+}
 int coop_contraption_made(uint64_t a) {
     for (int i = 0; a && i < MADE_N; i++) if (atomic_load(&made_parts[i]) == a) return 1;
     return 0;
@@ -1717,12 +1813,22 @@ static void bp_make(Cpu *c) {
     int32_t ne = 0;
     coop_rd(o + 0x1b0, &ne, 4);
     if (mk.st == 0) {   // the next complete record not made yet
+        // (not while this game's player has an Autobuild design selected, ability +0x51e8: the build object is theirs)
+        uint32_t selected = 0;
+        coop_rd(ab + 0x51e8, &selected, 4);
+        if (selected & 0xff) return;
         int k = -1;
         plat_mutex_lock(&bp_lock);
         for (int i = 0; i < BP_IN && k < 0; i++) if (bp_in[i].complete && !bp_in[i].made) k = i;
         if (k >= 0) bp_in[k].made = 1;
         plat_mutex_unlock(&bp_lock);
         if (k < 0) return;
+        if (bp_in[k].remake) {   // the old copy of this contraption deleted before the new shape is made
+            for (int i = 0; i < bp_in[k].ncopy && i < 21; i++)
+                if (bp_in[k].copy[i]) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, bp_in[k].copy[i], COOP_DELETE_REASON, 0, 0), made_remove(bp_in[k].copy[i]);
+            rt_log("coop: contraption: player %d's %08x changed shape: its old copy (%d parts) deleted, made again", bp_in[k].from, bp_in[k].key, bp_in[k].ncopy);
+            bp_in[k].ncopy = 0, bp_in[k].remake = 0, memset(bp_in[k].copy, 0, sizeof bp_in[k].copy);
+        }
         const uint8_t *r = bp_in[k].rec;
         int n = r[9];
         if (n < 2 || n > 21 || memcmp(r, "CmbAct", 6)) {
@@ -2002,7 +2108,21 @@ static void serial_run(Cpu *c, int n) {
 #define GAUGE_CONSUME_RATE 0x1fa4ed4
 #define ONOFF_CALC 0x9f9088
 #define ONOFF_SET 0x9fad68
-static __thread int in_push, in_node, in_copy_node;
+static __thread int in_push, in_node, in_copy_node, in_copy_force;
+// The device nodes that push their own part (research devices2/: rocket, sled, balloon, wing, hover stone, stabilizer,
+// spring, stake, homing cart, steering stick): on a copy their body writes are skipped; the wheel's and the cart's
+// motor nodes drive joints, and are skipped whole
+static const uint32_t force_nodes[] = {0x24343f4, 0x2458320, 0x222d694, 0x221cd04, 0x230a3fc, 0x24730dc, 0x221a7dc, 0x221420c,
+                                       0x225c52c, 0x226abd4};
+static const uint32_t motor_nodes[] = {0x22fc5f8, 0x2251440};
+static const uint32_t body_setters[] = {0x567750, 0x25a1f0, 0x29ae114, 0x29ae7a8, 0x29ae7fc, 0x29a4afc};
+static int in_list(const uint32_t *l, int n, uint64_t off) {
+    for (int i = 0; i < n; i++) if (l[i] == off) return 1;
+    return 0;
+}
+#define DEVSWITCH_UPDATE 0x4a3500
+static void copy_toggle_asked(uint64_t comp, uint64_t actor);   // below: a toggle asked on a copy, sent to its owner
+static int copy_toggle_ours(uint64_t comp);   // below: 1 when this game's own follow asked it
 static int contraption_on(void);
 int coop_contraption_made(uint64_t a);
 static __thread uint64_t push_body;   // the pushing fan's own body (a copy's fan never pushes its own contraption)
@@ -2051,6 +2171,23 @@ int coop_phase0_hook(Cpu *c, uint64_t addr) {
     // A part of another player's contraption made here (TOTK_COOP_CONTRAPTION): its fan pushes nothing (the owner's game
     // moves the contraption; the wind capsule and the look still run), and its on/off node charges no gauge
     if (off == APPLY_IMPULSE_FN && contraption_on() && coop_contraption_made(node_actor(c->x[0]))) return 1;
+    if (contraption_on()) {
+        if (in_list(body_setters, 6, off) && in_copy_force) return 1;   // (a copy's device moving its own body: not here)
+        if (in_list(motor_nodes, 2, off) && coop_contraption_made(node_actor(c->x[0]))) return 1;
+        if (in_list(force_nodes, 10, off) && coop_contraption_made(node_actor(c->x[0]))) {
+            inner = 1;
+            return wrap_call(c, addr, &in_copy_force, 1);
+        }
+        if (off == DEVSWITCH_UPDATE) {   // a toggle asked on a copy's device (a hit here): taken to the owner instead
+            uint64_t comp = c->x[0], actor = coop_rd_ptr(comp + 0x18);
+            uint8_t b8d = 0;
+            if (coop_contraption_made(actor) && coop_rd(comp + 0x8d, &b8d, 1) && (b8d & 8) && !copy_toggle_ours(comp)) {
+                __atomic_fetch_and((uint8_t *)(uintptr_t)(comp + 0x8d), (uint8_t)~8, __ATOMIC_SEQ_CST);
+                copy_toggle_asked(comp, actor);
+            }
+            return 0;
+        }
+    }
     if ((off == ONOFF_CALC || off == ONOFF_SET) && contraption_on() && coop_contraption_made(node_actor(c->x[0]))) {
         inner = 1;
         return wrap_call(c, addr, &in_copy_node, 1);
@@ -2369,7 +2506,7 @@ static void phase0_tick(Cpu *c, int n) {
 
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
     playerdiff_test(me);
-    if (contraption_on()) bp_pose_send(), bp_follow(c), abpush_test(c), abon_test();
+    if (contraption_on()) bp_pose_send(), bp_follow(c), abpush_test(c), abon_test(), cptoggle_test();
     if (!ablog_on()) return;
     deck_test(c, me, atomic_load(&tracked_n) < TRACK_N ? atomic_load(&tracked_n) : TRACK_N);
     failspam_test(c, me);

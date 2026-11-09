@@ -924,6 +924,12 @@ int coop_hook(Cpu *c, uint64_t addr) {
                                    (unsigned long long)c->x[0], (unsigned long long)rd_ptr(c->x[0] + 0x51f0), (unsigned long long)rd_ptr(c->x[0] + 0x51f8));
         return 0;
     }
+    // contraption copies (coop_autobuild.c, TOTK_COOP_CONTRAPTION): the device switch update, the device force nodes and
+    // the body setters they use
+    if (addr == MOD_MAIN_BASE + 0x4a3500 || addr == MOD_MAIN_BASE + 0x25a1f0 || addr == MOD_MAIN_BASE + 0x24343f4 || addr == MOD_MAIN_BASE + 0x22fc5f8 || addr == MOD_MAIN_BASE + 0x2458320 || addr == MOD_MAIN_BASE + 0x222d694 || addr == MOD_MAIN_BASE + 0x221cd04 || addr == MOD_MAIN_BASE + 0x230a3fc || addr == MOD_MAIN_BASE + 0x24730dc || addr == MOD_MAIN_BASE + 0x221a7dc || addr == MOD_MAIN_BASE + 0x221420c || addr == MOD_MAIN_BASE + 0x2251440 || addr == MOD_MAIN_BASE + 0x225c52c || addr == MOD_MAIN_BASE + 0x226abd4 || addr == MOD_MAIN_BASE + 0x29ae7a8 || addr == MOD_MAIN_BASE + 0x29ae7fc || addr == MOD_MAIN_BASE + 0x29a4afc) {
+        int coop_phase0_hook(Cpu *c, uint64_t addr);
+        return coop_phase0_hook(c, addr);
+    }
     if (addr == MOD_MAIN_BASE + 0x2487104 || addr == MOD_MAIN_BASE + 0x567750 || addr == MOD_MAIN_BASE + 0x29ae114 ||
         addr == MOD_MAIN_BASE + 0x1fa4ca8 || addr == MOD_MAIN_BASE + 0x1fa4ed4 || addr == MOD_MAIN_BASE + 0x9f9088 ||
         addr == MOD_MAIN_BASE + 0x9fad68) { int coop_phase0_hook(Cpu *c, uint64_t addr); return coop_phase0_hook(c, addr); }

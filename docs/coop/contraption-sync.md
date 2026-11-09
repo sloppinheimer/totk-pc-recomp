@@ -447,3 +447,26 @@ TOTK_COOP_CONTRAPTION=1 (coop_autobuild.c, "Contraption copies made by the game'
   the record path); without that, its older copy sync would bond and switch the same parts.
 - Pair test: each of the four made parts said "player 1's object <n>" for its own number, each number found its part,
   each counted as a copy; following and the device toggle unchanged.
+
+## Phase 1, fifth step: toggles both ways, every device's push, changes of shape (2026-11-09)
+- A toggle asked on a copy (the DeviceSwitch update main+0x4a3500 hooked: a copy part's +0x8d bit 3 set by this
+  game's hit path, not by the follow) is cleared and sent to the owner ("CBTG"); the owner toggles its own contraption.
+  Toggling follows the switch update's rule: on, one member's request; off, the request on every member that is on
+  (one request did not turn the owner's group off). The copy's follow uses the same rule and marks its own requests.
+- On a copy, every device node that pushes its own part (rocket, sled, balloon, wing, hover stone, stabilizer, spring,
+  stake, homing cart, steering stick: research devices2/) has its body writes skipped (the two velocity setters and
+  the three impulse / force calls), and the wheel's and the cart's motor nodes are skipped whole. Only the fan has run
+  in a test so far.
+- A new shape for a made copy (a part glued on or taken off there) deletes the copy and makes the new one; a copy whose
+  owner sends no pose for 3 s (its contraption gone there; the owner sends poses only while the root lives) is deleted.
+  A copy is not started while this game's player has an Autobuild design selected (ability +0x51e8).
+- Found and fixed: deleting the old copies (and later the made parts) was told to the other game as "destroyed here"
+  (coop_players.c, the keyed world objects watch): the owner then destroyed its own parts by those keys, its
+  contraption fell apart, and the copies with it. Copies, made parts and every actor this code deletes
+  (coop_deleted_here) are now kept out of that notice.
+- Pair tests: (1) a toggle asked on B's copy at 46 s went to A, A's fans came on, the copy followed (0111); a second at
+  54 s turned A's fans off and the copy followed (0000). (2) A pulled a fan off its Fanplane (autobuild_part_3rd.txt):
+  A's contraption became a new 3-part shape, B made it (3 of 3 in one group) and deleted the old copy when its poses
+  stopped. The first copy in that run lost its group 0.5 s after it was made and was destroyed: A's Link is put by a
+  fan at 36 s by the test (TOTK_COOP_TEST_ABHIT), and its stand-in in B appeared inside the copy as it was being made
+  (likely; open). No "destroyed here" notice any more.
