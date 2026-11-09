@@ -368,3 +368,22 @@ cleared, the blueprint put back, and the confirm main+0x1d3c0d4 called.
   measured.
 - Left: the copy uses the Link's own Autobuild BuildObject (a player building at that moment would clash), and all of
   this ran in game A, making a second copy of A's own build; game B, with a record received over the network, is next.
+
+**In game B (2026-11-09 morning): another game's contraption made with this game's own Autobuild.**
+- The Autobuild ability is caught in its update (main+0x9a2c00, hooked; x0 the ability, its build object at +0x51f0,
+  the menu's at +0x51f8): in both games of a pair the ability and the build object have the same addresses
+  (0x13628b0d0, 0x1ec715548), and game B's build object exists though B never built anything. Searching from the Link
+  (TOTK_COOP_TEST_FINDAB) does not find it within two pointers; the Ultrahand part (vtable main+0x3695798, in five of
+  the Link's components) is another object, its +0x51f0 empty.
+- Game A wrote its blueprint (the whole CmbAct) and its build's base matrix to a file at 33 s (TOTK_COOP_TEST_ABSAVE;
+  the file stands in for the network); game B read it at 36 s into its own build object (TOTK_COOP_TEST_ABLOAD:
+  [o+0x3c50] pointed at the buffer o+0xc50 when empty, the base matrix into o+0x120) and made it with the same steps
+  as in A (REBUILD=40, REBUILDBASE=6, REBUILDGOCLAIM=41.97, REBUILDGO=42 from GameDataMgr::calc, REBUILDGOMARK=2,
+  REBUILDGOFREE=1): the confirm returned 1 at phase 0, 0.2 s later the four parts were one group, green, each fan 1.97 m
+  from the wing as in A's, and the copy came to rest. The full-size frame of game B at 46 s shows it assembled and
+  green beside the old-style copy of A's build.
+- Next for the sync (Phase 1 of the plan): the record over the network instead of the file, made from the owner's
+  live contraption by the history writer (from GameDataMgr::calc, so any contraption, hand-glued ones too, not only
+  an Autobuild's schematic); the copy put at the owner's place and moved by velocity; the old part-by-part copy of
+  contraption parts left out; the copy's parts mapped to the owner's object numbers; and the build object kept free
+  for the player's own Autobuild (made between the player's builds, or a second build object).

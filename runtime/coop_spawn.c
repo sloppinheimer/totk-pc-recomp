@@ -915,6 +915,15 @@ int coop_hook(Cpu *c, uint64_t addr) {
     if (addr == MOD_MAIN_BASE + 0x916860) return beam_hook(c, addr);
     // contraption-sync.md Phase 0 tests (coop_autobuild.c coop_phase0_hook): a fan's push, the velocity and impulse
     // writes it makes, the on/off node's calc and setter and the two gauge charges
+    // the Autobuild ability's update (main+0x9a2c00, x0 the ability): kept, so the other game can build with it
+    // (coop_autobuild.c coop_ab_ability)
+    if (addr == MOD_MAIN_BASE + 0x9a2c00) {
+        extern _Atomic uint64_t coop_ab_ability;
+        uint64_t was = atomic_exchange(&coop_ab_ability, c->x[0]);
+        if (was != c->x[0]) rt_log("coop: autobuild: the Autobuild ability is %llx (its build object %llx, its menu object %llx)",
+                                   (unsigned long long)c->x[0], (unsigned long long)rd_ptr(c->x[0] + 0x51f0), (unsigned long long)rd_ptr(c->x[0] + 0x51f8));
+        return 0;
+    }
     if (addr == MOD_MAIN_BASE + 0x2487104 || addr == MOD_MAIN_BASE + 0x567750 || addr == MOD_MAIN_BASE + 0x29ae114 ||
         addr == MOD_MAIN_BASE + 0x1fa4ca8 || addr == MOD_MAIN_BASE + 0x1fa4ed4 || addr == MOD_MAIN_BASE + 0x9f9088 ||
         addr == MOD_MAIN_BASE + 0x9fad68) { int coop_phase0_hook(Cpu *c, uint64_t addr); return coop_phase0_hook(c, addr); }

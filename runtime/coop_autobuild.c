@@ -824,6 +824,47 @@ uint8_t coop_ab_cai[0x1820];   // the whole CmbAct: parts from +0xc, bond record
 // stepped, +0x4d10+0x220 cleared, the +0x4f48 used entries put back on the free list at +0x4f58), then per part an entry
 // from the pool at +0x1b0 (main+0x1d3cfc8) with the record's +0x98 and +0xd8, its +0x90 and +0x94, the record's +0xd7
 // and +0x117 cleared; then main+0x1d3b470.
+// TOTK_COOP_TEST_ABSAVE=<s>,<file> (game A, after a build kept with TOTK_COOP_TEST_CREATEDUMP=1): at that time its
+// blueprint (the whole CmbAct) and the build's base matrix (BuildObject +0x120) written to <file>.
+// TOTK_COOP_TEST_ABLOAD=<s>,<file> (game B, which has built nothing): at that time this game's own Autobuild build
+// object ([ability +0x51f0], the ability caught in its update) taken as the one to build with, the file's blueprint
+// kept as if built here and its base matrix put in the object, so TOTK_COOP_TEST_REBUILD and REBUILDGO make A's
+// contraption here. A test of building another game's contraption with the game's own Autobuild; the file stands in
+// for the network.
+extern _Atomic uint64_t coop_ab_ability;
+static void abfile_test(void) {
+    for (int mode = 0; mode < 2; mode++) {
+        static double at[2] = {-1, -1};
+        static char path[2][260];
+        const char *name = mode ? "TOTK_COOP_TEST_ABLOAD" : "TOTK_COOP_TEST_ABSAVE";
+        if (at[mode] < 0) {
+            const char *e = cfg_get(name), *k = e ? strchr(e, ',') : NULL;
+            at[mode] = e && k ? atof(e) : 0;
+            if (k) snprintf(path[mode], sizeof path[mode], "%s", k + 1);
+        }
+        if (at[mode] <= 0 || frame_step_world_us() / 1e6 < at[mode]) continue;
+        at[mode] = 0;
+        float m[12];
+        if (!mode) {
+            if (!coop_ab_obj || !coop_ab_cai[9] || !coop_rd(coop_ab_obj + 0x120, m, sizeof m)) { rt_log("coop: test: absave: no build kept"); continue; }
+            FILE *f = fopen(path[0], "wb");
+            int ok = f && fwrite(coop_ab_cai, sizeof coop_ab_cai, 1, f) == 1 && fwrite(m, sizeof m, 1, f) == 1;
+            if (f) fclose(f);
+            rt_log("coop: test: absave: %s: blueprint (%u parts, %u bonds) and base at %.2f %.2f %.2f: %d", path[0], coop_ab_cai[9], coop_ab_cai[10], m[3], m[7], m[11], ok);
+            continue;
+        }
+        uint64_t ab = atomic_load(&coop_ab_ability), o = ab ? coop_rd_ptr(ab + 0x51f0) : 0;
+        FILE *f = fopen(path[1], "rb");
+        int ok = f && fread(coop_ab_cai, sizeof coop_ab_cai, 1, f) == 1 && fread(m, sizeof m, 1, f) == 1;
+        if (f) fclose(f);
+        if (!ok || !o) { rt_log("coop: test: abload: %s read %d, build object %llx: nothing", path[1], ok, (unsigned long long)o); continue; }
+        if (!coop_rd_ptr(o + 0x3c50)) ST64(o + 0x3c50, o + 0xc50);   // (the blueprint buffer, as a load sets it)
+        memcpy((void *)(uintptr_t)(o + 0x120), m, sizeof m);
+        coop_ab_obj = o;
+        rt_log("coop: test: abload: %s: blueprint (%u parts, %u bonds) and base %.2f %.2f %.2f into this game's build object %llx (blueprint at %llx)",
+               path[1], coop_ab_cai[9], coop_ab_cai[10], m[3], m[7], m[11], (unsigned long long)o, (unsigned long long)coop_rd_ptr(o + 0x3c50));
+    }
+}
 static void rebuild_test(Cpu *c) {
     static double at = -1;
     if (at < 0) { const char *e = cfg_get("TOTK_COOP_TEST_REBUILD"); at = e ? atof(e) : 0; }
@@ -1673,6 +1714,46 @@ static void bondq_test(int n) {
         st = 2;
     }
 }
+// TOTK_COOP_TEST_FINDAB=<s>: at that time, where this game's Autobuild ability is (the Ultrahand part, vtable
+// main+0x3695798, 0xd0b8 bytes; the Autobuild's build object hangs at its +0x51f0): searched from this Link, its first
+// 0x2000 bytes and each component's first 0x800, as a direct pointer to the part or one pointer away (an object whose
+// +0x80 or +0x88 is it, as the power system's). Each place logged, with the part's +0x51f0 and the build object kept
+// by a build here (coop_ab_obj), to compare.
+_Atomic uint64_t coop_ab_ability;   // this game's Autobuild ability, from its update (coop_spawn.c coop_hook)
+static int is_uh_part(uint64_t p) {   // the Autobuild ability (vtable main+0x3695200: its update main+0x9a2c00 at +0x38)
+    return p && !(p & 7) && p > 0x100000000ull && p < 0x8000000000ull && coop_rd_ptr(p) == MOD_MAIN_BASE + 0x3695200;
+}
+static uint64_t ab_via(uint64_t q) {   // q itself, or an object q points to within its first 0x400 bytes
+    if (is_uh_part(q)) return q;
+    if (!q || (q & 7) || q < 0x100000000ull || q >= 0x8000000000ull) return 0;
+    for (uint64_t o = 0; o < 0x400; o += 8) { uint64_t r = coop_rd_ptr(q + o); if (is_uh_part(r)) return r; }
+    return 0;
+}
+static void findab_test(uint64_t me) {
+    static double at = -1;
+    if (at < 0) at = cfg_at("TOTK_COOP_TEST_FINDAB", NULL);
+    if (at <= 0 || !me || frame_step_world_us() / 1e6 < at) return;
+    at = 0;
+    int found = 0;
+    uint64_t tab = coop_rd_ptr(me + 0x228);
+    for (int src = -1; src < 0x200 && found < 12; src++) {
+        uint64_t base = src < 0 ? me : coop_rd_ptr(tab + 8 * (uint64_t)src);
+        uint64_t len = src < 0 ? 0x2000 : 0x800;
+        if (!base || (src >= 0 && !tab)) continue;
+        for (uint64_t off = 0; off < len && found < 12; off += 8) {
+            uint64_t q = coop_rd_ptr(base + off);
+            if (!q || (q & 7) || q < 0x100000000ull || q >= 0x8000000000ull) continue;
+            uint64_t part = ab_via(q);
+            const char *how = is_uh_part(q) ? "direct" : "one pointer on";
+            if (!part) continue;
+            rt_log("coop: test: findab: %s%#x +%#llx: the Autobuild ability %llx (%s); its +0x51f0 %llx, +0x51f8 %llx; this game's build object %llx",
+                   src < 0 ? "Link" : "component ", src < 0 ? 0 : src * 8, (unsigned long long)off, (unsigned long long)part, how,
+                   (unsigned long long)coop_rd_ptr(part + 0x51f0), (unsigned long long)coop_rd_ptr(part + 0x51f8), (unsigned long long)coop_ab_obj);
+            found++;
+        }
+    }
+    rt_log("coop: test: findab: %d places", found);
+}
 static void phase0_tick(Cpu *c, int n) {
     recbuild_test(c, n);
     bondq_test(n);
@@ -1737,6 +1818,7 @@ void coop_autobuild_tick(Cpu *c, uint64_t me) {
         for (int i = 0; i < atomic_load(&tracked_n) && i < TRACK_N; i++)
             if (live_device(i, nm, sizeof nm) && !strcmp(nm, "SpObj_WindGenerator_A_01")) { coop_fan_actor = fanhit_target(atomic_load(&tracked[i])); break; }
     }
+    abfile_test();
     rebuild_test(c);
     rebuild_ok(c);
     compdump_test(atomic_load(&tracked_n) < TRACK_N ? atomic_load(&tracked_n) : TRACK_N);
@@ -1758,6 +1840,7 @@ void coop_autobuild_tick(Cpu *c, uint64_t me) {
     if (n > TRACK_N) n = TRACK_N;
     if (n) serial_test(c, n);
     phase0_tick(c, n);
+    findab_test(me);
     rebuild_go_log();
     partcmp_test(n);
     rebuild_go_watch();
