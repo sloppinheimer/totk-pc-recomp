@@ -1312,3 +1312,63 @@ prevent. The earlier switching (the hit's toggle bit) is back in place: on works
 and only a build's first owner sends its records. 6.2's single table needs whoever runs a build to send its versions,
 which is P4. So 25.4 changes: milestone 1 is what this section confirmed plus device switching; the registry moves to
 milestone 2 with P4, as one rewrite of the contraption half of coop_autobuild.c into its own file.
+
+## 27. The rebuilt core (agreed with the tester, 2026-11-09)
+Not a restart. What was measured stays as it is: the history record and the Autobuild copy (7), the rigid-field drive
+(3), the gates G1 and G4, the stand-in veto, the touch hand-over, the contraption channel. What is rebuilt is the part
+of coop_autobuild.c that holds contraptions, because its shape is what section 14 set out to remove: two tables
+(own_c, "mine"; bp_in, "copies of theirs") with the same logic written twice, only a build's first owner sending its
+structure, and a copy that changes shape in another game being re-keyed and made again there (CBOW).
+
+### 27.1 Files
+- `runtime/coop_ctn.c` (new): the registry, records and versions, copy creation, the drive, device state, authority,
+  the gates' "is this a follower" answers. `runtime/coop_ctn.h`: what other files call.
+- `runtime/coop_autobuild.c`: keeps the Autobuild experiments and test switches only.
+- The names other files call (`coop_contraption_made`, `_follower`, `_ident`, `_find`, `_owns`, `coop_g1`) stay.
+
+### 27.2 One entry per build, in every game
+| Field | Meaning |
+|---|---|
+| cid | {minter incarnation u64, serial u32}, minted once by the game that first records the build (6.1) |
+| runner, epoch | the incarnation whose game simulates it now, and the count of its changes (5) |
+| role here | RUN (this game simulates it) or FOLLOW |
+| v, shape | the version this game holds: a count kept across runners, and the record's shape hash (6.5) |
+| record | the CmbAct, its centre, and for each part the minter's object number while the part is still the minter's original |
+| parts | this game's actor for each record part, in record order: uid = record index for this version |
+| local state | NONE, ASSEMBLING, MAKING, LIVE, REMAKING (old parts leaving) |
+| stream, drive | the runner's last three root samples, the clock offset, the drive's state (3) |
+| devices | which parts have a switch, which are on at the runner, and who pays (8) |
+| touched | this game's player holds or steers it |
+
+### 27.3 Rules
+- **R1 The runner sends the structure.** Whichever game runs a build records it at phase 0 every 2 s. A changed shape
+  is version v + 1. It is sent to every game. This holds for a build minted elsewhere too.
+- **R2 Everyone else applies it.** A game that does not run the build and holds an older version makes the copy if it
+  has no parts, or deletes its parts and makes it again (REMAKE, 6.6) if it has. The minter's original actors are
+  deleted like any others when a newer version comes from another runner; from then on the minter holds a copy.
+- **R3 A change made on a follower.** When a follower's parts stop being one group of the record's size for 1 s: if
+  this game's player caused it (holding it, or Ultrahand within 2 s), this game asks to run the build (TAKE) and,
+  once granted, R1 sends the new version under the same cid. Otherwise the copy is made again from the runner's
+  version. This replaces CBOW, given_away and adopt_tick. EDIT_REQ (6.7) can replace the TAKE later without
+  changing the entry.
+- **R4 Pieces.** After a split the largest piece keeps the cid (a tie: the piece holding record part 0). Each other
+  piece of two parts or more is minted by the runner as a new build that it runs. A merge keeps the larger build's cid.
+- **R5 Identity never comes from position or from a group pointer.** A group is known by the registry entry most of
+  its member actors belong to; record parts are ordered as the game's writer orders them (26).
+- **R6 Silence deletes nothing** (I7): an entry leaves only on RETIRE from its runner, or when its runner's game
+  leaves and no other game holds it.
+
+### 27.4 Messages (on the contraption channel, 12.4)
+| Message | Reliable | Content |
+|---|---|---|
+| VERSION | yes, in order | cid, epoch, v, shape, centre, object numbers, the record in 1,100-byte pieces |
+| STATE | latest only, 30 a second | cid, epoch, v, runner clock, root matrix, switch and on bits, who pays, rest flag |
+| TAKE / GRANT | yes | cid, epoch wanted / given, to whom |
+| TOGGLE | yes | cid, part, wanted on or off, from |
+| RETIRE | yes | cid |
+The "CB??" packets on the hit channel (CBBP, CBMV, CBAU, CBOW, CBTG) go.
+
+### 27.5 Order of work
+1. The device read of 26 finished and written into the notes (three readers).
+2. coop_ctn.c written whole from the table and rules above; the measured pieces moved in unchanged.
+3. One build, one gate run, then the play-test.
