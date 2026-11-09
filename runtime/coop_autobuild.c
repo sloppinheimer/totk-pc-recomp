@@ -1680,6 +1680,7 @@ static void dev_follow_parts(const uint64_t *parts, int n, uint32_t sw, uint32_t
 }
 // A root body driven toward a pose by velocity: the sender's speed from its last two poses, the gap closed in a sixth
 // of a second, the turn left by the angular velocity (small angles). cur: where the body is now.
+static __thread int sync_writing;   // the drive's own body writes run with this set (G1 lets them through)
 static int drive_root(Cpu *c, uint64_t root, float pose[2][12], const int64_t us[2], int64_t local, int64_t now, float cur[12], float v[3]) {
     uint64_t body = main_body_of(root);
     v[0] = v[1] = v[2] = 0;
@@ -1696,14 +1697,17 @@ static int drive_root(Cpu *c, uint64_t root, float pose[2][12], const int64_t us
     for (int r = 0; r < 3; r++)
         for (int q = 0; q < 3; q++) e[r * 3 + q] = m1[r * 4] * cur[q * 4] + m1[r * 4 + 1] * cur[q * 4 + 1] + m1[r * 4 + 2] * cur[q * 4 + 2];
     ang[0] = 0.5f * (e[7] - e[5]) * 6.0f, ang[1] = 0.5f * (e[2] - e[6]) * 6.0f, ang[2] = 0.5f * (e[3] - e[1]) * 6.0f;
+    sync_writing = 1;
     coop_guest_call(c, MOD_MAIN_BASE + 0x567750, body, (uint64_t)(uintptr_t)lin, 0, 0);   // SetLinearVelocity
     coop_guest_call(c, MOD_MAIN_BASE + 0x25a1f0, body, (uint64_t)(uintptr_t)ang, 0, 0);   // SetAngularVelocity
+    sync_writing = 0;
     return 1;
 }
 // The parts whose motion another game runs (copies run elsewhere, my contraptions run elsewhere): their devices'
 // pushes are skipped here (coop_phase0_hook), the game that runs them pushes. Rebuilt each co-op tick (bp_follow).
 #define DRIVEN_N 64
 static _Atomic uint64_t driven[DRIVEN_N];
+static _Atomic uint64_t driven_body[DRIVEN_N];   // their main bodies (G1)
 static int contraption_driven(uint64_t a) {
     for (int i = 0; a && i < DRIVEN_N; i++)
         if (atomic_load_explicit(&driven[i], memory_order_relaxed) == a) return 1;
@@ -1739,6 +1743,7 @@ static void driven_rebuild(void) {
     }
     plat_mutex_unlock(&bp_lock);
     for (int i = 0; i < DRIVEN_N; i++) atomic_store_explicit(&driven[i], i < n ? l[i] : 0, memory_order_relaxed);
+    for (int i = 0; i < DRIVEN_N; i++) atomic_store_explicit(&driven_body[i], i < n ? main_body_of(l[i]) : 0, memory_order_relaxed);
     for (int i = 0; i < DRIVEN_N; i++) atomic_store_explicit(&nocharge[i], i < nb ? b[i] : 0, memory_order_relaxed);
 }
 static void mirror_tick(Cpu *c, int64_t now);
@@ -1748,8 +1753,46 @@ static int follow_mode(void) {   // TOTK_COOP_FOLLOW=root: HEAD's root drive; el
     if (m < 0) { const char *e = cfg_get("TOTK_COOP_FOLLOW"); m = e && !strcmp(e, "root") ? 0 : 1; }
     return m;
 }
+// The clean-run line (plan 15.1 H4), every 10 s while contraption sync is on: each count is 0 in a clean run, whatever
+// the run tests, so a mistake anywhere shows in any test. Refused deaths of follower parts (G4), copies whose parts are
+// not one whole group, copy parts gone or dying, failed co-op reads of copy parts, contraption channel drops.
+static void clean_line(int64_t now) {
+    static int64_t last;
+    if (now - last < 10000000) return;
+    last = now;
+    uint32_t coop_life_refused(void);
+    int copies = 0, not_whole = 0, dead = 0, unread = 0;
+    plat_mutex_lock(&bp_lock);
+    for (int k = 0; k < BP_IN; k++) {
+        if ((bp_in[k].made != 2 && bp_in[k].made != 4) || !bp_in[k].ncopy) continue;
+        copies++;
+        uint64_t g0 = 0;
+        int whole = 1;
+        for (int r = 0; r < bp_in[k].ncopy && r < 21; r++) {
+            uint64_t a = bp_in[k].copy[r], t = 0, spr = 0, g = 0;
+            int32_t st = 0;
+            if (!a || !coop_rd(a + 0x24, &st, 4) || !coop_rd(a + 0x228, &t, 8) || !coop_rd(t + 0x480, &spr, 8) || !coop_rd(spr + 0x28, &g, 8)) { unread++, whole = 0; continue; }
+            if (st < 2 || st > 6) dead++;
+            if (!g || (r && g != g0)) whole = 0;
+            if (!r) g0 = g;
+        }
+        uint32_t gn = 0;
+        if (whole && g0 && coop_rd(g0 + 0x58, &gn, 4) && (int)gn != bp_in[k].ncopy) whole = 0;
+        not_whole += !whole;
+    }
+    plat_mutex_unlock(&bp_lock);
+    uint32_t od = 0, idr = 0;
+    coop_net_ctr_drops(&od, &idr);
+    uint32_t g1[9];
+    void coop_g1_counts(uint32_t out[9]);
+    coop_g1_counts(g1);
+    rt_log("coop: clean: %.0f s: %d copies; refused deaths %u, copies not whole %d, copy parts gone %d, unreadable %d, channel drops %u/%u; "
+           "writes kept off followers (G1): velocity %u/%u/%u, impulse %u/%u/%u, force %u/%u, transform %u",
+           now / 1e6, copies, coop_life_refused(), not_whole, dead, unread, od, idr, g1[0], g1[1], g1[2], g1[3], g1[4], g1[5], g1[6], g1[7], g1[8]);
+}
 static void bp_follow(Cpu *c) {   // the other games, from the co-op tick: each copy's root driven toward its owner's
     int64_t now = frame_step_world_us();
+    clean_line(now);
     mirror_tick(c, now);
     static int64_t last;
     double dt = last && now > last ? (now - last) / 1e6 : 1 / 30.0;
@@ -1981,22 +2024,37 @@ static int follow_rigid(Cpu *c, int k, int64_t now, float *err_out) {
     }
     clamp_vec(cv, 3.0f), clamp_vec(cw, 2.5f);
     _Alignas(16) float V[4] = {v_star[0] + cv[0] + fs->comp[0], v_star[1] + cv[1] + fs->comp[1], v_star[2] + cv[2] + fs->comp[2], 0}, W[4] = {w_r[0] + cw[0], w_r[1] + cw[1], w_r[2] + cw[2], 0};
+    // The setters skip a value equal to the body's stored one (unless body flag 44/45), so a copy held still by the same
+    // velocity each frame fell asleep and stayed where it dozed off, 27 cm from its place. A dither of 2e-4 m/s
+    // (rad/s), alternating each frame, makes every write a change and keeps the bodies awake.
+    static int parity;
+    float dz = (parity ^= 1) ? 2e-4f : -2e-4f;
+    W[0] += dz, W[1] += dz, W[2] += dz;
     for (int j = 0; j < np; j++) {
         uint64_t b = main_body_of(parts[j]);
         float m[12];
         if (!b || !coop_rd(b + 0x98, m, sizeof m)) continue;
         float d[3] = {m[3] - root[3], m[7] - root[7], m[11] - root[11]};
-        _Alignas(16) float vj[4] = {V[0] + W[1] * d[2] - W[2] * d[1], V[1] + W[2] * d[0] - W[0] * d[2], V[2] + W[0] * d[1] - W[1] * d[0], 0};
+        _Alignas(16) float vj[4] = {V[0] + W[1] * d[2] - W[2] * d[1] + dz, V[1] + W[2] * d[0] - W[0] * d[2] + dz, V[2] + W[0] * d[1] - W[1] * d[0] + dz, 0};
+        sync_writing = 1;
         coop_guest_call(c, MOD_MAIN_BASE + 0x567750, b, (uint64_t)(uintptr_t)vj, 0, 0);   // SetLinearVelocity
         coop_guest_call(c, MOD_MAIN_BASE + 0x25a1f0, b, (uint64_t)(uintptr_t)W, 0, 0);    // SetAngularVelocity
+        sync_writing = 0;
         fs->v_written[j][0] = vj[0], fs->v_written[j][1] = vj[1], fs->v_written[j][2] = vj[2];
     }
     fs->have_written = 1;
     static int64_t said;
     if (now - said > 500000) {
         said = now;
-        rt_log("coop: follow: %.2f s copy %08x: error %.3f m %.1f deg, age %.3f s, v* %.2f %.2f %.2f, V %.2f %.2f %.2f, gc %.3f, I %.2f %.2f %.2f",
-               now / 1e6, bp_in[k].key, ep, er * deg, age, v_star[0], v_star[1], v_star[2], V[0], V[1], V[2], fs->gc, fs->integ[0], fs->integ[1], fs->integ[2]);
+        float vb[3] = {0}, f68 = 0;
+        uint64_t flags = 0;
+        coop_rd(rb + 0xf8, vb, sizeof vb), coop_rd(rb + 0x68, &flags, 8);
+        uint64_t in_world = coop_rd_ptr(rb + 0x70), req = coop_rd_ptr(rb + 0x60);
+        (void)f68;
+        rt_log("coop: follow: %.2f s copy %08x: error %.3f m (%.3f %.3f %.3f) %.1f deg, age %.3f s, v* %.2f %.2f %.2f, V %.2f %.2f %.2f, gc %.3f, "
+               "I %.2f %.2f %.2f; root y %.3f, its velocity %.2f %.2f %.2f, flags %#llx, +0x70 %llx, request %llx, target y %.3f",
+               now / 1e6, bp_in[k].key, ep, e_p[0], e_p[1], e_p[2], er * deg, age, v_star[0], v_star[1], v_star[2], V[0], V[1], V[2], fs->gc,
+               fs->integ[0], fs->integ[1], fs->integ[2], root[7], vb[0], vb[1], vb[2], (unsigned long long)flags, (unsigned long long)in_world, (unsigned long long)req, p_star[1]);
     }
     return 1;
 }
@@ -2045,7 +2103,8 @@ static void mirror_pose(const MvPacket *p) {
 
 // The scene the original goes through (relative to TOTK_COOP_TEST_MIRROR_SCENE), written to every part of it as one
 // rigid motion about its root; at rest and after the drop it is left to its own physics.
-static const struct { double t; const char *name; float v[3], w[3]; int mode; } scene[] = {   // mode 0 free, 1 driven, 3 kicked once
+static const struct { double t; const char *name; float v[3], w[3]; int mode; } scene[] = {   // mode 0 free, 1 driven, 3 kicked
+    // once, 4 its devices turned on (then free), 5 turned off
     {0, "rest", {0}, {0}, 0},
     {4, "lift", {0, 0.75f, 0}, {0}, 1},
     {6, "carry 3", {3, 0, 0}, {0}, 1},
@@ -2055,7 +2114,9 @@ static const struct { double t; const char *name; float v[3], w[3]; int mode; } 
     {15, "turn", {0}, {0, 1.5f, 0}, 1},
     {18, "drop and tumble", {0}, {3, 0, 0}, 3},
     {25, "rest after", {0}, {0}, 0},
-    {31, "end", {0}, {0}, -1},
+    {31, "fans on", {0}, {0}, 4},
+    {37, "fans off", {0}, {0}, 5},
+    {41, "end", {0}, {0}, -1},
 };
 static int scene_at(double t) {
     int i = 0;
@@ -2097,6 +2158,11 @@ static void mirror_scene(Cpu *c, int64_t now) {
         last_i = i;
         rt_log("coop: mirror: scene %.1f s: %s", t, i >= 0 ? scene[i].name : "over");
         if (i >= 0 && scene[i].mode == 3) rigid_write(c, parts, n, scene[i].v, scene[i].w);   // (the kick, once)
+        if (i >= 0 && (scene[i].mode == 4 || scene[i].mode == 5)) {   // the devices on or off, as a hit asks (once)
+            int on = 0, first = -1;
+            for (int j = 0; j < n; j++) if (part_switch(parts[j])) { on |= part_on(parts[j]); if (first < 0) first = j; }
+            if (first >= 0 && on != (scene[i].mode == 4)) group_toggle(parts, n, first);
+        }
     }
     scene_name = i >= 0 ? scene[i].name : "";
     if (i >= 0 && scene[i].mode == 1) {   // (a step takes 29 m/s^2 x 1/60 s off the vertical velocity written: added, X1)
@@ -2179,7 +2245,7 @@ static void mirror_tick(Cpu *c, int64_t now) {
         } else
             i++;
     mirror_scene(c, now);
-    if (scene_t0 > 0 && now / 1e6 > scene_t0 + 31 && ms.n) ms_flush();
+    if (scene_t0 > 0 && now / 1e6 > scene_t0 + 41 && ms.n) ms_flush();
     // the root drive's case (TOTK_COOP_FOLLOW=root) has no follow_rigid to measure from: here
     if (follow_mode() == 0)
         for (int k = 0; k < BP_IN; k++)
@@ -2616,7 +2682,12 @@ static void bp_make(Cpu *c) {
     // The Autobuild ability is a game manager made at boot whatever the save ([main+0x3a62ef0], coop_life.c): no need
     // to wait for its update to run, which a save before Autobuild may never do (contraption-sync-v3.md, X6).
     uint64_t coop_life_ability(void);
-    uint64_t ab = coop_life_ability(), o = ab ? coop_rd_ptr(ab + 0x51f0) : 0;
+    // Copies are made with the ability's build object (+0x51f0), which exists on every save (X6). TOTK_COOP_COPY_OBJ=menu:
+    // with the Autobuild menu's thumbnail object (+0x51f8) instead, its thumbnail flag (+0x3c80) cleared while a copy is
+    // made and put back after the confirm (plan 7.2 variant; a test: the menu may use that object meanwhile).
+    static int own_obj = -1;
+    if (own_obj < 0) { const char *e = cfg_get("TOTK_COOP_COPY_OBJ"); own_obj = !(e && !strcmp(e, "menu")); }
+    uint64_t ab = coop_life_ability(), o = ab ? coop_rd_ptr(ab + (own_obj ? 0x51f0 : 0x51f8)) : 0;
     if (!o) return;
     uint64_t list = coop_rd_ptr(o + 0x1b8);
     int32_t ne = 0;
@@ -2687,6 +2758,7 @@ static void bp_make(Cpu *c) {
             ST8(rr + 0xd7, 0), ST64(e, rr + 0x98), ST8(rr + 0x117, 0), ST64(e + 8, rr + 0xd8);
             ST32(e + 0x10, LD32(rr + 0x90)), ST32(e + 0x14, LD32(rr + 0x94));
         }
+        if (!own_obj) ST8(o + 0x3c80, 0);   // (real parts, not thumbnails: put back after the confirm)
         coop_guest_call(c, MOD_MAIN_BASE + 0x1d3b470, o, 0, 0, 0);
         mk.slot = k, mk.st = 1, mk.t = now, mk.n = 0;
         rt_log("coop: contraption: player %d's %08x (%d parts): being made here at %.2f %.2f %.2f", bp_in[k].from, bp_in[k].key, n,
@@ -2701,7 +2773,10 @@ static void bp_make(Cpu *c) {
             if (!ent || coop_handle_status((const uint8_t *)(uintptr_t)(ent + 0x60)) != 3) ready = 0;
         }
         if (!ready) {
-            if (now - mk.t > 6000000) rt_log("coop: contraption: player %d's %08x: its parts were not made in 6 s", bp_in[k].from, bp_in[k].key), bp_in[k].made = 3, mk.st = 0;
+            if (now - mk.t > 6000000) {
+                rt_log("coop: contraption: player %d's %08x: its parts were not made in 6 s", bp_in[k].from, bp_in[k].key), bp_in[k].made = 3, mk.st = 0;
+                if (!own_obj) ST8(o + 0x3c80, 1);
+            }
             return;
         }
         static _Alignas(16) uint8_t tmp[21][0x40];
@@ -2741,6 +2816,7 @@ static void bp_make(Cpu *c) {
         coop_life_free_confirm(1);   // (its Zonaite charge skipped too: zeroed costs alone still go through the item routine)
         uint64_t r = coop_guest_call(c, MOD_MAIN_BASE + 0x1d3c0d4, o, 0, 0, 0);
         coop_life_free_confirm(0);
+        if (!own_obj) ST8(o + 0x3c80, 1);   // (the menu's thumbnail object again)
         for (int j = 0; j < ncost; j++) ST32(costs_at[j] + 0x48, costs_were[j]);
         for (int i = 0; i < mk.n; i++) {   // the confirm's mark without its green (given once in a group, below)
             uint64_t spr = mk.parts[i] ? coop_rd_ptr(coop_rd_ptr(mk.parts[i] + 0x228) + 0x480) : 0;
@@ -2838,6 +2914,58 @@ int coop_contraption_follower(uint64_t a) {
     plat_mutex_unlock(&bp_lock);
     return yes;
 }
+// G1 (contraption-sync-v3.md section 4): a core body of a part another game runs is written only by the drive here.
+// Every other write to it is dropped: the velocity setters main+0x567750, 0x25a1f0, 0x40e490, the impulses
+// main+0x44be18, 0x29ae114, 0x29ae7a8, the force writes main+0x29ae7fc, 0x29a4afc and SetTransform main+0x25a450, so
+// devices, hits and pushes move a contraption only in the game that runs it. Passed: the drive's own writes
+// (sync_writing), the spring's two launches (from main+0x221a9bc and 0x221aa10: the Link on a follower's spring is
+// launched natively, plan G1), and a part this game's player holds with Ultrahand (SPR +0x20 bit 16; until P3's touch
+// words, so a grab on another player's contraption moves it here while the hand-over is under way).
+// TOTK_COOP_G1=0: off. Counted per function for the clean line and X5.
+static _Atomic uint32_t g1_dropped[10];
+static const uint64_t g1_fns[10] = {0x567750, 0x25a1f0, 0x40e490, 0x44be18, 0x29ae114, 0x29ae7a8, 0x29ae7fc, 0x29a4afc, 0x25a450, 0};
+int coop_g1(Cpu *c, uint64_t off) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_G1"); on = contraption_on() && !(e && *e == '0'); }
+    if (!on || sync_writing) return 0;
+    uint64_t body = c->x[0];
+    int k = -1, hit = 0;
+    for (int i = 0; i < 9 && k < 0; i++) if (g1_fns[i] == off) k = i;
+    if (k < 0 || !body) return 0;
+    for (int i = 0; i < DRIVEN_N && !hit; i++) {
+        uint64_t b = atomic_load_explicit(&driven_body[i], memory_order_relaxed);
+        if (!b) break;
+        if (b == body) hit = i + 1;
+    }
+    if (!hit) return 0;
+    uint64_t lr = c->x[30] - MOD_MAIN_BASE;
+    if (lr == 0x221a9c0 || lr == 0x221aa14) return 0;   // (the spring's launches: returns after main+0x221a9bc / 0x221aa10)
+    uint64_t actor = atomic_load_explicit(&driven[hit - 1], memory_order_relaxed);
+    uint64_t spr = actor ? coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x480) : 0, f20 = 0;
+    if (spr && coop_rd(spr + 0x20, &f20, 8) && (f20 >> 16 & 1)) return 0;   // (held here)
+    atomic_fetch_add(&g1_dropped[k], 1);
+    {   // each (function, caller) the first time, with the caller's caller: which game code writes to followers
+        static struct { uint64_t off, lr; } seen[48];
+        static PlatMutex sl = PLAT_MUTEX_INIT;
+        int fresh = 0;
+        plat_mutex_lock(&sl);
+        for (int i = 0; i < 48; i++) {
+            if (seen[i].off == off && seen[i].lr == lr) break;
+            if (!seen[i].off) { seen[i].off = off, seen[i].lr = lr, fresh = 1; break; }
+        }
+        plat_mutex_unlock(&sl);
+        if (fresh) {
+            uint64_t fp = c->x[29], lr1 = fp ? coop_rd_ptr(fp + 8) : 0, fp2 = fp ? coop_rd_ptr(fp) : 0, lr2 = fp2 ? coop_rd_ptr(fp2 + 8) : 0;
+            char nm[48];
+            rt_log("coop: g1: main+%#llx on a follower's body (%s) from main+%#llx <- %#llx <- %#llx: dropped", (unsigned long long)off,
+                   coop_actor_name(actor, nm, sizeof nm), (unsigned long long)lr, (unsigned long long)(lr1 ? lr1 - MOD_MAIN_BASE : 0),
+                   (unsigned long long)(lr2 ? lr2 - MOD_MAIN_BASE : 0));
+        }
+    }
+    c->x[0] = 0;
+    return 1;
+}
+void coop_g1_counts(uint32_t out[9]) { for (int i = 0; i < 9; i++) out[i] = atomic_load(&g1_dropped[i]); }
 // TOTK_COOP_TEST_REBUILDGOIN=gamedata: the rebuild's confirm (and the history writer, TOTK_COOP_TEST_SERIAL) run from
 // GameDataMgr::calc instead, at actor phase 0 (coop_spawn.c coop_hook)
 void coop_autobuild_seq_calc(Cpu *c) {

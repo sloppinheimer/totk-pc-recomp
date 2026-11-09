@@ -1202,3 +1202,28 @@ bond-strain check, glue messages posted to a part); G4 (coop_life.c: a follower 
 
 Still to do in P1: X4's remaining guard cases (the lapse, a damaged part promoted), X5 (device gates), X14b (stand-in
 collision ignore), and T2 (a Link riding a follower).
+
+### 24.1 P1, second part (2026-11-09)
+- **All remaining plan hooks registered at once** (cpu.h COOP_HOOKED_V3: the G1-G8 gates, the touch hooks of section 5,
+  the stand-in hooks of section 9), dispatched to coop_life.c coop_life_v3, which lets the game run as is until a phase
+  gives a hook its behaviour. Later phases rebuild only the runtime. A full rebuild with 24 jobs takes about 4 minutes.
+- **G1 is on** (coop_autobuild.c coop_g1): every write to a core body of a part another game runs is dropped, except the
+  drive's own, the spring's two launches, and a part this game's player holds (until P3's touch words). In the pair runs
+  it kept off the copy's fan impulses and the wing's own every-frame velocity and force writes (main+0x221d5ac..0x221dbf8,
+  its lift and stabilizer node), with no effect on the copy's shape.
+- **The clean line** (coop_autobuild.c clean_line), every 10 s: refused deaths, copies not whole, copy parts gone,
+  unreadable copy parts, channel drops, and G1's dropped writes by function. Every gate run below logged 0 for every
+  failure count.
+- **The drive** adds an alternating 2e-4 m/s to what it writes, so a write always differs from the body's stored value
+  (the setters skip equal values).
+- **Gate suite** (two games each: devices toggled from the other game, a part taken off, a grab hand-over and carry, a
+  steering-stick hand-over, the channel under load): copies made whole (4 of 4), toggles sent to and decided by the game
+  that runs the contraption, both hand-overs granted, the channel lost and repeated nothing, every clean count 0.
+- **Open: a copy held in mid-air while its runner rests on the ground can stall 0.275 m below its place** in the mirror
+  lab (its root body's stored velocity -3.34 m/s and its place frozen while the drive asks +2.2 m/s up). It is not a
+  regression (the e421be1 build does the same at the same lab setting), not G1, not the build object and not the
+  scenery. It never showed in a pair run, where copy and original rest on the same ground. To check in P3: a runner
+  holding its contraption perfectly still in the air with Ultrahand, the real case closest to it.
+- Still to do in P1: X5 for device kinds other than the fan (it needs builds with them; the in-place bond path of P4
+  can make them), X14b (the stand-in collision ignore), the rest of X4 (the lapse, a damaged part promoted) and T2 (a
+  Link riding a follower).

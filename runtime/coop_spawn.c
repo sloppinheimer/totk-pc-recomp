@@ -914,6 +914,16 @@ static void phase_sample(uint64_t addr) {
 int coop_hook(Cpu *c, uint64_t addr) {
     phase_sample(addr);
     if (addr == MOD_MAIN_BASE + 0x916860) return beam_hook(c, addr);
+    if (addr == MOD_MAIN_BASE + 0x567750 || addr == MOD_MAIN_BASE + 0x25a1f0 || addr == MOD_MAIN_BASE + 0x40e490 ||
+        addr == MOD_MAIN_BASE + 0x44be18 || addr == MOD_MAIN_BASE + 0x29ae114 || addr == MOD_MAIN_BASE + 0x29ae7a8 ||
+        addr == MOD_MAIN_BASE + 0x29ae7fc || addr == MOD_MAIN_BASE + 0x29a4afc || addr == MOD_MAIN_BASE + 0x25a450) {
+        int coop_g1(Cpu *c, uint64_t off);   // G1: writes kept off contraptions another game runs (coop_autobuild.c)
+        if (coop_g1(c, addr - MOD_MAIN_BASE)) return 1;
+    }
+    if (COOP_HOOKED_V3(addr)) {   // contraption sync v3 (coop_life.c)
+        int coop_life_v3(Cpu *c, uint64_t off);
+        return coop_life_v3(c, addr - MOD_MAIN_BASE);
+    }
     // actor lifetime (coop_life.c): the delete and death requests, BondMaker, and the confirm's Zonaite charge
     if (addr == MOD_MAIN_BASE + 0x63baa8 || addr == MOD_MAIN_BASE + 0x63b6b0 || addr == MOD_MAIN_BASE + 0x1953184 ||
         addr == MOD_MAIN_BASE + 0x1b4b738 || addr == MOD_MAIN_BASE + 0x1916830 || addr == MOD_MAIN_BASE + 0x209b754 ||

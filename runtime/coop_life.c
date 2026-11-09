@@ -262,6 +262,8 @@ static int g4_on(void) {
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_G4"); on = !(e && *e == '0'); }
     return on;
 }
+static _Atomic uint32_t g4_refused;   // all refusals since the start (coop_life_refused, the clean-run line)
+uint32_t coop_life_refused(void) { return atomic_load(&g4_refused); }
 static int g4_refuse(Cpu *c, const char *what, uint64_t actor, uint64_t arg) {
     if (!g4_on() || !coop_contraption_follower(actor)) return 0;
     uint64_t lr[4];
@@ -275,6 +277,7 @@ static int g4_refuse(Cpu *c, const char *what, uint64_t actor, uint64_t arg) {
         if (!seen[i].lr) { seen[i].lr = lr[0], seen[i].arg = arg, n = seen[i].n = 1; break; }
     }
     plat_mutex_unlock(&sl);
+    atomic_fetch_add(&g4_refused, 1);
     if (n && (n & (n - 1)) == 0) {
         char nm[48];
         rt_log("coop: g4: %s %llu of a follower part %llx '%s' refused (%u from main+%#llx <- %#llx)", what, (unsigned long long)arg,
@@ -343,4 +346,11 @@ void coop_life_x6_probe(Cpu *c) {
            "(thumbnail flag %u), menu object %llx (thumbnail flag %u)",
            ab, uh, (unsigned long long)a, (unsigned long long)(vt ? vt - MOD_MAIN_BASE : 0), (unsigned long long)o, ot,
            (unsigned long long)t, tt);
+}
+
+// The contraption sync v3 hooks (cpu.h COOP_HOOKED_V3): the gates G1 to G8, the touch hooks of section 5 and the
+// stand-in hooks of section 9. Each phase gives its own their behaviour; until then they let the game run as is.
+int coop_life_v3(Cpu *c, uint64_t off) {
+    (void)c, (void)off;
+    return 0;
 }
