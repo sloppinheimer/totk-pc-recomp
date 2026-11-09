@@ -1327,9 +1327,311 @@ static void rebuild_go_log(void) {
     }
     rt_log("%s", line);
 }
+// ---- Contraption copies made by the game's own Autobuild (docs/coop/contraption-sync.md, Phase 1) -----------------
+// TOTK_COOP_CONTRAPTION=1. The owner records each of its contraptions with the game's history writer (main+0x1913694,
+// from GameDataMgr::calc, where every actor link resolves) and sends the record (a CmbAct: parts, their frames about the
+// contraption's centre, bonds), the centre, and which of its objects each part is. The other game makes it with its own
+// Autobuild build object (the steps Phase 0 found: the part maker main+0x1d3b470, the parts put in the world just
+// before the confirm main+0x1d3c0d4, which runs at actor phase 0 with every cost record at 0, the confirm's mark
+// without the green until the parts share a group), at the owner's place: base matrix [I | centre]. Its old copies of
+// those parts (coop_players.c) are not made, or deleted. Not done yet: following the owner's moves, the device state,
+// a player's own Autobuild while a copy is being made.
+#define BP_KIND 0x50424243u     // "CBBP"
+#define BP_SIZE 0x1818          // a CmbAct: header, 21 parts of 0x118 from +0xc, 21 bonds of 12 from +0x1704, the tail
+#define BP_CHUNK 800           // (coop_world.c reads hit packets into a 968-byte LinkHitPacket: a bigger one is dropped)
+#define BP_CHUNKS ((BP_SIZE + BP_CHUNK - 1) / BP_CHUNK)
+typedef struct {
+    uint32_t kind, key, shape;          // key: the owner's group; shape: a hash of the part names and the bonds
+    uint16_t chunk, chunks, len, pad;
+    float centre[3];
+    uint32_t ids[21];                   // the owner's object number of each record part (0: not one of its objects)
+    uint8_t d[BP_CHUNK];
+} BpPacket;
+_Static_assert(sizeof(BpPacket) <= 968, "BpPacket fits coop_world.c's hit packet buffer");
+static int contraption_on(void) {
+    static int on = -1;
+    if (on < 0) on = cfg_get("TOTK_COOP_CONTRAPTION") && *cfg_get("TOTK_COOP_CONTRAPTION") == '1';
+    return on;
+}
+static uint32_t bp_shape(const uint8_t *r) {   // the structure: names and bonds, not where the parts are
+    uint32_t h = 2166136261u;
+    int parts = r[9] < 21 ? r[9] : 21, bonds = r[10] < 21 ? r[10] : 21;
+    for (int i = 0; i < parts; i++)
+        for (const uint8_t *p = r + 0xc + i * 0x118 + 0x98; *p && p < r + 0xc + i * 0x118 + 0xd8; p++) h = (h ^ *p) * 16777619u;
+    for (int i = 0; i < bonds; i++)
+        for (int b = 0; b < 12; b++) h = (h ^ r[0x1704 + i * 12 + b]) * 16777619u;
+    return h ^ (uint32_t)(parts << 8 | bonds);
+}
+
+int coop_contraption_made(uint64_t a);
+// The owner: every 2 s, each own contraption recorded and sent (from coop_autobuild_seq_calc, actor phase 0).
+static void bp_send(Cpu *c) {
+    static int64_t last;
+    int64_t now = frame_step_world_us();
+    if (now - last < 2000000) return;
+    last = now;
+    int coop_own_sent_objects(uint64_t *out, int max), coop_is_copy(uint64_t a), coop_obj_ident(uint64_t a, int *owner, uint32_t *id);
+    uint64_t own[256], groups[16];
+    int n = coop_own_sent_objects(own, 256), ng = 0;
+    for (int i = 0; i < n; i++) {
+        uint64_t a = own[i], spr = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x480), g = spr ? coop_rd_ptr(spr + 0x28) : 0;
+        if (!g || coop_is_copy(a) || coop_contraption_made(a)) continue;
+        int seen = 0;
+        for (int k = 0; k < ng; k++) seen |= groups[k] == g;
+        if (seen || ng >= 16) continue;
+        groups[ng++] = g;
+        static _Alignas(16) uint8_t link[0x40], rec[0x3000];
+        static _Alignas(16) float align[12] = {1, 0, 0, 0, 1, 0, 0, 0, 1}, info[12];
+        memset(link, 0, sizeof link), memset(rec, 0, sizeof rec), memset(link + 0x10, 0xff, 4), link[0x14] = 1;
+        coop_guest_call(c, MOD_MAIN_BASE + LINK_SET_FN, (uint64_t)(uintptr_t)link, a, 1, 0);
+        uint64_t mgr = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + HISTORY_MGR_SLOT));
+        if (!(serial_call5(c, MOD_MAIN_BASE + HISTORY_WRITE, mgr, (uint64_t)(uintptr_t)link, (uint64_t)(uintptr_t)align, (uint64_t)(uintptr_t)rec,
+                           (uint64_t)(uintptr_t)info) & 1) || rec[9] < 2) continue;
+        // the writer leaves the header to its caller (it wrote only +9 parts and +0xa bonds): magic and version 2, as
+        // the Autobuild's loader checks them (main+0x1d3c164)
+        memcpy(rec, "CmbAct", 6), rec[6] = 0, rec[7] = 0, rec[8] = 2;
+        static BpPacket p;
+        memset(&p, 0, sizeof p);
+        p.kind = BP_KIND, p.key = (uint32_t)(g >> 3), p.shape = bp_shape(rec), p.chunks = BP_CHUNKS;
+        p.centre[0] = -info[3], p.centre[1] = -info[7], p.centre[2] = -info[11];   // (info is [I | -centre])
+        // which own object each record part is: the member whose body is where the part's frame puts it
+        for (int r = 0; r < rec[9] && r < 21; r++) {
+            float f[12], best = 0.05f;
+            memcpy(f, rec + 0xc + r * 0x118, sizeof f);
+            float at[3] = {f[3] + p.centre[0], f[7] + p.centre[1], f[11] + p.centre[2]};
+            for (int j = 0; j < n; j++) {
+                uint64_t b = own[j], s2 = coop_rd_ptr(coop_rd_ptr(b + 0x228) + 0x480);
+                if (!s2 || coop_rd_ptr(s2 + 0x28) != g) continue;
+                uint64_t body = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(b + 0x228) + 0x50) + 0x20) + 0x150);
+                float w[12];
+                if (!body || !coop_rd(body + 0x98, w, sizeof w)) continue;
+                float d = fabsf(w[3] - at[0]) + fabsf(w[7] - at[1]) + fabsf(w[11] - at[2]);
+                int owner = 0;
+                uint32_t id = 0;
+                if (d < best && coop_obj_ident(b, &owner, &id)) best = d, p.ids[r] = id;
+            }
+        }
+        for (int k = 0; k < BP_CHUNKS; k++) {
+            int off = k * BP_CHUNK, len = BP_SIZE - off < BP_CHUNK ? BP_SIZE - off : BP_CHUNK;
+            p.chunk = (uint16_t)k, p.len = (uint16_t)len;
+            memcpy(p.d, rec + off, (size_t)len);
+            coop_net_hit_send(&p, (int)(offsetof(BpPacket, d) + (size_t)len));
+        }
+        static struct { uint32_t key, shape; } said[16];
+        int s = -1;
+        for (int k = 0; k < 16 && s < 0; k++) if (said[k].key == p.key) s = k;
+        if (s < 0) s = (int)(p.key % 16), said[s].key = p.key, said[s].shape = 0;
+        if (said[s].shape != p.shape) {
+            said[s].shape = p.shape;
+            rt_log("coop: contraption: mine %08x (%u parts, %u bonds, shape %08x) sent, centre %.2f %.2f %.2f", p.key, rec[9], rec[10], p.shape,
+                   p.centre[0], p.centre[1], p.centre[2]);
+        }
+    }
+}
+
+// The other games: records put together from their chunks; each new shape made once.
+#define BP_IN 8
+static struct {
+    int from;
+    uint32_t key, shape, have, ids[21];
+    float centre[3];
+    uint8_t rec[BP_SIZE];
+    int complete, made;   // made: 1 being made, 2 made, 3 given up
+} bp_in[BP_IN];
+static PlatMutex bp_lock = PLAT_MUTEX_INIT;
+int coop_contraption_take(const void *data, int n, int from) {   // coop_world.c peer_tick: 1 when it was ours
+    const BpPacket *p = (const BpPacket *)data;
+    if (n < (int)offsetof(BpPacket, d) || p->kind != BP_KIND) return 0;
+    static _Atomic int said;
+    if (atomic_fetch_add(&said, 1) < 10) rt_log("coop: contraption: a record chunk %u/%u from player %d (%d bytes, on %d)", p->chunk, p->chunks, from, n, contraption_on());
+    if (!contraption_on() || p->chunk >= BP_CHUNKS || p->len > BP_CHUNK || n != (int)(offsetof(BpPacket, d) + p->len) ||
+        (size_t)p->chunk * BP_CHUNK + p->len > BP_SIZE)
+        return 1;
+    plat_mutex_lock(&bp_lock);
+    int f = -1, free = -1;
+    for (int k = 0; k < BP_IN && f < 0; k++) {
+        if (bp_in[k].from == from && bp_in[k].key == p->key) f = k;
+        else if (free < 0 && !bp_in[k].from) free = k;
+    }
+    if (f < 0) f = free >= 0 ? free : (int)(p->key % BP_IN), memset(&bp_in[f], 0, sizeof bp_in[f]), bp_in[f].from = from, bp_in[f].key = p->key;
+    if (bp_in[f].shape != p->shape && !bp_in[f].made) bp_in[f].shape = p->shape, bp_in[f].have = 0, bp_in[f].complete = 0;
+    if (bp_in[f].shape == p->shape && !bp_in[f].complete) {
+        memcpy(bp_in[f].rec + p->chunk * BP_CHUNK, p->d, p->len);
+        memcpy(bp_in[f].ids, p->ids, sizeof p->ids), memcpy(bp_in[f].centre, p->centre, sizeof p->centre);
+        bp_in[f].have |= 1u << p->chunk;
+        if (bp_in[f].have == (1u << BP_CHUNKS) - 1) {
+            bp_in[f].complete = 1;
+            rt_log("coop: contraption: player %d's %08x (shape %08x): its record came whole", from, p->key, p->shape);
+        }
+    }
+    plat_mutex_unlock(&bp_lock);
+    return 1;
+}
+// 1: player from's object id is a part of a contraption this game makes with its Autobuild (its old copy not wanted)
+int coop_contraption_owns(int from, uint32_t id) {
+    if (!contraption_on() || !id) return 0;
+    int yes = 0;
+    plat_mutex_lock(&bp_lock);
+    for (int k = 0; k < BP_IN && !yes; k++)
+        if (bp_in[k].from == from && bp_in[k].complete)
+            for (int r = 0; r < 21 && !yes; r++) yes = bp_in[k].ids[r] == id;
+    plat_mutex_unlock(&bp_lock);
+    return yes;
+}
+
+// The parts made here from other players' records: not this game's own (not sent as objects, not recorded and sent
+// back as a contraption of this game's)
+#define MADE_N 128
+static _Atomic uint64_t made_parts[MADE_N];
+static void made_add(uint64_t a) {
+    for (int i = 0; a && i < MADE_N; i++) {
+        uint64_t have = atomic_load(&made_parts[i]);
+        if (have == a) return;
+        if (!have && atomic_compare_exchange_strong(&made_parts[i], &have, a)) return;
+    }
+}
+int coop_contraption_made(uint64_t a) {
+    for (int i = 0; a && i < MADE_N; i++) if (atomic_load(&made_parts[i]) == a) return 1;
+    return 0;
+}
+// Making one (from coop_autobuild_seq_calc, actor phase 0), one at a time, over several frames.
+static struct { int slot, st; int64_t t; uint64_t parts[21]; int n; } mk = {-1, 0, 0, {0}, 0};
+static void bp_make(Cpu *c) {
+    int64_t now = frame_step_world_us();
+    uint64_t ab = atomic_load(&coop_ab_ability), o = ab ? coop_rd_ptr(ab + 0x51f0) : 0;
+    if (!o) return;
+    uint64_t list = coop_rd_ptr(o + 0x1b8);
+    int32_t ne = 0;
+    coop_rd(o + 0x1b0, &ne, 4);
+    if (mk.st == 0) {   // the next complete record not made yet
+        int k = -1;
+        plat_mutex_lock(&bp_lock);
+        for (int i = 0; i < BP_IN && k < 0; i++) if (bp_in[i].complete && !bp_in[i].made) k = i;
+        if (k >= 0) bp_in[k].made = 1;
+        plat_mutex_unlock(&bp_lock);
+        if (k < 0) return;
+        const uint8_t *r = bp_in[k].rec;
+        int n = r[9];
+        if (n < 2 || n > 21 || memcmp(r, "CmbAct", 6)) {
+            rt_log("coop: contraption: player %d's %08x: the record is not a CmbAct (%u parts)", bp_in[k].from, bp_in[k].key, n);
+            bp_in[k].made = 3;
+            return;
+        }
+        if (!coop_rd_ptr(o + 0x3c50)) ST64(o + 0x3c50, o + 0xc50);
+        uint64_t cai = coop_rd_ptr(o + 0x3c50);
+        memcpy((void *)(uintptr_t)cai, r, BP_SIZE);
+        memcpy(coop_ab_cai, r, BP_SIZE);
+        float m[12] = {1, 0, 0, bp_in[k].centre[0], 0, 1, 0, bp_in[k].centre[1], 0, 0, 1, bp_in[k].centre[2]};
+        memcpy((void *)(uintptr_t)(o + 0x120), m, sizeof m);
+        // the part pool emptied and refilled from the record, as the ability does before its part maker (rebuild_test)
+        uint64_t pc = o + 0x4d10, pu = o + 0x4f48;
+        uint32_t ctr = LD32(pc), used = LD32(pu);
+        ST64(pc + 0x220, 0), ST32(pc, ++ctr);
+        if ((int32_t)used >= 1) {
+            uint64_t head = LD64(o + 0x4f58);
+            for (uint32_t i = 0; i < used; i++) {
+                uint64_t ent = LD64(LD64(o + 0x4f50) + 8 * (uint64_t)i);
+                ST64(ent, head), ST64(o + 0x4f58, ent), head = ent;
+            }
+        }
+        ST32(pu, 0);
+        if (ctr == 0x7fffffff) ST32(pc, 0);
+        for (int i = 0; i < n; i++) {
+            uint64_t e = coop_guest_call(c, MOD_MAIN_BASE + 0x1d3cfc8, o + 0x1b0, 0, 0, 0);
+            if (!e) continue;
+            uint64_t rr = cai + 0xc + (uint64_t)i * 0x118;
+            ST8(rr + 0xd7, 0), ST64(e, rr + 0x98), ST8(rr + 0x117, 0), ST64(e + 8, rr + 0xd8);
+            ST32(e + 0x10, LD32(rr + 0x90)), ST32(e + 0x14, LD32(rr + 0x94));
+        }
+        coop_guest_call(c, MOD_MAIN_BASE + 0x1d3b470, o, 0, 0, 0);
+        mk.slot = k, mk.st = 1, mk.t = now, mk.n = 0;
+        rt_log("coop: contraption: player %d's %08x (%d parts): being made here at %.2f %.2f %.2f", bp_in[k].from, bp_in[k].key, n,
+               bp_in[k].centre[0], bp_in[k].centre[1], bp_in[k].centre[2]);
+        return;
+    }
+    int k = mk.slot;
+    if (mk.st == 1) {   // every part made: put in the world now, confirmed next frame
+        int ready = 1;
+        for (int i = 0; list && i < ne && i < 21; i++) {
+            uint64_t ent = coop_rd_ptr(list + 8 * (uint64_t)i);
+            if (!ent || coop_handle_status((const uint8_t *)(uintptr_t)(ent + 0x60)) != 3) ready = 0;
+        }
+        if (!ready) {
+            if (now - mk.t > 6000000) rt_log("coop: contraption: player %d's %08x: its parts were not made in 6 s", bp_in[k].from, bp_in[k].key), bp_in[k].made = 3, mk.st = 0;
+            return;
+        }
+        static _Alignas(16) uint8_t tmp[21][0x40];
+        for (int i = 0; list && i < ne && i < 21; i++) {
+            uint64_t ent = coop_rd_ptr(list + 8 * (uint64_t)i), ref = 0;
+            mk.parts[i] = coop_claim(c, (uint8_t *)(uintptr_t)(ent + 0x60), tmp[i], &ref);
+            made_add(mk.parts[i]);
+        }
+        mk.n = ne < 21 ? ne : 21, mk.st = 2;
+        return;
+    }
+    if (mk.st == 2) {   // the confirm, as the ability makes it, with no cost
+        uint64_t tab = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + 0x395f900)) + 8);
+        uint64_t costs_at[21] = {0};
+        uint32_t costs_were[21] = {0};
+        int ncost = 0;
+        static uint64_t keyname;
+        for (int i = 0; i < mk.n; i++) {
+            uint64_t ent = coop_rd_ptr(list + 8 * (uint64_t)i);
+            if (!ent || !mk.parts[i]) continue;
+            uint8_t *l = (uint8_t *)(uintptr_t)(ent + 0x48);
+            memset(l + 0x10, 0xff, 4), l[0x14] = 1;
+            coop_guest_call(c, MOD_MAIN_BASE + LINK_SET_FN, ent + 0x48, mk.parts[i], 1, 0);
+            ST32(ent + 0x1c, 3);
+            keyname = coop_rd_ptr(ent);
+            uint64_t rec = tab ? coop_guest_call(c, MOD_MAIN_BASE + 0xae6e04, tab, (uint64_t)(uintptr_t)&keyname, 0, 0) : 0;
+            int seen = 0;
+            for (int j = 0; j < ncost; j++) seen |= costs_at[j] == rec;
+            if (rec && !seen) costs_at[ncost] = rec, costs_were[ncost] = LD32(rec + 0x48), ST32(rec + 0x48, 0), ncost++;
+        }
+        ST8(o + 0x3c70, 0);
+        memcpy((void *)(uintptr_t)coop_rd_ptr(o + 0x3c50), bp_in[k].rec, BP_SIZE);
+        uint64_t r = coop_guest_call(c, MOD_MAIN_BASE + 0x1d3c0d4, o, 0, 0, 0);
+        for (int j = 0; j < ncost; j++) ST32(costs_at[j] + 0x48, costs_were[j]);
+        for (int i = 0; i < mk.n; i++) {   // the confirm's mark without its green (given once in a group, below)
+            uint64_t spr = mk.parts[i] ? coop_rd_ptr(coop_rd_ptr(mk.parts[i] + 0x228) + 0x480) : 0;
+            if (!spr) continue;
+            __atomic_fetch_or((uint32_t *)(uintptr_t)(spr + 0x27c), 1u, __ATOMIC_SEQ_CST);
+            ST64(spr + 0x20, (LD64(spr + 0x20) & ~(1ull << 51)) | (1ull << 28));
+            __atomic_fetch_and((uint32_t *)(uintptr_t)(mk.parts[i] + 0x5ac), ~4u, __ATOMIC_SEQ_CST);
+        }
+        rt_log("coop: contraption: player %d's %08x: confirmed (%llu)", bp_in[k].from, bp_in[k].key, (unsigned long long)(r & 1));
+        mk.st = 3, mk.t = now;
+        return;
+    }
+    if (mk.st == 3) {   // green once grouped; done after 3 s
+        int grouped = 0;
+        static int64_t logged;
+        int say = now - logged > 500000;
+        if (say) logged = now;
+        for (int i = 0; i < mk.n; i++) {
+            uint64_t spr = mk.parts[i] ? coop_rd_ptr(coop_rd_ptr(mk.parts[i] + 0x228) + 0x480) : 0;
+            if (spr && coop_rd_ptr(spr + 0x28)) __atomic_fetch_or((uint32_t *)(uintptr_t)(spr + 0x150), 1u, __ATOMIC_SEQ_CST), grouped++;
+            if (say) {
+                int32_t st = 0;
+                uint32_t q = 0;
+                float pp[3] = {0};
+                coop_rd(mk.parts[i] + 0x24, &st, 4), coop_rd(mk.parts[i] + COOP_ACTOR_POS, pp, 12);
+                if (spr) coop_rd(spr + 0x2b0, &q, 4);
+                rt_log("coop: contraption: part %d %llx state %d queued %u group %llx at %.2f %.2f %.2f", i, (unsigned long long)mk.parts[i], st, q,
+                       (unsigned long long)(spr ? coop_rd_ptr(spr + 0x28) : 0), pp[0], pp[1], pp[2]);
+            }
+        }
+        if (now - mk.t > 3000000) {
+            rt_log("coop: contraption: player %d's %08x: made, %d of %d parts in one group", bp_in[k].from, bp_in[k].key, grouped, mk.n);
+            bp_in[k].made = 2, mk.st = 0;
+        }
+    }
+}
+
 // TOTK_COOP_TEST_REBUILDGOIN=gamedata: the rebuild's confirm (and the history writer, TOTK_COOP_TEST_SERIAL) run from
 // GameDataMgr::calc instead, at actor phase 0 (coop_spawn.c coop_hook)
 void coop_autobuild_seq_calc(Cpu *c) {
+    if (contraption_on()) bp_send(c), bp_make(c);
     rebuild_go(c);
     serial_try(c, "GameDataMgr::calc");
 }
@@ -1361,7 +1663,9 @@ static void serial_run(Cpu *c, int n) {
     if (part) coop_actor_name(part, nm, sizeof nm);
     if (!part) { rt_log("coop: test: serial: no live part"); return; }
     static _Alignas(16) uint8_t link[0x40], rec[0x3000];
-    static _Alignas(16) float align[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}, info[12];
+    // the alignment is a 3x3 rotation, nine floats (the Autobuild ability fills sp+0x1a0..0x1c0 with a heading basis
+    // before its call at main+0x9a36c4); given here as identity
+    static _Alignas(16) float align[12] = {1, 0, 0, 0, 1, 0, 0, 0, 1}, info[12];
     memset(link, 0, sizeof link), memset(rec, 0, sizeof rec);
     memset(link + 0x10, 0xff, 4), link[0x14] = 1;   // an empty link: id -1, +0x14 set (main+0x155ec does nothing without it)
     coop_guest_call(c, MOD_MAIN_BASE + LINK_SET_FN, (uint64_t)(uintptr_t)link, part, 1, 0);   // (1: a strong link; the writer resolves it with 1)
@@ -1422,8 +1726,8 @@ static void serial_run(Cpu *c, int n) {
         const uint8_t *r = rec + 0xc + i * 0x118;
         float f[12], sc;
         memcpy(f, r, sizeof f), memcpy(&sc, r + 0x90, 4);
-        rt_log("coop: test: serial: part %d %.40s scale %.2f on %u frame0 rows %.3f %.3f %.3f | %.3f %.3f %.3f | %.3f %.3f %.3f pos %.3f %.3f %.3f",
-               i, (const char *)r + 0x98, sc, r[0x94], f[0], f[1], f[2], f[4], f[5], f[6], f[8], f[9], f[10], f[3], f[7], f[11]);
+        rt_log("coop: test: serial: part %d %.40s scale %.2f on %u frame0 words %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f",
+               i, (const char *)r + 0x98, sc, r[0x94], f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11]);
     }
     for (int i = 0; i < bonds && i < 21; i++) {
         const uint8_t *b = rec + 0x1704 + i * 12;
@@ -1431,7 +1735,17 @@ static void serial_run(Cpu *c, int n) {
         memcpy(&sa, b, 4), memcpy(&sb, b + 4, 4);
         rt_log("coop: test: serial: bond %d: part %u body %u - part %u body %u", i, b[8], sa, b[9], sb);
     }
-    rt_log("coop: test: serial: info pos %.3f %.3f %.3f", info[3], info[7], info[11]);
+    rt_log("coop: test: serial: info words %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f", info[0], info[1], info[2], info[3],
+           info[4], info[5], info[6], info[7], info[8], info[9], info[10], info[11]);
+    for (int i = 0; i < n; i++)   // each live part's body matrix, to compare with the frames
+        if (live_device(i, nm, sizeof nm)) {
+            uint64_t a = atomic_load(&tracked[i]);
+            uint64_t body = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x50) + 0x20) + 0x150);
+            float w[12] = {0};
+            if (body) coop_rd(body + 0x98, w, sizeof w);
+            rt_log("coop: test: serial: body %d %s words %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f", i, nm, w[0], w[1], w[2], w[3],
+                   w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11]);
+        }
     // the same parts' world places now, to compare with the frames
     for (int i = 0; i < n; i++)
         if (live_device(i, nm, sizeof nm)) {

@@ -387,3 +387,26 @@ cleared, the blueprint put back, and the confirm main+0x1d3c0d4 called.
   an Autobuild's schematic); the copy put at the owner's place and moved by velocity; the old part-by-part copy of
   contraption parts left out; the copy's parts mapped to the owner's object numbers; and the build object kept free
   for the player's own Autobuild (made between the player's builds, or a second build object).
+
+## Phase 1, first step (2026-11-09): the record over the network, the copy made by the Autobuild
+TOTK_COOP_CONTRAPTION=1 (coop_autobuild.c, "Contraption copies made by the game's own Autobuild"; off by default).
+- The history writer's alignment is a 3x3 rotation (nine floats): given identity, each record frame is the part's body
+  matrix with its translation less the contraption's centre, and the matrix out is [I | -centre]. So a game that puts
+  [I | centre] in its build object's base matrix makes the parts where the owner's are.
+- The owner, from GameDataMgr::calc every 2 s, records each of its contraptions (one member as the root), fills in the
+  CmbAct header the writer leaves to its caller ("CmbAct", version 2), finds which of its objects each record part is
+  (the member whose body is where the part's frame puts it), and sends record, centre and those numbers as 8 chunks of
+  800 bytes ("CBBP" hit packets; coop_world.c reads hit packets into a 968-byte buffer, a bigger packet is dropped).
+- The other game puts the chunks together; once a shape (part names and bonds) is whole it is made with its own build
+  object: the record in, base [I | centre], the part pool refilled, the part maker, the parts put in the world when all
+  are made, the confirm the next frame with no cost, the mark without the green, the green once grouped. Its old
+  copies of those parts are deleted and not made again (coop_players.c spawn_slot), and the parts it makes are not its
+  own: not sent as objects (prop_fn) nor recorded back (without that, game B sent the copy back and game A made a copy
+  of it).
+- Pair test (autobuild_noy_3rd.txt in A, idle B, both TOTK_COOP_CONTRAPTION=1): B received the 8 chunks, deleted its
+  four old copies, made the Fanplane at A's place (wing at 40.13 1512.6 1505.3, A's centre 39.98 1513.05 1505.29), the
+  confirm returned 1, and for 3 s all four parts were alive, in one group, at rest. The full-size frame of game B at
+  46 s shows one green Fanplane, assembled, where A's is. A normal start without the setting is unchanged.
+- Next: the copy following the owner's moves (velocity), its devices' state, the copy's parts known by the owner's
+  numbers (claims, messages, hits), a shape that changes (a part glued on or taken off), and the player's own
+  Autobuild while a copy is made.

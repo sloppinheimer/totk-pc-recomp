@@ -1733,6 +1733,18 @@ static void arrow_copies(Cpu *c, Slot *s) {
             s->mir[k].state = 1, s->mir[k].actor = 0, s->mir[k].ticks = 0;
             continue;
         }
+        // A part of a contraption this game makes with its own Autobuild from the owner's record (coop_autobuild.c,
+        // TOTK_COOP_CONTRAPTION=1): no copy of its own; one made before the record came is deleted
+        int coop_contraption_owns(int from, uint32_t id);
+        if (s->mir[k].state != 0 && coop_contraption_owns(s->net_id, s->mir[k].id)) {
+            if (s->mir[k].state == 3 && s->mir[k].actor) {
+                rt_log("coop: slot %d: the copy of %s (%u) deleted: its contraption is made here by the Autobuild", (int)(s - slots), s->mir[k].name, s->mir[k].id);
+                coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0), set_driven(s->mir[k].actor);
+            }
+            if (s->mir[k].state == 2) coop_handle_release(c, s->mir[k].handle);
+            if (s->mir[k].state != 1) s->mir[k].state = 1, s->mir[k].actor = 0, s->mir[k].ticks = 0;
+            continue;
+        }
         if (s->mir[k].state == 1 && coop_far_from_players(s->mir[k].pos)) continue;
         if (s->mir[k].state == 1 && copy_wait(s, k)) continue;
         // An owner's autobuilt device: made as an autobuild makes it with TOTK_COOP_AUTOBUILT=1 (autobuilt_on).
@@ -2464,7 +2476,8 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
     PropScan *ps = arg;
     Slot *cs;
     int ck;
-    if (prop_skip(nm) || copy_of(a, &cs, &ck) || is_driven(a) || is_preview(a) || old_item(a)) return;
+    int coop_contraption_made(uint64_t a);   // coop_autobuild.c: a part of another player's contraption made here
+    if (prop_skip(nm) || copy_of(a, &cs, &ck) || is_driven(a) || is_preview(a) || old_item(a) || coop_contraption_made(a)) return;
     for (int i = 0; i < 32; i++) if (my_arrows[i].actor == a) return;   // an arrow's fused material
     int32_t ast = 0;   // one going away (state 7..11) is not sent (a bomb after its blast, see arrow_copies)
     if (coop_rd(a + COOP_ACTOR_STATE, &ast, 4) && ast > 6 && !is_beam(nm)) return;

@@ -3596,6 +3596,8 @@ static void peer_tick(Cpu *c, uint64_t me) {
             }
             int coop_glue_take(const void *p, int n, int from);   // coop_glue.c: "GA" and "GL" packets (Ultrahand glue)
             if (coop_glue_take(&lhp, n, from)) continue;
+            int coop_contraption_take(const void *p, int n, int from);   // coop_autobuild.c: "CBBP" contraption records
+            if (coop_contraption_take(&lhp, n, from)) continue;
             int coop_bonds_take(const void *p, int n, int from);   // coop_bonds.c: "CB" packets (contraptions)
             if (coop_bonds_take(&lhp, n, from)) continue;
             if (n >= (int)offsetof(ContactPacket, e) && (cp->kind == ECONTACT_KIND || cp->kind == ECONTACT_ARROW) && (int)cp->to == my_id && cp->n <= CONTACT_MAX &&
