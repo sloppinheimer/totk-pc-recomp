@@ -571,3 +571,20 @@ TOTK_COOP_CONTRAPTION=1 (coop_autobuild.c, "Contraption copies made by the game'
   (re-notes.md, "Glue by hand, again"), so a part glued on goes through the same path untested. The test makes the
   loose fan for that test along the Link's +x, which is its left.
 - Again after the change: the toggle, part-off, carry and stick tests, and a normal start.
+
+## Redesign: contraption sync v3 (2026-11-09)
+The approach of the sections above is replaced by [contraption-sync-v3.md](contraption-sync-v3.md), a plan that is
+not built yet. Two corrections apply to everything above:
+- Motion types are 0 static, 1 keyframed, 2 dynamic. main+0xae4300 reads the applied type from body+0x68: bit 6 set
+  means 0, bit 7 set means 1, neither means 2. Where this file says "keyframed (type 2)" it asked for dynamic, which
+  changes nothing on a dynamic part. So Phase 0's "keyframed for every mode" meant dynamic, and the KFRIDE and
+  STANDPUSH results have to be re-read with the right names.
+- The ABLOG write watch makes the whole page of the watched part inaccessible, so the co-op's reads of that part fail
+  and were taken as 0. Several results fell inside a watch window and are most likely artefacts of the test, not game
+  behaviour:
+  - the late or flickering group pointer (SPR+0x28);
+  - "made 3 of 4";
+  - records not sent because a part matched no object;
+  - a false adoption.
+
+  X0 of the plan re-runs those pairs without the watch to confirm this.
