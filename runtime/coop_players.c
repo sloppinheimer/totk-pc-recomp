@@ -5097,6 +5097,7 @@ static void audit_tick(Cpu *c, uint64_t me, const CoopObj *sent, int n_sent, con
     fflush(f);
 }
 void coop_players_tick(Cpu *c) {
+    coop_rd_fail_report();
     if (frame_step_world_us() <= 0) return;   // not in the world yet
     coop_session_tests(frame_step_world_us());
     uint64_t me = coop_player_actor();

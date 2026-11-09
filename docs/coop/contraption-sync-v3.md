@@ -69,7 +69,7 @@ The physics core is unchanged from the merged design: the runner simulates nativ
 | All effects on both screens | On/off mirrored. Emitters and visuals run everywhere. Harm counts once (8.6). Deaths, detonations and launches replay by kind (6.6, 8.5). Internal state streamed (8.4). Riders placed on the local part (9). |
 
 ### 0.3 Read in the code and notes while planning (nothing run)
-- **Flags 44/45.** In the flush apply f_7000182eb0, when a linear velocity is applied and body+0x68 bit 44 is set, it sets request+0xd0 bit 5 and returns 0x200; bit 45 does the same for angular (+0xd0 bit 6). The caller stores the word in request+0xd4 and re-queues the block. The next flush, with +0xd0 bit 5 or 6 still set, writes zero velocity through world slots 0x190, 0x198 and 0x1a0. The setter clears +0xd0 bit 5 on each new set, and clamps speed to the body's preset limit (R/physics/functions.c body_set_linear_velocity).
+- **Flags 44/45** (not reproduced at runtime: section 23, X1). In the flush apply f_7000182eb0, when a linear velocity is applied and body+0x68 bit 44 is set, it sets request+0xd0 bit 5 and returns 0x200; bit 45 does the same for angular (+0xd0 bit 6). The caller stores the word in request+0xd4 and re-queues the block. The next flush, with +0xd0 bit 5 or 6 still set, writes zero velocity through world slots 0x190, 0x198 and 0x1a0. The setter clears +0xd0 bit 5 on each new set, and clamps speed to the body's preset limit (R/physics/functions.c body_set_linear_velocity).
 - **Relays.** server/coop_relay.py hard-codes VERSION 28, times out after 5.0 s, hands out the lowest free id, writes 0 into header byte 7 and forwards every packet to every other peer. runtime/coop_relay.c does the same (5 s timeout, lowest free id, put_header writes byte 7 = 0, forward to all).
 - **Session.** coop_net.c ends the session after 6 s without hearing the relay: my_id = 0, every other player marked gone, the thread exits. WELCOME sets my_id with no notice when it changes. The net thread sends HELLO once a second. The HIT queues hold 64 and drop silently.
 - **NetState** has ride_owner u8, pad u8, ride_id u32 and ride_off[3] (coop_net.h).
@@ -1122,3 +1122,40 @@ Pass: a stand-in teleported into a resting build moves it by 0; collision return
 - **D5.** After a network split, the session side's version wins for builds both sides touched.
 - **D6.** Recall on a copy made seconds ago rewinds only what that copy recorded until X16 shows the recorder can be fed.
 - **D7.** Quest effects of glued NPCs complete per world.
+## 23. P0 results (2026-11-09)
+Built: checked reads (coop_game.c counts failed reads per calling site and logs them every 5 s); the ABLOG write watch
+is opt-in (TOTK_COOP_TEST_GLUEWATCH); HEAD's dynamic root drive restored (the keyframed attempt dropped); the CTR
+channel (coop_net.c kind 11, routed by header byte 7 in both relays, net version 29) and coop_ctr.c (incarnations,
+reliable streams per sender, receiver and channel, latest-only slots, HB at 30 Hz from the co-op poll); coop_life.c
+(hooks on the delete and death requests, BondMaker and the confirm's item charge); the X1, X6 and X15a tests.
+Deferred to P2: the registry and its snapshot pool, which have no user before P2.
+
+- **X0 (reads without the watch): pass.** Five pair scenarios (toggle, part off, carry, stick, normal) with the watch
+  off. Every copy grouped whole (4 of 4, 3 of 3, 6 of 6, 7 of 7); no "3 of 4", no record left unsent, no false
+  adoption (AS20). Failed reads remain at sites that read stale actor pointers (coop_autobuild_tick, dev_on, eq_gear
+  and other player code): unknown now, never 0. The stick run still deletes and remakes a copy when the owner's group
+  is re-keyed ("shares objects"), which minted ids (6.1) remove.
+- **X6 (copies without the Autobuild ability): pass for creation.** The Autobuild ability is a game manager made at
+  boot, [main+0x3a62ef0], with its build object at +0x51f0 and its menu object at +0x51f8 (+0x3c80 1) on every save.
+  The first save has IsGet.Obj_AutoBuilder 0 (read through main+0x3d01a0, hash 0x5d930d12), and its ability, build
+  object and update (main+0x9a2c00) are all there. bp_make now reads the singleton. Pair run with B on that save, moved
+  next to A's Fanplane: B made the copy, all 4 parts in one group, without the ability. Some seconds later the group
+  was re-slotted and one part died (state 11): the follower-physics failure P1 addresses (X2, X4), not creation.
+  The confirm's item charge main+0x209b754 is skipped while a copy's confirm runs (coop_life.c); that run did not
+  reach it, so the skip is unexercised.
+- **X1 (bodies): one velocity write wakes a resting body; flag 44 is harmless here.** A resting plank given 3 m/s up
+  once: the body's velocity (+0xf8) reads 2.52 m/s the next frame (a write lands one frame later) and falls by
+  0.48 m/s a frame (29 m/s^2 at one physics step per 60 Hz frame for that plank). The same with body flag 44 set gave
+  the same frames: the velocity was not zeroed. Section 0.3's reading that flags 44/45 make a velocity last one step
+  is not reproduced for this case; I2 (the co-op never sets body flags) stands as a rule anyway.
+- **X15a (unload, capacity): partly.** The group table has 256 slots and the bond pool 512 (a 4-part build took 4).
+  Far deletes arrive through main+0x63b6b0 with reason 3 from main+0x249174 (GameActor calc) and main+0x636994 (the
+  engine's base calc), asked again every frame while deferred. A plank moved by teleport to 150, 300, 600 and 1200 m
+  was never deleted in 35 s: moving the actor does not unload it, so the unload test has to move the Link (X15b).
+- **Channel (P0 gate "0 CTR drops with 3 builds"): pass.** Two games, 60 s, each sending three 200-byte states 30
+  times a second, a control message twice a second and 7 bulk chunks of 1100 bytes per build every 10 s: every
+  reliable message arrived once and in order (119 control, 126 bulk), 0 gaps, 0 duplicates, 0 net drops, 0 resends,
+  and the three state slots stayed fresh. A normal two-game start on the final build joined both games, each with
+  its own incarnation.
+
+Next is P1: the self-mirror lab, X2 (the rigid velocity field against HEAD's root drive), X3, X14b, X4 and X5.

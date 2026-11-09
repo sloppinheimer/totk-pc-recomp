@@ -1,5 +1,6 @@
 // Co-op: game structures and calls (coop_game.h). Found and tested with coop_spawn.c; docs/coop/re-notes.md.
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -9,10 +10,49 @@
 #include "layout.h"
 #include "platform/platform.h"
 
-int coop_rd(uint64_t a, void *out, size_t n) { return a && plat_mem_read(a, out, n); }
-uint64_t coop_rd_ptr(uint64_t a) {
+// Failed reads of a non-null address, counted per calling site (return address in this executable). A failed read is
+// unknown, not 0: a caller that takes the zero it gets back as game state decides on nothing (docs/coop/
+// contraption-sync-v3.md, harness rule H2). coop_rd_fail_report logs the sites every 5 s when any failed.
+#define RD_SITES 128
+static struct { _Atomic uint64_t site; _Atomic uint32_t n; } rd_fail[RD_SITES];
+static _Atomic uint32_t rd_fail_lost;
+static void rd_fail_note(uint64_t site) {
+    for (unsigned i = 0, h = (unsigned)(site >> 2) % RD_SITES; i < RD_SITES; i++, h = (h + 1) % RD_SITES) {
+        uint64_t s = atomic_load(&rd_fail[h].site);
+        if (!s && atomic_compare_exchange_strong(&rd_fail[h].site, &s, site)) s = site;
+        if (s == site) { atomic_fetch_add(&rd_fail[h].n, 1); return; }
+    }
+    atomic_fetch_add(&rd_fail_lost, 1);
+}
+__attribute__((noinline)) int coop_rd(uint64_t a, void *out, size_t n) {
+    if (!a) return 0;
+    if (plat_mem_read(a, out, n)) return 1;
+    rd_fail_note((uint64_t)(uintptr_t)__builtin_return_address(0));
+    return 0;
+}
+__attribute__((noinline)) uint64_t coop_rd_ptr(uint64_t a) {
     uint64_t p = 0;
-    return coop_rd(a, &p, 8) ? p : 0;
+    if (!a) return 0;
+    if (plat_mem_read(a, &p, 8)) return p;
+    rd_fail_note((uint64_t)(uintptr_t)__builtin_return_address(0));
+    return 0;
+}
+void coop_rd_fail_report(void) {
+    static uint64_t last_ns;
+    static uint32_t said[RD_SITES], said_lost;
+    uint64_t now = plat_now_ns();
+    if (now - last_ns < 5000000000ull) return;
+    last_ns = now;
+    uintptr_t base = plat_exe_base();
+    for (int i = 0; i < RD_SITES; i++) {
+        uint64_t s = atomic_load(&rd_fail[i].site);
+        uint32_t n = atomic_load(&rd_fail[i].n);
+        if (!s || n == said[i]) continue;
+        rt_log("coop: reads: %u failed at exe+%#llx (%u in the last 5 s)", n, (unsigned long long)(s - base), n - said[i]);
+        said[i] = n;
+    }
+    uint32_t lost = atomic_load(&rd_fail_lost);
+    if (lost != said_lost) rt_log("coop: reads: %u failed at sites past the table", lost), said_lost = lost;
 }
 
 const char *coop_actor_name(uint64_t actor, char *buf, size_t n) {

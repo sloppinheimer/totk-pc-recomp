@@ -11,6 +11,7 @@
 
 #include "cfg.h"
 #include "coop_chars.h"
+#include "coop_ctr.h"
 #include "coop_game.h"
 #include "coop_net.h"
 #include "host.h"
@@ -913,6 +914,12 @@ static void phase_sample(uint64_t addr) {
 int coop_hook(Cpu *c, uint64_t addr) {
     phase_sample(addr);
     if (addr == MOD_MAIN_BASE + 0x916860) return beam_hook(c, addr);
+    // actor lifetime (coop_life.c): the delete and death requests, BondMaker, and the confirm's Zonaite charge
+    if (addr == MOD_MAIN_BASE + 0x63baa8 || addr == MOD_MAIN_BASE + 0x63b6b0 || addr == MOD_MAIN_BASE + 0x1953184 ||
+        addr == MOD_MAIN_BASE + 0x1b4b738 || addr == MOD_MAIN_BASE + 0x1916830 || addr == MOD_MAIN_BASE + 0x209b754) {
+        int coop_life_hook(Cpu *c, uint64_t addr);
+        return coop_life_hook(c, addr);
+    }
     // contraption-sync.md Phase 0 tests (coop_autobuild.c coop_phase0_hook): a fan's push, the velocity and impulse
     // writes it makes, the on/off node's calc and setter and the two gauge charges
     // the Autobuild ability's update (main+0x9a2c00, x0 the ability): kept, so the other game can build with it
@@ -945,6 +952,13 @@ int coop_hook(Cpu *c, uint64_t addr) {
             uint64_t x[31], sp = c->sp, pc = c->pc;
             memcpy(x, c->x, sizeof x);
             coop_autobuild_seq_calc(c);
+            memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
+        }
+        {   // TOTK_COOP_TEST_X6 (coop_life.c): whether this save has Autobuild, and the ability's build objects
+            void coop_life_x6_probe(Cpu *c);
+            uint64_t x[31], sp = c->sp, pc = c->pc;
+            memcpy(x, c->x, sizeof x);
+            coop_life_x6_probe(c);
             memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
         }
         void coop_gamedata_calc(uint64_t gmd, uint64_t me);
@@ -1552,11 +1566,11 @@ static void report_callers(void) {
 // TOTK_COOP_TEST_KFRIDE=<t>,<mode>,<speed> (contraption-sync.md, Phase 0 item 1), with TOTK_COOP_TEST_SPAWN putting a
 // part beside the Link a few seconds before: the part (slot 1's) is held 1.2 m above the flat ground of the fan tests
 // from t-3 s, the Link put on it at t-1.5 s, and from t it moves at <speed> m/s along -x for 4 s, then stops. Mode 0:
-// left dynamic and driven by its linear velocity each tick; 1: made keyframed (main+0xae4300 type 2) and driven by
-// velocity; 2: keyframed and teleported each tick. Every 0.5 s: the part's place, the Link's and the Link's offset
+// left dynamic and driven by its linear velocity each tick; 1: main+0xae4300 asked for type 2 (dynamic, so no change;
+// this test once took it for keyframed) and driven by velocity; 2: the same and teleported each tick. Every 0.5 s: the part's place, the Link's and the Link's offset
 // from the part, to see whether a Link standing on a moving body is carried with it.
 static uint64_t kf_actor;
-#define BODY_MOTION_TYPE 0xae4300   // (body, 0 static / 1 dynamic / 2 keyframed), queued like the setters below
+#define BODY_MOTION_TYPE 0xae4300   // (body, 0 static / 1 keyframed / 2 dynamic), queued like the setters below
 #define BODY_SET_LINVEL 0x567750
 #define BODY_SET_ANGVEL 0x25a1f0
 static void kfride_test(Cpu *c) {
@@ -1616,7 +1630,7 @@ static void kfride_test(Cpu *c) {
     if (t >= next) {
         next = t + 0.5;
         // the motion type as main+0xae4300 reads it: a pending request ([body+0x60]+0xd4 bit 2: [+0x60]+0x80) first,
-        // else body +0x68 bit 6 static, bit 7 dynamic, neither keyframed
+        // else body +0x68 bit 6 static, bit 7 keyframed, neither dynamic
         uint64_t flags = rd_ptr(body + 0x68), req = rd_ptr(body + 0x60);
         uint32_t rq = 0, rt = 0;
         if (req) rd(req + 0xd4, &rq, 4), rd(req + 0x80, &rt, 4);
@@ -1624,8 +1638,100 @@ static void kfride_test(Cpu *c) {
         float off[3] = {lp[0] - pos[0], lp[1] - pos[1], lp[2] - pos[2]};
         float drift = st == 3 ? sqrtf((off[0] - start_off[0]) * (off[0] - start_off[0]) + (off[2] - start_off[2]) * (off[2] - start_off[2])) : 0;
         rt_log("coop: test: kfride: %.2f s part %.2f %.2f %.2f (target %.2f, motion %s) Link %.2f %.2f %.2f, offset %.2f %.2f %.2f, level drift %.2f m",
-               t, pos[0], pos[1], pos[2], target[0], flags & 0x40 ? "static" : flags & 0x80 ? "dynamic" : "keyframed",
+               t, pos[0], pos[1], pos[2], target[0], flags & 0x40 ? "static" : flags & 0x80 ? "keyframed" : "dynamic",
                lp[0], lp[1], lp[2], off[0], off[1], off[2], drift);
+    }
+}
+
+// TOTK_COOP_TEST_X1=<t> (docs/coop/contraption-sync-v3.md, experiment X1), with TOTK_COOP_TEST_SPAWN making a plank
+// (slot 1's) before it. One game. The plank is put 1.2 m above the ground ahead of the Link at t and falls; from t+5
+// (at rest) the main body gets one linear velocity of 3 m/s up with no flag (does a write wake a resting body?), and
+// from t+9 the same with body flag 44 set first (does the flag make the velocity last one physics step?). Each frame
+// for 12 frames after each write: the body's current velocity (+0xf8), height, flags 44/45 and its motion type.
+static void x1_test(Cpu *c) {
+    static double t0 = -1;
+    static int st, frames;
+    static int64_t last;
+    if (t0 == -1) { const char *e = cfg_get("TOTK_COOP_TEST_X1"); t0 = e ? atof(e) : -2; if (t0 <= 0) t0 = -2; }
+    if (t0 < 0 || !kf_actor || st >= 6) return;
+    int64_t us = frame_step_world_us();
+    if (us <= last) return;   // (one step per world frame; a paused world writes nothing)
+    double dt = last ? (us - last) / 1e6 : 0;
+    last = us;
+    double t = us / 1e6;
+    uint64_t me = player_actor();
+    uint64_t body = rd_ptr(rd_ptr(rd_ptr(rd_ptr(kf_actor + 0x228) + 0x50) + 0x20) + 0x150);
+    if (!me || !body || t < t0) return;
+    if (st == 0) {
+        float lp[3] = {0}, lr[9] = {0};
+        rd(me + ACTOR_POS, lp, 12), rd(me + ACTOR_ROT, lr, 36);
+        float m[12] = {1, 0, 0, lp[0] + 2.5f * lr[2], 0, 1, 0, lp[1] + 1.2f, 0, 0, 1, lp[2] + 2.5f * lr[8]};
+        guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, kf_actor, (uint64_t)(uintptr_t)m, 0, 0);
+        rt_log("coop: test: x1: plank put at %.2f %.2f %.2f", m[3], m[7], m[11]);
+        st = 1;
+        return;
+    }
+    uint64_t flags = 0;
+    rd(body + 0x68, &flags, 8);
+    if ((st == 1 && t >= t0 + 5) || (st == 3 && t >= t0 + 9)) {
+        if (st == 3) {
+            uint64_t f = flags | 1ull << 44;
+            memcpy((void *)(uintptr_t)(body + 0x68), &f, 8);
+        }
+        _Alignas(16) float v[4] = {0, 3, 0, 0};
+        guest_call(c, MOD_MAIN_BASE + BODY_SET_LINVEL, body, (uint64_t)(uintptr_t)v, 0, 0);
+        rt_log("coop: test: x1: %s: 3 m/s up written at %.3f s (flags %#llx)", st == 1 ? "no flag" : "flag 44", t, (unsigned long long)flags);
+        st++, frames = 0;
+    }
+    if (st == 2 || st == 4) {
+        float v[3] = {0}, m[12] = {0};
+        rd(body + 0xf8, v, 12), rd(body + 0x98, m, 48);
+        uint64_t req = rd_ptr(body + 0x60);
+        uint32_t rq = 0, rt = 0;
+        if (req) rd(req + 0xd4, &rq, 4), rd(req + 0x80, &rt, 4);
+        int type = req && (rq & 4) ? (int)rt : flags & 0x40 ? 0 : flags & 0x80 ? 1 : 2;
+        rt_log("coop: test: x1: %s frame %d (dt %.4f): v %.3f %.3f %.3f, y %.3f, flag44 %d flag45 %d, type %d",
+               st == 2 ? "no flag" : "flag 44", frames, dt, v[0], v[1], v[2], m[7], (int)(flags >> 44 & 1), (int)(flags >> 45 & 1), type);
+        if (++frames >= 12) {
+            if (st == 4 && (flags >> 44 & 1)) {   // (the flag off again)
+                uint64_t f = flags & ~(1ull << 44);
+                memcpy((void *)(uintptr_t)(body + 0x68), &f, 8);
+            }
+            st = st == 2 ? 3 : 6;
+        }
+    }
+}
+
+// TOTK_COOP_TEST_X15_AWAY=<t> (experiment X15a, with TOTK_COOP_TEST_X15=1 and TOTK_COOP_TEST_SPAWN making a plank, slot
+// 1's): at t the plank is put 150 m from the Link along x, 20 m above it, then 300 m at t+10, 600 m at t+20 and 1200 m at
+// t+30. Every second: whether it still exists and its state, so the far delete's distance and path show (coop_life.c
+// logs the delete itself).
+static void x15_away_test(Cpu *c) {
+    static double t0 = -1;
+    static int step;
+    static double next_log;
+    if (t0 == -1) { const char *e = cfg_get("TOTK_COOP_TEST_X15_AWAY"); t0 = e ? atof(e) : -2; if (t0 <= 0) t0 = -2; }
+    if (t0 < 0 || !kf_actor) return;
+    double t = frame_step_world_us() / 1e6;
+    if (t < t0) return;
+    static const float dist[4] = {150, 300, 600, 1200};
+    uint64_t me = player_actor();
+    if (step < 4 && t >= t0 + 10 * step && me) {
+        float lp[3] = {0};
+        rd(me + ACTOR_POS, lp, 12);
+        float m[12] = {1, 0, 0, lp[0] + dist[step], 0, 1, 0, lp[1] + 20, 0, 0, 1, lp[2]};
+        guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, kf_actor, (uint64_t)(uintptr_t)m, 0, 0);
+        rt_log("coop: test: x15 away: %.1f s the plank put %.0f m from the Link", t, dist[step]);
+        step++;
+    }
+    if (t >= next_log && t < t0 + 45) {
+        next_log = t + 1;
+        uint32_t st = 0;
+        float p[3] = {0}, lp[3] = {0};
+        int ok = rd(kf_actor + COOP_ACTOR_STATE, &st, 4) && rd(kf_actor + ACTOR_POS, p, 12);
+        if (me) rd(me + ACTOR_POS, lp, 12);
+        float d = sqrtf((p[0] - lp[0]) * (p[0] - lp[0]) + (p[2] - lp[2]) * (p[2] - lp[2]));
+        rt_log("coop: test: x15 away: %.1f s plank %s, state %u, %.0f m from the Link", t, ok ? "readable" : "unreadable", st, d);
     }
 }
 
@@ -1770,6 +1876,8 @@ void coop_tick(struct Cpu *c) {
     }
     fndiff_tick();
     kfride_test(c);
+    x1_test(c);
+    x15_away_test(c);
     standpush_test(c);
     if (fanhit_at == -2) fanhit_at = cfg_get("TOTK_COOP_TEST_FANHIT") ? atof(cfg_get("TOTK_COOP_TEST_FANHIT")) : -1;
     // (from 3.5 s before the hit only: on from the world's start, it slowed the game too much for a scripted autobuild)
@@ -1846,6 +1954,7 @@ void coop_tick(struct Cpu *c) {
             rt_log("%s", line);
         }
     }
+    coop_ctr_tick();   // the contraption channel (coop_ctr.c): before the players, so their pass sees this poll's messages
     coop_players_tick(c);
     foe_log();
     for (int k = 0; k < 2; k++) {

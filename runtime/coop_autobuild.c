@@ -2227,7 +2227,10 @@ int coop_contraption_made(uint64_t a) {
 static struct { int slot, st; int64_t t; uint64_t parts[21]; int n; } mk = {-1, 0, 0, {0}, 0};
 static void bp_make(Cpu *c) {
     int64_t now = frame_step_world_us();
-    uint64_t ab = atomic_load(&coop_ab_ability), o = ab ? coop_rd_ptr(ab + 0x51f0) : 0;
+    // The Autobuild ability is a game manager made at boot whatever the save ([main+0x3a62ef0], coop_life.c): no need
+    // to wait for its update to run, which a save before Autobuild may never do (contraption-sync-v3.md, X6).
+    uint64_t coop_life_ability(void);
+    uint64_t ab = coop_life_ability(), o = ab ? coop_rd_ptr(ab + 0x51f0) : 0;
     if (!o) return;
     uint64_t list = coop_rd_ptr(o + 0x1b8);
     int32_t ne = 0;
@@ -2348,7 +2351,10 @@ static void bp_make(Cpu *c) {
         }
         ST8(o + 0x3c70, 0);
         memcpy((void *)(uintptr_t)coop_rd_ptr(o + 0x3c50), bp_in[k].rec, BP_SIZE);
+        void coop_life_free_confirm(int on);
+        coop_life_free_confirm(1);   // (its Zonaite charge skipped too: zeroed costs alone still go through the item routine)
         uint64_t r = coop_guest_call(c, MOD_MAIN_BASE + 0x1d3c0d4, o, 0, 0, 0);
+        coop_life_free_confirm(0);
         for (int j = 0; j < ncost; j++) ST32(costs_at[j] + 0x48, costs_were[j]);
         for (int i = 0; i < mk.n; i++) {   // the confirm's mark without its green (given once in a group, below)
             uint64_t spr = mk.parts[i] ? coop_rd_ptr(coop_rd_ptr(mk.parts[i] + 0x228) + 0x480) : 0;
@@ -3043,9 +3049,11 @@ void coop_autobuild_tick(Cpu *c, uint64_t me) {
     last = now;
     static int scanned;
     if (!scanned && now - first > 12000000) { scanned = 1; bond_scan(n); }
-    // A write watch on the first device's glue component +0x20..+0x30 (its group at +0x28) for 14 s: who sets it.
+    // TOTK_COOP_TEST_GLUEWATCH=1: a write watch on the first device's glue component +0x20..+0x30 (its group at +0x28)
+    // for 14 s: who sets it. Off by default and never in pair runs: the watch makes the whole page inaccessible, so the
+    // co-op's own reads of that part fail meanwhile (docs/coop/contraption-sync.md, "Redesign: contraption sync v3").
     static int watch_stage;
-    if (watch_stage == 0 && (cfg_get("TOTK_COOP_TEST_ABWATCH") || cfg_get("TOTK_COOP_TEST_BONDQ") || cfg_get("TOTK_COOP_TEST_RECBUILD") ||
+    if (watch_stage == 0 && (!cfg_get("TOTK_COOP_TEST_GLUEWATCH") || cfg_get("TOTK_COOP_TEST_ABWATCH") || cfg_get("TOTK_COOP_TEST_BONDQ") || cfg_get("TOTK_COOP_TEST_RECBUILD") ||
                              cfg_get("TOTK_COOP_TEST_SERIAL") || cfg_get("TOTK_COOP_TEST_REBUILDGO")))
         watch_stage = 2;   // (the one watch is another test's then; and it slows the game: every access to that page faults)
     if (watch_stage == 0) {

@@ -4,7 +4,8 @@
 #include <stdint.h>
 
 #define COOP_MAX_PLAYERS 8
-#define COOP_NET_VERSION 28   // packet header version: games and relays of another version ignore each other
+#define COOP_NET_VERSION 29   // packet header version: games and relays of another version ignore each other
+                              // (29: CTR packets, routed by header byte 7)
 
 // One player's state, sent about 30 times a second. Positions and directions are world space; the sticks are as the
 // player's own camera saw them, with the camera's horizontal forward and right so a receiver can turn them into its
@@ -105,6 +106,21 @@ int coop_net_objs_take(void *out, int max, int *from);             // the oldest
 #define COOP_HIT_MAX 1024   // a hit on a Link carries the hit as delivered and its damage record's changed words (coop_world.c, link_hits_send)
 void coop_net_hit_send(const void *data, int len);                 // up to COOP_HIT_MAX bytes
 int coop_net_hit_take(void *out, int max, int *from);              // the oldest hit received; 0 when none
+
+// Contraption traffic (CTR packets, coop_ctr.c): each one to one player (to = its id) or to every other (to = 0); the
+// relay routes it by header byte 7. Queued both ways, COOP_CTR_QUEUE deep; a full queue drops the packet and counts it
+// (coop_net_ctr_drops). At most COOP_CTR_MAX bytes each.
+#define COOP_CTR_MAX 1200
+#define COOP_CTR_QUEUE 256
+int coop_net_ctr_send(int to, const void *data, int len);          // 1 queued, 0 dropped (full, too big, not joined)
+int coop_net_ctr_take(void *out, int max, int *from);              // the oldest received; its length, 0 none
+void coop_net_ctr_drops(uint32_t *out_dropped, uint32_t *in_dropped);
+// Changes of who is here, for layers that keep per-player state: coop_net_session changes whenever this game's id
+// changes (a join, a new WELCOME with another id, the session ending), coop_net_presence(id) whenever player id comes
+// or goes (its first state, LEAVE, the session ending).
+uint32_t coop_net_session(void);
+uint32_t coop_net_presence(int id);
+int coop_net_live(int id);                                         // player id is here (heard, not left)
 
 // Joining and leaving while the game runs (the menu's Co-op tab; TOTK_COOP_RELAY joins at start).
 void coop_net_join(const char *relay, const char *name);   // relay: host[:port], 41900 by default
