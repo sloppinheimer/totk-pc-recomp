@@ -410,3 +410,15 @@ TOTK_COOP_CONTRAPTION=1 (coop_autobuild.c, "Contraption copies made by the game'
 - Next: the copy following the owner's moves (velocity), its devices' state, the copy's parts known by the owner's
   numbers (claims, messages, hits), a shape that changes (a part glued on or taken off), and the player's own
   Autobuild while a copy is made.
+
+## Phase 1, second step: the copy follows its owner (2026-11-09)
+- The owner sends the body matrix of its contraption's record part 0 (found when the record is made) about 20 times a
+  second ("CBMV" hit packets, with the owner's world time). The other game drives its copy's part 0 by velocity each
+  tick (coop_autobuild.c bp_follow): the owner's speed from its last two poses, plus the gap to its last pose carried
+  forward (at most 0.3 s) closed at 6 per second; and an angular velocity from the turn left to the owner's
+  orientation, closed at 6 per second. The bonds carry the other parts.
+- Pair test (TOTK_COOP_TEST_ABPUSH=44,0,3,0: A's Fanplane given 3 m/s up for 3 s, then left to fall): at rest the
+  copy's root was within 0.01 m of A's; rising at 3 m/s, within 0.03 to 0.09 m (one sample 0.46 m); when it fell and
+  tumbled, 0.17 to 0.56 m. The full-size frames of both games at the landing show the two Fanplanes tilted the same way.
+- Next: the copy's devices (on/off through the request path, no thrust, no battery), the owner's numbers on the copy's
+  parts, a shape that changes, and the player's own Autobuild while a copy is made.

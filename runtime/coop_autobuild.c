@@ -1364,6 +1364,9 @@ static uint32_t bp_shape(const uint8_t *r) {   // the structure: names and bonds
 }
 
 int coop_contraption_made(uint64_t a);
+// The owner's contraptions as last recorded: the actor that is record part 0 (the copy's root), for the pose stream
+#define OWN_C 16
+static struct { uint32_t key; uint64_t root; int64_t seen; } own_c[OWN_C];
 // The owner: every 2 s, each own contraption recorded and sent (from coop_autobuild_seq_calc, actor phase 0).
 static void bp_send(Cpu *c) {
     static int64_t last;
@@ -1408,7 +1411,18 @@ static void bp_send(Cpu *c) {
                 float d = fabsf(w[3] - at[0]) + fabsf(w[7] - at[1]) + fabsf(w[11] - at[2]);
                 int owner = 0;
                 uint32_t id = 0;
-                if (d < best && coop_obj_ident(b, &owner, &id)) best = d, p.ids[r] = id;
+                if (d < best && coop_obj_ident(b, &owner, &id)) {
+                    best = d, p.ids[r] = id;
+                    if (r == 0) {   // the root, for the pose stream (bp_pose_send)
+                        int f = -1, fr = -1;
+                        for (int q = 0; q < OWN_C && f < 0; q++) {
+                            if (own_c[q].key == p.key) f = q;
+                            else if (fr < 0 && now - own_c[q].seen > 5000000) fr = q;
+                        }
+                        if (f < 0) f = fr;
+                        if (f >= 0) own_c[f].key = p.key, own_c[f].root = b, own_c[f].seen = now;
+                    }
+                }
             }
         }
         for (int k = 0; k < BP_CHUNKS; k++) {
@@ -1437,6 +1451,10 @@ static struct {
     float centre[3];
     uint8_t rec[BP_SIZE];
     int complete, made;   // made: 1 being made, 2 made, 3 given up
+    uint64_t copy[21];    // the parts made here, in record order (copy[0] the root)
+    int ncopy;
+    float pose[2][12];    // the owner's root body matrix, the last two received, and when (owner's world clock)
+    int64_t pose_us[2], pose_local_us;
 } bp_in[BP_IN];
 static PlatMutex bp_lock = PLAT_MUTEX_INIT;
 int coop_contraption_take(const void *data, int n, int from) {   // coop_world.c peer_tick: 1 when it was ours
@@ -1466,6 +1484,104 @@ int coop_contraption_take(const void *data, int n, int from) {   // coop_world.c
     }
     plat_mutex_unlock(&bp_lock);
     return 1;
+}
+// The owner's root pose, about 20 times a second ("CBMV" hit packets): the copy drives its root toward it by velocity
+// (bp_follow), the bonds carry the rest; a body moved by velocity carries a Link standing on it (Phase 0 item 1).
+#define MV_KIND 0x564d4243u   // "CBMV"
+typedef struct { uint32_t kind, key; int64_t us; float m[12]; } MvPacket;
+int coop_contraption_pose_take(const void *data, int n, int from) {
+    const MvPacket *p = (const MvPacket *)data;
+    if (n != (int)sizeof(MvPacket) || p->kind != MV_KIND) return 0;
+    if (!contraption_on()) return 1;
+    plat_mutex_lock(&bp_lock);
+    for (int k = 0; k < BP_IN; k++)
+        if (bp_in[k].from == from && bp_in[k].key == p->key && p->us > bp_in[k].pose_us[1]) {
+            memcpy(bp_in[k].pose[0], bp_in[k].pose[1], sizeof bp_in[k].pose[0]), bp_in[k].pose_us[0] = bp_in[k].pose_us[1];
+            memcpy(bp_in[k].pose[1], p->m, sizeof p->m), bp_in[k].pose_us[1] = p->us, bp_in[k].pose_local_us = frame_step_world_us();
+        }
+    plat_mutex_unlock(&bp_lock);
+    return 1;
+}
+static uint64_t main_body_of(uint64_t a) {
+    return a ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x50) + 0x20) + 0x150) : 0;
+}
+static void bp_pose_send(void) {   // the owner, from the co-op tick
+    static int64_t last;
+    int64_t now = frame_step_world_us();
+    if (now - last < 50000) return;
+    last = now;
+    for (int q = 0; q < OWN_C; q++) {
+        if (!own_c[q].root || now - own_c[q].seen > 5000000) continue;
+        uint64_t body = main_body_of(own_c[q].root);
+        MvPacket p = {MV_KIND, own_c[q].key, now, {0}};
+        if (body && coop_rd(body + 0x98, p.m, sizeof p.m)) coop_net_hit_send(&p, sizeof p);
+    }
+}
+static void bp_follow(Cpu *c) {   // the other games, from the co-op tick: each copy's root driven toward its owner's
+    int64_t now = frame_step_world_us();
+    static int64_t last;
+    double dt = last && now > last ? (now - last) / 1e6 : 1 / 30.0;
+    last = now;
+    if (dt > 0.1) dt = 0.1;
+    for (int k = 0; k < BP_IN; k++) {
+        float m0[12], m1[12];
+        int64_t u0, u1, lu;
+        uint64_t root;
+        plat_mutex_lock(&bp_lock);
+        int ok = bp_in[k].made == 2 && bp_in[k].ncopy && bp_in[k].pose_us[1] && now - bp_in[k].pose_local_us < 1000000;
+        if (ok) memcpy(m0, bp_in[k].pose[0], sizeof m0), memcpy(m1, bp_in[k].pose[1], sizeof m1), u0 = bp_in[k].pose_us[0], u1 = bp_in[k].pose_us[1],
+                lu = bp_in[k].pose_local_us, root = bp_in[k].copy[0];
+        plat_mutex_unlock(&bp_lock);
+        if (!ok) continue;
+        uint64_t body = main_body_of(root);
+        float cur[12];
+        if (!body || !coop_rd(body + 0x98, cur, sizeof cur)) continue;
+        // the owner's velocity from its last two poses, and where it is now (its last pose carried forward, at most 0.3 s)
+        float v[3] = {0, 0, 0};
+        double odt = u0 && u1 > u0 ? (u1 - u0) / 1e6 : 0;
+        if (odt > 0.005 && odt < 0.5) for (int i = 0; i < 3; i++) v[i] = (m1[i * 4 + 3] - m0[i * 4 + 3]) / (float)odt;
+        double ahead = (now - lu) / 1e6;
+        if (ahead > 0.3) ahead = 0.3;
+        if (ahead < 0) ahead = 0;
+        _Alignas(16) float lin[4] = {0}, ang[4] = {0};
+        for (int i = 0; i < 3; i++) {
+            float want = m1[i * 4 + 3] + v[i] * (float)ahead;
+            lin[i] = v[i] + (want - cur[i * 4 + 3]) * 6.0f;   // the owner's speed and a sixth of a second to close the gap
+        }
+        // the turn left to the owner's orientation: R_err = R_target * R_current^T; its vector part (small angles)
+        float e[9];
+        for (int r = 0; r < 3; r++)
+            for (int q = 0; q < 3; q++) e[r * 3 + q] = m1[r * 4] * cur[q * 4] + m1[r * 4 + 1] * cur[q * 4 + 1] + m1[r * 4 + 2] * cur[q * 4 + 2];
+        ang[0] = 0.5f * (e[7] - e[5]) * 6.0f, ang[1] = 0.5f * (e[2] - e[6]) * 6.0f, ang[2] = 0.5f * (e[3] - e[1]) * 6.0f;
+        coop_guest_call(c, MOD_MAIN_BASE + 0x567750, body, (uint64_t)(uintptr_t)lin, 0, 0);   // SetLinearVelocity
+        coop_guest_call(c, MOD_MAIN_BASE + 0x25a1f0, body, (uint64_t)(uintptr_t)ang, 0, 0);   // SetAngularVelocity
+        static int64_t said;
+        if (now - said > 500000) {
+            said = now;
+            float d[3] = {m1[3] - cur[3], m1[7] - cur[7], m1[11] - cur[11]};
+            rt_log("coop: contraption: following player %d's %08x: root at %.2f %.2f %.2f, the owner's %.2f %.2f %.2f (off %.2f m), its speed %.2f %.2f %.2f",
+                   bp_in[k].from, bp_in[k].key, cur[3], cur[7], cur[11], m1[3], m1[7], m1[11], sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), v[0], v[1], v[2]);
+        }
+    }
+}
+// TOTK_COOP_TEST_ABPUSH=<s>,<vx>,<vy>,<vz>: the owner's first contraption's root given that velocity every tick for
+// 3 s from that time (a moving contraption for the pose stream to follow, with no player input)
+static void abpush_test(Cpu *c) {
+    static double at = -1;
+    static float v[3];
+    if (at < 0) {
+        const char *e = cfg_get("TOTK_COOP_TEST_ABPUSH");
+        at = e && sscanf(e, "%lf,%f,%f,%f", &at, &v[0], &v[1], &v[2]) == 4 ? at : 0;
+    }
+    double t = frame_step_world_us() / 1e6;
+    if (at <= 0 || t < at || t > at + 3) return;
+    for (int q = 0; q < OWN_C; q++) {
+        uint64_t body = main_body_of(own_c[q].root);
+        if (!body) continue;
+        _Alignas(16) float lin[4] = {v[0], v[1], v[2], 0};
+        coop_guest_call(c, MOD_MAIN_BASE + 0x567750, body, (uint64_t)(uintptr_t)lin, 0, 0);
+        break;
+    }
 }
 // 1: player from's object id is a part of a contraption this game makes with its Autobuild (its old copy not wanted)
 int coop_contraption_owns(int from, uint32_t id) {
@@ -1623,6 +1739,7 @@ static void bp_make(Cpu *c) {
         }
         if (now - mk.t > 3000000) {
             rt_log("coop: contraption: player %d's %08x: made, %d of %d parts in one group", bp_in[k].from, bp_in[k].key, grouped, mk.n);
+            memcpy(bp_in[k].copy, mk.parts, sizeof bp_in[k].copy), bp_in[k].ncopy = mk.n;
             bp_in[k].made = 2, mk.st = 0;
         }
     }
@@ -2123,6 +2240,7 @@ static void phase0_tick(Cpu *c, int n) {
 
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
     playerdiff_test(me);
+    if (contraption_on()) bp_pose_send(), bp_follow(c), abpush_test(c);
     if (!ablog_on()) return;
     deck_test(c, me, atomic_load(&tracked_n) < TRACK_N ? atomic_load(&tracked_n) : TRACK_N);
     failspam_test(c, me);
