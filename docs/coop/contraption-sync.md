@@ -422,3 +422,18 @@ TOTK_COOP_CONTRAPTION=1 (coop_autobuild.c, "Contraption copies made by the game'
   tumbled, 0.17 to 0.56 m. The full-size frames of both games at the landing show the two Fanplanes tilted the same way.
 - Next: the copy's devices (on/off through the request path, no thrust, no battery), the owner's numbers on the copy's
   parts, a shape that changes, and the player's own Autobuild while a copy is made.
+
+## Phase 1, third step: the copy's devices (2026-11-09)
+- The pose packets carry which record parts have a switch and which are on. The copy's group is put on or off as the
+  owner's by one toggle request on its first switched part (DeviceSwitch +0x8d bit 3; main+0x32f610 takes a member's
+  request to the whole group), asked again only after 1.5 s.
+- A copy's fan pushes nothing (WindGenerator_ApplyImpulse returns at once for a part made from a record: its push only
+  ever moves its own part, which the owner's game moves), and a copy's on/off node charges no gauge (consume and
+  consumeRate dropped while it runs), so only the owner's Link pays.
+- Pair test (TOTK_COOP_TEST_ABON=42: A's Fanplane's devices toggled by the request a hit makes): A's three fans came on
+  at 42.5 s; B's copy, off, was toggled once and its three fans read on (0111, as A's), and stayed so; B's log shows the
+  copy's charges not made. A's second toggle at 52 s did not turn A's fans off (one request on one part does not turn
+  a group off; the owner side, not the copy).
+- Not done: other thrust devices (rocket, wheel, sled, balloon, wing, hover stone, stabilizer: research devices2/),
+  a toggle asked on a copy (a hit on the copy's fan in game B) taken to the owner, and the devices' state in a record
+  made while they are on.
