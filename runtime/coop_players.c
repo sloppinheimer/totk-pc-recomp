@@ -1807,6 +1807,8 @@ static void arrow_copies(Cpu *c, Slot *s) {
                     if ((s->mir[k].flags & COOP_OBJ_AUTOBUILT) && frame_step_world_us() - atomic_load(&coop_ultrahand_hold_us) > 2000000) {
                         rt_log("coop: slot %d: the copy of autobuilt %u (%s) came apart here (state %d) with no Ultrahand on it here; made again",
                                (int)(s - slots), s->mir[k].id, s->mir[k].name, st);
+                        void coop_bonds_came_apart(uint64_t actor, int owner, uint32_t id);   // coop_bonds.c: its group unmarked
+                        coop_bonds_came_apart(s->mir[k].actor, s->net_id, s->mir[k].id);
                         s->mir[k].state = 1, s->mir[k].actor = 0, s->mir[k].ticks = 0;
                         continue;
                     }

@@ -32,6 +32,17 @@ evidence), guess.
   it from its enter function main+0x231fa58 (`coop_NodeGenericRequestCreateActor_enter`); the strings "Pack/Actor/",
   ".pack", "ActorMgr" inside it. Confidence: likely (not called by us yet).
 
+## Copies coming apart again and again (a play session apart-1924, 2026-11-08 night)
+- Game 2 remade the copies of player 1's autobuilt board (sled, stick, fan, plank) and rocket contraption over and
+  over ("came apart here (state 7) with no Ultrahand on it here; made again", up to four times each), all of a group in
+  one tick: one copy gone, the others still marked green kept bonds to a part that was gone and the game destroyed
+  them as parts broken off.
+- Now (coop_bonds.c coop_bonds_came_apart, found by its owner's number since its pair is dropped first) the green bit
+  is taken off the rest of the group at once, and marked again once the remade copy shares the group; a group that
+  comes apart twice in 30 s (parts gone within a second count once) is no longer marked here, so it holds.
+- Pair test (autobuild_stick_3rd.txt, `TOTK_COOP_TEST_ABSTICK=50,1`, B idle; A's stand-in lands on the copy's deck): B
+  2 parts came apart once (before: 12 in the minute), the copy then whole and green; A destroyed nothing.
+
 ## Flicker and the battery (a play session flicker-battery-1916, 2026-11-08 night)
 - Flicker: player 1 glued two fans by hand, turned them on, then off; game 2 then switched its copies off again every
   2.5 s, about 30 times, while player 2's swings (and player 1's stand-in) toggled them there too: the sync enforced

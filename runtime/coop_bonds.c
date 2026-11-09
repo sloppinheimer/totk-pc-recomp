@@ -374,11 +374,34 @@ int coop_bonds_take(const void *data, int n, int from) {   // coop_world.c peer_
 // is bonded, once it shares its contraption's group. TOTK_COOP_TEST_GREEN=0: not marked; =all: every bonded copy.
 #define MARK_AUTOBUILT 0x1c07114
 int coop_copy_autobuilt(uint64_t actor);   // coop_players.c
+// Groups whose copies came apart by accident twice in 30 s: no longer marked (green) here, so they hold. the tester's
+// session (apart-1924): copies of an autobuilt board came apart with nobody near, four times; each one gone left the
+// others bonded to nothing, and marked, the game destroyed them too.
+#define NOGREEN_N 16
+static struct { int from; uint32_t group; int strikes; int64_t first_us, last_us; int off; } nogreen[NOGREEN_N];
+static int nogreen_find(int from, uint32_t group, int make) {
+    int free = -1;
+    for (int i = 0; i < NOGREEN_N; i++) {
+        if (nogreen[i].from == from && nogreen[i].group == group && nogreen[i].first_us) return i;
+        if (free < 0 && !nogreen[i].first_us) free = i;
+    }
+    if (!make) return -1;
+    if (free < 0) free = 0;
+    memset(&nogreen[free], 0, sizeof nogreen[free]);
+    nogreen[free].from = from, nogreen[free].group = group;
+    return free;
+}
 static void mark_autobuilt(Cpu *c, uint64_t a) {
     static const char *mode = (const char *)1;
     if (mode == (const char *)1) mode = cfg_get("TOTK_COOP_TEST_GREEN");
     if (mode && *mode == '0') return;
     if (!(mode && !strcmp(mode, "all")) && !coop_copy_autobuilt(a)) return;
+    for (int k = 0; k < PAIR_N; k++)   // (a group that kept coming apart: not marked any more)
+        if (pair[k].used && (pair[k].ma == a || pair[k].ra == a)) {
+            int g = nogreen_find(pair[k].from, pair[k].group, 0);
+            if (g >= 0 && nogreen[g].off) return;
+            break;
+        }
     static uint64_t done[128];
     static int n;
     for (int i = 0; i < n; i++) if (done[i] == a) return;
@@ -483,6 +506,33 @@ int coop_bonds_carried(uint64_t actor) {
         if (pair[k].ma == actor && pair[k].done) member = 1;
     }
     return member;
+}
+// A copy here came apart by accident (coop_players.c): the green bit taken off the rest of its group first, so they
+// are not destroyed as parts broken off (they hold their bonds to the part gone), and they are marked again once the
+// remade copy shares their group. Twice in 30 s: that group is no longer marked here.
+void coop_bonds_came_apart(uint64_t actor, int owner, uint32_t id) {   // (by its owner's number: its pair may be gone)
+    int from = -1;
+    uint32_t group = 0;
+    for (int k = 0; k < PAIR_N && from < 0; k++)   // (the pair of a copy gone is dropped first: its record still says)
+        if ((pair[k].from == owner || pair[k].m.owner == (uint32_t)owner) && (pair[k].m.id == id || pair[k].root.id == id) && pair[k].first_us)
+            from = pair[k].from, group = pair[k].group;
+    if (from < 0) return;
+    for (int k = 0; k < PAIR_N; k++) {
+        if (!pair[k].used || pair[k].from != from || pair[k].group != group) continue;
+        uint64_t two[2] = {pair[k].ma, pair[k].ra};
+        for (int j = 0; j < 2; j++) {
+            uint64_t comp = two[j] != actor ? comp_of(two[j]) : 0;
+            if (comp) __atomic_fetch_and((uint32_t *)(uintptr_t)(comp + 0x150), ~1u, __ATOMIC_SEQ_CST);
+        }
+        pair[k].marked = 0;
+    }
+    int64_t now = frame_step_world_us();
+    int g = nogreen_find(from, group, 1);
+    if (now - nogreen[g].first_us > 30000000) nogreen[g].first_us = now, nogreen[g].strikes = 0;
+    if (now - nogreen[g].last_us > 1000000) nogreen[g].strikes++;   // (parts gone in one second: one time)
+    nogreen[g].last_us = now;
+    if (nogreen[g].strikes >= 2 && !nogreen[g].off)
+        nogreen[g].off = 1, rt_log("coop: bonds: player %d's contraption (group %08x) came apart here twice in 30 s: no longer marked green", from, group);
 }
 int coop_bonds_member(uint64_t actor) {   // a copy bonded here into another player's contraption (any thread: a read)
     for (int k = 0; actor && k < PAIR_N; k++)
