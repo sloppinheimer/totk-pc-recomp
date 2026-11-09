@@ -1397,35 +1397,52 @@ static void bp_send(Cpu *c) {
         memset(&p, 0, sizeof p);
         p.kind = BP_KIND, p.key = (uint32_t)(g >> 3), p.shape = bp_shape(rec), p.chunks = BP_CHUNKS;
         p.centre[0] = -info[3], p.centre[1] = -info[7], p.centre[2] = -info[11];   // (info is [I | -centre])
-        // which own object each record part is: the member whose body is where the part's frame puts it
+        // which own object each record part is: the group member of the part's name nearest to where the part's frame
+        // puts it, each member once (a body's origin can sit off the actor's frame, so not only an exact match)
+        uint64_t used[21] = {0};
+        int nmiss = 0;
         for (int r = 0; r < rec[9] && r < 21; r++) {
-            float f[12], best = 0.05f;
+            float f[12], best = 1.0f;
             memcpy(f, rec + 0xc + r * 0x118, sizeof f);
             float at[3] = {f[3] + p.centre[0], f[7] + p.centre[1], f[11] + p.centre[2]};
+            char want[0x40] = "";
+            memcpy(want, rec + 0xc + r * 0x118 + 0x98, sizeof want - 1);
+            uint64_t pick = 0;
+            uint32_t pick_id = 0;
             for (int j = 0; j < n; j++) {
                 uint64_t b = own[j], s2 = coop_rd_ptr(coop_rd_ptr(b + 0x228) + 0x480);
                 if (!s2 || coop_rd_ptr(s2 + 0x28) != g) continue;
-                uint64_t body = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(b + 0x228) + 0x50) + 0x20) + 0x150);
-                float w[12];
-                if (!body || !coop_rd(body + 0x98, w, sizeof w)) continue;
-                float d = fabsf(w[3] - at[0]) + fabsf(w[7] - at[1]) + fabsf(w[11] - at[2]);
+                int dup = 0;
+                for (int q = 0; q < r; q++) dup |= used[q] == b;
+                if (dup) continue;
+                char nm[0x40] = "";
+                coop_actor_name(b, nm, sizeof nm);
+                if (want[0] && strcmp(nm, want)) continue;
+                float w[12] = {0};
+                coop_rd(b + COOP_ACTOR_POS, w, 12);
+                float d = fabsf(w[0] - at[0]) + fabsf(w[1] - at[1]) + fabsf(w[2] - at[2]);
                 int owner = 0;
                 uint32_t id = 0;
-                if (d < best && coop_obj_ident(b, &owner, &id)) {
-                    best = d, p.ids[r] = id;
-                    for (int q = 0; q < OWN_C; q++)   // (each record part's actor, for the device states sent with the pose)
-                        if (own_c[q].key == p.key) own_c[q].parts[r] = b, own_c[q].np = rec[9] < 21 ? rec[9] : 21;
-                    if (r == 0) {   // the root, for the pose stream (bp_pose_send)
-                        int f = -1, fr = -1;
-                        for (int q = 0; q < OWN_C && f < 0; q++) {
-                            if (own_c[q].key == p.key) f = q;
-                            else if (fr < 0 && now - own_c[q].seen > 5000000) fr = q;
-                        }
-                        if (f < 0) f = fr;
-                        if (f >= 0) own_c[f].key = p.key, own_c[f].root = b, own_c[f].seen = now;
-                    }
-                }
+                if (d < best && coop_obj_ident(b, &owner, &id)) best = d, pick = b, pick_id = id;
             }
+            used[r] = pick, p.ids[r] = pick_id;
+            if (!pick) { nmiss++; continue; }
+            if (r == 0) {   // the root, for the pose stream (bp_pose_send)
+                int f2 = -1, fr = -1;
+                for (int q = 0; q < OWN_C && f2 < 0; q++) {
+                    if (own_c[q].key == p.key) f2 = q;
+                    else if (fr < 0 && now - own_c[q].seen > 5000000) fr = q;
+                }
+                if (f2 < 0) f2 = fr;
+                if (f2 >= 0) own_c[f2].key = p.key, own_c[f2].root = pick, own_c[f2].seen = now;
+            }
+            for (int q = 0; q < OWN_C; q++)   // (each record part's actor, for the device states sent with the pose)
+                if (own_c[q].key == p.key) own_c[q].parts[r] = pick, own_c[q].np = rec[9] < 21 ? rec[9] : 21;
+        }
+        if (nmiss) {   // (not sent: the other game would keep its loose copies of the parts it cannot name)
+            static int64_t said_miss;
+            if (now - said_miss > 10000000) said_miss = now, rt_log("coop: contraption: mine %08x: %d of %u parts matched no object of mine: not sent", p.key, nmiss, rec[9]);
+            continue;
         }
         for (int k = 0; k < BP_CHUNKS; k++) {
             int off = k * BP_CHUNK, len = BP_SIZE - off < BP_CHUNK ? BP_SIZE - off : BP_CHUNK;
@@ -1774,7 +1791,7 @@ int coop_contraption_owns(int from, uint32_t id) {
     int yes = 0;
     plat_mutex_lock(&bp_lock);
     for (int k = 0; k < BP_IN && !yes; k++)
-        if (bp_in[k].from == from && bp_in[k].complete)
+        if (bp_in[k].from == from && bp_in[k].complete && bp_in[k].made != 3)   // (not one whose copy was deleted)
             for (int r = 0; r < 21 && !yes; r++) yes = bp_in[k].ids[r] == id;
     plat_mutex_unlock(&bp_lock);
     return yes;
@@ -1823,6 +1840,22 @@ static void bp_make(Cpu *c) {
         if (k >= 0) bp_in[k].made = 1;
         plat_mutex_unlock(&bp_lock);
         if (k < 0) return;
+        for (int j = 0; j < BP_IN; j++) {   // an older copy of the owner's that shares objects with this one (the owner's
+            // contraption split or joined, under a new key): deleted first, or the two would be made inside each other
+            if (j == k || bp_in[j].from != bp_in[k].from || bp_in[j].made != 2 || !bp_in[j].ncopy) continue;
+            int shared = 0;
+            for (int r = 0; r < 21 && !shared; r++)
+                for (int q = 0; q < 21 && !shared && bp_in[k].ids[r]; q++) shared = bp_in[j].ids[q] == bp_in[k].ids[r];
+            if (!shared) continue;
+            for (int i = 0; i < bp_in[j].ncopy && i < 21; i++)
+                if (bp_in[j].copy[i]) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, bp_in[j].copy[i], COOP_DELETE_REASON, 0, 0), made_remove(bp_in[j].copy[i]);
+            rt_log("coop: contraption: player %d's %08x shares objects with its %08x: the old copy (%d parts) deleted", bp_in[k].from, bp_in[k].key, bp_in[j].key, bp_in[j].ncopy);
+            plat_mutex_lock(&bp_lock);
+            bp_in[j].ncopy = 0, bp_in[j].made = 3, memset(bp_in[j].copy, 0, sizeof bp_in[j].copy);
+            plat_mutex_unlock(&bp_lock);
+            bp_in[k].made = 0;   // (made next time: the deletes land first)
+            return;
+        }
         if (bp_in[k].remake) {   // the old copy of this contraption deleted before the new shape is made
             for (int i = 0; i < bp_in[k].ncopy && i < 21; i++)
                 if (bp_in[k].copy[i]) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, bp_in[k].copy[i], COOP_DELETE_REASON, 0, 0), made_remove(bp_in[k].copy[i]);

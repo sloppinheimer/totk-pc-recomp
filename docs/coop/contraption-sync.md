@@ -470,3 +470,16 @@ TOTK_COOP_CONTRAPTION=1 (coop_autobuild.c, "Contraption copies made by the game'
   stopped. The first copy in that run lost its group 0.5 s after it was made and was destroyed: A's Link is put by a
   fan at 36 s by the test (TOTK_COOP_TEST_ABHIT), and its stand-in in B appeared inside the copy as it was being made
   (likely; open). No "destroyed here" notice any more.
+
+## Phase 1, sixth step: naming the record's parts, splits (2026-11-09)
+- The first copy that fell apart in the part-off test was not the test's teleport (the copy broke at 30 s, the teleport
+  came at 36 s). The owner had sent the wing with no object number: its body's origin sat more than 5 cm from the
+  actor frame the record holds, so the other game kept its old loose copy of the wing, and the copy was made around
+  it. Each record part is now the group member of the part's name nearest to its frame (within 1 m, each member
+  once), and a record with a part that matches nothing is not sent (tried again 2 s later).
+- When a part comes off, the owner's contraption gets a new key. A copy of the owner's that shares objects with a new
+  record is deleted before the new one is made; before, the two were made inside each other and the new one fell
+  apart. A record whose copy was deleted no longer claims its objects, so the part that came off gets its loose copy.
+- Pair tests: the toggle test as before (on at 46 s, off at 54 s, the copy follows). Part-off: 4 of 4 made in one
+  group; the fan pulled off; the old copy deleted, the 3-part copy made 3 of 3 in one group, its root 0.00 m from the
+  owner's; the loose fan copied. Normal start, no settings: both games load, 59 fps, no contraption lines.
