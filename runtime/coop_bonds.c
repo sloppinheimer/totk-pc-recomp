@@ -133,6 +133,30 @@ static uint64_t call5(Cpu *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2
 // Two objects of this game bonded as an autobuild bonds its devices (main+0x1c05a98 from a's glue component to b's main
 // body, bit 24 cleared on both bodies first): the bond the graph joins into one group. For tests (coop_glue.c glue_test,
 // TOTK_COOP_TEST_GLUEBOND). 1: called.
+// As coop_bonds_bond, with the two matrices main+0x1c05a98 takes as what they are: each body's attachment frame in
+// that body's own space (createScotch's entry +0x448 / +0x4b0), here one world point, the middle of the two bodies,
+// with the world's axes, written in each. coop_bonds_bond gives it the two bodies' world matrices, which joins two
+// frames that are not at one place: a contraption made again that way and bonded flew apart in two physics steps
+// (contraption-sync.md, Phase 0 item 3).
+static void frame_in(const float m[12], const float p[3], float out[12]) {   // [R|t]^-1 [I|p] = [R^T | R^T (p - t)]
+    float d[3] = {p[0] - m[3], p[1] - m[7], p[2] - m[11]};
+    for (int r = 0; r < 3; r++) {
+        for (int k = 0; k < 3; k++) out[r * 4 + k] = m[k * 4 + r];
+        out[r * 4 + 3] = m[0 * 4 + r] * d[0] + m[1 * 4 + r] * d[1] + m[2 * 4 + r] * d[2];
+    }
+}
+int coop_bonds_bond_at(Cpu *c, uint64_t a, uint64_t b) {
+    uint64_t comp = comp_of(a), mb = main_body(a), rb = main_body(b);
+    float wm[12], wr[12];
+    static _Alignas(16) float fa[12], fb[12];
+    if (!comp || !mb || !rb || !coop_rd(mb + 0x98, wm, sizeof wm) || !coop_rd(rb + 0x98, wr, sizeof wr)) return 0;
+    float mid[3] = {(wm[3] + wr[3]) / 2, (wm[7] + wr[7]) / 2, (wm[11] + wr[11]) / 2};
+    frame_in(wm, mid, fa), frame_in(wr, mid, fb);
+    __atomic_fetch_and((uint64_t *)(uintptr_t)(mb + 0x68), ~BODY_SKIP_BIT, __ATOMIC_SEQ_CST);
+    __atomic_fetch_and((uint64_t *)(uintptr_t)(rb + 0x68), ~BODY_SKIP_BIT, __ATOMIC_SEQ_CST);
+    call5(c, MOD_MAIN_BASE + BOND_BODIES, comp, 0, rb, (uint64_t)(uintptr_t)fa, (uint64_t)(uintptr_t)fb);
+    return 1;
+}
 int coop_bonds_bond(Cpu *c, uint64_t a, uint64_t b) {
     uint64_t comp = comp_of(a), mb = main_body(a), rb = main_body(b);
     static _Alignas(16) float wm[12], wr[12];
