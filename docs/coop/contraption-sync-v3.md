@@ -1227,3 +1227,58 @@ collision ignore), and T2 (a Link riding a follower).
 - Still to do in P1: X5 for device kinds other than the fan (it needs builds with them; the in-place bond path of P4
   can make them), X14b (the stand-in collision ignore), the rest of X4 (the lapse, a damaged part promoted) and T2 (a
   Link riding a follower).
+
+## 25. Review of the plan and of how it is carried out (2026-11-09, evening)
+Asked for by the tester after P0, P1 and the first milestone-1 work took a day of mostly waiting on pair runs.
+
+### 25.1 Verdict
+The design of sections 1-14 stands. Its core was measured (24, X2), copies stay whole, both hand-overs pass and the
+channel loses nothing. No failure since came from the design. The failures came from how it was carried out:
+
+- **Runs were used to find out how the game works.** Device off and the stand-in veto were written against guesses and
+  tried, several runs each. The notes already answered most of both (25.3). A run is for confirming, not for finding out.
+- **Plan pieces were bolted onto the old code.** There is no registry (6.2) and no minted cid (6.1): coop_autobuild.c
+  still matches builds by shared actors and by position within 4 m. Device follow re-asks a toggle every 0.6 s until
+  the state reads right, where 8.1 says the game's own request path. Both are the piece-by-piece patching this plan
+  was written to end, and both fail in ways only a run shows (the stick explosion, the misshapen copy).
+- **The self-mirror lab made problems real play does not have** (24.1's mid-air stall). It cost several runs.
+- **Section 17 is too large for this stage**: 45 tests, many with 20 or 50 repeats, a soak, three players and network
+  splits, before two players can play.
+
+### 25.2 Process from here (replaces the gate column of 16 and the repeat counts of 17 until the last milestone)
+1. **Notes first.** Before a piece is written, its game-side questions are looked up in R/ (devices, devices2,
+   autobuild, physics, runtime, sync-v3). What the notes do not answer is read in Ghidra and added to the notes. No
+   code is written against a guess; an assumption that cannot be read is listed in the milestone's results.
+2. **A milestone is written whole, then run once.** No run between its pieces.
+3. **A failed run is explained from its logs before the next one.** The next run confirms a stated cause; it never
+   tries a guess. Two failures in a row on the same piece mean back to step 1.
+4. **One scripted gate run per milestone** (tools/coop/gate_contraption.ps1, about 4 minutes), judged by the clean line
+   and the pass lines, then the tester's play-test. Nobody has to watch the scripted run.
+5. **The mirror lab is for drive tuning only**, which is done. A lab-only oddity is noted and left.
+6. **The structure of 6.1 and 6.2 is built as written**: registry keyed by minted cid, part uids, versions. The
+   overlap and position matching goes.
+7. **Put off to the last milestone:** repeat counts (T10's 20 runs, T17's 50 toggles), T11 prefetch, T14 loss and
+   jitter, T38 three players and late join, T37 link loss, T39 soak, T40 cost. They check the robustness of code that
+   has to exist first.
+
+### 25.3 What the notes already say about the two open pieces
+- **Switching a group off.** The game does it with messages, not with a DeviceSwitch request: the group's sender
+  main+0x32eb90 sends 0x6b510001 (off) or 0x6b510000 (on) to each member's on/off node (handler main+0x245c114),
+  whose calc main+0x9f9088 turns the device's bools off (R/devices2/energy/c-gauge-callers section 4, R/devices
+  section 3.1). A request through main+0x1c08774 is only taken by a powered device and keeps the lower priority, and
+  a hit only ever asks for value 1. Left to read: which of the two paths a hit on a running device takes to switch
+  it off, and who sets the sender's flag bits in group+0x878.
+- **The stand-in veto.** main+0x40a240 compares the two bodies' filter words (layer and group bits at +0x18, a group
+  id at +0x2a, an ignore bitset at +0x20; R/runtime/triage/rate_fans_on.md). Its arguments are those filter records,
+  so matching them against a body holder plus 8 was a guess. Left to read: how a body reaches its filter record, so
+  the two sets are built from the same pointers the predicate receives.
+
+### 25.4 Milestones (the "playable soonest" order; phases of 16 in brackets)
+| Milestone | Content | Done when |
+|---|---|---|
+| 1 | registry and minted ids (P2); touch hand-overs (P3); device on and off by the game's own path; stand-in veto (I16); rider on a follower (T2); the rest of X4 | one gate run clean; the tester's play-test: build, switch, grab, steer and ride each other's builds |
+| 2 | building together (P4); the common devices (P5) | the same, with gluing onto each other's builds and every common device kind |
+| 3 | P6-P8 and everything 25.2 point 7 put off | section 17 in full |
+
+State when this was written: milestone 1's hand-overs pass in the gate; device off, the veto and the registry are open;
+that work is not committed.
