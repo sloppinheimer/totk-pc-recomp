@@ -1145,11 +1145,36 @@ static void rebuild_go(Cpu *c) {
     if (cai && coop_ab_cai[9]) memcpy((void *)(uintptr_t)cai, coop_ab_cai, sizeof coop_ab_cai);
     // TOTK_COOP_TEST_REBUILDGOPHASE=1: the actor manager's phase byte set to 4 for the call (a test of what the confirm
     // does when every actor link resolves; Phase 0 item 2 found the lookup refuses other jobs' actors in phase 2)
+    // TOTK_COOP_TEST_REBUILDGOFREE=1: no currency charged: the confirm charges each part's cost (the record
+    // main+0xae6e04 finds for the entry's name in the table [[[main+0x395f900]]+8], its +0x48) through main+0x209b754;
+    // each record's cost set to 0 for the call and put back after
+    uint64_t costs_at[0x15] = {0};
+    uint32_t costs_were[0x15] = {0};
+    int ncost = 0;
+    if (cfg_get("TOTK_COOP_TEST_REBUILDGOFREE")) {
+        uint64_t tab = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + 0x395f900)) + 8);
+        static uint64_t key;
+        for (int k = 0; tab && list && k < ne && k < 0x15; k++) {
+            uint64_t ent = coop_rd_ptr(list + 8 * (uint64_t)k);
+            if (!ent) continue;
+            key = coop_rd_ptr(ent);
+            uint64_t rec = coop_guest_call(c, MOD_MAIN_BASE + 0xae6e04, tab, (uint64_t)(uintptr_t)&key, 0, 0);
+            int seen = 0;
+            for (int i = 0; i < ncost; i++) seen |= costs_at[i] == rec;
+            if (!rec || seen) continue;
+            costs_at[ncost] = rec, costs_were[ncost] = LD32(rec + 0x48), ST32(rec + 0x48, 0);
+            char nm[64] = "";
+            coop_rd(key, nm, sizeof nm - 1);
+            rt_log("coop: test: rebuildgo: %s costs %u: 0 for the confirm", nm, costs_were[ncost]);
+            ncost++;
+        }
+    }
     uint64_t am = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + 0x395da68));
     int force = cfg_get("TOTK_COOP_TEST_REBUILDGOPHASE") && am && actor_phase() == 2;
     if (force) *(volatile uint8_t *)(uintptr_t)(am + 0x424) = 4;
     uint64_t r = coop_guest_call(c, MOD_MAIN_BASE + 0x1d3c0d4, o, 0, 0, 0);
     if (force) *(volatile uint8_t *)(uintptr_t)(am + 0x424) = 2;
+    for (int i = 0; i < ncost; i++) ST32(costs_at[i] + 0x48, costs_were[i]);
     rt_log("coop: test: rebuildgo: %.2f s the confirm (main+0x1d3c0d4) returned %llu at actor phase %d", frame_step_world_us() / 1e6,
            (unsigned long long)(r & 1), actor_phase());
     // TOTK_COOP_TEST_REBUILDGOMARK=1: each part then given the confirm's own mark (main+0x1c07114: autobuilt, green,
@@ -1261,8 +1286,14 @@ static void rebuild_go_log(void) {
     }
     rt_log("%s", line);
 }
-void coop_autobuild_link_calc(Cpu *c) {
+// TOTK_COOP_TEST_REBUILDGOIN=gamedata: the rebuild's confirm (and the history writer, TOTK_COOP_TEST_SERIAL) run from
+// GameDataMgr::calc instead, at actor phase 0 (coop_spawn.c coop_hook)
+void coop_autobuild_seq_calc(Cpu *c) {
     rebuild_go(c);
+    serial_try(c, "GameDataMgr::calc");
+}
+void coop_autobuild_link_calc(Cpu *c) {
+    if (!cfg_get("TOTK_COOP_TEST_REBUILDGOIN")) rebuild_go(c);
     static int from_link = -1;
     if (from_link < 0) { const char *in = cfg_get("TOTK_COOP_TEST_SERIALIN"); from_link = !in || strcmp(in, "part"); }
     if (from_link) serial_try(c, "the Link's update");

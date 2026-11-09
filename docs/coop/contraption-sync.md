@@ -356,3 +356,15 @@ cleared, the blueprint put back, and the confirm main+0x1d3c0d4 called.
   job, or the parts' dependency on the calling job). The confirm charges the currency for each part (the copy's game
   must not pay: zero the cost records' +0x48 or skip main+0x209b754 for it). It uses the Link's own Autobuild
   BuildObject (ability +0x51f0), which clashes with that player building at the same moment. Not tried in game B.
+- **Without any trick:** which hooked functions run outside the parallel actor update (TOTK_COOP_TEST_PHASES, the
+  phase byte sampled at every co-op hook): GameDataMgr::calc (main+0xa72b00), getController, setEventBool and a few
+  more run at phase 0. Called from GameDataMgr::calc (TOTK_COOP_TEST_REBUILDGOIN=gamedata, coop_spawn.c coop_hook),
+  the confirm returns 1 at phase 0 with nothing forced and queues the bonds itself; the copy comes out one group of 4,
+  green, at the record's places ((1.59, 1.16, 0.00) at 0.2 s), rigid as it lands. The history writer from there
+  (TOTK_COOP_TEST_SERIAL with REBUILDGOIN) returns 1 with 4 parts and 3 bonds, nothing forced either.
+- **No currency:** each part's cost record (main+0xae6e04 on [[[main+0x395f900]]+8], keyed by the entry's name; +0x48)
+  set to 0 around the confirm and put back after (TOTK_COOP_TEST_REBUILDGOFREE=1: wing 3, fan 3 before): the same
+  result. That the confirm then takes nothing is read from the code (main+0x209b754 is given the record's cost), not
+  measured.
+- Left: the copy uses the Link's own Autobuild BuildObject (a player building at that moment would clash), and all of
+  this ran in game A, making a second copy of A's own build; game B, with a record received over the network, is next.

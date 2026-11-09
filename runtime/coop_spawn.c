@@ -889,7 +889,29 @@ static int beam_hook(Cpu *c, uint64_t addr) {
     plat_mutex_unlock(&beam_lock);
     return 1;
 }
+// TOTK_COOP_TEST_PHASES=1: once per hooked function and actor manager phase byte ([[main+0x395da68]]+0x424) value,
+// the pair logged: which hooks run outside the parallel actor update (phase 2), where an actor link resolves to any actor
+static void phase_sample(uint64_t addr) {
+    static int on = -1;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_PHASES") != NULL;
+    if (!on) return;
+    uint64_t m = rd_ptr(rd_ptr(MOD_MAIN_BASE + 0x395da68));
+    uint8_t ph = 0xff;
+    if (m) rd(m + 0x424, &ph, 1);
+    static _Atomic uint64_t seen[128];
+    uint64_t key = ((addr - MOD_MAIN_BASE) << 8) | ph;
+    for (int i = 0; i < 128; i++) {
+        uint64_t have = atomic_load(&seen[i]);
+        if (have == key) return;
+        if (!have && atomic_compare_exchange_strong(&seen[i], &have, key)) {
+            rt_log("coop: test: phases: main+%llx runs at actor phase %u (world %.2f s)", (unsigned long long)(addr - MOD_MAIN_BASE), ph,
+                   frame_step_world_us() / 1e6);
+            return;
+        }
+    }
+}
 int coop_hook(Cpu *c, uint64_t addr) {
+    phase_sample(addr);
     if (addr == MOD_MAIN_BASE + 0x916860) return beam_hook(c, addr);
     // contraption-sync.md Phase 0 tests (coop_autobuild.c coop_phase0_hook): a fan's push, the velocity and impulse
     // writes it makes, the on/off node's calc and setter and the two gauge charges
@@ -898,7 +920,22 @@ int coop_hook(Cpu *c, uint64_t addr) {
         addr == MOD_MAIN_BASE + 0x9fad68) { int coop_phase0_hook(Cpu *c, uint64_t addr); return coop_phase0_hook(c, addr); }
     // Shared world progress (coop_gamedata.c, TOTK_COOP_SHARE_WORLD=1): GameDataMgr::calc (main+0xa72b00, x0 the
     // manager) and setEventBool (main+0xc6a9f0).
-    if (addr == MOD_MAIN_BASE + 0xa72b00) { void coop_gamedata_calc(uint64_t gmd, uint64_t me); coop_gamedata_calc(c->x[0], player_actor_cached); return 0; }
+    if (addr == MOD_MAIN_BASE + 0xa72b00) {
+        // contraption tests that need every actor link to resolve: GameDataMgr::calc runs each frame at actor phase 0,
+        // outside the parallel actor update (TOTK_COOP_TEST_PHASES)
+        static int seq = -1;
+        if (seq < 0) seq = cfg_get("TOTK_COOP_TEST_REBUILDGOIN") != NULL;
+        if (seq) {
+            void coop_autobuild_seq_calc(Cpu *c);
+            uint64_t x[31], sp = c->sp, pc = c->pc;
+            memcpy(x, c->x, sizeof x);
+            coop_autobuild_seq_calc(c);
+            memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
+        }
+        void coop_gamedata_calc(uint64_t gmd, uint64_t me);
+        coop_gamedata_calc(c->x[0], player_actor_cached);
+        return 0;
+    }
     if (addr == MOD_MAIN_BASE + 0xc6a9f0) { int coop_gamedata_event_bool(Cpu *c, uint64_t addr); return coop_gamedata_event_bool(c, addr); }
     // Ultrahand glue (coop_glue.c): doScotch main+0x1d66e34 (a bond made: captured), a bond's break main+0x1c0bb54
     // Autobuild research (coop_autobuild.c, TOTK_COOP_TEST_ABLOG): the autobuild device class's constructor
