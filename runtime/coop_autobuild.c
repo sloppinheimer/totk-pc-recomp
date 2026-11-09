@@ -412,7 +412,7 @@ static void hit_test(Cpu *c, uint64_t me, int n) {
             // with Ultrahand (autobuild_glue_3rd.txt): glue by hand
             static _Alignas(16) uint8_t lh[0x40];
             if (cfg_get("TOTK_COOP_TEST_ABLOOSE")) {
-                float at[3] = {f[0] + ux + dz * 1.6f, f[1] + 0.3f, f[2] + uz - dx * 1.6f}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+                float at[3] = {f[0] + ux * dist + dz * 1.6f, f[1] + 0.3f, f[2] + uz * dist - dx * 1.6f}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
                 rt_log("coop: test: abhit: a loose fan asked for at %.2f %.2f %.2f: %d", at[0], at[1], at[2],
                        coop_request_create(c, "SpObj_WindGenerator_A_01", at, rot, lh));
             }
@@ -1388,6 +1388,8 @@ static struct {
     int64_t pose_us[2], pose_local_us, asked_us, auth_us;
     uint32_t sw, on;      // while another game runs it: that game's devices (which have a switch, which are on)
     int64_t toggled_us;
+    int act;              // while this game runs it: the player who turned its devices on from another game (0: here)
+    int64_t act_us;       // when (cleared once its devices are off 2 s after)
 } own_c[OWN_C];
 // The owner: every 2 s, each own contraption recorded and sent (from coop_autobuild_seq_calc, actor phase 0).
 static void bp_send(Cpu *c) {
@@ -1502,6 +1504,8 @@ static struct {
     int64_t pose_us[2], pose_local_us;
     int auth, seq;        // the player whose game runs the contraption now (0: its owner), and its change count
     int64_t heard_us, asked_us, auth_us;   // the owner's last pose packet here; the last ask for it; the last change
+    int act;              // while this game runs it: the player who turned its devices on from another game (0: here)
+    int64_t act_us;
 } bp_in[BP_IN];
 static PlatMutex bp_lock = PLAT_MUTEX_INIT;
 int coop_contraption_take(const void *data, int n, int from) {   // coop_world.c peer_tick: 1 when it was ours
@@ -1542,7 +1546,7 @@ static int group_toggle(const uint64_t *parts, int n, int prefer);
 static void mark_ours(uint64_t comp);
 #define MV_KIND 0x564d4243u   // "CBMV"
 // Sent by the game that runs the contraption (its pose, flags bit 0) and by its owner (its devices, bit 1).
-typedef struct { uint32_t kind, key; int64_t us; float m[12]; uint32_t sw, on, owner, flags; } MvPacket;   // sw / on: bit r, record part r has a switch / is on
+typedef struct { uint32_t kind, key; int64_t us; float m[12]; uint32_t sw, on, owner, flags, act; } MvPacket;   // act: who pays   // sw / on: bit r, record part r has a switch / is on
 static void pose_push(float pose[2][12], int64_t us[2], int64_t *local, const MvPacket *p) {
     if (p->us <= us[1]) return;
     memcpy(pose[0], pose[1], sizeof pose[0]), us[0] = us[1];
@@ -1557,14 +1561,14 @@ int coop_contraption_pose_take(const void *data, int n, int from) {
         for (int q = 0; q < OWN_C; q++)
             if (own_c[q].key == p->key && own_c[q].auth == from) {
                 if (p->flags & 1) pose_push(own_c[q].pose, own_c[q].pose_us, &own_c[q].pose_local_us, p);
-                if (p->flags & 2) own_c[q].sw = p->sw, own_c[q].on = p->on;
+                if (p->flags & 2) own_c[q].sw = p->sw, own_c[q].on = p->on, own_c[q].act = (int)p->act;
             }
     } else
         for (int k = 0; k < BP_IN; k++) {
             if (bp_in[k].from != (int)p->owner || bp_in[k].key != p->key) continue;
             if (from == bp_in[k].from) bp_in[k].heard_us = frame_step_world_us();   // (its owner still has it)
             if (from != (bp_in[k].auth ? bp_in[k].auth : bp_in[k].from)) continue;
-            if (p->flags & 2) bp_in[k].sw = p->sw, bp_in[k].on = p->on;
+            if (p->flags & 2) bp_in[k].sw = p->sw, bp_in[k].on = p->on, bp_in[k].act = (int)p->act;
             if (p->flags & 1) pose_push(bp_in[k].pose, bp_in[k].pose_us, &bp_in[k].pose_local_us, p);
         }
     plat_mutex_unlock(&bp_lock);
@@ -1596,6 +1600,8 @@ static void bp_pose_send(void) {   // the owner, from the co-op tick
         MvPacket p = {MV_KIND, own_c[q].key, now, {0}, 0, 0, (uint32_t)coop_net_id(), own_c[q].auth ? 0u : 3u};   // (0: only "still mine")
         for (int r = 0; r < own_c[q].np; r++)
             if (part_switch(own_c[q].parts[r])) p.sw |= 1u << r, p.on |= (uint32_t)part_on(own_c[q].parts[r]) << r;
+        if (!own_c[q].auth && !(p.on & p.sw) && now - own_c[q].act_us > 2000000) own_c[q].act = 0;
+        p.act = (uint32_t)(own_c[q].act ? own_c[q].act : coop_net_id());
         if (body && coop_rd(body + 0x98, p.m, sizeof p.m)) coop_net_hit_send(&p, sizeof p);
     }
     for (int k = 0; k < BP_IN; k++) {   // another player's contraption this game runs now: its pose
@@ -1605,6 +1611,8 @@ static void bp_pose_send(void) {   // the owner, from the co-op tick
         MvPacket p = {MV_KIND, bp_in[k].key, now, {0}, 0, 0, (uint32_t)bp_in[k].from, 3};
         for (int r = 0; mine && r < bp_in[k].ncopy && r < 21; r++)
             if (part_switch(bp_in[k].copy[r])) p.sw |= 1u << r, p.on |= (uint32_t)part_on(bp_in[k].copy[r]) << r;
+        if (mine && !(p.on & p.sw) && now - bp_in[k].act_us > 2000000) bp_in[k].act = 0;
+        p.act = (uint32_t)(bp_in[k].act ? bp_in[k].act : coop_net_id());
         plat_mutex_unlock(&bp_lock);
         uint64_t body = main_body_of(root);
         if (body && coop_rd(body + 0x98, p.m, sizeof p.m)) coop_net_hit_send(&p, sizeof p);
@@ -1657,18 +1665,37 @@ static int contraption_driven(uint64_t a) {
         if (atomic_load_explicit(&driven[i], memory_order_relaxed) == a) return 1;
     return 0;
 }
+// The parts whose devices charge another player's gauge: the player who turned them on (the activator) pays, and
+// every game runs the contraption's device nodes, so the activator's game lets its own charges through and every
+// other game drops them (no_charge; docs/coop/contraption-sync.md section 6)
+static _Atomic uint64_t nocharge[DRIVEN_N];
+static int no_charge(uint64_t a) {
+    for (int i = 0; a && i < DRIVEN_N; i++)
+        if (atomic_load_explicit(&nocharge[i], memory_order_relaxed) == a) return 1;
+    return 0;
+}
 static void driven_rebuild(void) {
-    uint64_t l[DRIVEN_N];
-    int n = 0, me = coop_net_id();
+    uint64_t l[DRIVEN_N], b[DRIVEN_N];
+    int n = 0, nb = 0, me = coop_net_id();
     plat_mutex_lock(&bp_lock);
-    for (int k = 0; k < BP_IN; k++)
-        if (bp_in[k].made == 2 && bp_in[k].auth != me)
+    for (int k = 0; k < BP_IN; k++) {
+        if ((bp_in[k].made == 2 && bp_in[k].auth != me) || bp_in[k].made == 4)
             for (int r = 0; r < bp_in[k].ncopy && r < 21 && n < DRIVEN_N; r++) l[n++] = bp_in[k].copy[r];
-    for (int q = 0; q < OWN_C; q++)
-        if (own_c[q].auth && own_c[q].root)
+        int runner = bp_in[k].auth ? bp_in[k].auth : bp_in[k].from, payer = bp_in[k].act ? bp_in[k].act : runner;
+        if ((bp_in[k].made == 2 || bp_in[k].made == 4) && payer != me)
+            for (int r = 0; r < bp_in[k].ncopy && r < 21 && nb < DRIVEN_N; r++) b[nb++] = bp_in[k].copy[r];
+    }
+    for (int q = 0; q < OWN_C; q++) {
+        if (!own_c[q].root) continue;
+        if (own_c[q].auth)
             for (int r = 0; r < own_c[q].np && n < DRIVEN_N; r++) l[n++] = own_c[q].parts[r];
+        int runner = own_c[q].auth ? own_c[q].auth : me, payer = own_c[q].act ? own_c[q].act : runner;
+        if (payer != me)
+            for (int r = 0; r < own_c[q].np && nb < DRIVEN_N; r++) b[nb++] = own_c[q].parts[r];
+    }
     plat_mutex_unlock(&bp_lock);
     for (int i = 0; i < DRIVEN_N; i++) atomic_store_explicit(&driven[i], i < n ? l[i] : 0, memory_order_relaxed);
+    for (int i = 0; i < DRIVEN_N; i++) atomic_store_explicit(&nocharge[i], i < nb ? b[i] : 0, memory_order_relaxed);
 }
 static void bp_follow(Cpu *c) {   // the other games, from the co-op tick: each copy's root driven toward its owner's
     int64_t now = frame_step_world_us();
@@ -1936,6 +1963,7 @@ int coop_contraption_toggle_take(const void *data, int n, int from) {   // the o
         for (int q = 0; q < OWN_C; q++)
             if (own_c[q].key == p->key && own_c[q].np && !own_c[q].auth) {
                 int was_on = group_toggle(own_c[q].parts, own_c[q].np, (int)p->part);
+                own_c[q].act = was_on ? 0 : from, own_c[q].act_us = frame_step_world_us();   // (turned on there: that player pays)
                 rt_log("coop: contraption: player %d toggled my %08x (part %u): it was %s", from, p->key, p->part, was_on ? "on" : "off");
                 break;
             }
@@ -1943,6 +1971,7 @@ int coop_contraption_toggle_take(const void *data, int n, int from) {   // the o
         for (int k = 0; k < BP_IN; k++)   // another player's that this game runs now
             if (bp_in[k].from == (int)p->owner && bp_in[k].key == p->key && bp_in[k].made == 2 && bp_in[k].auth == coop_net_id()) {
                 int was_on = group_toggle(bp_in[k].copy, bp_in[k].ncopy, (int)p->part);
+                bp_in[k].act = was_on ? 0 : from, bp_in[k].act_us = frame_step_world_us();
                 rt_log("coop: contraption: player %d toggled player %u's %08x (part %u), run here: it was %s", from, p->owner, p->key, p->part, was_on ? "on" : "off");
                 break;
             }
@@ -2394,7 +2423,7 @@ static void serial_run(Cpu *c, int n) {
 #define GAUGE_CONSUME_RATE 0x1fa4ed4
 #define ONOFF_CALC 0x9f9088
 #define ONOFF_SET 0x9fad68
-static __thread int in_push, in_node, in_copy_node, in_copy_force;
+static __thread int in_push, in_node, in_copy_node, in_copy_force, in_paid_node;
 // The device nodes that push their own part (research devices2/: rocket, sled, balloon, wing, hover stone, stabilizer,
 // spring, stake, homing cart, steering stick): on a copy their body writes are skipped; the wheel's and the cart's
 // motor nodes drive joints, and are skipped whole
@@ -2474,9 +2503,24 @@ int coop_phase0_hook(Cpu *c, uint64_t addr) {
             return 0;
         }
     }
-    if ((off == ONOFF_CALC || off == ONOFF_SET) && contraption_on() && contraption_driven(node_actor(c->x[0]))) {
+    if ((off == ONOFF_CALC || off == ONOFF_SET) && contraption_on() && no_charge(node_actor(c->x[0]))) {   // (another player pays)
         inner = 1;
         return wrap_call(c, addr, &in_copy_node, 1);
+    }
+    if ((off == ONOFF_CALC || off == ONOFF_SET) && contraption_on() && coop_contraption_made(node_actor(c->x[0])) && ablog_on()) {
+        inner = 1;   // (TOTK_COOP_TEST_ABLOG: a copy's device whose activator is this player: its charges logged)
+        return wrap_call(c, addr, &in_paid_node, 1);
+    }
+    if ((off == GAUGE_CONSUME || off == GAUGE_CONSUME_RATE) && in_paid_node) {
+        static _Atomic int64_t said_paid;
+        int64_t now = frame_step_world_us();
+        if (now - atomic_load(&said_paid) > 2000000) {
+            float amount, g = 0;
+            uint32_t bits = (uint32_t)c->v[0];
+            memcpy(&amount, &bits, 4);
+            coop_rd(c->x[0] + 0x54, &g, 4);
+            atomic_store(&said_paid, now), rt_log("coop: contraption: a copy's device charges this player: %s %.3f, gauge %.1f", off == GAUGE_CONSUME ? "consume" : "consumeRate", amount, g);
+        }
     }
     if ((off == GAUGE_CONSUME || off == GAUGE_CONSUME_RATE) && in_copy_node) {
         static _Atomic int said_copy;

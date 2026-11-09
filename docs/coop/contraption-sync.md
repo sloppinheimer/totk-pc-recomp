@@ -534,3 +534,18 @@ TOTK_COOP_CONTRAPTION=1 (coop_autobuild.c, "Contraption copies made by the game'
 - Again after the change: the toggle test (a toggle on B's copy sent to A, which runs it, on and off), part-off, the
   carry test (largest gap 0.21 m, at rest 0.04 m), and a normal start.
 - Not yet: what happens when the rider gets off (the stick's off path was not found, research devices2/control/).
+
+## Phase 4, third step: getting off the stick; the activator pays (2026-11-09)
+- Getting off the stick (autobuild_stick_off_b_3rd.txt, B at 62 s): B's fans went off by the game's own path at 63 to
+  64 s, and A's followed within the same second. The contraption stays run by B.
+- The activator pays, without moving charges between games: every game runs the device nodes of its version of a
+  contraption, so each game lets the charges of a contraption's nodes through only when this game's player is its
+  activator, and drops them otherwise (coop_autobuild.c no_charge). The activator is the player whose toggle turned the
+  devices on from another game (the game that runs it notes it, "CBTG"), or else the player whose game runs it (a hit
+  there, the stick, a grab). It travels with the devices' state ("CBMV" act) and is forgotten 2 s after the devices are
+  off. Replaying kept charges through consume was tried first and dropped: the device nodes call consume about 104 per
+  fan many times a second while the gauge falls 104 a second per fan, so a sum of calls is not the drain; and a
+  consume made outside a device node did not move the gauge.
+- Pair test (the toggle test with TOTK_COOP_TEST_ABLOG=1): B toggled A's Fanplane on from its copy; A dropped its fans'
+  charges, and B's gauge fell 48000 to 46128 in about 6 s (about 312 a second, the usual drain of three fans). After B
+  toggled them off, B's copy dropped its charges again.
