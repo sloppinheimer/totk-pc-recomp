@@ -32,7 +32,7 @@ was built or run.
   - the net version 28 in coop_net.h;
   - the same version in server/coop_relay.py;
   - the NetState ride fields.
-- D1-D6 (section 22) are the tester's to decide. None of them blocks P0-P2.
+- D1-D7 (section 22) were decided by the tester on 2026-11-09: D2-D7 as proposed, D1 with a 60 s cap on menu time.
 
 ## 0. Decision
 
@@ -536,7 +536,8 @@ A missing field costs a visual or a snap at promotion, never a duplicate action.
 - **Switch-off on positive evidence only.** The activator's HB lists, per cid it activated: {serial, status}. Status is paying, battery (group bit 28 [v]), blocked (its 0x32eb90 OFF for that group, or mgr+0x50 bit 0 while the group is on) or not running here (paused, assembling, remaking, out of update radius).
   - The runner switches the build off, through requests on every member that is on, only on "blocked" with the current serial in two consecutive HBs.
   - Absent or late HBs change nothing. No other game's gauge can switch it off (G7).
-- **Activator leaves the session** (LEAVE or BYE): activation passes to the current stick rider if any, otherwise the runner switches the build off (decision D2). While the activator's game is paused, loading or rebuilding its copy, the build keeps running and nobody pays (decision D1).
+- **Activator leaves the session** (LEAVE or BYE): activation passes to the current stick rider if any, otherwise the runner switches the build off (decision D2).
+- **Activator not running the game** (decision D1). While the activator's game is loading or rebuilding its copy, the build keeps running and nobody pays, however long that takes. While it is in a menu (HB says paused, not loading), the build runs free for 60 s of menu time; after that the runner treats the activator as gone: activation passes to the stick rider if any, otherwise the build switches off. The 60 s count restarts when the activator leaves the menu.
 - **Battery part.** Bit 28 stops Link charges in every game (J3). Its life runs on the runner and is written into followers from the TLV; X13 finds the drain writer to gate on followers.
 - **Range.** If X13 shows CustomEnergyRange measures distance to a player, the runner evaluates it against the activator's Link (distance carried in HB).
 
@@ -913,6 +914,7 @@ Pass: a stand-in teleported into a resting build moves it by 0; collision return
 | T25 | B activates A's build | B's drain within 10% of single-player; A's gauge unchanged |
 | T26 | activator's gauge empties while it is a follower | off everywhere within RTT + 0.2 s |
 | T27 | non-activator's gauge empty; activator in a menu 30 s; battery build | stays on in every case |
+| T27b | activator in a menu 90 s, once with the other player on the stick and once with nobody on it | at 60 s the rider pays, or the build switches off; never before 60 s |
 | T28 | battery part | no gauge change; follower battery within 2% of the runner's |
 | T29 | 50 stand-in swings at a device | 0 toggles from swings; 1 per real hit |
 | T30 | enemy hits a device; beam on an enemy B owns | 1 toggle per hit; damage once, in the owner's game |
@@ -1112,8 +1114,8 @@ Pass: a stand-in teleported into a resting build moves it by 0; collision return
   - M21: session end promotes locally.
   - M22: relay id change becomes leave plus rejoin.
 
-## 22. Decisions for the tester
-- **D1.** While the activator's game is paused, loading or rebuilding its copy, the build keeps running and nobody pays.
+## 22. Decisions (the tester, 2026-11-09)
+- **D1.** While the activator's game is loading or rebuilding its copy, the build keeps running and nobody pays. In a menu it runs free for 60 s; then the stick rider pays, or the build switches off (8.7).
 - **D2.** When the activator leaves, the stick rider becomes the payer, otherwise the build switches off.
 - **D3.** A remote rider's weight is an approximate force until X14d.
 - **D4.** A stick rider who mounts while another player holds the build waits on an inert stick until the holder lets go.
