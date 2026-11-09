@@ -382,7 +382,14 @@ static void hit_test(Cpu *c, uint64_t me, int n) {
         int fan = -1, wing = -1;
         for (int i = 0; i < n; i++) {
             if (!live_device(i, nm, sizeof nm)) continue;
-            if (fan < 0 && !strcmp(nm, "SpObj_WindGenerator_A_01")) fan = i;
+            if (!strcmp(nm, "SpObj_WindGenerator_A_01")) {
+                // (TOTK_COOP_TEST_ABHIT_FANX=1: the fan furthest along +x, the same one in every run, not the first found)
+                float pa[3], pb[3];
+                if (fan < 0) fan = i;
+                else if (cfg_get("TOTK_COOP_TEST_ABHIT_FANX") && coop_rd(atomic_load(&tracked[i]) + COOP_ACTOR_POS, pa, 12) &&
+                         coop_rd(atomic_load(&tracked[fan]) + COOP_ACTOR_POS, pb, 12) && pa[0] > pb[0])
+                    fan = i;
+            }
             if (wing < 0 && !strcmp(nm, "SpObj_LiftGeneratorWing_A_01")) wing = i;
         }
         float f[3], w[3];
@@ -1790,6 +1797,16 @@ int coop_contraption_auth_take(const void *data, int n, int from) {
 static void auth_tick(void) {   // from the co-op tick
     int me = coop_net_id();
     int64_t now = frame_step_world_us();
+    if (cfg_get("TOTK_COOP_TEST_ABLOG")) {   // (when this Link's Ultrahand holds something: coop_spawn.c beam_hook)
+        extern _Atomic int64_t coop_ultrahand_hold_us;
+        static int64_t said_hold;
+        if (now - atomic_load(&coop_ultrahand_hold_us) < 100000 && now - said_hold > 1000000) {
+            said_hold = now;
+            int held_own = 0;
+            for (int q = 0; q < OWN_C; q++) held_own |= own_c[q].root && any_held(own_c[q].parts, own_c[q].np);
+            rt_log("coop: test: ablog: %.1f s: this Link's Ultrahand holds something (a part of mine held: %d)", now / 1e6, held_own);
+        }
+    }
     AuPacket out[OWN_C + BP_IN];
     int no = 0;
     plat_mutex_lock(&bp_lock);
@@ -1800,7 +1817,8 @@ static void auth_tick(void) {   // from the co-op tick
             rt_log("coop: contraption: mine %08x: no pose from player %d for 3 s: run here again", own_c[q].key, own_c[q].auth);
             auth_set((uint32_t)me, own_c[q].key, me, own_c[q].seq + 1);
         } else if (now - own_c[q].asked_us > 300000 && any_held(own_c[q].parts, own_c[q].np))
-            own_c[q].asked_us = now, out[no++] = (AuPacket){AU_KIND, (uint32_t)me, own_c[q].key, (uint32_t)me, own_c[q].seq, 0};
+            own_c[q].asked_us = now, out[no++] = (AuPacket){AU_KIND, (uint32_t)me, own_c[q].key, (uint32_t)me, own_c[q].seq, 0},
+            rt_log("coop: contraption: mine %08x held here, run by player %d: asked for it back", own_c[q].key, own_c[q].auth);
     }
     for (int k = 0; k < BP_IN; k++)
         if (bp_in[k].made == 2 && bp_in[k].ncopy && bp_in[k].auth != me && now - bp_in[k].asked_us > 300000 && any_held(bp_in[k].copy, bp_in[k].ncopy)) {

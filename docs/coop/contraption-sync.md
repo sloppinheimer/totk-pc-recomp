@@ -496,7 +496,7 @@ TOTK_COOP_CONTRAPTION=1 (coop_autobuild.c, "Contraption copies made by the game'
   on. The pushes of devices are skipped on every part another game runs (contraption_driven), the copy's and the
   owner's alike. The owner takes the authority back if the game running it sends no pose for 3 s.
 - Not yet: the authority on the steering stick or glue, a part taken off by the game that runs a contraption it does
-  not own (the owner's record still decides the shape), and the owner taking it back by grabbing it (written, not run).
+  not own (the owner's record still decides the shape), and the owner taking it back by grabbing it (run: see below).
 - Pair test (autobuild_noy_3rd.txt in A, autobuild_carry_b_3rd.txt in B, B with TOTK_COOP_TEST_ABHIT=46,
   TOTK_COOP_TEST_ABHIT_B=46, TOTK_COOP_TEST_ABHIT_DIST=2.2): B grabbed its copy of A's Fanplane, A handed it over
   (change 1). B lifted it 3 m and carried it; A's followed within 0.03 to 0.12 m, and 0.55 m at worst while falling
@@ -504,3 +504,10 @@ TOTK_COOP_CONTRAPTION=1 (coop_autobuild.c, "Contraption copies made by the game'
 - Found on the way: with the test's Link put 1 m from a fan, its stand-in in the other game appeared inside the
   contraption and shoved it 9 m off its place (the stand-in is a static body moved by teleport; section 5's
   "stand-ins must push" item). TOTK_COOP_TEST_ABHIT_DIST puts the Link further away.
+- The owner takes it back by grabbing it (pair test: autobuild_grabback_3rd.txt in A with TOTK_COOP_TEST_ABHIT=64,
+  TOTK_COOP_TEST_ABHIT_DIST=2.2 and TOTK_COOP_TEST_ABHIT_FANX=1, autobuild_carry_b_3rd.txt in B as above plus
+  TOTK_COOP_TEST_ABHIT_FANX=1). B carried it (change 1) and let go; A grabbed it, asked, and B handed it back (change
+  2). A lifted it 3 m and dropped it, and B's copy followed within 0.02 to 0.12 m, at rest 0.05 m. FANX puts each Link
+  by the fan furthest along +x: put by the first fan found, which differs between runs, B's Ultrahand missed in one run.
+- Seen once, not again: after B's carry, A's contraption stopped 1.0 m from B's pose at rest, while A's own Link had
+  just been put next to it by the test (likely blocked by that Link; open).
