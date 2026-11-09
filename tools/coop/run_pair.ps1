@@ -16,32 +16,43 @@
 #    before the overlay); -MarkSelf: both games also mark their own Link and log the map transform every 2 s
 #   -Port 41950: the relay on that UDP port (41900 may be taken by a game hosting on this PC)
 #   -EnvA / -EnvB "TOTK_COOP_TEST_TRAVEL=40;TOTK_COOP_TEST_NOTICESHOT=1": these settings for that game only
+#   -StopWhen "A:handed over||B:made, 4 of 4": stop as soon as every pattern (a regex; A: or B: says whose log) has
+#    appeared, -StopGrace seconds later (default 3); -Seconds stays the limit
+#   -ADir build\v143d -Tag 2: a second pair beside another one: A runs from that folder (made of links to build\v143 like
+#    -BDir), the profiles and the relay log are named after the tag, and only this pair's games are stopped (give each
+#    pair its own -ADir, -BDir and -Port)
 param([int]$Seconds = 90, [string]$ScriptA = "tools\coop\walk.txt", [string]$ScriptB = "tools\coop\idle.txt", [string]$FakeGearA = "", [string]$FakeDyeA = "", [string]$FakeHandA = "",
       [string]$ShotsA = "", [string]$ShotsB = "", [string]$ShotsDir = "", [int]$QuitBAfter = 0, [string]$FakeAtA = "", [string]$SpawnA = "", [string]$SpawnB = "", [string]$Profile = "build\profile-v143", [switch]$ShotsSmall, [string]$BDir = "build\v143b",
-      [string]$MarkShotsA = "", [string]$MarkShotsB = "", [switch]$MarkSelf, [string]$EnvA = "", [string]$EnvB = "", [int]$Port = 41900)
+      [string]$MarkShotsA = "", [string]$MarkShotsB = "", [switch]$MarkSelf, [string]$EnvA = "", [string]$EnvB = "", [int]$Port = 41900,
+      [string]$StopWhen = "", [int]$StopGrace = 3, [string]$ADir = "build\v143", [string]$Tag = "")
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
-# Only this checkout's games (from its build folder): a game of another checkout may be someone playing.
-Get-Process totk -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith((Join-Path $root 'build\'), [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force
+$src = Join-Path $root 'build\v143'; $a = Join-Path $root $ADir; $b = Join-Path $root $BDir
+# Only this pair's games (from its two folders): another pair may run beside it, and a game of another checkout may be
+# someone playing.
+Get-Process totk -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path.StartsWith("$a\", [StringComparison]::OrdinalIgnoreCase) -or $_.Path.StartsWith("$b\", [StringComparison]::OrdinalIgnoreCase)) } | Stop-Process -Force
 Start-Sleep 2
 
-# build\v143b: hard links to build\v143's files, junctions to its folders, a logs folder of its own.
-$a = Join-Path $root 'build\v143'; $b = Join-Path $root $BDir
-if (-not (Test-Path $b)) { New-Item -ItemType Directory $b | Out-Null }
-foreach ($f in Get-ChildItem $a -Force) {
-    $t = Join-Path $b $f.Name
-    if ($f.Name -in 'logs', 'obj') { continue }
-    if (Test-Path $t) { if ($f.PSIsContainer) { continue }; Remove-Item -Force $t }
-    if ($f.PSIsContainer) { New-Item -ItemType Junction $t -Target $f.FullName | Out-Null }
-    else { New-Item -ItemType HardLink $t -Target $f.FullName | Out-Null }
+# build\v143b (and -ADir when it is not build\v143): hard links to build\v143's files, junctions to its folders, a logs
+# folder of its own. Made again each run, so a new build's totk.exe is linked.
+foreach ($d in @($a, $b) | Where-Object { $_ -ne $src }) {
+    if (-not (Test-Path $d)) { New-Item -ItemType Directory $d | Out-Null }
+    foreach ($f in Get-ChildItem $src -Force) {
+        $t = Join-Path $d $f.Name
+        if ($f.Name -in 'logs', 'obj') { continue }
+        if (Test-Path $t) { if ($f.PSIsContainer) { continue }; Remove-Item -Force $t }
+        if ($f.PSIsContainer) { New-Item -ItemType Junction $t -Target $f.FullName | Out-Null }
+        else { New-Item -ItemType HardLink $t -Target $f.FullName | Out-Null }
+    }
 }
 
 . (Join-Path $PSScriptRoot 'quiet.ps1')   # no consoles, no mouse capture, the windows stay behind
-$relay = Start-Quiet (Join-Path $root '.venv\Scripts\pythonw.exe') "server\coop_relay.py --port $Port --log build\relay.log" $root
+$relayLog = "build\relay$Tag.log"
+$relay = Start-Quiet (Join-Path $root '.venv\Scripts\pythonw.exe') "server\coop_relay.py --port $Port --log $relayLog" $root
 $games = @()
-foreach ($g in @(@{dir = $a; prof = 'build\prof-coop-a'; script = $ScriptA; name = 'A'; input = $null},
-                 @{dir = $b; prof = 'build\prof-coop-b'; script = $ScriptB; name = 'B'; input = 'none'})) {
+foreach ($g in @(@{dir = $a; prof = "build\prof-coop-a$Tag"; script = $ScriptA; name = 'A'; input = $null},
+                 @{dir = $b; prof = "build\prof-coop-b$Tag"; script = $ScriptB; name = 'B'; input = 'none'})) {
     $p = Join-Path $root $g.prof
     if (Test-Path $p) { Remove-Item -Recurse -Force $p }
     Copy-Item -Recurse (Join-Path $root $Profile) $p
@@ -71,8 +82,18 @@ foreach ($g in @(@{dir = $a; prof = 'build\prof-coop-a'; script = $ScriptA; name
 }
 $deadline = (Get-Date).AddSeconds($Seconds)
 $bStart = Get-Date
+$stops = @($StopWhen -split '\|\|' | Where-Object { $_ -match '^[AB]:' })
+$logs = @{ A = (Join-Path $a 'logs\totk.log'); B = (Join-Path $b 'logs\totk.log') }
 while ((Get-Date) -lt $deadline -and ($games | Where-Object { -not $_.HasExited })) {
     Start-Sleep 1
+    if ($stops.Count -and ((Get-Date) - $bStart).TotalSeconds -ge 15) {
+        $all = $true
+        foreach ($st in $stops) {
+            $who = $st.Substring(0, 1); $rx = $st.Substring(2)
+            if (-not (Test-Path $logs[$who]) -or -not (Select-String -Path $logs[$who] -Pattern $rx -Quiet)) { $all = $false; break }
+        }
+        if ($all) { "stop: every pattern seen after $([int]((Get-Date) - $bStart).TotalSeconds) s"; Start-Sleep $StopGrace; break }
+    }
     if ($QuitBAfter -and -not $games[1].HasExited -and ((Get-Date) - $bStart).TotalSeconds -ge $QuitBAfter) {
         "game B closed"; Stop-Process -Id $games[1].Id -Force
     }
@@ -84,4 +105,4 @@ foreach ($d in $a, $b) {
     "=== $d"
     Select-String -Path (Join-Path $d 'logs\totk.log') -Pattern 'coop net|coop: (slot|player slot|remote|markers|notice|test: notice|test: travel)|FATAL' | Select-Object -ExpandProperty Line
 }
-"=== relay"; Get-Content (Join-Path $root 'build\relay.log')
+"=== relay"; Get-Content (Join-Path $root $relayLog)
