@@ -216,7 +216,7 @@ static void send_groups(int64_t now) {
 // ---- the others' groups: copies bonded here
 #define PAIR_N 128
 static struct {
-    int used, from, tries, done;
+    int used, from, tries, done, marked;
     uint32_t group;
     BondObj m, root;               // the member, and the member it is bonded to (its group's first found here)
     uint64_t ma, ra;               // their copies here
@@ -365,7 +365,7 @@ int coop_bonds_take(const void *data, int n, int from) {   // coop_world.c peer_
 // part's SpecialPowerReceiverComponent; it ORs bit 0 into the component's +0x150 (the green, as the "green_begone" mod
 // shows: read for behaviour only, no licence) and +0x27c, sets +0x264/+0x268 and the +0x20 flags, and clears bit 2 of
 // the actor's +0x5ac. Called once on each copy of an autobuilt part (coop_players.c copy flag COOP_OBJ_AUTOBUILT) when it
-// is bonded. TOTK_COOP_TEST_GREEN=0: not called; =all: on every bonded copy.
+// is bonded, once it shares its contraption's group. TOTK_COOP_TEST_GREEN=0: not marked; =all: every bonded copy.
 #define MARK_AUTOBUILT 0x1c07114
 int coop_copy_autobuilt(uint64_t actor);   // coop_players.c
 static void mark_autobuilt(Cpu *c, uint64_t a) {
@@ -380,7 +380,13 @@ static void mark_autobuilt(Cpu *c, uint64_t a) {
     if (!comp) return;
     uint32_t b = 0;
     coop_rd(comp + 0x150, &b, 4);
-    if (!(b & 1)) coop_guest_call(c, MOD_MAIN_BASE + MARK_AUTOBUILT, comp, 0, 0, 0);
+    // Only bit 0 of +0x150, the bit the mod blanks: green, and destroyed when broken apart. The whole of main+0x1c07114
+    // (TOTK_COOP_TEST_GREEN=full) made the copies of the Fanboat come apart 11 times in a minute with the other player's
+    // stand-in on its deck (and each was made again); the bit alone, twice (autobuild_stick_3rd.txt pair test).
+    if (!(b & 1)) {
+        if (mode && !strcmp(mode, "full")) coop_guest_call(c, MOD_MAIN_BASE + MARK_AUTOBUILT, comp, 0, 0, 0);
+        else __atomic_fetch_or((uint32_t *)(uintptr_t)(comp + 0x150), 1u, __ATOMIC_SEQ_CST);
+    }
     done[n++ % 128] = a;
     static int said;
     char nm[48];
@@ -406,6 +412,13 @@ static void bond_pairs(Cpu *c, int64_t now) {
         uint64_t comp = comp_of(pair[k].ma), mb = main_body(pair[k].ma), rb = main_body(pair[k].ra);
         if (!comp || !mb || !rb) continue;
         if (pair[k].tries) {   // bonded once: a second bond would be a second edge. 3 s on, whether the graph joined them (logged)
+            // Marked autobuilt (green) only once the two share a group: marked as soon as the bond was asked for, a
+            // copy was taken by the game for an autobuilt part broken off its contraption and destroyed itself before
+            // the graph had joined it, and the owner then deleted its own (autobuild_part_3rd.txt pair test).
+            if (!pair[k].marked && now - pair[k].tried_us > 500000) {
+                uint64_t mg = coop_rd_ptr(comp + SPR_GROUP), rg = coop_rd_ptr(comp_of(pair[k].ra) + SPR_GROUP);
+                if (mg && mg == rg) pair[k].marked = 1, mark_autobuilt(c, pair[k].ma), mark_autobuilt(c, pair[k].ra);
+            }
             if (!pair[k].done && now - pair[k].tried_us > 3000000) {
                 uint64_t mg = coop_rd_ptr(comp + SPR_GROUP), rg = coop_rd_ptr(comp_of(pair[k].ra) + SPR_GROUP);
                 pair[k].done = 1;
@@ -421,7 +434,6 @@ static void bond_pairs(Cpu *c, int64_t now) {
         if (!coop_rd(mb + 0x98, wm, sizeof wm) || !coop_rd(rb + 0x98, wr, sizeof wr)) continue;
         call5(c, MOD_MAIN_BASE + BOND_BODIES, comp, 0, rb, (uint64_t)(uintptr_t)wm, (uint64_t)(uintptr_t)wr);
         pair[k].tries++, pair[k].tried_us = now;
-        mark_autobuilt(c, pair[k].ma), mark_autobuilt(c, pair[k].ra);
         if (said < 40) said++, rt_log("coop: bonds: %s bonded to %s (player %u's contraption)", pair[k].m.name, pair[k].root.name, pair[k].m.owner);
     }
 }
@@ -450,6 +462,21 @@ int coop_bonds_claimed(uint64_t actor) {
     for (int i = 0; actor && i < CLAIMED_N; i++)
         if (atomic_load_explicit(&claimed[i], memory_order_relaxed) == actor) return 1;
     return 0;
+}
+// A bonded copy that is not its group's root here: placed by its bonds, not each tick (coop_players.c place_copy).
+// Each part put at its owner's place pulled against the bonds, and copies marked autobuilt broke off and came apart
+// (autobuild_stick_3rd.txt pair test). TOTK_COOP_PLACE_ALL=1: every part placed, as before.
+int coop_bonds_carried(uint64_t actor) {
+    static int all = -1;
+    if (all < 0) all = cfg_get("TOTK_COOP_PLACE_ALL") != NULL;
+    if (all || !actor) return 0;
+    int member = 0;
+    for (int k = 0; k < PAIR_N; k++) {
+        if (!pair[k].used || !pair[k].tries) continue;
+        if (pair[k].ra == actor) return 0;   // a root: placed
+        if (pair[k].ma == actor && pair[k].done) member = 1;
+    }
+    return member;
 }
 int coop_bonds_member(uint64_t actor) {   // a copy bonded here into another player's contraption (any thread: a read)
     for (int k = 0; actor && k < PAIR_N; k++)
@@ -531,7 +558,7 @@ static void claim_tick(int64_t now) {
 // The owner's side: where the claiming player has this game's objects; moved there each tick while heard (0.5 s).
 #define HELD_N 64
 static struct { int from; ClaimEntry e; int64_t heard_us; } held[HELD_N];
-static struct { int from; uint32_t id, flags; Follow f; } held_root[8];   // (with the claimer's device state, flags)   // each claimer's first entry (its root): the others move with it
+static struct { int from; uint32_t id, flags, prev; int64_t follow_until; Follow f; } held_root[8];   // (with the claimer's device state, flags)   // each claimer's first entry (its root): the others move with it
 static int claim_take(const void *data, int n, int from) {
     uint32_t cnt = 0;
     memcpy(&cnt, (const uint8_t *)data + 4, 4);
@@ -578,7 +605,11 @@ static void held_tick(Cpu *c, int64_t now) {
         for (int k = 0; k < HELD_N && rk < 0; k++)
             if (held[k].heard_us && held[k].from == from && held[k].e.id == held_root[g].id) rk = k;
         uint64_t ra = rk >= 0 ? coop_obj_find(coop_net_id(), held[rk].e.id, held[rk].e.name) : 0;
-        if (rk >= 0 && (held_root[g].flags & 2) && device_sync()) {   // this game's devices of it as the claimer has them
+        // Followed only for 5 s after the claimer's state changes: followed all the time, a claim's "off", still coming
+        // after this game's own Link took the stick, turned its fans off again a second after the stick turned them on
+        // (autobuild_stick_3rd.txt with a rider from game B, TOTK_COOP_TEST_ABDECK)
+        if ((held_root[g].flags & 3) != (held_root[g].prev & 3)) held_root[g].prev = held_root[g].flags, held_root[g].follow_until = now + 5000000;
+        if (rk >= 0 && (held_root[g].flags & 2) && device_sync() && now < held_root[g].follow_until) {   // as the claimer has them
             uint64_t dev[64];
             int nd = 0;
             for (int k = 0; k < HELD_N && nd < 64; k++) {

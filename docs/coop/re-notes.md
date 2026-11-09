@@ -32,6 +32,47 @@ evidence), guess.
   it from its enter function main+0x231fa58 (`coop_NodeGenericRequestCreateActor_enter`); the strings "Pack/Actor/",
   ".pack", "ActorMgr" inside it. Confidence: likely (not called by us yet).
 
+## A rider, copies coming apart, the green bit (2026-11-08 evening)
+- A rider (TOTK_COOP_TEST_ABDECK=<s>[,<name>]: this Link put on a device of the contraption, its place in the device's
+  frame logged every 0.25 s): game B's Link on A's Fanboat while A holds the stick stayed put to 1-2 cm (one 0.2 m
+  step) for 20 s; the Fanboat did not travel on the stairs, so a rider on a moving contraption is not tested.
+- B's Link put on the deck before A took the stick claimed it (the claim rule), and its "off" kept coming after A's
+  own Link took the stick: A's fans went on and off again. The owner now follows a claimer's device state only for 5 s
+  after it changes (coop_bonds.c held_root follow_until): A's fans stayed on.
+- Copies of autobuilt parts came apart in B when A's stand-in landed on the copy (A's Link put behind the stick), and
+  each one's "went away" made A delete its own part: A lost a plank and a fan. Now (coop_players.c) an autobuilt
+  part's copy that comes apart is passed on to its owner only if this game's Link held something with Ultrahand in
+  the last 2 s (the beam's part object +0x18 == 5, coop_spawn.c beam_hook); otherwise it is made again. A part pulled
+  off by either player still brings the whole contraption down in both games.
+- Marked with all of main+0x1c07114, the Fanboat's copies came apart 11 times in a minute with the stand-in on the
+  deck; with bit 0 of +0x150 alone (the mod's bit: green, destroyed when broken apart), twice, made again and green.
+  The bit alone is the default now (TOTK_COOP_TEST_GREEN=full for the whole call).
+- Bonded copies other than their group's root are no longer placed each tick (coop_bonds.c coop_bonds_carried): the
+  bonds carry them (TOTK_COOP_PLACE_ALL=1 for every part). Not shown to change the breaks above.
+
+## Glue by hand in the other game (2026-11-08 evening, the tester's live session)
+- the tester glued fan 3 to fan 1 by hand in game 1 (logs of build143 and build143play, 16:33): game 1 sent bond 1
+  and "a contraption of mine (2 parts)"; its glue entry was "no longer glued here: taken off the list" a few seconds
+  on, and game 2 then "parted here" (removeScotch), which undid coop_bonds' bond: "show no shared group here yet".
+  Game 2 also made "a copy of object 4 (UltraHand_Connection_Effect2)", and the tester saw a large green slab between the
+  glued copies and a green glow in a loose fan's copy.
+- Ultrahand's release makes the lasting bond in main+0x1d67060 (called from main+0x1d61ca0): it takes both parts'
+  SpecialPowerReceiverComponents, checks the two contraptions together stay under 22 parts, sets the target's +0x20 bit
+  0x1000 and ends in the bond maker main+0x1916830, as the Autobuild does; the glue entry (createScotch / doScotch) is
+  only the joint while it is made. So a glue by hand's parts share a group (as an autobuild's), and coop_bonds' bond
+  (main+0x1c05a98 -> main+0x1916830) on the copies is the same kind.
+- UltraHand_Connection_Effect2 is one actor per Link, made by its glue-effect manager (main+0x994048, which keeps it at
+  manager+0x400 and gives its EffectInfo the manager): it draws every glue joint from the manager's data. A copy by
+  name has no manager: hence the slab. It is no longer copied (prop_skip, and ignored if a sender of before sends it).
+- The glue's look of the joint itself: createScotch's tail (main+0x1d61858) copies four vectors into the entry
+  (+0x51c, +0x528, +0x534, +0x540) and sets +0x554 bit 1 when the request's +0x20 answers 1 (Ultrahand's does; ours, the
+  base class, does not). They are now captured with the bond (GlueBond.look, pts) and written into the entry made in the
+  other game.
+- coop_glue now reads a bond as held while its entry is glued or its two objects share one group (same_group), on the
+  maker's side (no removal sent when the entry goes) and on the other side (no glue made again once bonded).
+- Not checked yet: the look with these changes (needs a glue by hand in the tester's next session), and world objects
+  both games have (coop_bonds bonds copies only).
+
 ## A failed create request must be released (fixed 2026-11-08)
 - a play session (main d84dcc4, game 2 from build143play): after a fast travel game 2 made no actor at all
   (copies, its own capsule devices: the item left the inventory and nothing came), and the ground was missing. Its
@@ -1050,6 +1091,15 @@ other game reaching the owner's devices, both wait on one. A hit does it (the pr
   | Wing | SpObj_LiftGeneratorWing_A_01 | 5 | 0 | no switch | - | |
   | Hydrant | SpObj_WaterPump_A_01 | 20 | 1 | not seen | - | at 0x21 took the bit and stayed off; made at 0x61 it was deleted by the game (state 7 -> 11) in two runs |
   | Time bomb | SpObj_TimerBomb_A_01 | 24 | 1 | yes | - | arms once |
+  | Homing cart | SpObj_Chaser_A_01 | 7 | 1 | yes | yes | alone, followed in the other game (GLUENONE pair test) |
+  | Stabilizer | SpObj_TiltingDoll_A_01 | 26 | 1 | no | - | took the bit at 0x21, stayed off |
+  | Mirror | SpObj_LightMirror_A_01 | 9 | 0 | no switch | - | |
+  | Portable pot | SpObj_CookSetOnFire_A_01 | 13 | 0 | no switch | - | on (0x2000) from the start: lit |
+  | Hover stone | SpObj_FloatingStone_A_01 | 19 | 1 | yes | yes | |
+  | Construct head | SpObj_GolemHead_A_01 | 25 | 1 | yes | yes | alone, followed in the other game |
+  | Stake | SpObj_Pile_A_01 | 6 | 0 | no switch | - | |
+  (The capsule hydrant is SpObj_WaterPump_A_01, the only WaterPump actor; made 3 m ahead on the stairs it was deleted
+  by the game in three runs out of four.)
 
 - What +0x8d bit 6 (0x40) means is not known. It is not "awake" after all: moving a device by speed did not set it
   (a beam emitter at 0x21 stayed so), and the same kind was 0x61 or 0x21 from one run to the next as it was made at
@@ -1164,8 +1214,15 @@ the tester's idea: the other game builds the owner's blueprint itself, so the pa
   coop_players.c coop_copy_autobuilt) when the copy is bonded. Pair test (autobuild_noy_3rd.txt in A, idle B, game
   screenshots in B at 40-44 s): B's copy Fanplane is green, as A's; the hit pair (autobuild_3rd.txt with Y at 48 and
   50 s) still shows B's copies on, off and on with A. TOTK_COOP_TEST_GREEN=0 leaves it out, =all marks every bonded copy.
-- Not tested: the mod's side effect, autobuilt parts destroyed when broken apart, on a copy taken apart in the other
-  game (an owner's autobuilt part taken off is deleted by the game already: autobuild_part_3rd.txt).
+- Taking a part off (2026-11-08 evening). An autobuilt contraption is meant to come apart whole when a piece is taken
+  off (the tester), whoever takes it. Marked as soon as their bond was asked for, a copy was destroyed by the game before
+  the graph had joined it (a fan copy gone in B with nobody near it; then the owner deleted its own): copies are now
+  marked only once they share a group. Pair tests: B pulls the wing off its copy (autobuild_part_b_3rd.txt with
+  `TOTK_COOP_TEST_ABHIT_B=46`): B's copy goes, B's other copies follow, the owner deletes its wing and its fans go too:
+  both games empty. A shakes a fan off its own (autobuild_part_3rd.txt, `TOTK_COOP_TEST_ABHIT=36`): A destroys the fan,
+  B drops its copy, B's other copies come apart (state 7) and tell A, which deletes the rest: both games empty. (A's own
+  game had not destroyed its rest by then; the notices did.) The Ultrahand grab in autobuild_part_3rd.txt does not take
+  every run (the Link ends up facing away).
 
 ### Earlier research (before the lead)
 - What the autobuild passes when it makes a part (TOTK_COOP_TEST_CREATEDUMP=1, coop_spawn.c create_dump on
