@@ -1684,3 +1684,227 @@ Worked out from 32 and from coop_ctn.c as it is; replaces "stable uids given by 
   bond, followed and switched by the core; coop_glue.c and coop_bonds.c stand down for registry parts.
 - Still to read before (a) to (c) are written: our own mirror code in coop_players.c (the slots' `mir` table, the
   claim at its line with coop_contraption_owns, prop scan, coop_obj_find / coop_obj_ident).
+
+## 34. What the device reading established (read 2026-11-09, R/sync-v3/m2/p5/, eleven folders)
+Static reading only; nothing here has been run. Each block names the folder that holds the code and addresses.
+
+**The steering stick and "held" (stick-head) - notes 6a, 6b**
+- A stick's rider is the occupant of the one seat of its Ridable component; the seat is filled only by the rider's own
+  ride start. Nothing fills the seat of a fresh copy. The mod's stick_rider reads the right fields but does not test
+  that the occupant's actor is in state 2 to 6.
+- The mirror on the rider: the rider's controller component ([actor+0x228]+0x410) holds a handle to the ridden actor at
+  +0x20 (slot +0x28, id +0x30, valid +0x38 == 1). The controller's state word 3 means steering.
+- "Held" (SPR +0x20 bit 16) is set only by main+0x1c0b83c, from three message paths of a Player's Ultrahand part; the
+  holder is stored as a handle at [SPR+0x30]+0x10, so a hold by this game's Link can be told from any other. The
+  confirm sets no hold. What made one frame of "held" on a fresh copy is one of three candidates, not decided by
+  reading; reading the holder handle and requiring it to be this game's Link closes all three.
+- Why the car never switched off (6a): the "everything off" is raised only by the stick's own node in the game where
+  the seat was occupied, once a frame for 2.0 s after the rider leaves (event 0x12 on the group, group +0x880). The
+  game that ran the build had no rider on its stick, so nothing raised it. A game that runs a build whose rider is in
+  another game has to raise event 0x12 itself (group +0x880 |= 1 << 0x12) when the rider leaves, or the runner must be
+  the game of the rider.
+- While a rider steers, the stick raises event 0x11 each frame and the group sends ON to the switchable devices.
+- The stick's tilt: floats in the stick's blackboard, ControlStick_StickX/Y (0x6f1afb02, 0xde18d120) and
+  ControlStick_ScaledStickX/Y (0x4b809ce9, 0x9479c43d); the stick's animation reads the Scaled pair, the rider's pose
+  node reads StickX/Y of the stick it rides. Writing them on a follower each frame shows the tilt; whether the
+  follower's own graph writes 0 over them each frame, and in which order, is not read.
+- Four group bools named: ControlStick_ForceAllPartsOn 0xe7ee94d2, ForceAllPartsOff 0xd169fcb2,
+  SpecialParts_IsLogicOrderOff 0x0f548ac3, SpecialParts_IsChangeableOnOffNow 0x8d0ccacd.
+- Only the spring and the time bomb take separate on/off messages (IsSeparateOnOffMessage); the stick, cart, pot,
+  mirror and stake are not switchable by a hit.
+- The construct head has no brain in its graph: it turns toward a perception target by posing a constraint, applies no
+  force and spawns nothing.
+
+**Set-off not taking (setoff-not-taking) - note 3**
+- A set-off that reaches the node cannot fail inside it: the off trigger is tested before every on trigger. A fan that
+  still reads on was either not reached, or switched on again, or the bit the mod reads is not the latch.
+- The mod's "on" read ([comp 11]+0x348 bit 0x2000) is not the latch, and its writer was not found. The latch is the
+  node's +0x9a bit 0; the game itself reads the blackboard bool SpecialParts_IsOn (hash 0xbcd1015f), written on every
+  accepted change. The mod must read that bool.
+- What switches a just-switched-off fan back on in a two-fan build: the group's mixed rule (one on, one off: ON to
+  all), the group's hit rule (a hit while any fan is off: ON to all), a hit's flip, and an ON message (the mod's own
+  included). In the failing stretch of the logs every ask came with a swing of the other player's stand-in in that
+  game: a stand-in's weapon hitting the real fans is a hit there.
+- The failure followed the game (player 1's), not hand-glued against Autobuilt: nothing the node, the group or the
+  handler reads differs by a part's origin; green is read by none of them.
+- An ON is refused while the energy gate is closed (DeviceSwitch +0x8d bit 0 clear).
+- Not read: who drains the message ring and when, in frame order against the node's calc and the group sender; the
+  writer of the comp 11 word.
+
+**Hits (hits-status) - note 2**
+- A jump or fall attack is a normal weapon contact plus the damage attribute ZonauGearChangeStateOn (bit 54 of the
+  contact's 64-bit mask); no other attack of the player has it. None of the five hit-toggle functions reads the mask.
+  What consumes bit 54 was not found, so whether a jump attack switches a device by message or by the same toggle bit
+  is not decided by reading. If by message, the mod's follower branch (which watches the toggle bit only) cannot see it.
+- The shockwave is not a toggle path (its damage type is rejected by the hit filter).
+- The toggle sites keep no reference to the attacker; the filter passes weapon, shield and arrow contacts of an actor
+  whose affiliation is Player. Whether a stand-in's affiliation is Player is not read.
+- Status effects on parts, what kills a burning part, damage and explosions on parts: not read in this pass.
+
+**Spring and stake (spring-stake) - notes 4, 5**
+- A spring ignores the set-on / set-off messages: it is in separate-message mode and takes only 0x2ca80000,
+  0x2ca80002 and 0x6b510003. Its latch is set by writing the on/off node's event byte (node +0x40 bit 0 on, bit 1
+  off) between two calcs, which needs the path from an actor to its node (engine-access).
+- The spring's state is four layers: the latch; the launch, which is the tick the latch changes and not a state; the
+  post-launch timers; and the extension, which is the head body's pose against the base and no node field. A follower
+  set to the runner's latch produces the pulse itself; the head's pose comes with the bodies.
+- The launch changes only the velocities of the spring's two bodies (head +v, base -v/3); it never touches the player.
+- The mod drops the launch on a followed spring: the spring's apply main+0x221a7dc is in force_nodes, so both velocity
+  writes are skipped in coop_phase0_hook after G1 has let them through. The fix is to pass return addresses
+  main+0x221a9c0 and 0x221aa14 in that rule too, or to take the apply out of force_nodes.
+- The old toggle path (coop_bonds.c) sends edges, and tests "on" with the comp 11 word: two games differ by one edge
+  whenever they disagree on the count. That is note 4.
+- A stake's hold is its own authored constraint "ToGround", re-pointed at the body it hit by main+0x2215364 and
+  disabled by main+0x2215118; neither is hooked, so a followed stake connects itself to the follower's ground while
+  the runner's pose already carries the hold. A followed stake must not connect: main+0x2215364 returns for it.
+
+**Wheels, sled, carts (wheels) - note 6a**
+- The wheel node the mod skips is a twin no shipped graph uses. motor_nodes names main+0x22fc5f8; the wheel that runs
+  is ExecuteFastWheelMotion, wrapper main+0x22fa1b0, body 0x22fa3fc, and it is untouched today. Its inert test is the
+  call at 0x22fa5e4 (return address 0x22fa5e8), not 0x22fc918.
+- The wheel has no notion of a rider: it sees IsWorking (the on/off latch), the inert test (held, carried, just
+  released), and the group steering bit 5 with the stick numbers. Its disabled branch un-anchors and disables its three
+  motor constraints and writes its five model floats to 0; the next working tick re-anchors by itself.
+- The visible spin is the blackboard float FastWheel_ModelRotateSpeed (0x4b7368f5), integrated by the model node
+  main+0x220b9d4; steering pose is FastWheel_ModelSteeringAngle (0xbc8c3de4). Only the motion node writes them. A
+  follower shows the right spin by writing those two floats, or by its node running.
+- A wheel drives only while the group has steering (group +0x878 bit 5), which exists only in a call that saw event
+  0x11 and a stick member whose ForceAllPartsOn bool was true. The group steering numbers at group +0x928/+0x92c/+0x930
+  are the stick blackboard floats StickX, StickY, ForwardBackMove, set to NaN at the start of every group pass.
+- Wheels spinning for ever (6a): the wheels stay on until an OFF reaches them; the OFF comes from the stick release
+  chain, which did not run in the game that ran the build (stick-head).
+- Classes that run, with their gates: sled main+0x2458320 (inert test at return 0x2458428; writes its own body
+  velocities and side-edge constraints), cart 0x2251440 (inert at return 0x2251a8c; constraints only), homing cart
+  0x225c52c (inert at return 0x225c6c0; three constraints and an impulse), merged wheel 0x236d2e8 (no body write, queues
+  message 0x08e5001a to what it touches), LargeWheel 0x246ba9c / 0x246cb88 / 0x246d930 (hinge motor and steering, gated
+  by IsActive only, no inert test).
+- Cart and wheel visuals (post-calc nodes) are bone posing only and work on a copy.
+- Not read: the tuning values at [main+0x395f3a0]; what a wheel does at command 0; the consumers of the comp 81 marks.
+
+**Energy (energy)**
+- The per-device "can be on" bit (DeviceSwitch +0x8d bit 0) is rewritten at the end of every call of main+0x4a3500 from
+  this game's own gauge manager: blocked = mgr[0x50] bit 0 or not mgr[0xe8] bit 0 (the game flag Obj_Battery_Get). A
+  follower's copy therefore consults the watching player's gauge, not the payer's.
+- It is also cleared for a device out of range of this game's Link (range 20, mgr +0xc4, against mgr +0xa0..0xa8) when
+  the group's bit 6 is clear and no exemption holds, and for 6 s after a "substitute energy" event. A watcher far from
+  a build would switch its copy off by this bit.
+- The node forces OFF and refuses ON while the bit is clear. So for a part this game does not pay for, the bit must be
+  set after each call of main+0x4a3500 (the function rewrites it every call).
+- The group sender has its own gauge-cannot-pay OFF (main+0x32f4e8..0x32f4fc, needs mgr[0xe8] bit 1, group +0x9e8 == 1
+  and no battery in the group).
+- Draw = ds+0x3c * ds+0x40 * ds+0x44; +0x44 is the group factor carried by message 0x6b510002.
+- A battery part: its node only publishes cur/max of its life cell; the code that lowers the cell was not read.
+- Not read: the writer of mgr[0x50]; mgr[0xe8] bit 1; the frame order of the DeviceSwitch update and the node calc.
+
+**Balloon, hover stone, wing, stabilizer (lift-devices)**
+- All four are force nodes whose body writes go to the part's main body only: balloon (impulse main+0x29ae7a8, two
+  linear and two angular velocity writes), wing (force 0x29ae7fc, linear velocity at two sites, angular at six, the
+  rail path included), hover stone (linear at 0x230aa08 and 0x230a530, angular at 0x230aa30), stabilizer (0x40e490 and
+  0x29ae7fc). No constraint setter, no other body. force_nodes drops exactly these on a follower.
+- Balloon: the swell shown is node +0x20, not +0x2c. It follows "any heat" from the balloon's own fire sensor, so a
+  follower swells by itself when its own copy of the fire is under it. With no fire a balloon gives no lift, only a
+  brake on falling.
+- Hover stone: the target pose is local to each game's node, captured from the body at the node's own working edge
+  and replaced by the body's pose whenever it is out of tolerance or held. Nothing needs to be sent or handed over.
+  Its energy range is the one device with a custom range (50), tested against the watching game's Link (energy).
+- Stabilizer: works whether switched on or not; needs only the group's count of stabilizers (group +0xa1e), which the
+  group refresh sets in each game.
+- Wing: reads no on state; publishes Wing_LiftRate and Wing_IsOnRail to its blackboard; the full lift law is not read
+  (not needed: the runner's motion is what a follower shows).
+- Not read: the consumer of the model component's request table (comp 81), so whether those requests are physical.
+
+**Rocket and time bomb (rocket-timebomb)**
+- Rocket: on by the ordinary set messages. After the working edge it waits 20 frames, probes for its own build in
+  front of the nozzle (a blocked launch fails with a tumble), then thrusts every tick. Its burn is its own life
+  (MaxLife 90, 1 a frame once RocketEngine_IsSucceededLaunch is true), and it ends by death kind 16 (life depleted) and
+  a plain delete with the vanishing effect: no blast. The rocket node asks for no death itself.
+- A follower rocket derives effects and animation from the on state alone. Not dropped today: its gravity-cancel
+  requests to comp 81 each thrust tick, and two draws of the global random generator on a failed launch.
+- Time bomb: ignores the set messages (separate-message mode). Armed by message 0x2ca80000; message 0x2ca80002
+  detonates at once. Fuse: node +0xdc (now), +0xe0 (previous), total 110 frames, stepped only while armed and not
+  held or attached; a value written from outside is honoured. At 0 the node asks death kind 8 (exploded) and calls its
+  blast virtual every tick. The blast is the chemistry explosion of size 20.
+- A follower bomb must have its fuse written each tick from the runner's and kept above 0, or it detonates by itself;
+  the runner's detonation is then replayed as death kind 8.
+- The death kinds are named (table at main+0x366f8b0): 6 eaten, 7 picked up, 8 exploded, 9 burned, 15 kinematic
+  collision, 16 life depleted, 20 the Autobuild part's own death.
+- A mod bug to check: the death-component hook in coop_life.c takes the actor from component +0x8, while the game's
+  function main+0x1b4b738 takes it from component +0x18. If +0x8 is not the actor, G4 refuses nothing for deaths
+  asked straight on the component (the bomb's own, and the broken-off rule's inlined one).
+- Not read: the blast virtual's target; who subtracts the rocket's life; who sends the two bomb messages.
+
+**Emitters and visual kinds (emitters)**
+- Beam, flame, frost, shock, light, mirror, hydrant and the wind capsule read nothing only the owner has: given the
+  on and working state a copy runs the same code and shows the same. Each game makes its own beam actor, element pool
+  and wind capsule.
+- Harm is not done by the emitter nodes but by the attack sensors and chemistry of the game that runs the emitter, so
+  a copy's beam or flame harms in the copy's game as a real one does: hits by a copy's emitter have to be told from
+  the runner's by their attacker so they are not counted in two games.
+- The light also takes forced on/off messages 0x6b510004 / 0x6b510005, sent only by the contraption controller update
+  main+0x1917ac0 to members of kind light.
+- The pot's flame state is a debounced "upright, not held" test of each game's own copy; no switch.
+- Emitters hold fire while their group is in hold state 11 and 0.5 s after; groups are computed in each game.
+- Not read: the chemistry steps that burn, freeze and electrify; who writes hold state 11.
+
+**Spawns (spawns)**
+- The cannon and the beam make no actor when they fire. Each has a Shooter component that makes its projectiles in
+  advance (the cannon up to 8 Obj_CannonBall_A_01, the beam one BeamosBeam), in every game that has the part, copies
+  included. Firing is one call, Shooter::shoot main+0x1bf8df4 (cannon: return address 0x224f538; beam: from
+  0x2232d0c), which launches a ball already made. A copy whose node runs fires its own ball unless that call is not
+  reached for it.
+- The cannon the game runs is ExecuteCanonMotionPostCalc (calc main+0x224e0b8), not the node the earlier notes named.
+  The launch velocity is data the cannon writes into the ball's blackboard (Obj_CannonBall_InitVel) before its first tick.
+- The ball and the time bomb explode through the chemistry system (a Blast element), not through an actor.
+- The actor-create function has 108 direct call sites; none belongs to a device node. Ice from the frost device was
+  not traced.
+
+**Engine access (engine-access)**
+- No path from an actor to its AI nodes was found. A node is reached only by noting it when its calc runs (x0 = node;
+  node -> actor is [[node+8]+8]+0x1f8), or from another node of the same actor through the graph (count G+0x60, array
+  G+0x68). So the mod keeps its own table of (actor, calc) -> node, filled from the calc hooks it already has.
+- The blackboard is reached from the actor alone: bb = [[[actor+0x228]+0]+0x10]. Bool section at bb+0x198 (values
+  bb+0x1a0, hash table bb+0x1c8, size bb+0x1d4), float section at bb+0x120 (values bb+0x128, table bb+0x150, size
+  bb+0x15c); slot = hash % size, {hash, index}, linear probe, hash 0 ends. Keys are murmur3_32 of the name, seed 0.
+  The game's own bool write also bumps a change counter (bb+0x1f0) and honours a lock byte (bb+0x1e0).
+- Writing IsOn / IsWorking from outside is overwritten by the node each tick; the latch itself must be set.
+- The on/off event byte in the blackboard (entry 0xc9efe622, byte +8) also charges the gauge: not for a follower.
+- Comp 81 requests live one frame; whether they act on physics is not read.
+- The two inert tests are pure reads of this game's own state (held, carried, comp 36 state 4, the group's held bit).
+
+### 34.1 What this changes in the code (each item written from the folder named; none run)
+1. **"On" is read from the blackboard bool SpecialParts_IsOn**, not from the comp 11 word (setoff-not-taking,
+   engine-access). Every on/off compare in coop_ctn.c uses it.
+2. **Touch is "this game's Link holds it"**: the holder handle at [SPR+0x30]+0x10 resolved and compared with this
+   game's Link, with the held bit; the stick rider test also requires the occupant in state 2 to 6 (stick-head). This
+   is the fix of 6a's false touch.
+3. **The game of the rider runs the build.** With touch right, steering makes the rider's game the runner, and the
+   stick's own release chain then switches the devices off in the game that runs them (stick-head, wheels).
+4. **A stand-in's weapon does not hit devices.** In the game where a player is only a stand-in, its swing reaches the
+   real parts and flips them, while the same swing in its own game is sent as a wanted state: two switches for one hit.
+   That matches every failing ask of note 3. The hit filter must refuse a stand-in as attacker (hits-status,
+   setoff-not-taking). Needs one more read: which actor the filter sees as "other" for a weapon contact.
+5. **On a followed build the group sender sends nothing**: the mixed rule and the hit rule would switch a copy back
+   on against the runner. Today only the hit event is taken off at the sender's entry.
+6. **A part this game does not pay for always may be on**: after each DeviceSwitch update main+0x4a3500 its +0x8d
+   bit 0 is set, so a watcher's empty gauge or distance does not switch a copy off (energy).
+7. **Spring**: its latch is set through its on/off node's event byte (node +0x40), found by the node table; the two
+   launch writes are let through in the phase-0 rule (return addresses main+0x221a9c0, 0x221aa14); lone springs leave
+   coop_bonds.c (spring-stake).
+8. **Time bomb**: armed with 0x2ca80000; its fuse written each tick from the runner's and kept above 0; never
+   0x2ca80002; the detonation comes as the runner's death of kind 8 (rocket-timebomb).
+9. **Wheels**: the hook moves from the unused twin to the real node (main+0x22fa1b0 / 0x22fa3fc); on a follower the
+   wheel takes its disabled branch (inert test forced at return 0x22fa5e8) and its two model floats are written from
+   the runner's (wheels). The same per-part float channel carries the stick's four tilt floats (stick-head).
+10. **Stake**: main+0x2215364 returns at once for a followed stake (spring-stake).
+11. **Cannon**: Shooter::shoot is not reached for a followed cannon; the runner's ball is the runner's object (spawns).
+12. **To check in coop_life.c**: the death-component hook's actor offset (+0x8 against the game's +0x18).
+
+### 34.2 Not decided by this reading (a reader goes back for each before its code is written)
+- What consumes the jump attack's attribute (bit 54 of the contact mask): decides note 2.
+- Which actor the hit filter resolves as attacker for a stand-in's weapon, and a stand-in's affiliation: decides
+  item 4's exact test.
+- Who drains the message ring and where in the frame, against the node's calc and the group sender.
+- Whether comp 81 requests are physical (rocket gravity-cancel on a follower).
+- What consumes a copy emitter's hits (beam, flame) so harm is not counted in two games.
+- Status effects on parts, damage and explosions on parts (not touched by this pass).
+- The seat release function; whether a stand-in ever performs a ride start (rider placement, 6c).
