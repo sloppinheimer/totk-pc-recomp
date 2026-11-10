@@ -2680,3 +2680,22 @@ running, and P2 could not switch it off until P1 left the menu. P1's game runs t
 from P2 wait there (the pause of 44.1). In single player the paused game stops everything, but here the other player
 plays on. A game in a menu (the heartbeat's paused flag, COOP_CTR_HB_PAUSED) could hand the builds and lone devices near
 the other player to that player's game; not designed yet.
+
+### 44.4 Written after run 5 (not run)
+- **Note 19:** a Zonai device with no map placement that is no copy is this game's made object without the
+  nearer-than-a-stand-in test; a new object not taken is logged with the test that kept it.
+- **Note 21:** while the game that runs a build is in a menu (heartbeat paused flag), a game whose Link is within 60 m
+  takes the build after 1 s; a hit on a lone device whose owner is in a menu takes the device over (as a grab) and
+  switches it here.
+- **Note 20 (read: R/sync-v3/run5/attach):** none of our hooks refuses a glue. Strongest lead: a copy's body has +0x68
+  bit 24 set, which keeps a bond out of the game's graph (main+0xa2d39c answers no node), so the glue made no build.
+  The glue tick hook (main+0x1d67060) now clears that bit on the bodies of live actors before the tick, and logs how
+  each glue ends (made, timed out, aborted by a test).
+- **6.7 edit requests, written:** a glue this game's player finishes (BondMaker called from the glue tick, return
+  address main+0x1d677a8) with one end a part of a build another game runs is sent to that game (EDIT_REQ: the build,
+  its version, the part and slot, the other end by part or origin number, the relation of the two bodies); that game
+  makes the same bond in place with its build object's bond queue at phase 0, even while its own player holds the
+  build, and records the new version. Not written: the gluer breaking its edge when the runner refuses.
+
+**Decision (the tester, 2026-11-10):** map-placed and NPC vehicles and spawns as entities are left out of milestone 2.
+NPC vehicles are to be looked at in a play-test; if they look wrong, they get done.

@@ -1159,6 +1159,116 @@ static struct {
     float centre[3];
     uint8_t rec[BP_SIZE];
 } mk;
+// ---- Edit requests (plan 6.7): a glue this game's player finished on a build another game runs --------------------------
+// The glue completes natively here (the glue tick's BondMaker, coop_life.c); its two ends and their relation are sent to
+// the game that runs the build, which makes the same bond in place with the build object's bond queue (bond_queue, as
+// in_place does), even while its own player holds the build, and records the new version; this game then applies it
+// in place, where the bond is already. One end is a part of that build (by its record number); the other is a part of
+// the same build, a part of another build, or an object (its origin numbers).
+typedef struct {
+    uint64_t inc;           // the build's cid
+    uint32_t serial, v;     // and the version the part numbers belong to
+    uint32_t part, slot;    // the build's part (record number) and its body slot
+    uint32_t opart, oslot;  // the other end: a part of the same build (record number, 0xff: not), its body slot
+    uint64_t oinc;          // ... else its origin: the incarnation of the game whose object it was, and its number
+    uint32_t oid, pad;
+    char oname[48];
+    float rel[12];          // the other end's body in the part's body's frame (3x4 rows)
+} EditMsg;
+_Static_assert(sizeof(EditMsg) <= COOP_CTR_PAYLOAD, "an edit request fits one channel message");
+static struct { EditMsg m; int64_t us; } edits[8];
+static int edits_n;
+static uint64_t body_owner(uint64_t body) { return body ? link_actor(coop_rd_ptr(body + 0x110) + 0x18) : 0; }
+void coop_ctn_glue_made(Cpu *c, uint64_t ba, uint64_t bb, const float wa[12], const float wb[12], uint64_t edge) {
+    if (!ctn_on() || !edge) return;
+    uint64_t a = body_owner(ba), b = body_owner(bb);
+    if (!a || !b) return;
+    EditMsg m;
+    memset(&m, 0, sizeof m);
+    uint64_t runner = 0, tb = 0, other = 0, obody = 0;
+    int found = 0;
+    plat_mutex_lock(&reg_lock);
+    for (int side = 0; side < 2 && !found; side++) {
+        uint64_t t = side ? b : a;
+        for (int i = 0; i < REG_N && !found; i++)
+            for (int r = 0; reg[i].used && !runs(&reg[i]) && reg[i].local == L_LIVE && r < reg[i].np && !found; r++)
+                if (reg[i].parts[r] == t) {
+                    found = 1, runner = reg[i].runner, m.inc = reg[i].inc, m.serial = reg[i].serial, m.v = reg[i].v, m.part = (uint32_t)r;
+                    tb = side ? bb : ba, other = side ? a : b, obody = side ? ba : bb;
+                    m.opart = 0xff;
+                    for (int u = 0; u < reg[i].np; u++) if (reg[i].parts[u] == other) m.opart = (uint32_t)u;
+                }
+    }
+    if (found && m.opart == 0xff) {
+        uint32_t id = 0;
+        uint64_t oinc = 0;
+        if (origin_of(other, &id, &oinc)) m.oid = id, m.oinc = oinc;
+    }
+    plat_mutex_unlock(&reg_lock);
+    if (!found) return;   // (no end is a part of a build another game runs: this game records the build itself)
+    if (m.opart == 0xff && !m.oid) {
+        int owner = 0;
+        uint32_t id = 0;
+        if (!objs_ident(other, &owner, &id)) {
+            rt_log("coop: contraption: a glue here onto a build another game runs: the other end is no object the others know: not sent");
+            return;
+        }
+        m.oid = id, m.oinc = owner == coop_net_id() || !owner ? coop_ctr_me() : coop_ctr_incarnation(owner);
+    }
+    coop_actor_name(other, m.oname, sizeof m.oname);
+    for (uint32_t k = 0; k < 3; k++) {
+        if (body_slot(c, tb == ba ? a : b, k) == tb) m.slot = k;
+        if (body_slot(c, other, k) == obody) m.oslot = k;
+    }
+    float inv[12];
+    const float *wt = tb == ba ? wa : wb, *wo = tb == ba ? wb : wa;
+    if (!m34_inv(inv, wt)) return;
+    m34_mul(m.rel, inv, wo);
+    coop_ctr_send_inc(runner, COOP_CTR_EDIT_REQ, COOP_CTR_RELIABLE, &m, sizeof m);
+    rt_log("coop: contraption: a glue here onto part %u of a build another game runs (other end %s %s): sent to that game", m.part, m.oname,
+           m.opart != 0xff ? "of the same build" : "an object");
+}
+// The game that runs the build: each edit request made in place at actor phase 0 (asked again for 2 s while the other
+// end is not found here yet, or the bond queue still holds the last change's bonds)
+static void edits_pass(Cpu *c) {
+    if (!edits_n || mk.st) return;
+    uint64_t ab = coop_life_ability(), o = ab ? coop_rd_ptr(ab + 0x51f0) : 0;
+    uint32_t selected = 0;
+    if (!o || (coop_rd(ab + 0x51e8, &selected, 4) && (selected & 0xff))) return;   // (the build object is the player's now)
+    int64_t now = frame_step_world_us();
+    for (int i = 0; i < edits_n; i++) {
+        EditMsg m = edits[i].m;
+        uint64_t a = 0, b = 0;
+        int drop = now - edits[i].us > 2000000;
+        plat_mutex_lock(&reg_lock);
+        Ent *e = ent_find(m.inc, m.serial);
+        if (!e || !runs(e) || e->local != L_LIVE || e->v != m.v || m.part >= (uint32_t)e->np) drop = 1;
+        else {
+            a = e->parts[m.part];
+            if (m.opart != 0xff && m.opart < (uint32_t)e->np) b = e->parts[m.opart];
+            for (int q = 0; !b && m.opart == 0xff && q < REG_N; q++)
+                for (int u = 0; reg[q].used && u < reg[q].np && !b; u++) if (reg[q].ids[u] == m.oid && reg[q].oinc[u] == m.oinc) b = reg[q].parts[u];
+        }
+        plat_mutex_unlock(&reg_lock);
+        if (!drop && !b && m.opart == 0xff) {
+            int owner = m.oinc == coop_ctr_me() ? coop_net_id() : coop_ctr_route(m.oinc);
+            if (owner) objs_find(owner, m.oid, m.oname, &b);
+        }
+        int why = 0, done = 0;
+        if (!drop && a && b && alive(a) && alive(b) && bond_pool_recycle(c, o)) {
+            done = bond_queue(c, o, a, m.slot, b, m.oslot, m.rel, &why);
+            rt_log("coop: contraption: an edit request: a glue onto part %u (other end %s): %s", m.part, m.oname, done ? "made here" : "not made");
+            if (done) coop_ctn_structure_event();
+            else drop = 1;
+        }
+        if (drop && !done) rt_log("coop: contraption: an edit request onto part %u (other end %s) not made: the build or the other end is not here as asked", m.part, m.oname);
+        if (done || drop) {
+            plat_mutex_lock(&reg_lock);
+            edits[i] = edits[--edits_n], i--;
+            plat_mutex_unlock(&reg_lock);
+        }
+    }
+}
 // The game that ran e no longer has it: this game runs it, if two or more of its parts are here (reg_lock held)
 static void take_over(Ent *e, uint32_t epoch) {
     int here = 0;
@@ -1403,6 +1513,7 @@ static void retire_pass(Cpu *c);
 void coop_ctn_phase0(Cpu *c) {
     if (!ctn_on()) return;
     record_pass(c);
+    edits_pass(c);
     make_pass(c);
     events_put();
     deaths_put(c);
@@ -2670,6 +2781,12 @@ static void receive(void) {
             if (mk.st && mk.e == e) e->relinq_later = 1;   // (being made here: taken up once made, finding 38)
             else take_over(e, p->epoch);
         }
+        plat_mutex_unlock(&reg_lock);
+    }
+    while (coop_ctr_recv_type(COOP_CTR_EDIT_REQ, &m)) {   // a glue another game's player finished on a build run here
+        if (m.len != (int)sizeof(EditMsg)) continue;
+        plat_mutex_lock(&reg_lock);
+        if (edits_n < 8) memcpy(&edits[edits_n].m, m.d, sizeof(EditMsg)), edits[edits_n].m.oname[47] = 0, edits[edits_n].us = now, edits_n++;
         plat_mutex_unlock(&reg_lock);
     }
     while (coop_ctr_recv_type(COOP_CTR_PULL, &m)) {   // a game back in reach of a build it had unloaded: the version again

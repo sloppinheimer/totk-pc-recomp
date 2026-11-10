@@ -297,6 +297,24 @@ int coop_life_hook(Cpu *c, uint64_t addr) {
         void coop_ctn_structure_event(void);
         coop_ctn_structure_event();
     }
+    // A glue this game's player finished: BondMaker called from the glue tick main+0x1d67060 (the call at main+0x1d677a4;
+    // its other caller is the Autobuild's confirm). x1 is the bond's description: +0x10 body A, +0x18 body B. Run, then
+    // its edge (x0, 0: none) and the two bodies' relation at that moment (world matrices at body +0x98) go to the core,
+    // which sends it to the game that runs the build if one end is a part of a build another game runs (plan 6.7).
+    // Research notes sync-v3/run5/attach, section 7.
+    if (off == BOND_MAKER && c->x[30] - MOD_MAIN_BASE == 0x1d677a8) {
+        static __thread int inner;
+        if (inner) { inner = 0; return 0; }
+        uint64_t ba = coop_rd_ptr(c->x[1] + 0x10), bb = coop_rd_ptr(c->x[1] + 0x18);
+        float wa[12], wb[12];
+        int have = ba && bb && coop_rd(ba + 0x98, wa, sizeof wa) && coop_rd(bb + 0x98, wb, sizeof wb);
+        inner = 1;
+        c->pc = MOD_MAIN_BASE + off;
+        rt_dispatch(c);
+        void coop_ctn_glue_made(Cpu *c, uint64_t ba, uint64_t bb, const float wa[12], const float wb[12], uint64_t edge);
+        if (have) coop_ctn_glue_made(c, ba, bb, wa, wb, c->x[0]);
+        return 1;
+    }
     if (off == 0x2995024 || off == 0x2995068 || off == 0x2999fe8 || off == 0x18ac48 || off == 0x8aaab0 || off == 0x1c042bc ||
         off == 0x1cf54d4) {
         x3_hook(c, off);
@@ -458,7 +476,40 @@ int coop_life_v3(Cpu *c, uint64_t off) {
         }
         return 1;
     }
-    if (off == 0x2474478) { coop_ctn_note_fuse(c->x[0], v3_node_actor(c->x[0])); return 0; }   // (a time bomb's fuse node: coop_ctn.c)
+    if (off == 0x2474478) { coop_ctn_note_fuse(c->x[0], v3_node_actor(c->x[0])); return 0; }
+    // The glue tick main+0x1d67060 (x0 the glue's state, entry +0x558; x2, x3 the two bodies). A body whose +0x68 has bit
+    // 24 set gets no graph node from main+0xa2d39c, so a bond on it joins no group (research notes sync-v3/run5/attach,
+    // section 2); a copy's body has it (coop_bonds.c, cause not found), and the game's glue never clears it, so a glue
+    // with a copy or a part made here from a record made no build (plan 44.3, note 20). Cleared here, as coop_bonds.c and
+    // bond_queue do, only on the body of a live actor (a body torn down keeps it and has no graph id). Then the tick runs,
+    // and the glue's end is logged: made, or aborted with its time and progress (state +0x34 done, +0x28, +0x2c).
+    if (off == 0x1d67060) {
+        static __thread int inner;
+        if (inner) { inner = 0; return 0; }
+        uint64_t gs = c->x[0], bodies[2] = {c->x[2], c->x[3]};
+        uint8_t was = 1;
+        coop_rd(gs + 0x34, &was, 1);
+        for (int k = 0; k < 2; k++) {
+            uint64_t f68 = 0, a = bodies[k] ? hnd_actor(coop_rd_ptr(bodies[k] + 0x110) + 0x18) : 0;
+            if (a && coop_rd(bodies[k] + 0x68, &f68, 8) && (f68 >> 24 & 1)) {
+                __atomic_fetch_and((uint64_t *)(uintptr_t)(bodies[k] + 0x68), ~(1ull << 24), __ATOMIC_SEQ_CST);
+                static _Atomic int said;
+                char nm[48];
+                if (atomic_fetch_add(&said, 1) < 12) rt_log("coop: glue: body %d of a glue (%s) had +0x68 bit 24: cleared, so the bond joins the graph", k, coop_actor_name(a, nm, sizeof nm));
+            }
+        }
+        inner = 1;
+        c->pc = MOD_MAIN_BASE + off;
+        rt_dispatch(c);
+        uint8_t done = 0;
+        float el = 0, pr = 0;
+        coop_rd(gs + 0x34, &done, 1), coop_rd(gs + 0x28, &el, 4), coop_rd(gs + 0x2c, &pr, 4);
+        if (!was && done) {
+            static _Atomic int said;
+            if (atomic_fetch_add(&said, 1) < 40) rt_log("coop: glue: a glue ended after %.2f s, progress %.2f (%s)", el, pr, pr > 0.5f ? "past the pull: made, or the bond maker refused" : el > 1.5f ? "timed out" : "aborted by a test");
+        }
+        return 1;
+    }   // (a time bomb's fuse node: coop_ctn.c)
     // The group's on/off sender (x0 = group). On a build another game runs it sends nothing here: its rules (some
     // devices on and some off: ON to all; a hit while one is off: ON to all; the gauge cannot pay: OFF) would switch
     // a copy against the game that runs it, whose state comes by STATE. The sender still runs, so the group flags it
