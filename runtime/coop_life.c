@@ -365,7 +365,73 @@ uint32_t coop_life_shots_kept(void) { return atomic_load(&shots_kept); }
 static uint64_t v3_node_actor(uint64_t node) {   // an AI node's actor ([[node +8] +8] +0x1f8)
     return node ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(node + 8) + 8) + 0x1f8) : 0;
 }
+// The hit filter of the device toggle (main+0x1d38a00, x0 = the device, result in w0): it walks the device's contact
+// records (list [[[device +0x228] +0x428] +0x50]: base +0x10, count min(+8, +0x18), 0x1c0 bytes each) and answers 1 when
+// one is a weapon, shield or arrow contact of a Player. The attacker of a record is the actor of its handle at +0x60
+// (who owns the other body: the weapon), or, when byte +0x94 bit 0 is set, of the handle at +0x78 (the weapon's
+// topmost owner: who wields it). A handle is {+8 reference, +0x10 serial}; the reference's +0x48 is the serial while it
+// is good and its +0x40 the actor. Research notes sync-v3/m2/p6/hit-attacker.
+// Another player's stand-in swings in this game too, and its weapon reaches the real devices here; the same swing in
+// its own game is sent as the state wanted. So a hit whose every contact is a stand-in's is no hit here: counted once,
+// where the player is. (A frame in which a stand-in's and this Link's contacts are both on one device is taken as this
+// Link's; the three receiver-side toggle copies read no actor and are not covered.)
+int coop_players_all(uint64_t *out, int max);
+static uint64_t hnd_actor(uint64_t h) {
+    int32_t serial = -1, have = 0, st = 0;
+    uint64_t ref = coop_rd_ptr(h + 8);
+    if (!ref || !coop_rd(h + 0x10, &serial, 4) || serial == -1 || !coop_rd(ref + 0x48, &have, 4) || have != serial) return 0;
+    uint64_t a = coop_rd_ptr(ref + 0x40);
+    return a && coop_rd(a + 0x24, &st, 4) && (st < 7 || st > 11) ? a : 0;
+}
+static uint64_t owner_step(uint64_t a) {   // who holds or shot a: the first four owner links of main+0x1d19380, in its order
+    static const uint32_t link[4][2] = {{0x208, 0x20}, {0x508, 0x530}, {0x120, 0x2f0}, {0x440, 0x70}};
+    uint64_t t = a ? coop_rd_ptr(a + 0x228) : 0;
+    for (int k = 0; t && k < 4; k++) {
+        uint64_t comp = coop_rd_ptr(t + link[k][0]), o = comp ? hnd_actor(comp + link[k][1]) : 0;
+        if (o) return o;
+    }
+    return 0;
+}
+static int contact_of_standin(uint64_t rec, const uint64_t *st, int n) {
+    uint8_t f94 = 0;
+    uint64_t a = hnd_actor(rec + 0x60), b = coop_rd(rec + 0x94, &f94, 1) && (f94 & 1) ? hnd_actor(rec + 0x78) : 0;
+    for (int i = 0; i < n; i++) if (st[i] == a || st[i] == b) return 1;
+    for (int step = 0; a && step < 4; step++) {
+        a = owner_step(a);
+        for (int i = 0; a && i < n; i++) if (st[i] == a) return 1;
+    }
+    return 0;
+}
+static _Atomic uint32_t standin_hits;
+uint32_t coop_life_standin_hits(void) { return atomic_load(&standin_hits); }
+static int only_standin_contacts(uint64_t victim) {
+    uint64_t st[8];
+    int n = coop_players_all(st, 8);
+    uint64_t t = victim ? coop_rd_ptr(victim + 0x228) : 0, atk = t ? coop_rd_ptr(t + 0x428) : 0, l = atk ? coop_rd_ptr(atk + 0x50) : 0;
+    uint32_t cap = 0, cnt = 0;
+    uint64_t base = l ? coop_rd_ptr(l + 0x10) : 0;
+    if (n <= 0 || !base || !coop_rd(l + 8, &cap, 4) || !coop_rd(l + 0x18, &cnt, 4)) return 0;
+    if (cnt > cap) cnt = cap;
+    if (!cnt || cnt > 64) return 0;
+    for (uint32_t k = 0; k < cnt; k++) if (!contact_of_standin(base + (uint64_t)k * 0x1c0, st, n)) return 0;
+    return 1;
+}
+void coop_ctn_note_fuse(uint64_t node, uint64_t actor);
 int coop_life_v3(Cpu *c, uint64_t off) {
+    if (off == 0x1d38a00) {
+        static __thread int inner;
+        if (inner) { inner = 0; return 0; }
+        uint64_t victim = c->x[0];
+        inner = 1;
+        c->pc = MOD_MAIN_BASE + off;
+        rt_dispatch(c);
+        if ((c->x[0] & 1) && only_standin_contacts(victim)) {
+            if (atomic_fetch_add(&standin_hits, 1) < 8) rt_log("coop: contraption: a stand-in's hit on a device here is not taken as a hit (its own game sends it)");
+            c->x[0] = 0;
+        }
+        return 1;
+    }
+    if (off == 0x2474478) { coop_ctn_note_fuse(c->x[0], v3_node_actor(c->x[0])); return 0; }   // (a time bomb's fuse node: coop_ctn.c)
     // The group's on/off sender (x0 = group). On a build another game runs it sends nothing here: its rules (some
     // devices on and some off: ON to all; a hit while one is off: ON to all; the gauge cannot pay: OFF) would switch
     // a copy against the game that runs it, whose state comes by STATE. The sender still runs, so the group flags it

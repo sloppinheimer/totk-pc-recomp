@@ -99,7 +99,7 @@ typedef struct {
     int64_t hus[3], clock_off, clock_off_at, heard_us;
     FollowState *fs;
     uint32_t sw, on;        // at the runner: which record parts have a switch, which are on
-    uint32_t fw, fk;        // at the runner: which parts are wheels / sticks, and their floats (StMsg)
+    uint32_t fw, fk, fb;    // at the runner: which parts are wheels / sticks / time bombs, and their floats (StMsg)
     float pf[21][4];
     uint64_t payer;         // the incarnation whose gauge pays (who switched it on)
     int64_t toggled_us, payer_us;
@@ -353,9 +353,9 @@ typedef struct {
     int64_t us;             // the runner's world clock
     uint64_t payer;
     float m[12];            // its root part's main body matrix
-    uint32_t sw, on, flags, pad;
-    uint32_t fw, fk;        // bit r: part r is a wheel / a steering stick, its floats in pf[r]
-    float pf[21][4];        // wheel: model spin, model steering angle; stick: x, y, scaled x, scaled y
+    uint32_t sw, on, flags, fb;
+    uint32_t fw, fk;        // bit r: part r is a wheel (fw) / a steering stick (fk) / a time bomb (fb), its floats in pf[r]
+    float pf[21][4];        // wheel: model spin, model steering angle; stick: x, y, scaled x, scaled y; bomb: fuse left, armed
 } StMsg;
 _Static_assert(sizeof(StMsg) <= COOP_CTR_PAYLOAD, "a state fits one channel message");
 typedef struct { uint64_t inc; uint32_t serial, epoch; uint64_t who; } CtlMsg;   // TAKE, GRANT, PULL, RETIRE
@@ -781,11 +781,13 @@ static void make_pass(Cpu *c) {
     }
 }
 static void dev_flush(Cpu *c);
+static void events_put(void);
 static void floats_follow(void);
 void coop_ctn_phase0(Cpu *c) {
     if (!ctn_on()) return;
     record_pass(c);
     make_pass(c);
+    events_put();
     dev_flush(c);
     floats_follow();
 }
@@ -1115,6 +1117,94 @@ static uint64_t onoff_node(uint64_t actor) {
     }
     return 0;
 }
+// A time bomb's fuse node (ExecuteSpObjTimerBomb, calc main+0x2474478), noted the same way (coop_life.c)
+static struct { _Atomic uint64_t actor, node; } fuse_nodes[32];
+void coop_ctn_note_fuse(uint64_t node, uint64_t actor) {
+    if (!node || !actor) return;
+    for (int k = 0; k < 32; k++) if (atomic_load_explicit(&fuse_nodes[k].actor, memory_order_relaxed) == actor) { atomic_store(&fuse_nodes[k].node, node); return; }
+    for (int k = 0; k < 32; k++) {
+        uint64_t have = atomic_load(&fuse_nodes[k].actor), n = atomic_load(&fuse_nodes[k].node);
+        if (have && coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(n + 8) + 8) + 0x1f8) == have && alive(have)) continue;   // (still that bomb's)
+        atomic_store(&fuse_nodes[k].node, node), atomic_store(&fuse_nodes[k].actor, actor);
+        return;
+    }
+}
+static uint64_t fuse_node(uint64_t actor) {
+    for (int k = 0; actor && k < 32; k++) {
+        if (atomic_load(&fuse_nodes[k].actor) != actor) continue;
+        uint64_t node = atomic_load(&fuse_nodes[k].node);
+        return coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(node + 8) + 8) + 0x1f8) == actor ? node : 0;
+    }
+    return 0;
+}
+// A device's switch event byte: byte +8 of the blackboard entry SpecialPartsParam (0xc9efe622; the entries are the
+// section at +0x918, their pointers at +0x920). Bit 0 and bit 2 ask on, bit 1 off; the on/off node takes the byte at
+// the start of its calc and clears it. It is what a jump or fall attack writes on the device it hits (main+0x1b640f4,
+// from the attacker's side: set on, never a flip), with no toggle request at all, which is why such an attack by a
+// player on another game's build did nothing (plan 31, note 2). Research notes sync-v3/m2/p6/jump-attack.
+// On a part of a build another game runs the byte is taken off before the node here reads it and sent to the game
+// that runs the build, which puts it on its own part at phase 0: the node there does with it what it does with its own
+// player's. A hit that also asked a toggle (a plain swing) is sent as the toggle only.
+#define BB_ENTRIES 0x918
+#define BB_SWITCH_EVENT 0xc9efe622u
+static uint64_t event_entry(uint64_t actor) {
+    uint64_t bb = actor_bb(actor);
+    int i = bb_index(bb, BB_ENTRIES, BB_SWITCH_EVENT);
+    return i >= 0 ? coop_rd_ptr(coop_rd_ptr(bb + BB_ENTRIES + 8) + 8 * (uint64_t)i) : 0;
+}
+static PlatMutex ev_lock = PLAT_MUTEX_INIT;
+static struct { uint64_t actor; uint8_t bits; int64_t us; } ev_seen[16], ev_put[16];
+static struct { uint64_t actor; int64_t us; } tog_seen[16];
+static int ev_seen_n, ev_put_n, tog_i;
+void coop_ctn_event_seen(uint64_t actor) {   // from the on/off calc of a followed part (a game thread), before the calc
+    uint64_t en = event_entry(actor);
+    uint8_t b = 0;
+    if (!en || !coop_rd(en + 8, &b, 1) || !(b & 7)) return;
+    __atomic_fetch_and((uint8_t *)(uintptr_t)(en + 8), (uint8_t)~7, __ATOMIC_SEQ_CST);
+    plat_mutex_lock(&ev_lock);
+    if (ev_seen_n < 16) ev_seen[ev_seen_n].actor = actor, ev_seen[ev_seen_n].bits = b & 7, ev_seen[ev_seen_n].us = frame_step_world_us(), ev_seen_n++;
+    plat_mutex_unlock(&ev_lock);
+}
+typedef struct { uint64_t inc; uint32_t serial, part, bits, pad; } EvMsg;
+static void events_out(void) {   // the co-op tick: events seen 50 ms ago or more, sent unless the same hit asked a toggle
+    int64_t now = frame_step_world_us();
+    for (;;) {
+        uint64_t actor = 0;
+        uint8_t bits = 0;
+        int toggled = 0;
+        plat_mutex_lock(&ev_lock);
+        for (int i = 0; i < ev_seen_n && !actor; i++) {
+            if (now - ev_seen[i].us < 50000) continue;
+            actor = ev_seen[i].actor, bits = ev_seen[i].bits;
+            for (int k = 0; k < 16; k++) toggled |= tog_seen[k].actor == actor && llabs(tog_seen[k].us - ev_seen[i].us) < 300000;
+            ev_seen[i] = ev_seen[--ev_seen_n];
+        }
+        plat_mutex_unlock(&ev_lock);
+        if (!actor) return;
+        if (toggled) continue;
+        EvMsg m = {0};
+        int found = 0;
+        uint32_t id = 0;
+        plat_mutex_lock(&reg_lock);
+        for (int i = 0; i < REG_N && !found; i++)
+            for (int r = 0; reg[i].used && !runs(&reg[i]) && r < reg[i].np && !found; r++)
+                if (reg[i].parts[r] == actor) m.inc = reg[i].inc, m.serial = reg[i].serial, m.part = (uint32_t)r, id = cid32(&reg[i]), found = 1;
+        plat_mutex_unlock(&reg_lock);
+        if (!found) continue;
+        m.bits = bits;
+        coop_ctr_send(0, COOP_CTR_EVENT, COOP_CTR_RELIABLE, &m, sizeof m);
+        rt_log("coop: contraption: a switch event %#x put on %08x part %u here (a jump attack, or another set-on): sent to the game that runs it", bits, id, m.part);
+    }
+}
+static void events_put(void) {   // actor phase 0, where the build runs: the events the other games sent, on the parts
+    plat_mutex_lock(&ev_lock);
+    for (int i = 0; i < ev_put_n; i++) {
+        uint64_t en = alive(ev_put[i].actor) ? event_entry(ev_put[i].actor) : 0;
+        if (en) __atomic_fetch_or((uint8_t *)(uintptr_t)(en + 8), ev_put[i].bits, __ATOMIC_SEQ_CST);
+    }
+    ev_put_n = 0;
+    plat_mutex_unlock(&ev_lock);
+}
 static void dev_msg(Cpu *c, uint64_t actor, int on) {
     static _Alignas(16) uint8_t msg[16];
     uint32_t key = 0, id = on ? 0x6b510000u : 0x6b510001u;
@@ -1231,6 +1321,9 @@ void coop_ctn_toggle_asked(uint64_t comp, uint64_t actor) {
             if (reg[i].parts[r] == actor) m.inc = reg[i].inc, m.serial = reg[i].serial, m.part = (uint32_t)r, id = cid32(&reg[i]), found = 1;
     plat_mutex_unlock(&reg_lock);
     if (!found) return;
+    plat_mutex_lock(&ev_lock);   // (the same hit's switch event, if any, is not sent besides: events_out)
+    tog_seen[tog_i % 16].actor = actor, tog_seen[tog_i % 16].us = frame_step_world_us(), tog_i++;
+    plat_mutex_unlock(&ev_lock);
     m.want = !part_on(actor);   // (a toggle on the copy as it shows: the other state)
     coop_ctr_send(0, COOP_CTR_TOGGLE, COOP_CTR_RELIABLE, &m, sizeof m);
     rt_log("coop: contraption: a toggle asked on %08x part %u here: sent to the game that runs it, wanted %s (switch %llx)", id, m.part, m.want ? "on" : "off",
@@ -1243,8 +1336,20 @@ static void floats_follow(void) {
     plat_mutex_lock(&reg_lock);
     for (int i = 0; i < REG_N; i++) {
         Ent *e = &reg[i];
-        if (!e->used || runs(e) || e->local != L_LIVE || e->touched || !(e->fw | e->fk)) continue;
+        if (!e->used || runs(e) || e->local != L_LIVE || e->touched || !(e->fw | e->fk | e->fb)) continue;
         for (int r = 0; r < e->np && r < 21; r++) {
+            // A time bomb: armed as where it runs (the bit its own arming message sets, fuse node +0xe8 bit 0), and its
+            // fuse (node +0xdc now, +0xe0 before) the runner's, never under 2 frames: at 0 the node here would ask the
+            // bomb's death and blast by itself. The blast comes with the runner's. Research notes
+            // sync-v3/m2/p5/rocket-timebomb, 2.2 and 2.4.
+            if (e->fb >> r & 1) {
+                uint64_t node = fuse_node(e->parts[r]);
+                float left = e->pf[r][0] > 2.0f ? e->pf[r][0] : 2.0f;
+                if (!node || e->pf[r][1] == 0 || left != left) continue;
+                __atomic_fetch_or((uint8_t *)(uintptr_t)(node + 0xe8), (uint8_t)1, __ATOMIC_SEQ_CST);
+                memcpy((void *)(uintptr_t)(node + 0xdc), &left, 4), memcpy((void *)(uintptr_t)(node + 0xe0), &left, 4);
+                continue;
+            }
             uint64_t bb = (e->fw | e->fk) >> r & 1 ? actor_bb(e->parts[r]) : 0;
             if (!bb) continue;
             if (e->fw >> r & 1) bb_set_f32(bb, BB_WHEEL_SPIN, e->pf[r][0]), bb_set_f32(bb, BB_WHEEL_STEER, e->pf[r][1]);
@@ -1312,6 +1417,20 @@ static void receive(void) {
         if (e && !runs(e) && m.from == e->runner && !(mk.st && mk.e == e)) e->want_make = 0, e->in_v = 0xffffffffu, e->gone_us = now;   // (deleted at phase 0: retire_pass)
         plat_mutex_unlock(&reg_lock);
     }
+    while (coop_ctr_recv_type(COOP_CTR_EVENT, &m)) {   // a switch event another game's player put on a build run here
+        const EvMsg *p = (const EvMsg *)m.d;
+        if (m.len != (int)sizeof(EvMsg)) continue;
+        plat_mutex_lock(&reg_lock);
+        Ent *e = ent_find(p->inc, p->serial);
+        uint64_t actor = e && runs(e) && e->local == L_LIVE && p->part < (uint32_t)e->np ? e->parts[p->part] : 0;
+        if (actor && (p->bits & 5)) e->payer = m.from, e->payer_us = now;   // (switched on from there: that player pays)
+        plat_mutex_unlock(&reg_lock);
+        if (!actor) continue;
+        plat_mutex_lock(&ev_lock);
+        if (ev_put_n < 16) ev_put[ev_put_n].actor = actor, ev_put[ev_put_n].bits = (uint8_t)(p->bits & 7), ev_put_n++;
+        plat_mutex_unlock(&ev_lock);
+        rt_log("coop: contraption: player %d put switch event %#x on part %u of a build run here", m.from_id, p->bits, p->part);
+    }
     while (coop_ctr_recv_type(COOP_CTR_PULL, &m)) {   // a game back in reach of a build it had unloaded: the version again
         const CtlMsg *p = (const CtlMsg *)m.d;
         if (m.len != (int)sizeof(CtlMsg)) continue;
@@ -1342,7 +1461,7 @@ static void receive(void) {
         if (!route || coop_ctr_latest(route, COOP_CTR_STATE, e->key64, &s, sizeof s, &age) != (int)sizeof s) continue;
         if (s.inc != e->inc || s.serial != e->serial || s.epoch != e->epoch || s.us <= e->hus[2]) continue;
         e->heard_us = now;
-        if (s.flags & 2) e->sw = s.sw, e->on = s.on, e->payer = s.payer, e->fw = s.fw, e->fk = s.fk, memcpy(e->pf, s.pf, sizeof e->pf);
+        if (s.flags & 2) e->sw = s.sw, e->on = s.on, e->payer = s.payer, e->fw = s.fw, e->fk = s.fk, e->fb = s.fb, memcpy(e->pf, s.pf, sizeof e->pf);
         if (!(s.flags & 1)) continue;
         memmove(e->hm[0], e->hm[1], 2 * sizeof e->hm[0]), memmove(e->hus, e->hus + 1, 2 * sizeof e->hus[0]);
         memcpy(e->hm[2], s.m, sizeof s.m), e->hus[2] = s.us;
@@ -1370,7 +1489,11 @@ static void send_states(void) {   // the builds this game runs: root and devices
             for (int r = 0; r < e->np; r++) {
                 uint64_t bb = actor_bb(e->parts[r]);
                 if (bb_f32(bb, BB_WHEEL_SPIN, &s.pf[r][0])) s.fw |= 1u << r, bb_f32(bb, BB_WHEEL_STEER, &s.pf[r][1]);
-                else if (bb_f32(bb, BB_STICK_X, &s.pf[r][0]))
+                else if (fuse_node(e->parts[r])) {
+                    uint64_t node = fuse_node(e->parts[r]), cell = coop_rd_ptr(node + 0xd0) & ~3ull;
+                    uint8_t armed = 0;
+                    s.fb |= 1u << r, coop_rd(node + 0xdc, &s.pf[r][0], 4), s.pf[r][1] = cell && coop_rd(cell, &armed, 1) && armed;
+                } else if (bb_f32(bb, BB_STICK_X, &s.pf[r][0]))
                     s.fk |= 1u << r, bb_f32(bb, BB_STICK_Y, &s.pf[r][1]), bb_f32(bb, BB_STICK_SX, &s.pf[r][2]), bb_f32(bb, BB_STICK_SY, &s.pf[r][3]);
             }
             if (!(s.on & s.sw) && now - e->payer_us > 2000000) e->payer = 0;
@@ -1577,6 +1700,7 @@ void coop_ctn_tick(Cpu *c) {
         if (devs) dev_follow(c, e, now);
     }
     floats_follow();
+    events_out();
     send_states();
 }
 int coop_ctn_first(int run_here, uint64_t parts[21]) {   // for the tests: the first live build this game runs (or follows)

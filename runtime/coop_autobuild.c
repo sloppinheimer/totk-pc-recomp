@@ -1494,6 +1494,7 @@ static void serial_run(Cpu *c, int n) {
 static __thread int in_push, in_node, in_copy_node, in_copy_force, in_paid_node, in_force_inert;
 int coop_ab_force_inert(void) { return in_force_inert; }
 void coop_ctn_note_onoff(uint64_t node, uint64_t actor);
+void coop_ctn_event_seen(uint64_t actor);
 // The wheel that runs is ExecuteFastWheelMotion (wrapper main+0x22fa1b0, x0 = its node); main+0x22fc5f8 in motor_nodes
 // below is a twin no shipped graph uses (research notes sync-v3/m2/p5/wheels, section 0). A followed wheel's node
 // runs once with its inert test forced true: that is the game's own disabled branch, which takes the three motor
@@ -1572,7 +1573,11 @@ int coop_phase0_hook(Cpu *c, uint64_t addr) {
     // moves the contraption; the wind capsule and the look still run), and its on/off node charges no gauge
     if (off == APPLY_IMPULSE_FN && contraption_on() && coop_ctn_driven(node_actor(c->x[0]))) return 1;
     if (contraption_on()) {
-        if (off == ONOFF_CALC) coop_ctn_note_onoff(c->x[0], node_actor(c->x[0]));   // (the node of each device: coop_ctn.c)
+        if (off == ONOFF_CALC) {   // (the node of each device, and a switch event put on a followed one here: coop_ctn.c)
+            uint64_t actor = node_actor(c->x[0]);
+            coop_ctn_note_onoff(c->x[0], actor);
+            if (coop_ctn_driven(actor)) coop_ctn_event_seen(actor);
+        }
         if (off == 0x22fa1b0) {
             uint64_t node = c->x[0], actor = node_actor(node);
             if (!coop_ctn_driven(actor)) {

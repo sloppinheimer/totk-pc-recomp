@@ -1938,3 +1938,97 @@ Static reading only; nothing here has been run. Each block names the folder that
 - **Cannon (item 11)** - coop_life.c: a followed cannon's fire function main+0x224e690 runs with Shooter::shoot
   main+0x1bf8df4 answering -1 inside it. Not checked: that the runner's ball reaches the other game as an object.
 - **The death-component hook (item 12)** - coop_life.c reads the actor at component +0x18, falling back to +0x8.
+
+## 35. What the second reading established (read 2026-11-09, R/sync-v3/m2/p6/, seven folders, all read in full)
+Static reading only; nothing here has been run.
+
+**Who hit (hit-attacker)**
+- The hit filter of the device toggle (main+0x1d38a00) takes only the device; it walks the device's own contact
+  records. A record names its attacker by two handles: +0x60 the owner of the other body (the weapon), and, when byte
+  +0x94 bit 0 is set, +0x78 the weapon's topmost owner (who wields it; main+0x1d19380 follows weapon holder, shooter
+  link, hold link). A sword has no affiliation of its own, so a sword contact counts only through its wielder.
+- Whether a stand-in's own affiliation reads as Player is not read (the pack says the same as a Player's, the actor
+  table row does not). The test written does not depend on it.
+- Three of the five toggle functions read no actor at all; a hit through them cannot be attributed.
+- An arrow the mod makes as a copy has no shooter link and very likely never passes the filter.
+
+**The jump attack (jump-attack) - note 2**
+- The jump and fall attacks' mark is consumed by one function on the attacker's side, main+0x1b640f4. It writes the
+  device's switch event byte (blackboard entry 0xc9efe622, byte +8): bit 0, "switch on". It sets no toggle request and
+  sends no message. The on/off node reads the byte at the start of its calc and clears it; a device already on ignores
+  bit 0. So a jump attack is a set-on that the mod, which forwards only the toggle request, never saw.
+- A plain swing goes through the same function too (event bit 0 or 2), besides its toggle request.
+- Not read: what the two do together on a device that is already on.
+
+**Message delivery (message-order)**
+- Messages queued with main+0x2b76c34 go into one ring, drained by main+0x2b772b0 in push order, in one pass, under
+  the ring's lock; both set-offs of a build are delivered back to back and both devices change in the same frame.
+- A full ring drops a message silently (capacity 100 unless a parameter block says otherwise).
+- The latch changes in each device's own node calc, on a job thread; between two devices' calcs the group's mixed rule
+  can in principle see one off and one on. With the group sender now silent on followed builds (34.3) that rule can
+  act only where the build runs, on messages of the same pass.
+- The on/off node handler is reached through the node's own message interface; no direct call exists. Which component
+  forwards to it, and the order of the drain against the mod's phase-0 sends, are not read.
+
+**Riding (seat-rider) - notes 6b, 6c**
+- A stand-in cannot ride: the stand-in actor is built without the Rider component, and the ride start reads it with no
+  check. Nothing is steered by a stand-in, rightly or wrongly. What draws the rider at the stick in the other game is
+  the mod's own placement (coop_players.c ride_place); 6c is to be looked for there.
+- The stick node's "engaged" input is the stick's own on/off latch, whose condition is a boolean of the seat test.
+  It is true only where the seat is really occupied: the rider's game.
+- A seat is emptied by the rider's end of ride, by the rider's teardown, or by the ridden actor's own per-frame check
+  when the occupant is dead or gone.
+- Not found: the code that puts a rider on the saddle each frame.
+
+**Comp 81 requests (comp81-consumer)**
+- Its consumer is its own update main+0x447df0. The requests are physics properties of the body (mass, inertia scale,
+  the gravity/damping preset, five factors), never a force or a velocity. The rocket's "gravity cancel" is a mass
+  and inertia override. A follower whose velocity the mod writes is not pushed by them, and with its node running it
+  has the same mass and inertia as the runner's. Nothing to change.
+
+**Harm by emitters (emitter-harm)**
+- The damage of a beam or flame is the game's generic hit path in the game that runs the victim; the record's
+  attacker is the beam actor or the pool sensor, and through the owner chain the device, and the Link only when the
+  Link holds the device.
+- Each game runs its own beam and flame on a build it has. On an enemy, the copy's hit is kept and plays the reaction;
+  the enemy's life is its owner's. It is counted twice only where a hit is attributed to this game's Link and sent to
+  the enemy's owner while the owner's own emitter hits too. The fix belongs in coop_world.c contacts_filter: a contact
+  from a device this game only follows is taken out. A compilable test "this contact comes from device D" is in the
+  folder.
+- Not read: the life and status consumers; who writes a shot's creator link.
+
+**Status and damage on parts (part-status-damage)**
+- Zonai device parts take no damage from weapons or blasts (all their damage rates are 0) and cannot burn (stone).
+  The exceptions are the parts that drain their own life (rocket, battery, time bomb, spring, wing, balloon).
+- Wooden parts burn: the chemistry update asks death kind 9 every frame once an element is burned out, and ignition
+  damage lowers life, whose writer main+0x4400b0 asks death kind 16 itself at life 0, straight on the death component.
+- Burning is read as the element state byte (2 burning, 3 burned out) in the chemical component's element list;
+  electrified as a bit beside it. How to write a status so its effects start and stop is not read.
+- On a follower every such death is asked each frame and refused; the copy burns or stands at life 0 by its own
+  local causes until the runner's delete comes.
+- Blast pushes on parts are main+0x312718 and message 0x08e5001a, both ending in the impulse call the mod already
+  keeps off followed bodies.
+
+### 35.1 Written from it (not run; continues 34.3)
+- **A stand-in's hit on a device is no hit here** - coop_life.c, the hit filter main+0x1d38a00 run and its answer
+  turned to 0 when every contact on the device is a stand-in's (its weapon, or anything it wields or shot). A run
+  shows: the line "a stand-in's hit on a device here is not taken as a hit", and fans switched by the other player go
+  off once and stay off (31, note 3). Not covered: a frame with both players' contacts on one device, and the three
+  toggle paths that read no actor.
+- **Jump attack and other set-ons (31, note 2)** - coop_ctn.c coop_ctn_event_seen, events_out, events_put: the
+  switch event byte put on a followed part is taken off before the node here reads it and sent to the runner (message
+  EVENT), which puts it on its own part at phase 0. Not sent when the same hit asked a toggle. A run shows: the other
+  player's jump attack switches a build on in both games.
+- **Time bomb in a build** - coop_life.c notes the fuse node (calc main+0x2474478); coop_ctn.c sends fuse and armed
+  with the state and, on the copy, arms it and writes the fuse, never under 2 frames. Not done: the blast shown on
+  the copy (it needs the runner's death replayed with its kind, part of 33.3).
+
+### 35.2 Still to write (nothing blocks them but the writing; none needs a reader first unless said)
+- Structure in place (33.3): bonds made and broken where the parts stand; a part in a build leaves the object system
+  in every game; deaths replayed with their kind (the bomb's blast, a burned board). Needs our own mirror code in
+  coop_players.c read first.
+- Lone devices into the core (31, notes 4 and 5); coop_glue.c and coop_bonds.c stand down for registry parts.
+- Emitter hits of a followed device taken out in coop_world.c contacts_filter.
+- Rider placement and the stick car's lag (31, 6c): coop_players.c ride_place.
+- Wooden parts on a copy: burning and life sent by the runner. Needs a read of how a status is written.
+- The payer's own empty gauge switching off a build another game runs.
