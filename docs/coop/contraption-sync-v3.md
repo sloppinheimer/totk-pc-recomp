@@ -1462,3 +1462,14 @@ Scope agreed with the tester: "everything" before the next test is the stick fix
   build in the first owner's game after the other player has taken it, the i16 line counts more than one stand-in
   body, and every clean line reads 0. If the stick still breaks, the cause is not a stand-in or gear body meeting a
   part, and the next step is reading, not another run.
+
+### 29.3 The run (tag veto2, one pass of the stick scenario, 2026-11-09)
+- The stick stayed part of the build in the first owner's game to the end of the run, the other player took it, and the
+  fans came on at that player's say in both games. Every clean line 0.
+- The veto listed 26 records for the one stand-in and its 9 gear actors (1 before) against 36 records of the 7 parts,
+  and refused 13,016 pairs (a few hundred before).
+- The stick did not move when the stand-in arrived: 1514.55 before, 1514.53 to 1514.57 after. In every earlier run,
+  those where it broke off and those where it did not, it dropped about 0.2 m in that half second. So the shove itself
+  is gone, which one run can show; that the break is gone follows from it.
+- Not looked at in this run: the other three scenarios on this build, and a remote swing reaching a build now that
+  the stand-in's sensors no longer meet parts.
