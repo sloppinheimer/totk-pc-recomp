@@ -167,7 +167,7 @@ static int died_lately(uint64_t a, int64_t now) {   // (reg_lock held)
 }
 
 // The parts made here from records: not this game's own objects (not sent as objects, not recorded as a new build)
-#define MADE_N 160
+#define MADE_N (REG_N * 21 + 64)   // (every part the registry can hold, and orphans: review 1 findings 24, 75, 83)
 static _Atomic uint64_t made_parts[MADE_N];
 static void made_add(uint64_t a) {
     for (int i = 0; a && i < MADE_N; i++) {
@@ -175,6 +175,8 @@ static void made_add(uint64_t a) {
         if (have == a) return;
         if (!have && atomic_compare_exchange_strong(&made_parts[i], &have, a)) return;
     }
+    static _Atomic int said;
+    if (a && !atomic_fetch_add(&said, 1)) rt_log("coop: contraption: the table of parts made here is full (%d): a part made here is not marked as such", MADE_N);
 }
 static void made_forget(uint64_t a) {   // (a made part that became this game's own loose object)
     for (int i = 0; a && i < MADE_N; i++) {
@@ -945,11 +947,13 @@ static int bond_pool_recycle(Cpu *c, uint64_t o) {
 // Parts an in-place change took out of their build and no entry has taken since: another entry's version (the other
 // piece of a split) takes them within a second, or they are deleted (a part loose where the build runs comes back as
 // that game's object).
-#define ORPHAN_N 32
+#define ORPHAN_N 64
 static struct { uint64_t actor, oinc; uint32_t gen, id; int adopt; int64_t us; } orphans[ORPHAN_N];
 static void orphan_add(uint64_t a, uint32_t gen, uint32_t id, uint64_t oinc, int64_t now, int adopt) {   // (reg_lock held)
     for (int i = 0; a && i < ORPHAN_N; i++)
         if (!orphans[i].actor) { orphans[i].actor = a, orphans[i].gen = gen, orphans[i].id = id, orphans[i].oinc = oinc, orphans[i].us = now, orphans[i].adopt = adopt; return; }
+    static int said;
+    if (a && !said++) rt_log("coop: contraption: the orphan table is full (%d): a part left by an in-place change stays where it is", ORPHAN_N);
 }
 static void orphans_pass(Cpu *c, int64_t now) {
     for (int i = 0; i < ORPHAN_N; i++) {
@@ -1553,9 +1557,12 @@ static int follow_rigid(Cpu *c, Ent *e, int64_t now, float *err_out) {
 
 
 // ---- Gates and lists read from game threads ----------------------------------------------------------------------------
-#define DRIVEN_N 96
+// (room for every part the registry can hold and every lone device: 96 dropped the later builds' parts from every gate
+// with no trace, review 1 findings 19, 31, 65, 75, 83. Each list is filled from its start, a 0 ends it.)
+#define DRIVEN_N (REG_N * 21 + 64)
 static _Atomic uint64_t driven[DRIVEN_N];        // the parts of builds another game runs (not touched here)
-static _Atomic uint64_t driven_body[DRIVEN_N];   // their main bodies (G1)
+static _Atomic uint64_t driven_body[DRIVEN_N];   // their main bodies (G1), the parts with none left out
+static _Atomic uint64_t driven_body_of[DRIVEN_N];   // the part of each driven_body entry
 static _Atomic uint64_t nocharge[DRIVEN_N];      // the parts whose devices another player pays for
 int coop_ctn_driven(uint64_t a) {
     for (int i = 0; a && i < DRIVEN_N; i++) {
@@ -1566,8 +1573,11 @@ int coop_ctn_driven(uint64_t a) {
     return 0;
 }
 int coop_ctn_no_charge(uint64_t a) {
-    for (int i = 0; a && i < DRIVEN_N; i++)
-        if (atomic_load_explicit(&nocharge[i], memory_order_relaxed) == a) return 1;
+    for (int i = 0; a && i < DRIVEN_N; i++) {
+        uint64_t d = atomic_load_explicit(&nocharge[i], memory_order_relaxed);
+        if (!d) return 0;
+        if (d == a) return 1;
+    }
     return 0;
 }
 // A part of a build this game does not run, or one still being made (G3 and G4: it takes no game rule's death)
@@ -1619,7 +1629,7 @@ int coop_g1(Cpu *c, uint64_t off) {
     if (!hit) return 0;
     uint64_t lr = c->x[30] - MOD_MAIN_BASE;
     if (lr == 0x221a9c0 || lr == 0x221aa14) return 0;   // (the spring's launches: returns after main+0x221a9bc / 0x221aa10)
-    uint64_t actor = atomic_load_explicit(&driven[hit - 1], memory_order_relaxed);
+    uint64_t actor = atomic_load_explicit(&driven_body_of[hit - 1], memory_order_relaxed);
     uint64_t spr = actor ? coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x480) : 0, f20 = 0;
     if (spr && coop_rd(spr + 0x20, &f20, 8) && (f20 >> 16 & 1)) return 0;   // (held here)
     atomic_fetch_add(&g1_dropped[k], 1);
@@ -1700,15 +1710,15 @@ static struct { _Atomic uint64_t actor, node; } onoff_nodes[NODE_N];
 void coop_ctn_note_onoff(uint64_t node, uint64_t actor) {
     if (!node || !actor) return;
     for (int p = 0; p < 4; p++) {
-        int k = (int)((actor >> 4) + (uint64_t)p) % NODE_N;
+        unsigned k = (unsigned)(((actor >> 4) + (uint64_t)p) % NODE_N);   // (unsigned: an int went negative for an address with bit 35 set, finding 25)
         uint64_t have = atomic_load_explicit(&onoff_nodes[k].actor, memory_order_relaxed);
         if (have == actor) { atomic_store_explicit(&onoff_nodes[k].node, node, memory_order_relaxed); return; }
         if (!have || p == 3) { atomic_store(&onoff_nodes[k].node, node), atomic_store(&onoff_nodes[k].actor, actor); return; }
     }
 }
 static uint64_t onoff_node(uint64_t actor) {
-    for (int p = 0; actor && p < 4; p++) {
-        int k = (int)((actor >> 4) + (uint64_t)p) % NODE_N;
+    for (int p = 0; actor && alive(actor) && p < 4; p++) {   // (a dead actor's node may be freed: finding 27)
+        unsigned k = (unsigned)(((actor >> 4) + (uint64_t)p) % NODE_N);
         if (atomic_load(&onoff_nodes[k].actor) != actor) continue;
         uint64_t node = atomic_load(&onoff_nodes[k].node);
         return coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(node + 8) + 8) + 0x1f8) == actor ? node : 0;
@@ -1728,7 +1738,7 @@ void coop_ctn_note_fuse(uint64_t node, uint64_t actor) {
     }
 }
 static uint64_t fuse_node(uint64_t actor) {
-    for (int k = 0; actor && k < 32; k++) {
+    for (int k = 0; actor && alive(actor) && k < 32; k++) {
         if (atomic_load(&fuse_nodes[k].actor) != actor) continue;
         uint64_t node = atomic_load(&fuse_nodes[k].node);
         return coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(node + 8) + 8) + 0x1f8) == actor ? node : 0;
@@ -1751,7 +1761,8 @@ static uint64_t event_entry(uint64_t actor) {
     return i >= 0 ? coop_rd_ptr(coop_rd_ptr(bb + BB_ENTRIES + 8) + 8 * (uint64_t)i) : 0;
 }
 static PlatMutex ev_lock = PLAT_MUTEX_INIT;
-static struct { uint64_t actor; uint8_t bits; int64_t us; } ev_seen[16], ev_put[16];
+#define EVQ 64
+static struct { uint64_t actor; uint8_t bits; int64_t us; uint32_t gen; } ev_seen[EVQ], ev_put[EVQ];
 static struct { uint64_t actor; int64_t us; } tog_seen[16];
 static int ev_seen_n, ev_put_n, tog_i;
 void coop_ctn_event_seen(uint64_t actor) {   // from the on/off calc of a followed part (a game thread), before the calc
@@ -1797,7 +1808,7 @@ static void events_out(void) {   // the co-op tick: events seen 50 ms ago or mor
 static void events_put(void) {   // actor phase 0, where the build runs: the events the other games sent, on the parts
     plat_mutex_lock(&ev_lock);
     for (int i = 0; i < ev_put_n; i++) {
-        uint64_t en = alive(ev_put[i].actor) ? event_entry(ev_put[i].actor) : 0;
+        uint64_t en = alive_as(ev_put[i].actor, ev_put[i].gen) ? event_entry(ev_put[i].actor) : 0;
         if (en) __atomic_fetch_or((uint8_t *)(uintptr_t)(en + 8), ev_put[i].bits, __ATOMIC_SEQ_CST);
     }
     ev_put_n = 0;
@@ -1830,14 +1841,18 @@ static void dev_msg(Cpu *c, uint64_t actor, int on) {
 // sender main+0x32eb90 sends "on" to all of them (group flag bits 11 and 21, research notes sync-v3/onoff/c_group.md).
 // Sent from the co-op tick, the messages of one build could land on either side of the devices' node updates, one
 // fan went off a frame before the others, and the game switched them all back on.
-#define SETQ 8
+#define SETQ 32
 static struct { uint64_t parts[21]; int n; uint32_t on; char why; } setq[SETQ];
 static int setq_n;
 static void dev_set_later(const uint64_t *parts, int np, uint32_t on, char why) {   // (reg_lock held) on: bit r, part r wanted on
     if (!parts[0]) return;   // (its first part gone here: the build is about to be made again)
     for (int i = 0; i < setq_n; i++)
         if (setq[i].parts[0] == parts[0]) { memcpy(setq[i].parts, parts, sizeof setq[i].parts), setq[i].n = np, setq[i].on = on; return; }
-    if (setq_n == SETQ) return;
+    if (setq_n == SETQ) {
+        static int said;
+        if (!said++) rt_log("coop: contraption: the device set queue is full (%d): a set dropped", SETQ);
+        return;
+    }
     memcpy(setq[setq_n].parts, parts, sizeof setq[setq_n].parts), setq[setq_n].n = np, setq[setq_n].on = on, setq[setq_n].why = why, setq_n++;
 }
 static void dev_flush(Cpu *c) {   // from actor phase 0
@@ -1850,6 +1865,7 @@ static void dev_flush(Cpu *c) {   // from actor phase 0
         char was[24] = "";
         int sent = 0;
         for (int r = 0; r < q[i].n && r < 21; r++) {
+            if (!alive(q[i].parts[r])) continue;   // (gone since the tick queued it: finding 28)
             int sw = part_switch(q[i].parts[r]) != 0, on = sw && part_on(q[i].parts[r]), want = (int)(q[i].on >> r & 1);
             was[r] = sw ? (on ? '1' : '0') : '-', was[r + 1] = 0;
             if (sw && on != want) dev_msg(c, q[i].parts[r], want), sent++;
@@ -2007,7 +2023,7 @@ static void floats_follow(Cpu *c) {
 // copy too. Death kinds: research notes sync-v3/m2/p5/rocket-timebomb (table at main+0x366f8b0).
 #define CTR_DEATH COOP_CTR_HIT   // (a message number of the channel the rebuilt core had left unused)
 typedef struct { uint64_t inc; uint32_t serial, part, kind, v; } DeathMsg;   // (v: the version part is a number of)
-static struct { uint64_t actor; uint32_t kind; int64_t us; } death_said[16], death_put[16];
+static struct { uint64_t actor; uint32_t kind; int64_t us; uint32_t gen; } death_said[16], death_put[64];
 static int death_said_i, death_put_n;
 void coop_life_death_allow(int on);
 void coop_ctn_death_seen(uint64_t actor, uint32_t kind) {   // from the death hooks (any thread), a request not refused
@@ -2032,15 +2048,15 @@ void coop_ctn_death_seen(uint64_t actor, uint32_t kind) {   // from the death ho
     rt_log("coop: contraption: part %u of a build run here is asked death kind %u: told to the other games", m.part, kind);
 }
 static void deaths_put(Cpu *c) {   // actor phase 0
-    uint64_t actor[16];
-    uint32_t kind[16];
+    uint64_t actor[64];
+    uint32_t kind[64], gen[64];
     plat_mutex_lock(&reg_lock);
     int n = death_put_n;
-    for (int i = 0; i < n; i++) actor[i] = death_put[i].actor, kind[i] = death_put[i].kind;
+    for (int i = 0; i < n; i++) actor[i] = death_put[i].actor, kind[i] = death_put[i].kind, gen[i] = death_put[i].gen;
     death_put_n = 0;
     plat_mutex_unlock(&reg_lock);
     for (int i = 0; i < n; i++) {
-        if (!alive(actor[i])) continue;
+        if (!alive_as(actor[i], gen[i])) continue;   // (the same actor still, not another at its address: finding 28)
         coop_life_death_allow(1);
         coop_guest_call(c, MOD_MAIN_BASE + 0x1953184, actor[i], kind[i], 0, 0);
         coop_life_death_allow(0);
@@ -2198,7 +2214,7 @@ static void springs_phase0(Cpu *c);
 #define CTR_LONE_ASK COOP_CTR_IMPULSE
 typedef struct { uint64_t key; uint32_t id, on; uint32_t spring, flags; float ext, limit; } LoneMsg;   // (key first: the channel keeps the latest per sender and key)
 typedef struct { uint64_t owner; uint32_t id, want, bits, pad; char name[48]; } LoneAsk;
-#define LONE_N 48
+#define LONE_N 64
 static struct { uint64_t actor, owner; int owner_id; uint32_t id, on; int64_t heard_us, set_us; int spring; SprSt spr; uint32_t gate; } lone[LONE_N];
 static _Atomic uint64_t lone_actor[LONE_N];
 static PlatMutex lone_lock = PLAT_MUTEX_INIT;
@@ -2364,7 +2380,7 @@ static void lone_tick(void) {
         if (!a || !part_switch(a)) continue;
         if (q.bits) {
             plat_mutex_lock(&ev_lock);
-            if (ev_put_n < 16) ev_put[ev_put_n].actor = a, ev_put[ev_put_n].bits = (uint8_t)(q.bits & 7), ev_put_n++;
+            if (ev_put_n < EVQ) ev_put[ev_put_n].actor = a, ev_put[ev_put_n].gen = gen_of(a), ev_put[ev_put_n].bits = (uint8_t)(q.bits & 7), ev_put_n++;
             plat_mutex_unlock(&ev_lock);
         } else {
             uint64_t parts[21] = {a};
@@ -2388,7 +2404,7 @@ static void springs_phase0(Cpu *c) {
         plat_mutex_lock(&reg_lock);
         for (int i = 0; i < REG_N; i++)
             for (int r = 0; reg[i].used && runs(&reg[i]) && reg[i].local == L_LIVE && r < reg[i].np && n < SPR_N; r++)
-                if (spring_actor(reg[i].parts[r])) list[n++] = reg[i].parts[r];
+                if (alive_as(reg[i].parts[r], reg[i].gen[r]) && spring_actor(reg[i].parts[r])) list[n++] = reg[i].parts[r];
         plat_mutex_unlock(&reg_lock);
         uint64_t own[256];
         int no = objs_list(0, own, 256);
@@ -2421,6 +2437,25 @@ static void springs_phase0(Cpu *c) {
 }
 
 // ---- The co-op tick: messages, authority, touch, drive ------------------------------------------------------------------
+// Builds another game sent while the registry here was full: asked for again (PULL) once an entry is free
+static struct { uint64_t inc, runner; uint32_t serial; } wanted[16];
+static void wanted_add(uint64_t inc, uint32_t serial, uint64_t runner) {   // (reg_lock held)
+    int k = -1;
+    for (int i = 0; i < 16 && k < 0; i++) if (wanted[i].inc == inc && wanted[i].serial == serial) k = i;
+    for (int i = 0; i < 16 && k < 0; i++) if (!wanted[i].inc) k = i;
+    if (k >= 0) wanted[k].inc = inc, wanted[k].serial = serial, wanted[k].runner = runner;
+}
+static void wanted_pass(void) {   // (reg_lock held)
+    int free_n = 0;
+    for (int i = 0; i < REG_N; i++) free_n += !reg[i].used;
+    for (int i = 0; i < 16 && free_n > 0; i++) {
+        if (!wanted[i].inc) continue;
+        CtlMsg m = {wanted[i].inc, wanted[i].serial, 0, coop_ctr_me()};
+        if (coop_ctr_route(wanted[i].runner)) coop_ctr_send_inc(wanted[i].runner, COOP_CTR_PULL, COOP_CTR_RELIABLE, &m, sizeof m), free_n--;
+        rt_log("coop: contraption: room in the registry again: a build not taken before asked for again");
+        wanted[i].inc = 0;
+    }
+}
 static void receive(void) {
     CoopCtrMsg m;
     int64_t now = frame_step_world_us();
@@ -2432,6 +2467,11 @@ static void receive(void) {
         plat_mutex_lock(&reg_lock);
         Ent *e = ent_find(p->inc, p->serial);
         if (!e && (e = ent_new(p->inc, p->serial))) rt_log("coop: contraption: %08x: a build of another game's, first heard of", cid32(e));
+        if (!e) {   // (the registry is full: kept to be asked for again once there is room, finding 20)
+            static int64_t said;
+            if (now - said > 10000000) said = now, rt_log("coop: contraption: a build of another game's not taken: the registry is full (%d)", REG_N);
+            wanted_add(p->inc, p->serial, m.from);
+        }
         if (e && p->v > e->vseen && p->v != 0xffffffffu) e->vseen = p->v;
         if (e && p->epoch >= e->epoch) {
             if (p->epoch > e->epoch || !e->runner) set_runner(e, p->runner, p->epoch);
@@ -2491,7 +2531,7 @@ static void receive(void) {
         plat_mutex_unlock(&reg_lock);
         if (!actor) continue;
         plat_mutex_lock(&ev_lock);
-        if (ev_put_n < 16) ev_put[ev_put_n].actor = actor, ev_put[ev_put_n].bits = (uint8_t)(p->bits & 7), ev_put_n++;
+        if (ev_put_n < EVQ) ev_put[ev_put_n].actor = actor, ev_put[ev_put_n].gen = gen_of(actor), ev_put[ev_put_n].bits = (uint8_t)(p->bits & 7), ev_put_n++;
         plat_mutex_unlock(&ev_lock);
         rt_log("coop: contraption: player %d put switch event %#x on part %u of a build run here", m.from_id, p->bits, p->part);
     }
@@ -2501,7 +2541,7 @@ static void receive(void) {
         plat_mutex_lock(&reg_lock);
         Ent *e = ent_find(p->inc, p->serial);
         uint64_t actor = e && !runs(e) && m.from == e->runner && e->local == L_LIVE && p->v == e->v && p->part < (uint32_t)e->np ? e->parts[p->part] : 0;
-        if (actor && death_put_n < 16) death_put[death_put_n].actor = actor, death_put[death_put_n].kind = p->kind, death_put_n++;
+        if (actor && death_put_n < 64) death_put[death_put_n].actor = actor, death_put[death_put_n].gen = e->gen[p->part], death_put[death_put_n].kind = p->kind, death_put_n++;
         plat_mutex_unlock(&reg_lock);
         if (actor) rt_log("coop: contraption: part %u of %08x died where it runs (kind %u): the same asked of the copy here", p->part, cid32(e), p->kind);
     }
@@ -2601,6 +2641,7 @@ static void authority(void) {   // touch (plan 5.3), asks, a runner that left, a
     uint64_t me = coop_ctr_me();
     int64_t now = frame_step_world_us();
     plat_mutex_lock(&reg_lock);
+    wanted_pass();
     for (int i = 0; i < REG_N; i++) {
         Ent *e = &reg[i];
         if (!e->used) continue;
@@ -2712,9 +2753,10 @@ static void retire_pass(Cpu *c) {   // builds their runner retired: the parts he
     plat_mutex_unlock(&reg_lock);
 }
 static void lists_rebuild(Cpu *c) {
-    uint64_t l[DRIVEN_N], b[DRIVEN_N], me = coop_ctr_me();
+    static uint64_t l[DRIVEN_N], b[DRIVEN_N], body[DRIVEN_N], body_of[DRIVEN_N];
+    uint64_t me = coop_ctr_me();
     static uint64_t all[REG_N * 21];
-    int n = 0, nb = 0, na = 0;
+    int n = 0, nb = 0, na = 0, nbody = 0;
     plat_mutex_lock(&reg_lock);
     for (int i = 0; i < REG_N; i++) {
         Ent *e = &reg[i];
@@ -2728,7 +2770,16 @@ static void lists_rebuild(Cpu *c) {
     }
     plat_mutex_unlock(&reg_lock);
     for (int i = 0; i < DRIVEN_N; i++) atomic_store_explicit(&driven[i], i < n ? l[i] : 0, memory_order_relaxed);
-    for (int i = 0; i < DRIVEN_N; i++) atomic_store_explicit(&driven_body[i], i < n ? main_body_of(l[i]) : 0, memory_order_relaxed);
+    // (the bodies with the part each is of, side by side and without gaps: a part whose body was not readable left a 0
+    // that ended G1's scan before the parts after it, finding 80)
+    for (int i = 0; i < n; i++) {
+        uint64_t bd = main_body_of(l[i]);
+        if (bd) body[nbody] = bd, body_of[nbody++] = l[i];
+    }
+    for (int i = 0; i < DRIVEN_N; i++) {
+        atomic_store_explicit(&driven_body_of[i], i < nbody ? body_of[i] : 0, memory_order_relaxed);
+        atomic_store_explicit(&driven_body[i], i < nbody ? body[i] : 0, memory_order_relaxed);
+    }
     for (int i = 0; i < LONE_N && nb < DRIVEN_N; i++) {   // (another player's lone device: its owner pays)
         uint64_t la = atomic_load_explicit(&lone_actor[i], memory_order_relaxed);
         if (la) b[nb++] = la;

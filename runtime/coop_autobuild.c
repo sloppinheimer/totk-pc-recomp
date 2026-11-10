@@ -1501,14 +1501,35 @@ void coop_ctn_event_seen(uint64_t actor);
 // constraints off their bodies and disables them. After that the node is skipped, so the spin and steering floats the
 // model reads stay as coop_ctn.c writes them from the game that runs the build. A wheel no longer followed leaves the
 // table and its node runs again, re-anchoring by itself on its next working tick.
+// A slot holds the actor's id (actor +0x10) too: a new copy made at a freed copy's address is another wheel. A slot
+// whose wheel is no longer followed (its copy deleted, remade or unloaded: its node never runs again to free it) is
+// taken back when a new one needs room (review 1 findings 26, 60, 82).
 #define WHEEL_N 64
-static struct { _Atomic uint64_t node, actor; } wheel_off[WHEEL_N];
+static struct { _Atomic uint64_t node, actor; _Atomic uint32_t gen; } wheel_off[WHEEL_N];
+static uint32_t actor_gen(uint64_t a) {
+    uint32_t g = 0;
+    return a && coop_rd(a + 0x10, &g, 4) ? g : 0;
+}
 static int wheel_slot(uint64_t node, uint64_t actor, int add) {
+    uint32_t gen = actor_gen(actor);
     for (int i = 0; i < WHEEL_N; i++)
-        if (atomic_load(&wheel_off[i].node) == node && atomic_load(&wheel_off[i].actor) == actor) return i;
-    for (int i = 0; add && i < WHEEL_N; i++) {
-        uint64_t none = 0;
-        if (atomic_compare_exchange_strong(&wheel_off[i].node, &none, node)) { atomic_store(&wheel_off[i].actor, actor); return i; }
+        if (atomic_load(&wheel_off[i].node) == node && atomic_load(&wheel_off[i].actor) == actor && atomic_load(&wheel_off[i].gen) == gen) return i;
+    for (int pass = 0; add && pass < 2; pass++) {
+        for (int i = 0; i < WHEEL_N; i++) {
+            uint64_t none = 0;
+            if (atomic_compare_exchange_strong(&wheel_off[i].node, &none, node)) {
+                atomic_store(&wheel_off[i].gen, gen), atomic_store(&wheel_off[i].actor, actor);
+                return i;
+            }
+        }
+        for (int i = 0; i < WHEEL_N; i++) {   // (full: the slots of wheels no longer followed freed)
+            uint64_t a = atomic_load(&wheel_off[i].actor);
+            if (!a || !coop_ctn_driven(a) || actor_gen(a) != atomic_load(&wheel_off[i].gen)) atomic_store(&wheel_off[i].actor, 0), atomic_store(&wheel_off[i].node, 0);
+        }
+    }
+    if (add) {
+        static _Atomic int said;
+        if (!atomic_fetch_add(&said, 1)) rt_log("coop: contraption: the table of followed wheels is full (%d): a wheel's node skipped without its inert run", WHEEL_N);
     }
     return -1;
 }
