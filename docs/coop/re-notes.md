@@ -32,7 +32,7 @@ evidence), guess.
   it from its enter function main+0x231fa58 (`coop_NodeGenericRequestCreateActor_enter`); the strings "Pack/Actor/",
   ".pack", "ActorMgr" inside it. Confidence: likely (not called by us yet).
 
-## Game 2 stuck in a load after a fast travel (play6, 2026-11-10; cause not found yet)
+## Game 2 stuck in a load after a fast travel (play6, 2026-11-10; stuck in the delete-all step, blocker not named yet)
 - What happened (play6_p2.log, the frozen game; play6_p1.log): player 1 fast travelled from the sky island to
   Kohsustu Lightroot (CheckPoint056, Depths) and its load took about 2 s. Player 2 had its map open; about 6 s later
   its load began ("slot 0: its Player went away (state 7)", then "the player's EquipmentUser ... is now 0") and never
@@ -46,21 +46,35 @@ evidence), guess.
   the game refused each create request (no "PlayerPuppet requested" line; player 1's same request during its own load
   was taken at once). requestCreateActor (main+0x599670) refuses at once, with no side effect, while bit 1 of the
   actor manager's byte +0xe1 is set; with it clear and the pack not loaded it registers the actor's resource
-  (main+0x2c35f8, once per name) and returns 0. Which of the two happened here is not known, nor whether either
-  holds the load: the refusal may only be a sign that the manager is closed for the load.
+  (main+0x2c35f8, once per name: repeated calls only look it up) and returns 0.
+- Where that bit comes from (two Sonnet readings, notes outside the repo: warp-sequence.md, actormgr-load.md): a travel
+  that changes the area runs the Sequence graphs' ChangeBanc (SleepResidentActor, UnloadBanc, LoadBanc,
+  AfterChangeBanc). Its node SeqExecuteDeleteAllActor (vtable main+0x36dc240) sets the bit in its enter
+  (main+0x1fd9750: an atomic `|= 2` on [[main+0x395e008]]+0xe1, seen in the generated C here); only
+  SeqOneShotAfterDeleteAllActor (main+0x1fe7824) clears it. So game 2 sat in or before the delete-all step. Its update
+  (main+0xea8aec) finishes only when the resource system [[main+0x3ad74b8]+8] has no unfinished job (main+0x67522c,
+  +0x678) and +0x600 bit 5 is set; the actor system [main+0x3ad6d80] has empty delete lists (+0x3d0, +0x3e8, +0x400),
+  an empty going-away list (+0x398, drained each frame by main+0x6ecce4) and creation queue counters [+0x430]+0xe0 of
+  0; and every actor still registered with state 2 or more is persistent (+0x440 bit 20) and in state 2..6. Until then
+  it asks each other actor to delete (main+0x63baa8, reason 4) every frame. (Reading, not tested.)
+- Not the co-op actor link: coop_claim (main+0x1877160 with level 0) takes only the link lock ref+0x4c, no holder lane
+  at [actor+0x1a8]+0x50, and a reason-4 delete waits only on a lane (main+0x63baa8). Not the co-op delete refusal:
+  coop_life.c refuses deletes only of contraption follower parts from three callers, and play6_p2 counted none.
+- Not the player lookup: the travel's SetPlayerPos (main+0xebb96c) and SearchSafetyPlace (main+0x977a38) take the
+  last entry of the resident list, where a PlayerPuppet never is; the stand-in is only an ordinary actor to delete.
+- What keeps the step is not known: an actor that stays at state 7..11, one whose delete is refused or deferred, or a
+  resource job. runtime/coop_loadwatch.c now logs the step's values and those actors (name, state, flags, lanes) when
+  creates stay refused for 15 s, so the next such freeze names it.
 - Ruled out by the logs: the failed-read counters (exe+0xe072b8a eq_gear, 0xe05ff2b / 0xe060c87 / 0xe060d87
   coop_players_tick, 0xe08be1b coop_actors_all; build/v143/totk.map) failed at the same rate all session and only
   fall as actors go: polling of missing actors, a symptom. No copy was made, no actor asked for and no actor frozen in
   player 2 during its load; its enemy copies were let go at 453 s, before it.
 - Seen before: 2026-11-07, player 2 warped to where player 1 stood and stayed on the loading screen (commit 9cb26a5
   guessed frozen enemy copies; this run had none then, so that guess does not explain this one).
-- Read next: (1) what a fast travel's load waits on before it builds the new area (the warp sequence: strings
-  WarpOutEventWithJunction, DefaultWarpOutEvent, Game/WarpInfoTable; and what sets bit 1 of the actor manager's
-  +0xe1), and whether a Player-class stand-in 2.7 km away in an unloaded area (player 1's, put in the Depths 3 s
-  before player 2's load began; on 2026-11-07 player 2 also "warped to where player 1 stood") takes part in it; (2) whether an actor's link flag
-  ref+0x4c, set by the link acquire main+0x61aa24 and cleared only by the link release main+0x1aff9c, holds up its
-  deletion: coop_game.c coop_claim takes such a link and the co-op code never releases one (spawn_slot clears the
-  link bytes, the "went away" path drops the actor); (3) where player 2 travelled to (the tester's memory).
+- Still open: whether the link lock ref+0x4c (left set by coop_claim, which never calls the release main+0x1aff9c)
+  holds an actor's later destroy step; what the going-away drain main+0x6ecce4 needs for a Player-class actor placed
+  in an unloaded area (player 1's stand-in was put 2.7 km away in the Depths 3 s before game 2's load began); where
+  player 2 travelled to.
 - Side bug seen in the same run: player 1's load unloaded its copies of player 2's two fans ("went away here (state 0 /
   11); the owner is told"), and player 2 then deleted its own fans ("player 1 picked up or destroyed my ...").
 

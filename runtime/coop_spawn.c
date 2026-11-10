@@ -1561,6 +1561,8 @@ void coop_tick(struct Cpu *c) {
             rt_log("%s", line);
         }
     }
+    void coop_loadwatch_tick(void);   // coop_loadwatch.c
+    coop_loadwatch_tick();
     coop_players_tick(c);
     foe_log();
     for (int k = 0; k < 2; k++) {
