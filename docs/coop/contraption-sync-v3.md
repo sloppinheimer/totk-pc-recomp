@@ -2852,3 +2852,8 @@ falls back to the place key as coop_obj_ident does (not built while the games ru
   sync-v3/run5/attach, 0x1d62f44). One glue worked: onto a fan P2 had taken over before (no longer placed by the
   mirror), and it made a build (e3c3a9e4) that P1 then made too. So bit 26 comes with what the object mirror does to a
   copy each tick (place_copy), and is gone once a copy is taken over. What bit 26 is and what sets it: not read.
+- **Note 26, written (option B of R/sync-v3/run7/bit26):** bit 26 of body +0x68 is a one-step "teleported" latch
+  (set by an applied transform request through bit 25, copied by the body's post-step update), and the glue upkeep
+  main+0x1d62f44 releases a glue entry while either body has it. A hook on the upkeep clears bit 26 on a copy's body
+  before the game's test, and logs the copy's body bits and request word for the first glues. Not explained by the
+  code: why the bit was set on a copy teleported only about once a second (the log line answers it).

@@ -483,6 +483,32 @@ int coop_life_v3(Cpu *c, uint64_t off) {
     // with a copy or a part made here from a record made no build (plan 44.3, note 20). Cleared here, as coop_bonds.c and
     // bond_queue do, only on the body of a live actor (a body torn down keeps it and has no graph id). Then the tick runs,
     // and the glue's end is logged: made, or aborted with its time and progress (state +0x34 done, +0x28, +0x2c).
+    // The glue entry's upkeep main+0x1d62f44 (x0 the entry), every frame from the SPR update: it releases the glue
+    // unless both bodies have +0x68 bit 10 set and bit 26 clear. Bit 26 is a one-step "teleported" latch (bit 25, set by
+    // an applied transform request, copied by the body's post-step update), and the object mirror teleports its copies,
+    // so a glue onto a copy of another player's object was cancelled at once (plan 47.4, note 26; research notes
+    // sync-v3/run7/bit26, option B). On a copy's body bit 26 is cleared here, in the upkeep itself, so the order of the
+    // physics step and this update in a frame does not matter; a glue between two of the game's own bodies keeps the
+    // game's rule. The bits of a copy's body are logged for the first glues (why it stays set is not read: probe).
+    if (off == 0x1d62f44) {
+        uint64_t bodies[2] = {coop_guest_call(c, MOD_MAIN_BASE + 0x1d61b08, c->x[0], 0, 0, 0), coop_guest_call(c, MOD_MAIN_BASE + 0x1d61b5c, c->x[0], 0, 0, 0)};
+        for (int k = 0; k < 2; k++) {
+            uint64_t f68 = 0, a = bodies[k] ? hnd_actor(coop_rd_ptr(bodies[k] + 0x110) + 0x18) : 0;
+            int coop_is_copy(uint64_t a);
+            if (!a || !coop_is_copy(a) || !coop_rd(bodies[k] + 0x68, &f68, 8) || !(f68 >> 26 & 1)) continue;
+            uint64_t req = coop_rd_ptr(bodies[k] + 0x60);
+            uint32_t rq = 0;
+            if (req) coop_rd(req + 0xd4, &rq, 4);
+            static _Atomic int said;
+            char nm[48];
+            if (atomic_fetch_add(&said, 1) < 30)
+                rt_log("coop: glue: a copy's body (%s) is marked teleported (+0x68 bits 10/15/25/26/41 %u%u%u%u%u, request +0xd4 %#x): bit 26 cleared for the glue",
+                       coop_actor_name(a, nm, sizeof nm), (unsigned)(f68 >> 10 & 1), (unsigned)(f68 >> 15 & 1), (unsigned)(f68 >> 25 & 1),
+                       (unsigned)(f68 >> 26 & 1), (unsigned)(f68 >> 41 & 1), rq);
+            __atomic_fetch_and((uint64_t *)(uintptr_t)(bodies[k] + 0x68), ~(1ull << 26), __ATOMIC_SEQ_CST);
+        }
+        return 0;
+    }
     if (off == 0x1d67060) {
         static __thread int inner;
         if (inner) { inner = 0; return 0; }
