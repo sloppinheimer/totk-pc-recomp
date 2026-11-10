@@ -2699,3 +2699,12 @@ the other player to that player's game; not designed yet.
 
 **Decision (the tester, 2026-11-10):** map-placed and NPC vehicles and spawns as entities are left out of milestone 2.
 NPC vehicles are to be looked at in a play-test; if they look wrong, they get done.
+
+### 44.5 To test later (the tester, 2026-11-10: not run now)
+Everything since run 5 (66a2a23, e5439fc), and 1133e2c's empty-battery rule:
+- P2 glues its object onto a single loose object of P1's; onto a build P1 runs; and onto it while P1 holds it.
+- Three fans spawned with the other player's stand-in beside them: all three on both screens.
+- A menu opened in one game while the other player is near one of its builds or loose devices: the build is run by
+  the other game after 1 s, a hit on the device switches it.
+- Hitting a device with an empty or recharging battery does not switch it on, and the other battery does not pay.
+- An NPC vehicle, if one comes along (the decision of 44.4).
