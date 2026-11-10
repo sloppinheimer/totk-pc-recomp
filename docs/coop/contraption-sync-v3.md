@@ -2396,3 +2396,92 @@ Static reading only.
 - Reads started (Sonnet, R/sync-v3/m2/p8/): wood-status (burning parts alike), weight-push (P6: standing on, weighing
   down and pushing a build another game runs), unload-travel (P7: what removes and restores builds), limits
   (capacities a session with several builds can reach).
+
+## 41. What the fourth reading established, and the designs for P6 and P7 (read 2026-11-10, R/sync-v3/m2/p8/, four folders, all read in full)
+Static reading only.
+
+**What removes a build (unload-travel)**
+- Nothing sweeps. Every actor tests itself each frame against its own radius from the game's observers (the player
+  and camera slots): DisplayRadius + DeleteRadiusOffset of its kind, 60 m for a capsule's item form, 90 m for a fan,
+  wheel, rocket or stick, 100 to 130 m for cart, sled, balloon and wing, up to 310 m for a spring. Out of range it
+  asks its own delete with reason 3.
+- So a build goes part by part, each at its own radius, and a follower's copy is deleted by the engine well inside
+  the 160 m the plan's section 10 assumed.
+- A part made at run time (from the pouch, by Autobuild, glued by hand) is gone for good: no code was found that
+  makes it again, and no save record of placed parts. Only the Autobuild history designs persist.
+- Fast travel has no "world unloaded" call for such parts: the observers jump, every part fails its range test and
+  deletes itself in the next frames. Map actors go with reason 6 when their map unit unloads.
+- No "oldest part is removed" rule was found; at the run-time placement pool's limit a new actor is simply not made.
+- The unload callers are listed by return address; a delete of reason 3 (also 5, 6, 10) from them is an unload, a
+  delete of reason 0 from the death procedure is a destroy.
+
+**Burning (wood-status)**
+- A status is not written into an element: reactions add into a per-frame accumulator, a tick advances the burn
+  timer, and an evaluator derives the status. The step that stores the result was not found.
+- The game's own nodes set a status by request: ignite main+0x1b34a44(comp, 2, -1), extinguish and burn out
+  main+0xb2b804(comp, 0 or 2, -1). The flame, the blackboard flag and the sound follow the state.
+- A wooden part burning alone loses no life; it ends when it burns out, by death kind 9. Zonai device parts cannot burn.
+- Every reaction into an element passes main+0x1906768; a hook there could stop a copy igniting from local causes.
+- Corrections to 35: the "request A" of the chemical component is a lightning strike, not a status setter.
+
+**Weight and push (weight-push) - P6**
+- The game sends no force for a Link standing on something or walking into it. The Link's body (10 kg) is moved by
+  velocity and its weight and push are what the contact solver does between two real bodies. There is nothing to
+  relay. The one impulse the controller applies by code (PushObject) was not shown to run for the player.
+- What the Link stands on is in no field; it can be read each frame from the controller's contact list, or at the
+  ground ray's call (main+0x29a9398 with return address main+0x1f556c4).
+- A stand-in has the Player's bodies by data, but today its main body is static and teleported, which weighs
+  nothing down.
+- Ranking of the three ways by what the code supports: let the stand-in's body touch the build (a moving, velocity
+  driven body and a narrower veto) > an explicit force at the ground body (works, its size would be tuned, not read)
+  > relaying impulses (nothing to relay).
+- A fault in the mod: G1's entry for main+0x29a4afc compares x0 with a body, and that function's x0 is the world;
+  that write is never dropped on a follower. Only the stick's force node uses it and that node is skipped whole.
+
+**Capacities (limits)**
+- All overflows are silent. Bond slots 512 (a 21-part build uses up to 21: about 24 such builds); group records 256;
+  the actor message ring 100 by default (a 21-part build toggling pushes up to 21 in one frame: four such builds
+  toggling in the same frame fill it, and a full ring drops messages with no trace); the Autobuild descriptor pool 21
+  per build object. The number of connected sets and of graph node ids could not be read; plain-read functions for
+  every pool are in the folder for a status line.
+- The actor create function answers with an error code when a table, the heap or its queue is full.
+
+### 41.1 Written from it (not run)
+- **A build unloaded where it ran is handed on (10.3)**: coop_ctn.c record_pass sends RELINQUISH when none of a
+  build's parts is left in the game that ran it; a game that still has two or more of its parts takes it (GRANT) and
+  sends its version. With the unload rule of 33.1 this makes "walk away, the other player keeps the build" whole for
+  two players. For three, two games could both take; not handled.
+- **Burning parts (36 item 2)**: coop_ctn.c burning_phase0. The runner reads, five times a second, which parts burn
+  (the game's own test) and sends the mask with the state; a copy that differs is set alight or put out with the
+  game's own requests. The burned-out end comes with the death relay of 40.2. Not shown by reading: that a request
+  brings the copy to the same state. Not done: keeping a copy from igniting by local causes (the hook at
+  main+0x1906768), loose wooden objects that are no build's part.
+
+### 41.2 Design for P6 (riding, weight, push), not written
+1. A player on a build another game runs is, in the runner's game, a stand-in whose body really touches the build:
+   while that player stands on or rides a part, the stand-in's standing body is made a moving body driven by
+   velocity toward the rider's place on the part (ride_place), and the veto lets that one body meet that build.
+   Weight and push then happen in the runner's solver as they do for its own Link.
+2. The player's own game keeps dropping writes to its copy; its Link stands on the copy as on any moving floor (the
+   existing ride-along).
+3. What the Link stands on comes from its controller's contact list, so "rides part X of build Y" is sent as an
+   identity the runner can find (the part's origin numbers), not a position.
+4. To read before writing: how the contact-mass scale enters the solver (it decides whether the Link weighs 1 kg or
+   100 kg on a build); whether the stand-in gets a controller record; the Player's riding pose inputs (6b/6c).
+5. To fix with it: G1's body test for main+0x29a4afc.
+
+### 41.3 Design for P7 (lifetime and session), partly written
+1. Walk away: written (33.1 unload at the follower; 41.1 hand-on at the runner). The follower's "back within half
+   the distance" rule should use the part's own delete radius (readable per kind) in place of the distance at which
+   it went.
+2. Fast travel: the same two rules apply, since each part deletes itself after the observers jump; to tell travel
+   from walking away use the delete reason and caller at the mod's delete hooks, as listed in the folder.
+3. Nothing persists across a reload in the game itself, so nothing is restored by the mod either: a build exists
+   while some game has it loaded. When no game has it, it is gone, as in single player.
+4. Leaving: the build passes to the lowest-numbered game that has it (written before, 5.9). Joining late: the runner
+   sends every build's version to a game that joins (written). Rejoining with a new incarnation: to be checked
+   against the registry's keys.
+5. Capacity: a status line of the pools every 10 s, and the ring's fill; builds toggled in the same frame are spread
+   over frames if the ring would overflow.
+6. Three players: the two-game assumptions to remove are the take-over on RELINQUISH (41.1) and the toggle and
+   event messages sent to all.

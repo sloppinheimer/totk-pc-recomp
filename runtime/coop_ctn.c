@@ -114,6 +114,7 @@ typedef struct {
     FollowState *fs;
     uint32_t sw, on;        // at the runner: which record parts have a switch, which are on
     uint32_t fp;            // bit r: part r is a spring; pf[r] = its extension, upper limit, enables
+    uint32_t burn;          // bit r: part r burns (where the build runs)
     uint32_t fw, fk, fb;    // at the runner: which parts are wheels / sticks / time bombs, and their floats (StMsg)
     float pf[21][4];
     uint64_t payer;         // the incarnation whose gauge pays (who switched it on)
@@ -402,7 +403,7 @@ typedef struct {
     uint64_t payer;
     float m[12];            // its root part's main body matrix
     uint32_t sw, on, flags, fb;
-    uint32_t fp, pad3;      // bit r: part r is a spring; pf[r] = extension, upper limit, enables (1 spring, 2 motor)
+    uint32_t fp, burn;      // burn: bit r, part r burns. fp: bit r: part r is a spring; pf[r] = extension, upper limit, enables (1 spring, 2 motor)
     uint32_t fw, fk;        // bit r: part r is a wheel (fw) / a steering stick (fk) / a time bomb (fb), its floats in pf[r]
     float pf[21][4];        // wheel: model spin, model steering angle; stick: x, y, scaled x, scaled y; bomb: fuse left, armed
 } StMsg;
@@ -618,8 +619,13 @@ static void record_pass(Cpu *c) {
                         send_ctl(COOP_CTR_RETIRE, e, e->epoch, me);
                         for (int r = 0; r < e->np; r++) if (!part_group(e->parts[r])) made_forget(e->parts[r]);
                     }
+                    // None of its parts is left here: the engine unloaded them (each part deletes itself beyond its own
+                    // display radius from this game's player, 60 to 130 m for most parts: research notes
+                    // sync-v3/m2/p8/unload-travel) or they were destroyed (then their deaths were sent). A game that still
+                    // has the build is told it may run it now (plan 10.3).
+                    if (!live_parts) send_ctl(COOP_CTR_RELINQUISH, e, e->epoch, me);
                     rt_log("coop: contraption: %08x, run here, is no build any more (%d of %d parts alive): %s", cid32(e), live_parts, e->np,
-                           live_parts ? "retired" : "lapsed");
+                           live_parts ? "retired" : "lapsed, offered to the games that still have it");
                     free(e->fs), memset(e, 0, sizeof *e);
                 }
             }
@@ -1119,6 +1125,7 @@ static void events_put(void);
 static void deaths_put(Cpu *c);
 static int gauge_blocked(void);
 static void floats_follow(Cpu *c);
+static void burning_phase0(Cpu *c);
 static void springs_phase0(Cpu *c);
 void coop_ctn_phase0(Cpu *c) {
     if (!ctn_on()) return;
@@ -1129,6 +1136,7 @@ void coop_ctn_phase0(Cpu *c) {
     dev_flush(c);
     floats_follow(c);
     springs_phase0(c);
+    burning_phase0(c);
 }
 
 // ---- The rigid-field follower drive (plan section 3) ------------------------------------------------------------------
@@ -1784,6 +1792,54 @@ static int gauge_blocked(void) {
     return mgr && coop_rd(mgr + 0x50, &b50, 1) && coop_rd(mgr + 0xe8, &be8, 1) && ((b50 & 1) || !(be8 & 1));
 }
 
+// ---- Burning parts (plan 36 item 2; research notes sync-v3/m2/p8/wood-status) --------------------------------------------
+// A wooden part burns by its own chemistry in each game, from what touches it there. So that a copy burns when its
+// part does where the build runs, and stops when it stops, the runner sends which parts burn (the game's own
+// "is any element burning" main+0x1b306fc(chemical component, -1), the component at [actor +0x228] +0x180) and a copy
+// that differs is given the request the game's own nodes give: ignite main+0x1b34a44(comp, 2, -1) (fire cause
+// "forced"), extinguish main+0xb2b804(comp, 0, -1). The burned-out end comes as the part's death (kind 9), sent with
+// the deaths above. Not shown by reading: that a request alone brings a copy to the same state (the step that takes
+// the game's decision into the element was not found).
+static uint64_t chem_comp(uint64_t a) {
+    uint64_t t = a ? coop_rd_ptr(a + 0x228) : 0;
+    return t ? coop_rd_ptr(t + 0x180) : 0;
+}
+static void burning_phase0(Cpu *c) {
+    static int64_t last;
+    int64_t now = frame_step_world_us();
+    if (now - last < 200000) return;
+    last = now;
+    for (int i = 0; i < REG_N; i++) {
+        uint64_t parts[21];
+        uint32_t want = 0, have = 0;
+        int np, mine;
+        plat_mutex_lock(&reg_lock);
+        Ent *e = &reg[i];
+        int go = e->used && e->local == L_LIVE && e->np && !e->touched;
+        np = e->np, mine = go && runs(e), want = e->burn;
+        memcpy(parts, e->parts, sizeof parts);
+        plat_mutex_unlock(&reg_lock);
+        if (!go) continue;
+        for (int r = 0; r < np && r < 21; r++) {
+            uint64_t comp = alive(parts[r]) ? chem_comp(parts[r]) : 0;
+            if (comp && (coop_guest_call(c, MOD_MAIN_BASE + 0x1b306fc, comp, (uint64_t)-1, 0, 0) & 1)) have |= 1u << r;
+        }
+        if (mine) {
+            plat_mutex_lock(&reg_lock);
+            if (reg[i].used && runs(&reg[i])) reg[i].burn = have;
+            plat_mutex_unlock(&reg_lock);
+            continue;
+        }
+        for (int r = 0; r < np && r < 21; r++) {
+            uint64_t comp = ((want ^ have) >> r & 1) && alive(parts[r]) ? chem_comp(parts[r]) : 0;
+            if (!comp) continue;
+            if (want >> r & 1) coop_guest_call(c, MOD_MAIN_BASE + 0x1b34a44, comp, 2, (uint64_t)-1, 0);
+            else coop_guest_call(c, MOD_MAIN_BASE + 0xb2b804, comp, 0, (uint64_t)-1, 0);
+            rt_log("coop: contraption: part %d of a build followed here %s where it runs: %s here", r, want >> r & 1 ? "burns" : "does not burn", want >> r & 1 ? "set alight" : "put out");
+        }
+    }
+}
+
 // ---- A spring's head (plan 37 note 14; research notes sync-v3/m2/p7/spring-bodies) ---------------------------------------
 // A spring is two bodies, the base (main) and the head, on a slider joint "PistonSlider" with a motor that pulls the head
 // in and a spring that pushes it out. The object mirror and the follow drive move the base only, and after a launch the
@@ -2158,6 +2214,20 @@ static void receive(void) {
         plat_mutex_unlock(&reg_lock);
         if (actor) rt_log("coop: contraption: part %u of %08x died where it runs (kind %u): the same asked of the copy here", p->part, cid32(e), p->kind);
     }
+    while (coop_ctr_recv_type(COOP_CTR_RELINQUISH, &m)) {   // the game that ran a build no longer has it: run here if it is here
+        const CtlMsg *p = (const CtlMsg *)m.d;
+        if (m.len != (int)sizeof(CtlMsg)) continue;
+        plat_mutex_lock(&reg_lock);
+        Ent *e = ent_find(p->inc, p->serial);
+        int here = 0;
+        for (int r = 0; e && r < e->np; r++) here += alive_as(e->parts[r], e->gen[r]);
+        if (e && !runs(e) && m.from == e->runner && e->local == L_LIVE && here >= 2) {
+            uint32_t ep = (p->epoch > e->epoch ? p->epoch : e->epoch) + 1;
+            rt_log("coop: contraption: %08x: the game that ran it no longer has it (unloaded there): run here now", cid32(e));
+            set_runner(e, coop_ctr_me(), ep), send_ctl(COOP_CTR_GRANT, e, ep, coop_ctr_me()), e->resend = 1;
+        }
+        plat_mutex_unlock(&reg_lock);
+    }
     while (coop_ctr_recv_type(COOP_CTR_PULL, &m)) {   // a game back in reach of a build it had unloaded: the version again
         const CtlMsg *p = (const CtlMsg *)m.d;
         if (m.len != (int)sizeof(CtlMsg)) continue;
@@ -2188,7 +2258,7 @@ static void receive(void) {
         if (!route || coop_ctr_latest(route, COOP_CTR_STATE, e->key64, &s, sizeof s, &age) != (int)sizeof s) continue;
         if (s.inc != e->inc || s.serial != e->serial || s.epoch != e->epoch || s.us <= e->hus[2]) continue;
         e->heard_us = now;
-        if (s.flags & 2) e->sw = s.sw, e->on = s.on, e->payer = s.payer, e->fw = s.fw, e->fk = s.fk, e->fb = s.fb, e->fp = s.fp, memcpy(e->pf, s.pf, sizeof e->pf);
+        if (s.flags & 2) e->sw = s.sw, e->on = s.on, e->payer = s.payer, e->fw = s.fw, e->fk = s.fk, e->fb = s.fb, e->fp = s.fp, e->burn = s.burn, memcpy(e->pf, s.pf, sizeof e->pf);
         if (!(s.flags & 1) || (e->v && s.v != e->v)) continue;   // (the root of another version is another part)
         memmove(e->hm[0], e->hm[1], 2 * sizeof e->hm[0]), memmove(e->hus, e->hus + 1, 2 * sizeof e->hus[0]);
         memcpy(e->hm[2], s.m, sizeof s.m), e->hus[2] = s.us;
@@ -2210,6 +2280,7 @@ static void send_states(void) {   // the builds this game runs: root and devices
         Ent *e = &reg[i];
         int go = e->used && runs(e) && e->local == L_LIVE && e->v && e->np;
         if (go) {
+            s.burn = e->burn;
             s.key = e->key64, s.inc = e->inc, s.serial = e->serial, s.epoch = e->epoch, s.v = e->v, s.shape = e->shape, s.us = now, s.flags = 2;
             for (int r = 0; r < e->np; r++)
                 if (part_switch(e->parts[r])) s.sw |= 1u << r, s.on |= (uint32_t)part_on(e->parts[r]) << r;
