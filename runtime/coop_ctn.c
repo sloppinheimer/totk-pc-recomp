@@ -1798,6 +1798,16 @@ void coop_ctn_event_seen(uint64_t actor) {   // from the on/off calc of a follow
     plat_mutex_unlock(&ev_lock);
 }
 typedef struct { uint64_t inc; uint32_t serial, part, bits, v; } EvMsg;   // (v: the version part is a number of)
+// A hit here that would switch on a device another game runs (a build's part or a lone device) while this game's gauge
+// cannot pay is not sent: in the game a player whose battery is empty or recharging does not switch a device on, and
+// sent, the device went on where it runs and the other player's battery paid for it (plan 43, note 17). Switching off
+// is still sent.
+static void refused_on(uint64_t actor) {
+    static int64_t said;
+    int64_t now = frame_step_world_us();
+    char nm[48];
+    if (now - said > 2000000) said = now, rt_log("coop: contraption: a hit here would switch on %s, run by another game, while this gauge cannot pay: not sent", coop_actor_name(actor, nm, sizeof nm));
+}
 static void events_out(void) {   // the co-op tick: events seen 50 ms ago or more, sent unless the same hit asked a toggle
     int64_t now = frame_step_world_us();
     for (;;) {
@@ -1814,6 +1824,7 @@ static void events_out(void) {   // the co-op tick: events seen 50 ms ago or mor
         plat_mutex_unlock(&ev_lock);
         if (!actor) return;
         if (toggled) continue;
+        if ((bits & 5) && gauge_blocked()) { refused_on(actor); continue; }   // (plan 43 note 17: see refused_on)
         EvMsg m = {0};
         int found = 0;
         uint32_t id = 0;
@@ -1981,6 +1992,10 @@ void coop_ctn_toggle_asked(uint64_t comp, uint64_t actor) {
         for (int r = 0; reg[i].used && !runs(&reg[i]) && r < reg[i].np && !found; r++)
             if (reg[i].parts[r] == actor) m.inc = reg[i].inc, m.serial = reg[i].serial, m.part = (uint32_t)r, id = cid32(&reg[i]), found = 1;
     plat_mutex_unlock(&reg_lock);
+    if (!part_on(actor) && gauge_blocked()) {   // (switching on with a gauge that cannot pay: not asked, note 17)
+        refused_on(actor);   // (called only for a device followed here: coop_autobuild.c, the switch update)
+        return;
+    }
     if (!found) {   // (not a build's part: a lone device of another player's)
         if (lone_ask(actor, !part_on(actor), 0)) {
             plat_mutex_lock(&ev_lock);
