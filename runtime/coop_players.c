@@ -2652,6 +2652,9 @@ static int report_props(uint64_t me, CoopObj *out, int max) {
         {
             int coop_ctn_core(void);
             if (coop_ctn_core() && is_imaginary(props[e].actor)) continue;
+            // (nor a device's own beam: every game's copy of the device fires its own, and the copy of the owner's
+            // beam, made and destroyed beside it, is a candidate for the emitters that stayed dark, plan 37 note 14)
+            if (coop_ctn_core() && !strcmp(props[e].name, "BeamosBeam")) continue;
         }
         o->id = id;
         coop_actor_name(props[e].actor, o->name, sizeof o->name);

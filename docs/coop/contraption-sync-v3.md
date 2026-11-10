@@ -2316,3 +2316,67 @@ Game code, by Sonnet readers into R/sync-v3/m2/p7/ (one folder each):
 - A run shows: two loose fans fused by either player appear fused on the other screen within a second, with "applied
   in place: 2 parts kept (0x3 taken from the objects), 1 bonds made"; unfused by either, they come apart on both and
   stay apart; a part broken off an Autobuilt build leaves no stray copy.
+
+## 40. What the third reading established (read 2026-11-09/10, R/sync-v3/m2/p7/, five folders, all read in full)
+Static reading only.
+
+**The refused delete (delete-refused) - note 12**
+- The delete request answers 0 for three reasons only: the actor is going (state 7 to 11), a delete was already asked
+  and accepted (actor +0x28 bit 17), or lock lane 2 is held. A second ask after an accepted one answers 0. The mod
+  took that 0 as a refusal and asked for ever; the fan of note 12 may simply have been accepted the first time.
+- An accepted delete waits, with no time limit, until lane 0 is free and the actor's latch (+0x1b0) is 0.
+- Who holds lane 2 on a Zonai part is not settled: the holders found keep a reference to the actor.
+
+**The spring (spring-bodies) - notes 4, 14**
+- The head is a second body on a slider joint with a one-way motor (pulls the head in) and a spring (pushes it out).
+  The value the node writes is the joint's upper limit, not a target; the two flags are spring on and motor on.
+- Idle, the motor is on and the head is in. On a launch the node switches the motor off, kicks the head, and for
+  ordinary launch speeds writes nothing more: after that the head is where physics leaves it. The joint holds no
+  extension. So two games agree only if the head's pose is sent.
+- Nothing moves the head when the base is placed from outside: it lags and is dragged by the joint.
+- The joint is found from the actor by name, its state read by plain reads, and set by the game's setters.
+- Other parts with a second body that is not fixed to the main one: wheel (suspension), big wheel (spin, steering,
+  suspension), construct head (neck), cooking pot (pan).
+
+**Off screen (offscreen) - note 14**
+- Every actor update phase opens with one gate: a per-actor calc mask (+0x3fc; bits 0 and 1 skip the whole update,
+  0xc4 its components) built from "reasons" that code sets, and a blocked bit (+0x5ac bit 6). A skipped actor still
+  gets one full update every 150 (or 30) counts. Messages are still taken while an actor is skipped and applied at its
+  next update, off before on.
+- What sets the mask from view or distance was not found, nor which phase runs the AI nodes. So "the game stops a
+  copy's device logic when it is out of view while the mod keeps placing its body" is supported as a mechanism and
+  not shown. The mod now logs the gate of each lone copy when it changes; the next session's log decides it.
+
+**The stick's lean (stick-graph) - 6b, 14**
+- On a stick with nobody in its seat nothing writes the four tilt floats each tick; they are zeroed once when the
+  seat empties. So the mod's writes are not being overwritten, unless the copy's seat reads as occupied.
+- The stick's animation reads the float through a pointer; whether that is the actor blackboard's float is not read.
+  The game's own float write also bumps a change counter the mod's bare store skipped.
+- The cause of the missing lean was not found. The stand-in's own riding pose follows the Player's left-stick
+  inputs of its animation, not the stick's floats.
+
+**A device staying off (gate-stuck) - 14**
+- Nothing in the on/off node, the DeviceSwitch or the group latches from a closed energy gate or a refused set-on;
+  the gate is worked out again at every update. For a loose device the gauge is consulted only once its own switch
+  state is 1, which a local hit toggle makes it.
+- The logs of the session show each loose emitter's on state following its owner, one set per change. So the gate
+  did not hold them off. Two candidates remain, neither confirmed: a hit on a copy taken by the copy itself before
+  the copy was in the mod's lists; or the copy on but dark, its beam lost (the object mirror made and destroyed
+  copies of the owner's beam actor beside it).
+- In the mod: a lone copy first heard of was in the "follows" list a tick before it was in the no-charge list.
+
+### 40.1 Written from it (not run)
+- **Delete (note 12)**: coop_ctn.c part_delete takes an already accepted delete (actor +0x28 bit 17) as done, and
+  logs the lock lanes when the game does refuse one.
+- **The spring's head (notes 4, 14)**: coop_ctn.c springs_phase0, spring_joint, spring_read, spring_apply. The game
+  that runs a spring reads its extension, upper limit and the two enables ten times a second and sends them (with a
+  build's state, or with the lone device's); a copy sets the joint with the game's setters when they differ and puts
+  the head at that extension from its base when it is more than 5 cm off. A run shows: a spring fired by either
+  player is extended on both screens and retracted on both, also after one player looked away.
+- **Floats by the game's own write (6b)**: at phase 0 the wheel and stick floats go through main+0xc3e260, which
+  bumps the change counter. Not known to be the cause of the missing lean.
+- **Lone copies**: lone_tick runs before the lists are rebuilt (no tick without the no-charge rule); each lone copy's
+  update gate is logged when it changes ("its update is not run by the game now").
+- **A device's own beam is not sent as a plain object** (coop_players.c report): each game's copy fires its own.
+- Not written: the stick's lean beyond the float write (cause not found); the off-screen difference itself (to be
+  decided by the gate log); the rider's lag.

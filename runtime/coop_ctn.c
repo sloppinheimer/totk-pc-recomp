@@ -113,6 +113,7 @@ typedef struct {
     int64_t hus[3], clock_off, clock_off_at, heard_us;
     FollowState *fs;
     uint32_t sw, on;        // at the runner: which record parts have a switch, which are on
+    uint32_t fp;            // bit r: part r is a spring; pf[r] = its extension, upper limit, enables
     uint32_t fw, fk, fb;    // at the runner: which parts are wheels / sticks / time bombs, and their floats (StMsg)
     float pf[21][4];
     uint64_t payer;         // the incarnation whose gauge pays (who switched it on)
@@ -184,8 +185,22 @@ static int alive_as(uint64_t a, uint32_t gen) { return alive(a) && gen_of(a) == 
 static int part_delete(Cpu *c, uint64_t a) {
     if (!a) return 1;
     if (!alive(a) || !coop_rd_ptr(a + 0x1a8)) { made_forget(a); return 1; }
+    // Already asked and accepted (actor +0x28 bit 17): the game answers 0 to a second ask, which is no refusal. It goes
+    // once its locks let it (research notes sync-v3/m2/p7/delete-refused, Q1 and Q3). Taken as refused, one such part
+    // held up every later build (plan 37, note 12).
+    {
+        uint32_t f28 = 0;
+        if (coop_rd(a + 0x28, &f28, 4) && (f28 >> 17 & 1)) { made_forget(a); return 1; }
+    }
     coop_deleted_here(a);
-    if (!(coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, a, 0, 0, 0) & 1)) return 0;
+    if (!(coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, a, 0, 0, 0) & 1)) {
+        static int64_t said;   // (a lock lane held: lane 2 is the one a delete of reason 0 minds)
+        uint64_t lanes = 0;
+        int64_t now = frame_step_world_us();
+        coop_rd(coop_rd_ptr(a + 0x1a8) + 0x50, &lanes, 8);
+        if (now - said > 2000000) said = now, rt_log("coop: contraption: a delete refused by the game: lock lanes %016llx (byte 2 held: a reference to the actor is kept somewhere)", (unsigned long long)lanes);
+        return 0;
+    }
     made_forget(a);
     return 1;
 }
@@ -284,10 +299,15 @@ static int bb_f32(uint64_t bb, uint32_t hash, float *out) {
     int i = bb_index(bb, BB_FLOATS, hash);
     return i >= 0 && coop_rd(coop_rd_ptr(bb + BB_FLOATS + 8) + 4 * (uint64_t)i, out, 4);
 }
-static void bb_set_f32(uint64_t bb, uint32_t hash, float v) {
+// (with a Cpu: through the game's own float write main+0xc3e260(bb, index, &value), which also minds the lock byte and
+// bumps the float's change counter; without: the bare store. Research notes sync-v3/m2/p7/stick-graph, answer 2.)
+static void bb_set_f32(Cpu *c, uint64_t bb, uint32_t hash, float v) {
+    static _Alignas(16) float arg;
     int i = bb_index(bb, BB_FLOATS, hash);
     uint64_t arr = i >= 0 ? coop_rd_ptr(bb + BB_FLOATS + 8) : 0;
-    if (arr && v == v) memcpy((void *)(uintptr_t)(arr + 4 * (uint64_t)i), &v, 4);
+    if (!arr || v != v) return;
+    if (c) arg = v, coop_guest_call(c, MOD_MAIN_BASE + 0xc3e260, bb, (uint64_t)i, (uint64_t)(uintptr_t)&arg, 0);
+    else memcpy((void *)(uintptr_t)(arr + 4 * (uint64_t)i), &v, 4);
 }
 static int part_green(uint64_t a) {   // made from zonaite by an Autobuild confirm (SPR +0x150 bit 0, as main+0x1b0f7d4 reads it)
     uint64_t spr = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x480) : 0;
@@ -382,6 +402,7 @@ typedef struct {
     uint64_t payer;
     float m[12];            // its root part's main body matrix
     uint32_t sw, on, flags, fb;
+    uint32_t fp, pad3;      // bit r: part r is a spring; pf[r] = extension, upper limit, enables (1 spring, 2 motor)
     uint32_t fw, fk;        // bit r: part r is a wheel (fw) / a steering stick (fk) / a time bomb (fb), its floats in pf[r]
     float pf[21][4];        // wheel: model spin, model steering angle; stick: x, y, scaled x, scaled y; bomb: fuse left, armed
 } StMsg;
@@ -1090,14 +1111,16 @@ static void make_pass(Cpu *c) {
 }
 static void dev_flush(Cpu *c);
 static void events_put(void);
-static void floats_follow(void);
+static void floats_follow(Cpu *c);
+static void springs_phase0(Cpu *c);
 void coop_ctn_phase0(Cpu *c) {
     if (!ctn_on()) return;
     record_pass(c);
     make_pass(c);
     events_put();
     dev_flush(c);
-    floats_follow();
+    floats_follow(c);
+    springs_phase0(c);
 }
 
 // ---- The rigid-field follower drive (plan section 3) ------------------------------------------------------------------
@@ -1658,11 +1681,12 @@ void coop_ctn_toggle_asked(uint64_t comp, uint64_t actor) {
 
 // The wheels and sticks of the builds followed here shown as where they run (at actor phase 0 and at the co-op tick:
 // when in the frame the stick's own graph writes its floats is not read, so both)
-static void floats_follow(void) {
+static void floats_follow(Cpu *c) {
     plat_mutex_lock(&reg_lock);
     for (int i = 0; i < REG_N; i++) {
         Ent *e = &reg[i];
         if (!e->used || runs(e) || e->local != L_LIVE || e->touched || !(e->fw | e->fk | e->fb)) continue;
+        (void)c;
         for (int r = 0; r < e->np && r < 21; r++) {
             // A time bomb: armed as where it runs (the bit its own arming message sets, fuse node +0xe8 bit 0), and its
             // fuse (node +0xdc now, +0xe0 before) the runner's, never under 2 frames: at 0 the node here would ask the
@@ -1678,12 +1702,96 @@ static void floats_follow(void) {
             }
             uint64_t bb = (e->fw | e->fk) >> r & 1 ? actor_bb(e->parts[r]) : 0;
             if (!bb) continue;
-            if (e->fw >> r & 1) bb_set_f32(bb, BB_WHEEL_SPIN, e->pf[r][0]), bb_set_f32(bb, BB_WHEEL_STEER, e->pf[r][1]);
-            else bb_set_f32(bb, BB_STICK_X, e->pf[r][0]), bb_set_f32(bb, BB_STICK_Y, e->pf[r][1]), bb_set_f32(bb, BB_STICK_SX, e->pf[r][2]), bb_set_f32(bb, BB_STICK_SY, e->pf[r][3]);
+            if (e->fp >> r & 1) continue;   // (a spring: springs_phase0)
+            if (e->fw >> r & 1) bb_set_f32(c, bb, BB_WHEEL_SPIN, e->pf[r][0]), bb_set_f32(c, bb, BB_WHEEL_STEER, e->pf[r][1]);
+            else bb_set_f32(c, bb, BB_STICK_X, e->pf[r][0]), bb_set_f32(c, bb, BB_STICK_Y, e->pf[r][1]), bb_set_f32(c, bb, BB_STICK_SX, e->pf[r][2]), bb_set_f32(c, bb, BB_STICK_SY, e->pf[r][3]);
         }
     }
     plat_mutex_unlock(&reg_lock);
 }
+
+// ---- A spring's head (plan 37 note 14; research notes sync-v3/m2/p7/spring-bodies) ---------------------------------------
+// A spring is two bodies, the base (main) and the head, on a slider joint "PistonSlider" with a motor that pulls the head
+// in and a spring that pushes it out. The object mirror and the follow drive move the base only, and after a launch the
+// joint holds no extension of its own: the head is where each game's physics left it. So the game that runs a spring
+// sends its extension, the joint's upper limit and its two enables (spring, motor), and a copy is given them: the
+// joint by the game's own setters, the head put where that extension is from the base (W_head = W_base * frame B *
+// Tx(ext) * inverse(frame A), the joint's own two pivot frames).
+//   joint from the actor: main+0x29629d4(phys, "PistonSlider" at main+0x2c478e7) -> ref; ref's vtable +0x10 (ref, key
+//   main+0xba6c2c()) -> J; data D = J+0x38's vtable slot 0 (it, key main+0xba6fc8()); head [J+0x100], base [J+0x108];
+//   D +0x58 bit 0 spring on, bit 1 motor on, +0x60 upper limit, +0x64 / +0x94 the frames of head and base.
+//   setters: main+0x2997c04(J, s0 = upper limit), 0x2997c54(J, spring on), 0x2997d94(J, motor on).
+typedef struct { uint64_t actor; float ext, limit; uint32_t flags; } SprSt;   // flags: 1 spring on, 2 motor on
+#define SPR_N 32
+static SprSt spr_have[SPR_N];      // this game's own springs and those of builds it runs, read 10 times a second
+static int spr_have_n;
+static PlatMutex spr_lock = PLAT_MUTEX_INIT;
+typedef struct { uint64_t J, D, head, base; } SprJoint;
+static int spring_actor(uint64_t a) {
+    char nm[48];
+    return a && !strncmp(coop_actor_name(a, nm, sizeof nm), "SpObj_SpringPiston", 18);
+}
+static int spring_joint(Cpu *c, uint64_t actor, SprJoint *j) {
+    uint64_t phys = phys_sys(actor);
+    memset(j, 0, sizeof *j);
+    uint64_t ref = phys ? coop_guest_call(c, MOD_MAIN_BASE + 0x29629d4, phys, MOD_MAIN_BASE + 0x2c478e7, 0, 0) : 0;
+    uint64_t fn = ref ? coop_rd_ptr(coop_rd_ptr(ref) + 0x10) : 0;
+    if (!fn) return 0;
+    j->J = coop_guest_call(c, fn, ref, coop_guest_call(c, MOD_MAIN_BASE + 0xba6c2c, 0, 0, 0, 0), 0, 0);
+    uint64_t dw = j->J ? coop_rd_ptr(j->J + 0x38) : 0, dfn = dw ? coop_rd_ptr(coop_rd_ptr(dw)) : 0;
+    j->D = dfn ? coop_guest_call(c, dfn, dw, coop_guest_call(c, MOD_MAIN_BASE + 0xba6fc8, 0, 0, 0, 0), 0, 0) : 0;
+    if (!j->D) return 0;
+    j->head = coop_rd_ptr(j->J + 0x100), j->base = coop_rd_ptr(j->J + 0x108);
+    return j->head && j->base;
+}
+static int spring_read(const SprJoint *j, SprSt *s) {   // (the extension as main+0x2997ff4 computes it)
+    float fa[12], fb[12], ma[12], mb[12];
+    uint8_t f58 = 0;
+    if (!coop_rd(j->D + 0x64, fa, 48) || !coop_rd(j->D + 0x94, fb, 48) || !coop_rd(j->head + 0x98, ma, 48) || !coop_rd(j->base + 0x98, mb, 48) ||
+        !coop_rd(j->D + 0x58, &f58, 1) || !coop_rd(j->D + 0x60, &s->limit, 4)) return 0;
+    s->ext = 0;
+    for (int i = 0; i < 3; i++) {
+        float axis = fb[0] * mb[i * 4] + fb[4] * mb[i * 4 + 1] + fb[8] * mb[i * 4 + 2];
+        float pa = ma[i * 4 + 3] + fa[3] * ma[i * 4] + fa[7] * ma[i * 4 + 1] + fa[11] * ma[i * 4 + 2];
+        float pb = mb[i * 4 + 3] + fb[3] * mb[i * 4] + fb[7] * mb[i * 4 + 1] + fb[11] * mb[i * 4 + 2];
+        s->ext += axis * (pa - pb);
+    }
+    s->flags = f58 & 3;
+    return s->ext == s->ext && s->limit == s->limit;
+}
+static uint64_t call_f(Cpu *c, uint64_t fn, uint64_t a0, float s0) {   // a guest call with a float in s0
+    __uint128_t v0 = c->v[0];
+    uint32_t bits;
+    memcpy(&bits, &s0, 4);
+    c->v[0] = bits;
+    uint64_t r = coop_guest_call(c, fn, a0, 0, 0, 0);
+    c->v[0] = v0;
+    return r;
+}
+static void spring_apply(Cpu *c, uint64_t actor, const SprSt *want) {
+    SprJoint j;
+    SprSt cur;
+    if (!spring_joint(c, actor, &j) || !spring_read(&j, &cur)) return;
+    if (fabsf(cur.limit - want->limit) > 0.001f) call_f(c, MOD_MAIN_BASE + 0x2997c04, j.J, want->limit);
+    if ((cur.flags ^ want->flags) & 1) coop_guest_call(c, MOD_MAIN_BASE + 0x2997c54, j.J, want->flags & 1, 0, 0);
+    if ((cur.flags ^ want->flags) & 2) coop_guest_call(c, MOD_MAIN_BASE + 0x2997d94, j.J, want->flags >> 1 & 1, 0, 0);
+    if (fabsf(cur.ext - want->ext) > 0.05f) {
+        static _Alignas(16) float m[12];
+        float fa[12], fb[12], fai[12], base[12], t[12], tx[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+        if (!coop_rd(j.D + 0x64, fa, 48) || !coop_rd(j.D + 0x94, fb, 48) || !coop_rd(j.base + 0x98, base, 48) || !m34_inv(fai, fa)) return;
+        tx[3] = want->ext;
+        m34_mul(t, base, fb), m34_mul(t, t, tx), m34_mul(m, t, fai);
+        coop_guest_call(c, MOD_MAIN_BASE + 0x25a450, j.head, (uint64_t)(uintptr_t)m, 0, 0);
+    }
+}
+static int spr_find(uint64_t actor, SprSt *out) {   // what this game last read of its own spring
+    int got = 0;
+    plat_mutex_lock(&spr_lock);
+    for (int i = 0; i < spr_have_n && !got; i++) if (spr_have[i].actor == actor) *out = spr_have[i], got = 1;
+    plat_mutex_unlock(&spr_lock);
+    return got;
+}
+static void springs_phase0(Cpu *c);
 
 // ---- Lone devices (plan 31, notes 4 and 5) -------------------------------------------------------------------------------
 // A device in no build (a single fan, spring, light) is its owner's object, and the other games show its copy through
@@ -1694,10 +1802,10 @@ static void floats_follow(void) {
 // that is not the latch, so two games drifted apart by one flip; it is switched off when this file is on.
 #define CTR_LONE COOP_CTR_PUSH        // (two message numbers of the channel the rebuilt core had left unused)
 #define CTR_LONE_ASK COOP_CTR_IMPULSE
-typedef struct { uint64_t key; uint32_t id, on; } LoneMsg;   // (key first: the channel keeps the latest per sender and key)
+typedef struct { uint64_t key; uint32_t id, on; uint32_t spring, flags; float ext, limit; } LoneMsg;   // (key first: the channel keeps the latest per sender and key)
 typedef struct { uint64_t owner; uint32_t id, want, bits, pad; char name[48]; } LoneAsk;
 #define LONE_N 48
-static struct { uint64_t actor, owner; int owner_id; uint32_t id, on; int64_t heard_us, set_us; } lone[LONE_N];
+static struct { uint64_t actor, owner; int owner_id; uint32_t id, on; int64_t heard_us, set_us; int spring; SprSt spr; uint32_t gate; } lone[LONE_N];
 static _Atomic uint64_t lone_actor[LONE_N];
 static PlatMutex lone_lock = PLAT_MUTEX_INIT;
 int coop_ctn_follows(uint64_t a) {
@@ -1774,7 +1882,9 @@ static void lone_tick(void) {
             int owner = 0;
             uint32_t id = 0;
             if (coop_is_copy(own[i]) || coop_contraption_made(own[i]) || coop_ctn_part(own[i]) || !part_switch(own[i]) || part_group(own[i]) || !coop_obj_ident(own[i], &owner, &id) || !id) continue;
-            LoneMsg s = {cid_key(me, id) ^ 0x4c4f4e45ull, id, (uint32_t)part_on(own[i])};
+            LoneMsg s = {cid_key(me, id) ^ 0x4c4f4e45ull, id, (uint32_t)part_on(own[i]), 0, 0, 0, 0};
+            SprSt sp;
+            if (spr_find(own[i], &sp)) s.spring = 1, s.flags = sp.flags, s.ext = sp.ext, s.limit = sp.limit;
             int changed = 1;
             for (int q = 0; q < 64; q++) if (last[q].id == id) changed = last[q].on != s.on;
             if (all || changed) coop_ctr_send(0, CTR_LONE, changed ? COOP_CTR_RELIABLE : 0, &s, sizeof s);
@@ -1795,6 +1905,7 @@ static void lone_tick(void) {
         if (k >= 0) {
             if (lone[k].actor != a) lone[k].set_us = 0;
             lone[k].actor = a, lone[k].owner = m.from, lone[k].owner_id = m.from_id, lone[k].id = p->id, lone[k].on = p->on, lone[k].heard_us = now;
+            lone[k].spring = (int)p->spring, lone[k].spr.ext = p->ext, lone[k].spr.limit = p->limit, lone[k].spr.flags = p->flags;
         }
         plat_mutex_unlock(&lone_lock);
     }
@@ -1803,6 +1914,19 @@ static void lone_tick(void) {
         uint64_t a = lone[i].actor;
         if (a && (now - lone[i].heard_us > 3000000 || !alive(a))) a = lone[i].actor = 0;
         atomic_store_explicit(&lone_actor[i], a, memory_order_relaxed);
+        if (a) {   // Whether the game runs this copy's update: its calc mask (actor +0x3fc: bits 0 and 1 skip the whole
+            // update, 0xc4 its components) and the blocked bit (+0x5ac bit 6), said when they change. A device out of
+            // step while its player looks away (plan 37, note 14) is expected to show here. Research notes
+            // sync-v3/m2/p7/offscreen.
+            uint32_t m3fc = 0, f5ac = 0;
+            coop_rd(a + 0x3fc, &m3fc, 4), coop_rd(a + 0x5ac, &f5ac, 4);
+            uint32_t gate = (m3fc & 0xc7) | (f5ac & 0x40) << 2;
+            if (gate != lone[i].gate) {
+                lone[i].gate = gate;
+                rt_log("coop: contraption: player %d's lone device %u here: its update is %s (calc mask %#x, blocked %u)", lone[i].owner_id, lone[i].id,
+                       gate & 0x103 ? "not run by the game now" : gate ? "run in part" : "run", m3fc, f5ac >> 6 & 1);
+            }
+        }
         if (!a || now - lone[i].set_us < 500000 || part_on(a) == (int)lone[i].on) continue;
         uint64_t parts[21] = {a};
         lone[i].set_us = now;
@@ -1832,6 +1956,50 @@ static void lone_tick(void) {
         }
         rt_log("coop: contraption: player %d asked this game's lone %s %s", m.from_id, q.name, q.bits ? "a switch event" : q.want ? "on" : "off");
     }
+}
+
+static void springs_phase0(Cpu *c) {
+    static int64_t read_us;
+    int64_t now = frame_step_world_us();
+    uint64_t list[SPR_N];
+    SprSt want[SPR_N];
+    int n = 0, nw = 0;
+    // this game's springs read (10 a second): the parts of builds it runs, and its own lone ones
+    if (now - read_us > 100000) {
+        read_us = now;
+        plat_mutex_lock(&reg_lock);
+        for (int i = 0; i < REG_N; i++)
+            for (int r = 0; reg[i].used && runs(&reg[i]) && reg[i].local == L_LIVE && r < reg[i].np && n < SPR_N; r++)
+                if (spring_actor(reg[i].parts[r])) list[n++] = reg[i].parts[r];
+        plat_mutex_unlock(&reg_lock);
+        uint64_t own[256];
+        int no = coop_own_sent_objects(own, 256);
+        for (int i = 0; i < no && n < SPR_N; i++)
+            if (!coop_is_copy(own[i]) && !coop_ctn_part(own[i]) && spring_actor(own[i])) list[n++] = own[i];
+        SprSt got[SPR_N];
+        int ng = 0;
+        for (int i = 0; i < n; i++) {
+            SprJoint j;
+            if (spring_joint(c, list[i], &j) && spring_read(&j, &got[ng])) got[ng++].actor = list[i];
+        }
+        plat_mutex_lock(&spr_lock);
+        memcpy(spr_have, got, sizeof(SprSt) * (size_t)ng), spr_have_n = ng;
+        plat_mutex_unlock(&spr_lock);
+    }
+    // the springs followed here given the state where they run
+    plat_mutex_lock(&reg_lock);
+    for (int i = 0; i < REG_N; i++) {
+        Ent *e = &reg[i];
+        if (!e->used || runs(e) || e->local != L_LIVE || e->touched) continue;
+        for (int r = 0; r < e->np && nw < SPR_N; r++)
+            if ((e->fp >> r & 1) && e->parts[r]) want[nw].actor = e->parts[r], want[nw].ext = e->pf[r][0], want[nw].limit = e->pf[r][1], want[nw].flags = (uint32_t)e->pf[r][2], nw++;
+    }
+    plat_mutex_unlock(&reg_lock);
+    plat_mutex_lock(&lone_lock);
+    for (int i = 0; i < LONE_N && nw < SPR_N; i++)
+        if (lone[i].actor && lone[i].spring) want[nw] = lone[i].spr, want[nw].actor = lone[i].actor, nw++;
+    plat_mutex_unlock(&lone_lock);
+    for (int i = 0; i < nw; i++) if (alive(want[i].actor)) spring_apply(c, want[i].actor, &want[i]);
 }
 
 // ---- The co-op tick: messages, authority, touch, drive ------------------------------------------------------------------
@@ -1936,7 +2104,7 @@ static void receive(void) {
         if (!route || coop_ctr_latest(route, COOP_CTR_STATE, e->key64, &s, sizeof s, &age) != (int)sizeof s) continue;
         if (s.inc != e->inc || s.serial != e->serial || s.epoch != e->epoch || s.us <= e->hus[2]) continue;
         e->heard_us = now;
-        if (s.flags & 2) e->sw = s.sw, e->on = s.on, e->payer = s.payer, e->fw = s.fw, e->fk = s.fk, e->fb = s.fb, memcpy(e->pf, s.pf, sizeof e->pf);
+        if (s.flags & 2) e->sw = s.sw, e->on = s.on, e->payer = s.payer, e->fw = s.fw, e->fk = s.fk, e->fb = s.fb, e->fp = s.fp, memcpy(e->pf, s.pf, sizeof e->pf);
         if (!(s.flags & 1) || (e->v && s.v != e->v)) continue;   // (the root of another version is another part)
         memmove(e->hm[0], e->hm[1], 2 * sizeof e->hm[0]), memmove(e->hus, e->hus + 1, 2 * sizeof e->hus[0]);
         memcpy(e->hm[2], s.m, sizeof s.m), e->hus[2] = s.us;
@@ -1963,6 +2131,8 @@ static void send_states(void) {   // the builds this game runs: root and devices
                 if (part_switch(e->parts[r])) s.sw |= 1u << r, s.on |= (uint32_t)part_on(e->parts[r]) << r;
             for (int r = 0; r < e->np; r++) {
                 uint64_t bb = actor_bb(e->parts[r]);
+                SprSt sp;
+                if (spr_find(e->parts[r], &sp)) { s.fp |= 1u << r, s.pf[r][0] = sp.ext, s.pf[r][1] = sp.limit, s.pf[r][2] = (float)sp.flags; continue; }
                 if (bb_f32(bb, BB_WHEEL_SPIN, &s.pf[r][0])) s.fw |= 1u << r, bb_f32(bb, BB_WHEEL_STEER, &s.pf[r][1]);
                 else if (fuse_node(e->parts[r])) {
                     uint64_t node = fuse_node(e->parts[r]), cell = coop_rd_ptr(node + 0xd0) & ~3ull;
@@ -2182,6 +2352,7 @@ void coop_ctn_tick(Cpu *c) {
     receive();
     retire_pass(c);
     authority();
+    lone_tick();   // (before the lists: a lone copy first heard of is in the no-charge list the same tick)
     lists_rebuild(c);
     cptoggle_test();
     for (int i = 0; i < REG_N; i++) {
@@ -2195,8 +2366,7 @@ void coop_ctn_tick(Cpu *c) {
         if (drive) follow_rigid(c, e, now, &err);
         if (devs) dev_follow(c, e, now);
     }
-    floats_follow();
-    lone_tick();
+    floats_follow(NULL);
     events_out();
     send_states();
 }
