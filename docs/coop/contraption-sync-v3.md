@@ -2220,3 +2220,9 @@ either way round.** (37, continued; session of 23:0x, logs build/v143/logs/totk.
 - *Cannon, stake, time bomb, beam (items 9 to 12) look right; not tried on enemies.*
 - Counted in the logs of this session: stand-in hits not taken, 8 in each game; versions applied in place, 2 and 3;
   no refused delete; no part read as held by someone else.
+- the tester on note 14: the player looking away had only turned around next to the spring (not far from it); the beam
+  emitters of the battery case were loose, not in a build.
+- Read in our own coop_players.c (copy_place, place_copy): a copy of a Zonai device runs its own update, and its main
+  body is put at the owner's place every tick; nothing of ours stops a copy that is off screen. A spring's extension is
+  its second body, which is not placed. So the off-screen difference is either the game's own (what it stops for an
+  actor out of view: not read) or the second body going its own way. To be read before anything is changed.
