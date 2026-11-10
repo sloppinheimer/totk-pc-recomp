@@ -1473,3 +1473,48 @@ Scope agreed with the tester: "everything" before the next test is the stick fix
   is gone, which one run can show; that the break is gone follows from it.
 - Not looked at in this run: the other three scenarios on this build, and a remote swing reaching a build now that
   the stand-in's sensors no longer meet parts.
+
+## 30. Milestone 2 under the rule of 29 (2026-11-09)
+Milestone 2 is P4 (structure) and P5 (devices). Its experiments X5, X7, X8, X9, X11, X12 and X13 were written as runs.
+Under 29 each becomes a question answered by reading code. The one test of this milestone is asked for when all of it
+is implemented.
+
+### 30.1 What the notes already hold, and what they do not
+Two surveys of the research folder, counting as known only what a note states from code or from a logged run:
+`R/sync-v3/m2/p4_known_unknown.md` and `p5_known_unknown.md`.
+
+| Topic | State |
+|---|---|
+| making a bond between two existing parts | partly: the maker and its record are known; the space of its frames, and how a part already built gets its bond read, are not |
+| breaking one bond | partly: the functions take the edge pointer; finding the edge between two named bodies, and what a shake breaks, are not known |
+| a structure change as an event | partly: the points where it fires are known; the graph job's merge and split, and when membership is final, are unread |
+| a part's death and its replay | partly: the request can be refused; the replay's effect on edges and group is unread |
+| bodies gone after a delete (X7) | not established; the plan's citation for it was wrong |
+| identity of map and NPC parts, loose devices | partly: a placement hash exists, checked on enemies only |
+| a small copy for one added part; a copy around the local Link | partly: a record needs at least one bond; reusing an existing actor is unread |
+| per device kind: what moves it | named for 13 kinds; kept off followers for about 10 |
+| per device kind: internal state | fully described for 0 of 26; no path from an actor to its AI node is in the notes |
+| hits, harm, status on parts | partly: the toggle path is read; no status-apply function is identified |
+| spawns | not established |
+| energy and battery | partly: the callers and the payer are known; the gauge's "blocked" bit, the battery's drain and CustomEnergyRange are not |
+
+### 30.2 Where the plan's text is wrong or the code does not do what it says (found by the surveys)
+- 8.1 still switches by a DeviceSwitch request; that does not switch a device (28). The code uses the set messages.
+- 6.6 says the break functions name the peer body; they take the edge.
+- X7's body test cites a note that does not say it.
+- The plan has part uids that never change; the code uses the record index, and parts of one name keep the group's
+  order, which can change.
+- "Event-driven" structure: the hooks only log; the runner polls every 2 s.
+- The spring's launch is dropped on followers: G1 lets it pass, but the spring's apply function is among the wrapped
+  force nodes.
+- The wheel and cart motor nodes are skipped whole; the notes say to use the game's own "inert" test.
+- The game switches a follower's devices off through its own gauge (DeviceSwitch +0x8d bit 0); 8.7 does not cover it.
+- The contact filter covers enemy copies and stand-ins only, not parts.
+- The delete reason the code passes (3) is the far-delete reason in the P0 notes.
+Each is settled in the implementation of this milestone, from what the readers return, not from the plan's wording.
+
+### 30.3 Readers (Sonnet), each writing readable code into R/sync-v3/m2/
+- P4: bond-make, graph-groups, bond-break, death-delete, part-maker, placement-id.
+- P5, after P4's are read: engine access (actor to node, blackboard), rocket and time bomb, spring and stake, balloon /
+  hover stone / wing / stabilizer, wheels / sled / carts, stick and construct head, emitters, hits and status, spawns,
+  energy and battery.
