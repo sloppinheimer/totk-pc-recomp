@@ -2183,3 +2183,20 @@ written with the P5 leftovers or dropped by a stated decision.
 - **Fix after note 12 (not run)** - coop_ctn.c parts_delete, make_pass: a part whose delete the game refuses for 2 s is
   given up and left as it is, and a build waiting on a refused delete steps aside for 0.3 s so the others are made.
   The logs of the session up to here are kept as build/play2_p1.log and build/play2_p2.log.
+
+**13. Breaking an Autobuilt build: a fan (or the wing) "respawns" on the other screen and slowly flies away; glitchy
+either way round.** (37, continued; session of 23:0x, logs build/v143/logs/totk.log = player 1, build/v143play = player 2)
+- Seen working in the same logs: on/off from either player on an Autobuilt plane; the stuck-delete fix (every build
+  was made); a part pulled off applied in place ("27601be7 version 2 applied in place: 3 parts kept, 0 bonds made,
+  1 broken", then version 3 the same, player 1 lines 3680 and 3727; player 2 line 3152).
+- What goes wrong, from the logs: when a part of a green build is broken off, the game where it runs kills that part
+  (the game's own rule for Autobuilt parts). While it is dying it is no longer in the build, and the object sync of
+  that game sends it as a plain object ("I move SpObj_... (key ...)", player 2 lines 2373 to 2376, 3023 to 3026).
+  The other game then makes a mirror copy of it (player 1 line 3040, 3139 to 3141), and the older copy code makes
+  that copy again each time it dies there ("the copy of autobuilt ... came apart here (state 7) ...; made again",
+  player 1 lines 3189, 3218; "came apart here twice in 30 s", 3219). That copy is a live fan, switched on: the fan
+  that flies away.
+- So the core handled the break; the object mirror and the older copy code then brought the dead part back.
+- Same root as the decision of 38: a part that is or was a build's belongs to the core, and the object mirror must
+  not show it. The narrow rule here: an actor made by an Autobuild (the game's "imaginary" class) is never sent or
+  mirrored as a plain object while the core is on; loose, it is a dying part.
