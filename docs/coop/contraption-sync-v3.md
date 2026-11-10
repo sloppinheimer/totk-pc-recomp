@@ -1421,3 +1421,27 @@ together at actor phase 0, before any device update.
 - A build that unloads or is destroyed at its runner lapses there only; the others keep their copy (10.3).
 - B's first core1 run never asked for off; not seen again in six runs, not explained.
 - Not carried over: the self-mirror lab, ABON, ABPUSH and the root-only drive mode.
+
+## 29. The rule of work from here (the tester, 2026-11-09, night)
+This replaces 25.2 points 2 to 4 and 11, and every "one run to see" in sections 15 to 17.
+
+1. **No guessing.** Nothing is written against a theory of how the game works.
+2. **No run to find something out.** No instrumentation run, no repeat-until-it-breaks loop, no quick check.
+3. **What is not known is read.** Sonnet readers turn the game code in question into a readable form (commented
+   pseudocode with addresses, in the research folder). That is read, and the notes say what was learned.
+4. **Then it is implemented.**
+5. **Testing starts only when everything planned is implemented**, and each run needs the tester's yes.
+
+What the evening before this rule cost and showed is in 28 and in the research notes (physics/README.md section 8):
+two fixes for the stick breaking off were written on theories and were wrong; the measurements that followed name a
+second stand-in body and five more bodies that the collision veto does not cover, without naming their owners.
+
+### 29.1 Open questions handed to readers (no code until they are answered)
+- How a Player actor holds its rigid bodies: every body of a stand-in, and the path from the actor to each.
+- What bodies a Player's gear has (weapon, shield, bow, as their own actors), on which layers, and how the game keeps
+  them from pushing things the Player stands by.
+- The collision layers: their names and numbers, the layer matrix the filter main+0x40a240 reads, and the game's own
+  ways to make two bodies ignore each other (X14b's candidates).
+
+### 29.2 Implemented and not yet tested
+(kept current; empty when this section was written: the rebuilt core and device on/off were run in 28)
