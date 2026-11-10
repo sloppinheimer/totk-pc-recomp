@@ -1531,3 +1531,85 @@ Noted as they come, not acted on until their turn. Each gets its cause read befo
 | 5 | p2 tried to attach a log to p1's stake. It did not work, it glitched the other player's game too, and the log is now stuck and cannot be moved. | From the logs (build/play1c_p1.log, play1c_p2.log): the log is a map tree trunk that p2's game moves ("I move ... Trunk"), the stake is p1's object, and each game holds the other's as a per-object copy. The glue went through the older coop_glue.c, not the new core: p2's game made bond 2 between its trunk and its copy of the stake, and p1's game made the same bond again between its copy of the trunk and its stake. No registry entry was made for the pair. The result is one glued pair whose two halves are each placed by a different game's object sync, so neither game can move it. This is the case the plan's structure phase exists for: a bond between two players' things has to make one build with one runner (6.4, 6.7), and coop_glue.c is to stand down for it (14). Not built yet. | noted |
 | 6 | A three-wheeled car with a steering stick, driven by the player who made it (p1). (a) After p1 got off, the wheels spin forever on p2's screen. (b) The stick does not move on the watching screen, though the driver's body moves as if steering. (c) The driver's figure lags behind the machine on the watching screen: it stays with it roughly but floats when the machine bounces over rough ground. | From the logs (build/play1d_p1.log, play1d_p2.log). (a) The car is 8 parts, 4 with a switch. p1's game made and ran it; then p2's game logged its own player touching it, asked to run it and was handed it; when the logs were taken p2's game ran it and reported all four switched parts on, and p1's game followed with them on. Nothing switched it off after the rider left. Not known: why p2's game saw its own player touch the car while p1 drove (the tester: each game had its own pad and p2's Link was nowhere near the car, so p2's game was wrong: it read its own player as holding or steering a build that the other player was driving, and took the build from under its driver. The test is any_held in coop_ctn.c: a part with the Ultrahand-held bit, SPR +0x20 bit 16, or a stick whose rider is this game's own Link. Which of the two read true in p2's game, and why, is not known: how the stick names its rider when the rider is another player's stand-in, and whether anything sets the held bit on a copy, are to be read. The final logs add two facts: p2's game logged the touch and "let go" in the same moment, a few seconds after its copy was made, so the false touch lasted about one tick; and p1's game, from then on a follower of its own build, never logged its own player touching the car while p1 drove it, so it never asked for the build back. Both readings of any_held were wrong in this session, in opposite directions), and what the game does to switch a build off when its rider gets off and why that did not happen in the game running it (the group's "everything off" request at stick release, R/sync-v3/onoff/c_group.md, is the path to read). (b) The stick's tilt is device state (8.4), not sent; only on and off travel. (c) A rider's stand-in is placed from its own player's stream, not on the local copy of the part it rides (9, ride info), which is not built. | noted |
 | 7 | The play session ended with player 2's game crashing (found in its log; not something the tester reported). | build/play1_final_p2.log: "45cfc61b is not whole here (0 members, 2 parts): made again", and in the same moment an access violation reading address 0x50 inside main+0x63baa8, the delete request, called with an actor and reason 3. The chain is in coop_ctn.c: the repair rule of 27.3 R3 found a followed two-part build whose parts read as no group at all, queued a remake, and make_pass asked the game to delete each of the old parts without first checking that the actor still exists (part_delete has no such check; the older code it was moved from had none either). The parts were already gone, so the delete request read through a dead actor. Two things to settle from the death-delete reader's output before writing: the read that says an actor is safe to pass to the delete request, and why a followed build's parts vanish (the build was player 1's, far from player 2 at the time: an unload is the likely reading, not proven), since a build that unloads in a follower must not be "repaired" at all (10.3). | noted; a crash, first in line |
+
+## 32. What the structure reading established (read 2026-11-09, R/sync-v3/m2/p4/, six folders, all read in full)
+Static reading only; nothing here has been run. Each line names the folder that holds the code and addresses.
+
+**Bonds (bond-make)**
+- A bond is fully described by the relative pose of its two bodies: `rel = inverse(poseA) * poseB`, with which body
+  slot of each part. Passing both bodies' world matrices holds them where they stand; nothing is pulled.
+- The game makes a bond two ways, both ending in the same maker: at once (main+0x1c05a98), or queued on the first
+  part and made by that part's own update in a frame where its SPR +0x27c bit 0 is set (what an Autobuild confirm
+  does). The queue needs no build object. Setting the bit by itself runs the reader once and does not make the part green.
+- The queued way also asks an active device on (request {1, priority 5}) and raises a structure flag on the group.
+- A body torn down once carries a mark (body +0x68 bit 24) that nothing clears; a bond on such a body is dropped silently.
+- An older note ("the maker takes frames in each body's own space") is wrong; the matrices are poses in one common space.
+
+**Groups (graph-groups)**
+- No group survives a change. Adding or removing one bond dissolves the connected sets at both ends and rebuilds them,
+  and every member gets a new group record: SPR +0x28 and the group id change at every rebuild even when parts and
+  bonds are the same. Matching a build by its group can never hold; 27.3 R5 stands.
+- The group pointer of a part left alone becomes 0, written last in the same physics step.
+- The new members collide with each other from the bond maker's return until the end of the graph job that takes the
+  bond: the push-apart seen when bonding touching parts.
+- A record's part order: sorted by name; equal names keep the group's member order, which is the order of first
+  appearance in the set and changes when a bond is added. So "uid = record index" (the code today) is not stable.
+- A hook on the record bind (main+0xc16b94) sees every regrouping once, with the member list filled.
+- The history record: at most 21 parts and 21 bonds; bonds past 21 are dropped silently; an end whose part is not in
+  the record leaves its index byte unwritten.
+
+**Breaking (bond-break)**
+- The edge between two named bodies is found by listing one body's edges and comparing ends; exact code exists.
+  Breaking it "as the game does" posts a message carrying the edge pointer to the owner of end A.
+- One shake of a hand-glued part breaks every glue bond on that part and no other. One shake of an Autobuilt part with
+  both Autobuilt and plain neighbours breaks only its bonds to the plain ones.
+- Six families of code remove edges; only three pass the one function a hook could watch. A torn-down controller takes
+  all its edges with it and passes none.
+- The strain rule (the stick's loss, 28) is read in full: tolerance 0.3 m scaled by the parts' bond strength.
+
+**Death and delete (death-delete)**
+- For a Zonai part every death kind but five ends in a plain delete inside the request call. A death breaks no bond and
+  leaves no group by itself; only the delete's teardown does, in a later physics flush.
+- The kind asked is rewritten before it is stored (kinematic collision becomes life depleted). A replay must use the
+  stored kind, and a delete made at once leaves the death word untouched.
+- Delete reason 0 is "delete this actor"; reason 3, which the code passes today, is "far delete", the unload reason.
+- The delete request reads the actor's lock object before anything else, and that object is dropped once the actor
+  passes state 7. This is the read that crashed player 2's game (31, note 7).
+- No single read is proven for "this actor's bodies have left the world"; body +0x70 == 0, taken through a pointer
+  known to be valid, is the best supported.
+
+**The part maker (part-maker)**
+- The game's confirm already has a branch for "an existing actor stands in for this record part" (pool entry state 2)
+  and bonds it to newly made parts from its real body. It accepts a hand-filled entry. A record still needs at least
+  one bond, so a single part cannot go through it.
+- The confirm sends the set-off message to an existing device it takes in, breaks that actor's glue edges first, and
+  does not make it green.
+- The "preview" marks are never put on the parts the co-op recipe makes, and none of them was shown to stop parts
+  colliding while they are assembled. What does is not established.
+- The player's character controller pushes what it touches through a query filter that never runs the pair test, so
+  the stand-in veto does not reach a controller's pushes. (A stand-in has no controller; the local player has.)
+
+**Identity (placement-id)**
+- Every actor has a placement record; a map-placed actor carries a 64-bit hash copied from the map's own data, and an
+  actor made at run time carries all ones. The game keys saved flags by that hash, so it is the same in two games on
+  the same map data. "Has a hash" is the test for "came from the map".
+- Nothing tells "made by a player" from "spawned by the game at run time"; that has to come from the mod's own record.
+- NPC and enemy vehicles are not made by the bond maker; how their parts are joined is not read.
+
+### 32.1 What this changes in the design
+- 27.2's "uid = record index" goes. A part's uid is given once by the runner and travels with the version (6.1).
+- Structure changes can be sent as what they are (a bond: two uids, two slots, a relative pose; a break: two uids, two
+  slots; a death: a uid and the stored kind) and made in place with the read functions, instead of delete-and-remake.
+  Remake stays as the fallback.
+- A delete the mod makes passes reason 0 and is made only on an actor whose state is 2 to 6 and whose lock object is
+  still there.
+- A followed build whose parts are gone is not repaired: parts that vanish in a follower are an unload until the
+  runner says otherwise (10.3).
+
+### 32.2 Still not read after this pass (each blocks the piece named)
+- In which frame the graph takes a new bond after the maker returns (the scheduler's order): bounds how long new
+  neighbours collide. Blocks nothing; the made bond is correct either way.
+- What keeps parts from colliding while the game assembles them: blocks a clean in-place add of a touching part.
+- The shake detector and the bit that arms a part's bonds for breaking (SPR +0x20 bit 55's meaning).
+- What holds the delete lock of reason 0 for a part.
+- How NPC and enemy vehicles are joined.
