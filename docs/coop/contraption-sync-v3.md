@@ -2116,3 +2116,53 @@ it could.**
 - Not known: what joins the parts again. Candidates, none confirmed: the older glue path making player 1's bond
   again on player 2's parts (it does so once at line 1555); the other game, whose copy is still whole, taking the
   build and its state winning; the game's own rule for bonds between two parts made by a confirm. To be read.
+
+**Added to notes 10 and 11 after the tester's answer and a read of our own coop_glue.c (2026-11-09, late)**
+- the tester moves one game at a time; the two gamepads are used only at the title screen. Each hand-over in the logs
+  lines up with the window that had the focus (player 1's log: "window gained the focus" at 22:38:17, then its
+  touch; player 2's at 22:38:22), so those were his own grabs and the hand-over worked as designed. "Both Links grab
+  at once" is withdrawn.
+- **The likely cause of note 11**, read from coop_glue.c's own header and its retry code: the older glue sync still
+  runs beside the core. It refuses a break of a bond it made again here from another game's glue, and it makes that
+  bond again once a second for as long as its maker still lists it. Player 1's own fans stay fused in player 1's
+  game, so player 2's game puts the bond back on its parts (found through coop_obj_find, which answers with the
+  core's made parts). Player 2's log line 1555 is that path making player 1's bond. Not confirmed by a run with
+  TOTK_COOP_GLUE=0.
+- The same path is the likely cause of note 5 (the log on another player's stake).
+- Note 10 (a loose copy of the other player's object cannot be moved with Ultrahand) is not explained yet.
+
+## 38. Where the whole plan stands, and what comes next (2026-11-09, late; agreed with the tester in conversation)
+
+**Decision: the older glue path is retired, not rewritten.** Two systems decide the same thing: coop_glue.c syncs
+"this bond exists" between two objects that each keep their own owner, the core syncs "this is one build, run by one
+game". The replacement is one rule in the core: two things glued are a build, whoever owned them.
+- A loose object glued on, this game's or another's, is taken into the build in place (no delete and make).
+- The object mirror stops moving an object, and does not delete it, while it is a part of a build, in every game.
+- A part that comes off is a plain object again, owned by the game that ran the build.
+- coop_glue.c and the bonding half of coop_bonds.c are then switched off from the core. coop_bonds.c holds another
+  session's uncommitted changes in this checkout and is not edited.
+- The fixed waits go at the same time: the 2 s between records, the 3 s before a made copy counts, the 3 s before a
+  build that is gone is retired (note 9).
+- To read first, all our own code: coop_glue.c, coop_bonds.c, the object mirror in coop_players.c.
+
+**Phases (the table of section 20)**
+| phase | stands |
+|---|---|
+| P0 to P3 | done and run before this session's milestone 2 |
+| P4 structure | splits, merges and pull-offs written (in place); the glue rework above is what is missing |
+| P5 devices | mostly written (34.3, 35.1 and after); missing: wooden parts burning alike, the time bomb's blast on the copy, the payer's empty gauge |
+| P6 riding, weight, push | only pieces: the stand-in veto (run), rider placement (written); the rest not started |
+| P7 lifetime and session | only the unload case (33.1, written); fast travel, leave and rejoin, late join, three players not started |
+| P8 a long session | not started |
+
+**Named in the plan's P4 and P5 and neither built nor flagged until now:** vehicles placed by the map and NPC
+vehicles entering the registry; spawned things (a cannon ball) as tracked entities of the build. Each is either
+written with the P5 leftovers or dropped by a stated decision.
+
+**Order**
+1. the tester finishes the play-test list of the milestone 2 build; notes go into 37.
+2. The glue rework (finishes P4), with the waits removed.
+3. The P5 leftovers (the burning one after one more read).
+4. One test of P4 and P5 together.
+5. P6, then P7: each read first, written whole, tested once.
+6. The long session.
