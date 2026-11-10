@@ -204,7 +204,38 @@ static uint64_t part_switch(uint64_t a) {   // component 166 when the device tak
     uint8_t b60 = 0;
     return c166 && coop_rd(c166 + 0x60, &b60, 1) && b60 ? c166 : 0;
 }
-static int part_on(uint64_t a) {   // the device's on bool ([comp 11] +0x348 bit 0x2000)
+// An actor's blackboard ([[[actor +0x228] +0] +0x10]) and the index of a value in one of its sections: the bools at
+// +0x198, the floats at +0x120; a section holds its count at +0, its values at +8, a hash table at +0x30 of
+// {u32 hash, s32 index} slots and the table's size at +0x3c. A key is looked up from hash % size onward, wrapping; an
+// empty slot (hash 0) ends the search. Keys are murmur3_32 of the name. Read from the game: research notes
+// sync-v3/m2/p5/engine-access.
+#define BB_BOOLS 0x198
+#define BB_FLOATS 0x120
+static uint64_t actor_bb(uint64_t a) {
+    uint64_t t = a ? coop_rd_ptr(a + 0x228) : 0, c0 = t ? coop_rd_ptr(t) : 0;
+    return c0 ? coop_rd_ptr(c0 + 0x10) : 0;
+}
+static int bb_index(uint64_t bb, uint32_t sec, uint32_t hash) {
+    uint64_t tab = bb ? coop_rd_ptr(bb + sec + 0x30) : 0;
+    int32_t size = 0, count = 0;
+    if (!tab || !coop_rd(bb + sec + 0x3c, &size, 4) || !coop_rd(bb + sec, &count, 4) || size <= 0 || size > 4096) return -1;
+    uint32_t at = hash % (uint32_t)size;
+    for (int i = 0; i < size; i++, at = (at + 1) % (uint32_t)size) {
+        struct { uint32_t hash; int32_t index; } e;
+        if (!coop_rd(tab + 8 * (uint64_t)at, &e, 8) || !e.hash) return -1;
+        if (e.hash == hash) return e.index >= 0 && e.index < count ? e.index : -1;
+    }
+    return -1;
+}
+// The device's on state: the blackboard bool SpecialParts_IsOn (0xbcd1015f), which the on/off node writes at every
+// change of its latch and which the game's own group code reads. The word this used to read ([comp 11] +0x348 bit
+// 0x2000) is not the latch and its writer is unknown (research notes sync-v3/m2/p5/setoff-not-taking, section 5); it
+// is the fallback for an actor with no such bool.
+static int part_on(uint64_t a) {
+    uint64_t bb = actor_bb(a);
+    int i = bb_index(bb, BB_BOOLS, 0xbcd1015fu);
+    uint8_t b = 0;
+    if (i >= 0) return coop_rd(coop_rd_ptr(bb + BB_BOOLS + 8) + (uint64_t)i, &b, 1) && b;
     uint64_t t = a ? coop_rd_ptr(a + 0x228) : 0, c11 = t ? coop_rd_ptr(t + 8 * 11) : 0;
     uint32_t v = 0;
     return c11 && coop_rd(c11 + 0x348, &v, 4) && (v & 0x2000);
@@ -214,10 +245,27 @@ static int part_green(uint64_t a) {   // made from zonaite by an Autobuild confi
     uint32_t f = 0;
     return spr && coop_rd(spr + 0x150, &f, 4) && (f & 1);
 }
+// Held with Ultrahand by this game's Link. The held bit (SPR +0x20 bit 16) is set only by main+0x1c0b83c, which
+// stores who holds as a handle at [SPR +0x30] +0x10 (slot +8, id +0x10; the slot's +0x48 is the id while the handle is
+// good, +0x40 the actor). The bit alone read true for one tick on a copy just made, with no hold by this game's
+// player, and the other game lost its car to it (plan 31, note 6a): so the holder has to be this game's Link.
+// Research notes sync-v3/m2/p5/stick-head, section 4.
 static int part_held(uint64_t a) {
-    uint64_t spr = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x480) : 0;
+    uint64_t spr = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x480) : 0, me = coop_player_actor();
     uint64_t f = 0;
-    return spr && coop_rd(spr + 0x20, &f, 8) && (f & 0x10000);
+    if (!spr || !me || !coop_rd(spr + 0x20, &f, 8) || !(f & 0x10000)) return 0;
+    uint64_t h = coop_rd_ptr(spr + 0x30), slot = h ? coop_rd_ptr(h + 0x10 + 8) : 0;
+    uint32_t id = 0, sid = 0;
+    uint64_t holder = slot && coop_rd(h + 0x10 + 0x10, &id, 4) && id != ~0u && coop_rd(slot + 0x48, &sid, 4) && sid == id ? coop_rd_ptr(slot + 0x40) : 0;
+    if (holder != me) {
+        static int64_t said;
+        int64_t now = frame_step_world_us();
+        char nm[48] = "";
+        if (now - said > 2000000)
+            said = now, rt_log("coop: contraption: a part reads held, and not by this Link (holder %s): no touch", holder ? coop_actor_name(holder, nm, sizeof nm) : "none");
+        return 0;
+    }
+    return 1;
 }
 // The Link steering a stick: its rider sources (component 129, [actor+0x228]+0x408: count +0x20, array +0x28 of
 // pointers), one with state +0x18 == 2, +0x74 <= 0 and a live handle (slot [src+8]: +0x48 its id, +0x40 the actor),
@@ -235,7 +283,7 @@ static uint64_t stick_rider(uint64_t a) {
             id == -1 || !coop_rd(slot + 0x48, &sid, 4) || sid != id)
             continue;
         uint64_t rider = coop_rd_ptr(slot + 0x40);
-        if (rider) return rider;
+        if (alive(rider)) return rider;   // (the game's own readers also want the occupant in state 2 to 6)
     }
     return 0;
 }

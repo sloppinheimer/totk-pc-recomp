@@ -1908,3 +1908,12 @@ Static reading only; nothing here has been run. Each block names the folder that
 - What consumes a copy emitter's hits (beam, flame) so harm is not counted in two games.
 - Status effects on parts, damage and explosions on parts (not touched by this pass).
 - The seat release function; whether a stand-in ever performs a ride start (rider placement, 6c).
+
+### 34.3 Written from this reading so far (not run; continues the list of 33)
+- **"On" from the blackboard (34.1 item 1)** - coop_ctn.c part_on, actor_bb, bb_index. Every on/off compare and the
+  state sent now read SpecialParts_IsOn; the comp 11 word is the fallback for an actor without that bool. A run
+  shows: the "there on / here" lines agree with what is on screen in both games, and set-off is not repeated.
+- **Touch by this game's Link only (34.1 item 2; 31 note 6a)** - coop_ctn.c part_held, stick_rider. Held needs the
+  held bit and the holder handle resolving to this game's Link; a rider must be in state 2 to 6. A part that reads
+  held by someone else logs "a part reads held, and not by this Link". A run shows: carrying another player's build
+  still takes it over (the carry scenario), and a build is not taken by a game whose player is nowhere near.
