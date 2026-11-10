@@ -1725,6 +1725,15 @@ int coop_ctn_no_charge(uint64_t a) {
 // A part of a build this game does not run, or one still being made (G3 and G4: it takes no game rule's death)
 // Every part of every entry here, for reads from other threads and files (the object mirror: coop_players.c)
 static _Atomic uint64_t part_list[REG_N * 21];
+int coop_ctn_parts_all(uint64_t *out, int max) {   // every part of every build known here (coop_players.c: riding)
+    int n = 0;
+    for (int i = 0; i < REG_N * 21 && n < max; i++) {
+        uint64_t p = atomic_load_explicit(&part_list[i], memory_order_relaxed);
+        if (!p) break;
+        out[n++] = p;
+    }
+    return n;
+}
 int coop_ctn_part(uint64_t a) {
     for (int i = 0; a && i < REG_N * 21; i++) {
         uint64_t p = atomic_load_explicit(&part_list[i], memory_order_relaxed);
