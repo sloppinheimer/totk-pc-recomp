@@ -48,12 +48,15 @@ static int ctn_on(void) {
     static int on = -1;
     if (on < 0) {
         on = cfg_get("TOTK_COOP_CONTRAPTION") && *cfg_get("TOTK_COOP_CONTRAPTION") == '1';
-        // (devices' on and off are this file's then, lone ones too: the older flip path of coop_bonds.c stands down)
-        if (on && !cfg_get("TOTK_COOP_DEVICE_SYNC")) cfg_set("TOTK_COOP_DEVICE_SYNC", "0");
-        // (and glue and bonds: anything glued is a build of this file's, whoever owned the parts; the older glue sync
-        // made a maker's bond again every second and refused its break, plan 37 note 11 and section 38)
-        if (on && !cfg_get("TOTK_COOP_GLUE")) cfg_set("TOTK_COOP_GLUE", "0");
-        if (on && !cfg_get("TOTK_COOP_BONDS")) cfg_set("TOTK_COOP_BONDS", "0");
+        // Devices' on and off are this file's then, lone ones too: the older flip path of coop_bonds.c stands down. And
+        // glue and bonds: anything glued is a build of this file's, whoever owned the parts; the older glue sync made a
+        // maker's bond again every second and refused its break (plan 37 note 11 and section 38). They are switched off
+        // in this process's environment, which cfg_get reads first and cfg_save never writes, not with cfg_set, which
+        // totk.ini would keep after this session (review 1 finding 84). memory.c calls this right after cfg_init, before
+        // the older files read their switch once and keep it.
+        static const char *const older[] = {"TOTK_COOP_DEVICE_SYNC", "TOTK_COOP_GLUE", "TOTK_COOP_BONDS"};
+        for (int k = 0; on && k < 3; k++)
+            if (!cfg_from_env(older[k])) plat_setenv(older[k], "0");
     }
     return on;
 }
@@ -92,6 +95,9 @@ typedef struct {
                             // game's own object, taken into the build where it stood. Let go, never deleted.
     int64_t del_since;      // since when a delete of a part of it has been refused (0: none)
     int64_t stuck_until;    // not picked by the maker before this (a refused delete: the other builds go first)
+    uint32_t unloaded;      // bit r: part r went here with no death asked of it (the engine unloaded it, plan 41)
+    uint32_t vseen;         // the highest version number heard of it: a new runner numbers on from here (finding 39)
+    int relinq_later;       // a RELINQUISH that came while it was being made: taken up once made (finding 38)
     int np;
     int absent;             // a follower whose parts the engine unloaded: 1 far, 2 near again and waiting for the version
     float absent_dist;      // how far this game's Link was when they went
@@ -148,6 +154,14 @@ static Ent *ent_new(uint64_t inc, uint32_t serial) {   // (a free slot; a full t
 }
 static int runs(const Ent *e) { return e->runner && e->runner == coop_ctr_me(); }
 static uint32_t cid32(const Ent *e) { return (uint32_t)(e->key64 ^ e->key64 >> 32); }   // (for the log)
+// Parts whose death was asked here lately (coop_ctn_death_seen): a part that goes with no death asked was unloaded by
+// the engine, one that died was destroyed. The two are told apart where a build loses parts (record_pass, authority).
+static struct { uint64_t actor; int64_t us; } died[32];
+static int died_i;
+static int died_lately(uint64_t a, int64_t now) {   // (reg_lock held)
+    for (int i = 0; a && i < 32; i++) if (died[i].actor == a && now - died[i].us < 5000000) return 1;
+    return 0;
+}
 
 // The parts made here from records: not this game's own objects (not sent as objects, not recorded as a new build)
 #define MADE_N 160
@@ -215,7 +229,9 @@ static int parts_delete(Cpu *c, Ent *e) {
     for (int r = 0; r < e->np && r < 21; r++) {
         if (e->del_ok >> r & 1) continue;
         if (!alive_as(e->parts[r], e->gen[r])) { made_forget(e->parts[r]), e->del_ok |= 1u << r; continue; }
-        if (e->adopt >> r & 1) { e->del_ok |= 1u << r; continue; }   // (the object mirror's, or this game's own: let go)
+        // Only a part this game made from a record is deleted. Any other (the object mirror's copy, or this game's own
+        // object taken into a build) is let go as it is, whatever the entry's bits say (review 1 finding 1).
+        if ((e->adopt >> r & 1) || !coop_contraption_made(e->parts[r])) { e->del_ok |= 1u << r; continue; }
         if (part_delete(c, e->parts[r])) { e->del_ok |= 1u << r; continue; }
         if (!e->del_since) e->del_since = now;
         if (now - e->del_since > 2000000) {
@@ -437,6 +453,11 @@ static void set_runner(Ent *e, uint64_t who, uint32_t epoch) {   // (reg_lock he
     memset(e->hus, 0, sizeof e->hus), e->clock_off_at = 0;   // (another sender's clock)
     if (e->fs) memset(e->fs, 0, sizeof *e->fs);
     if (runs(e) && !was) e->seen_us = frame_step_world_us(), e->gone_us = 0, e->payer = 0;
+    // A new runner whose parts are an older version than one heard of (the old runner's last, not applied here yet):
+    // its parts' record goes out under a number above all of them, or the games holding that one would keep it for good
+    // (review 1 finding 39).
+    if (runs(e) && !was && e->v && e->vseen > e->v) e->v = e->vseen + 1, e->resend = 1;
+    if (runs(e) && !was) e->unloaded = 0;   // (parts that went here before are no longer its parts: not an unload now)
     rt_log("coop: contraption: %08x is run by %s now (change %u)", cid32(e), runs(e) ? "this game" : "another player's game", epoch);
 }
 
@@ -575,6 +596,25 @@ static void record_pass(Cpu *c) {
             for (int r = 0; r < nmem; r++) e->original &= !coop_contraption_made(used[r]);
         }
         claimed[e - reg] = 1;
+        // A part of it gone here with no death asked: the engine is unloading the build part by part (each part at its
+        // own radius from this game's player). Recorded, each smaller group would be a new version, the other games'
+        // copies would lose those parts and, at the end, the whole build. It is offered to them instead, unchanged; a
+        // game that still has it runs it from then on (review 1 finding 36, plan 41.1).
+        {
+            uint32_t unl = e->unloaded;
+            for (int r = 0; r < e->np && r < 21; r++)
+                if (e->parts[r] && !alive_as(e->parts[r], e->gen[r]) && !died_lately(e->parts[r], now)) unl |= 1u << r;
+            e->unloaded = unl;
+            if (unl) {
+                if (now - e->asked_us > 1000000) {
+                    e->asked_us = now, send_ctl(COOP_CTR_RELINQUISH, e, e->epoch, me);
+                    rt_log("coop: contraption: %08x, run here, is being unloaded here (parts %#x gone): offered to the games that still have it", cid32(e), unl);
+                }
+                e->seen_us = now, e->gone_us = 0;
+                plat_mutex_unlock(&reg_lock);
+                continue;
+            }
+        }
         uint32_t shape = bp_shape(rec), green = 0;
         for (int r = 0; r < nmem; r++) green |= (uint32_t)part_green(used[r]) << r;
         int same = e->v && shape == e->shape && e->np == nmem && green == e->green;
@@ -586,9 +626,10 @@ static void record_pass(Cpu *c) {
                 for (int u = 0; u < nmem; u++) kept |= used[u] == e->parts[r];
                 if (!kept && !part_group(e->parts[r])) made_forget(e->parts[r]);
             }
-            e->v++, e->shape = shape, e->green = green, e->np = nmem, e->resend = 1;
+            e->v = (e->v > e->vseen ? e->v : e->vseen) + 1, e->shape = shape, e->green = green, e->np = nmem, e->resend = 1;
             memcpy(e->rec, rec, BP_SIZE), memcpy(e->parts, used, sizeof e->parts), memcpy(e->ids, ids, sizeof e->ids), memcpy(e->oinc, oinc, sizeof e->oinc);
-            e->del_ok = 0;
+            e->del_ok = 0, e->unloaded = 0, e->adopt = 0;
+            for (int r = 0; r < nmem; r++) if (!coop_contraption_made(used[r])) e->adopt |= 1u << r;   // (not made here: never deleted here)
             for (int r = 0; r < 21; r++) e->gen[r] = gen_of(e->parts[r]);
             rt_log("coop: contraption: %08x, run here: version %u (%u parts, %u bonds, shape %08x)", cid32(e), e->v, rec[9], rec[10], shape);
         }
@@ -613,19 +654,22 @@ static void record_pass(Cpu *c) {
                 if (!e->gone_us) e->gone_us = now;
                 int live_parts = 0, grouped = 0;
                 for (int r = 0; r < e->np; r++) live_parts += alive(e->parts[r]), grouped += alive(e->parts[r]) && part_group(e->parts[r]);
+                for (int r = 0; r < e->np && r < 21; r++)
+                    if (e->parts[r] && !alive_as(e->parts[r], e->gen[r]) && !died_lately(e->parts[r], now)) e->unloaded |= 1u << r;
                 if (grouped) e->gone_us = now;   // (still a build: the writer refused it this time, or it is changing)
                 if (now - e->gone_us > 600000) {   // (0.6 s: a regrouping takes a frame or two)
-                    if (live_parts) {
-                        send_ctl(COOP_CTR_RETIRE, e, e->epoch, me);
-                        for (int r = 0; r < e->np; r++) if (!part_group(e->parts[r])) made_forget(e->parts[r]);
-                    }
-                    // None of its parts is left here: the engine unloaded them (each part deletes itself beyond its own
-                    // display radius from this game's player, 60 to 130 m for most parts: research notes
-                    // sync-v3/m2/p8/unload-travel) or they were destroyed (then their deaths were sent). A game that still
-                    // has the build is told it may run it now (plan 10.3).
-                    if (!live_parts) send_ctl(COOP_CTR_RELINQUISH, e, e->epoch, me);
+                    // Parts of it went with no death asked: the engine unloaded them (each part deletes itself beyond its
+                    // own display radius from this game's player, 60 to 130 m for most parts: research notes
+                    // sync-v3/m2/p8/unload-travel). A game that still has the build is told it may run it now (plan
+                    // 10.3). Else it broke apart here (parts alive, no group) or was destroyed (every part died, the
+                    // deaths were sent): the other games' copies go (RETIRE), and none of them makes it again
+                    // (review 1 finding 37).
+                    int unl = e->unloaded != 0;
+                    if (unl) send_ctl(COOP_CTR_RELINQUISH, e, e->epoch, me);
+                    else send_ctl(COOP_CTR_RETIRE, e, e->epoch, me);
+                    for (int r = 0; live_parts && r < e->np; r++) if (!part_group(e->parts[r])) made_forget(e->parts[r]);
                     rt_log("coop: contraption: %08x, run here, is no build any more (%d of %d parts alive): %s", cid32(e), live_parts, e->np,
-                           live_parts ? "retired" : "lapsed, offered to the games that still have it");
+                           unl ? "unloaded here, offered to the games that still have it" : live_parts ? "broken apart, retired" : "destroyed, retired");
                     free(e->fs), memset(e, 0, sizeof *e);
                 }
             }
@@ -786,7 +830,7 @@ static void orphans_pass(Cpu *c, int64_t now) {
         int adopted = orphans[i].adopt;
         if (a) orphans[i].actor = 0;
         plat_mutex_unlock(&reg_lock);
-        if (a && adopted) continue;   // (an object of the mirror's or of this game's: it is a plain object again)
+        if (a && (adopted || !coop_contraption_made(a))) continue;   // (an object of the mirror's or of this game's: it is a plain object again)
         if (a && alive_as(a, gen) && !part_delete(c, a)) {   // (refused now: asked again)
             plat_mutex_lock(&reg_lock);
             orphan_add(a, gen, 0, 0, now - 900000, 0);
@@ -802,8 +846,11 @@ static int in_place(Cpu *c, Ent *e, uint64_t o, int64_t now) {
     uint64_t oinc[21], act[21] = {0}, breaks[64];
     uint32_t gens[21] = {0};
     int n, nb, ne = 0, nbreak = 0, have[21] = {0}, made = 0;
+    uint32_t in_v, in_shape, in_green;   // (the version read here is the one committed: another may come meanwhile, finding 3)
+    float in_centre[3];
     plat_mutex_lock(&reg_lock);
     memcpy(r, e->in_rec, BP_SIZE), memcpy(ids, e->in_ids, sizeof ids), memcpy(oinc, e->in_oinc, sizeof oinc);
+    in_v = e->in_v, in_shape = e->in_shape, in_green = e->in_green, memcpy(in_centre, e->in_centre, sizeof in_centre);
     n = r[9], nb = r[10];
     int ok = n >= 2 && n <= 21 && nb >= 1 && nb <= 21 && !memcmp(r, "CmbAct", 6);
     for (int j = 0; ok && j < n; j++) {
@@ -898,9 +945,10 @@ static int in_place(Cpu *c, Ent *e, uint64_t o, int64_t now) {
         for (int j = 0; j < n; j++) if (orphans[q].actor == act[j]) orphans[q].actor = 0;
     memset(e->parts, 0, sizeof e->parts), memset(e->gen, 0, sizeof e->gen);
     memcpy(e->parts, act, sizeof(uint64_t) * (size_t)n), memcpy(e->gen, gens, sizeof(uint32_t) * (size_t)n);
-    memcpy(e->rec, r, BP_SIZE), memcpy(e->ids, ids, sizeof e->ids), memcpy(e->oinc, oinc, sizeof e->oinc), memcpy(e->centre, e->in_centre, sizeof e->centre);
-    e->np = n, e->v = e->in_v, e->shape = e->in_shape, e->green = e->in_green, e->local = L_LIVE, e->original = 0, e->want_make = 0, e->del_ok = 0;
-    e->absent = 0, e->old_us = 0, e->changed_us = 0, e->remade_us = now, e->adopt = in_adopt;
+    memcpy(e->rec, r, BP_SIZE), memcpy(e->ids, ids, sizeof e->ids), memcpy(e->oinc, oinc, sizeof e->oinc), memcpy(e->centre, in_centre, sizeof e->centre);
+    e->np = n, e->v = in_v, e->shape = in_shape, e->green = in_green, e->local = L_LIVE, e->original = 0, e->del_ok = 0;
+    if (e->in_v == in_v) e->want_make = 0;   // (a newer version, or a RETIRE, that came meanwhile stays to be done)
+    e->absent = 0, e->old_us = 0, e->changed_us = 0, e->remade_us = now, e->adopt = in_adopt, e->unloaded = 0;
     plat_mutex_unlock(&reg_lock);
     rt_log("coop: contraption: %08x version %u applied in place: %d parts kept (%#x taken from the objects), %d bonds made, %d broken", cid32(e), e->v, n, in_adopt, made, nbreak);
     return 1;
@@ -920,6 +968,15 @@ static struct {
     float centre[3];
     uint8_t rec[BP_SIZE];
 } mk;
+// The game that ran e no longer has it: this game runs it, if two or more of its parts are here (reg_lock held)
+static void take_over(Ent *e, uint32_t epoch) {
+    int here = 0;
+    for (int r = 0; r < e->np; r++) here += alive_as(e->parts[r], e->gen[r]);
+    if (runs(e) || e->local != L_LIVE || here < 2) return;
+    uint32_t ep = (epoch > e->epoch ? epoch : e->epoch) + 1;
+    rt_log("coop: contraption: %08x: the game that ran it no longer has it (unloaded there): run here now", cid32(e));
+    set_runner(e, coop_ctr_me(), ep), send_ctl(COOP_CTR_GRANT, e, ep, coop_ctr_me()), e->resend = 1;
+}
 static void make_pass(Cpu *c) {
     int64_t now = frame_step_world_us();
     static int own_obj = -1;   // (TOTK_COOP_COPY_OBJ=menu: the Autobuild menu's thumbnail object instead, a test)
@@ -973,7 +1030,7 @@ static void make_pass(Cpu *c) {
             plat_mutex_lock(&reg_lock);
             rt_log("coop: contraption: %08x changed shape (version %u): its %d parts here deleted, made again once gone", cid32(e), e->in_v, e->np);
             memcpy(e->old, e->parts, sizeof e->old), e->old_us = now;
-            e->np = 0, e->local = L_NONE, e->original = 0, e->v = 0, e->del_ok = 0, memset(e->parts, 0, sizeof e->parts);
+            e->np = 0, e->local = L_NONE, e->original = 0, e->v = 0, e->del_ok = 0, e->adopt = 0, e->unloaded = 0, memset(e->parts, 0, sizeof e->parts);
             plat_mutex_unlock(&reg_lock);
             return;
         }
@@ -1054,7 +1111,7 @@ static void make_pass(Cpu *c) {
         }
         mk.n = ne < 21 ? ne : 21, mk.st = 2;
         plat_mutex_lock(&reg_lock);   // (the entry's parts from now on: held where the runner's is while being made)
-        memcpy(e->parts, mk.parts, sizeof e->parts), e->np = mk.n, e->del_ok = 0, e->absent = 0;
+        memcpy(e->parts, mk.parts, sizeof e->parts), e->np = mk.n, e->del_ok = 0, e->absent = 0, e->adopt = 0, e->unloaded = 0;
         for (int i = 0; i < 21; i++) e->gen[i] = gen_of(e->parts[i]);
         memcpy(e->rec, mk.rec, BP_SIZE), memcpy(e->centre, mk.centre, sizeof e->centre);
         memcpy(e->ids, mk.ids, sizeof e->ids), memcpy(e->oinc, mk.oinc, sizeof e->oinc);
@@ -1115,6 +1172,7 @@ static void make_pass(Cpu *c) {
             plat_mutex_lock(&reg_lock);
             if (e->local == L_MAKING) e->local = L_LIVE;
             e->changed_us = 0, e->remade_us = now;
+            if (e->relinq_later) e->relinq_later = 0, take_over(e, e->epoch);
             plat_mutex_unlock(&reg_lock);
             mk.st = 0, mk.n = 0, mk.e = NULL;
         }
@@ -1523,7 +1581,7 @@ void coop_ctn_event_seen(uint64_t actor) {   // from the on/off calc of a follow
     if (ev_seen_n < 16) ev_seen[ev_seen_n].actor = actor, ev_seen[ev_seen_n].bits = b & 7, ev_seen[ev_seen_n].us = frame_step_world_us(), ev_seen_n++;
     plat_mutex_unlock(&ev_lock);
 }
-typedef struct { uint64_t inc; uint32_t serial, part, bits, pad; } EvMsg;
+typedef struct { uint64_t inc; uint32_t serial, part, bits, v; } EvMsg;   // (v: the version part is a number of)
 static void events_out(void) {   // the co-op tick: events seen 50 ms ago or more, sent unless the same hit asked a toggle
     int64_t now = frame_step_world_us();
     for (;;) {
@@ -1546,7 +1604,7 @@ static void events_out(void) {   // the co-op tick: events seen 50 ms ago or mor
         plat_mutex_lock(&reg_lock);
         for (int i = 0; i < REG_N && !found; i++)
             for (int r = 0; reg[i].used && !runs(&reg[i]) && r < reg[i].np && !found; r++)
-                if (reg[i].parts[r] == actor) m.inc = reg[i].inc, m.serial = reg[i].serial, m.part = (uint32_t)r, id = cid32(&reg[i]), found = 1;
+                if (reg[i].parts[r] == actor) m.inc = reg[i].inc, m.serial = reg[i].serial, m.part = (uint32_t)r, m.v = reg[i].v, id = cid32(&reg[i]), found = 1;
         plat_mutex_unlock(&reg_lock);
         if (!found) { lone_ask(actor, 0, bits); continue; }
         m.bits = bits;
@@ -1744,7 +1802,7 @@ static void floats_follow(Cpu *c) {
 // refusal lifted for that call. So a time bomb's blast, a burned board and a broken-off part's vanishing play on the
 // copy too. Death kinds: research notes sync-v3/m2/p5/rocket-timebomb (table at main+0x366f8b0).
 #define CTR_DEATH COOP_CTR_HIT   // (a message number of the channel the rebuilt core had left unused)
-typedef struct { uint64_t inc; uint32_t serial, part, kind, pad; } DeathMsg;
+typedef struct { uint64_t inc; uint32_t serial, part, kind, v; } DeathMsg;   // (v: the version part is a number of)
 static struct { uint64_t actor; uint32_t kind; int64_t us; } death_said[16], death_put[16];
 static int death_said_i, death_put_n;
 void coop_life_death_allow(int on);
@@ -1754,11 +1812,13 @@ void coop_ctn_death_seen(uint64_t actor, uint32_t kind) {   // from the death ho
     int found = 0;
     int64_t now = frame_step_world_us();
     plat_mutex_lock(&reg_lock);
-    for (int i = 0; i < 16 && !found; i++) found = death_said[i].actor == actor && now - death_said[i].us < 3000000;   // (asked every frame by some rules)
+    died[died_i % 32].actor = actor, died[died_i++ % 32].us = now;   // (died, not unloaded: record_pass, authority)
+    // (asked every frame by some rules: once per part and kind in 3 s; another kind is another death, finding 63)
+    for (int i = 0; i < 16 && !found; i++) found = death_said[i].actor == actor && death_said[i].kind == kind && now - death_said[i].us < 3000000;
     if (!found) {
         for (int i = 0; i < REG_N && !m.inc; i++)
             for (int r = 0; reg[i].used && runs(&reg[i]) && reg[i].local == L_LIVE && r < reg[i].np && !m.inc; r++)
-                if (reg[i].parts[r] == actor) m.inc = reg[i].inc, m.serial = reg[i].serial, m.part = (uint32_t)r;
+                if (reg[i].parts[r] == actor) m.inc = reg[i].inc, m.serial = reg[i].serial, m.part = (uint32_t)r, m.v = reg[i].v;
         if (m.inc) death_said[death_said_i % 16].actor = actor, death_said[death_said_i % 16].kind = kind, death_said[death_said_i++ % 16].us = now;
     }
     plat_mutex_unlock(&reg_lock);
@@ -2144,6 +2204,7 @@ static void receive(void) {
         plat_mutex_lock(&reg_lock);
         Ent *e = ent_find(p->inc, p->serial);
         if (!e && (e = ent_new(p->inc, p->serial))) rt_log("coop: contraption: %08x: a build of another game's, first heard of", cid32(e));
+        if (e && p->v > e->vseen && p->v != 0xffffffffu) e->vseen = p->v;
         if (e && p->epoch >= e->epoch) {
             if (p->epoch > e->epoch || !e->runner) set_runner(e, p->runner, p->epoch);
             // (a version this game holds or passed, or one it sent itself, is not taken; a late piece of an older one neither)
@@ -2187,7 +2248,9 @@ static void receive(void) {
         if (m.len != (int)sizeof(CtlMsg)) continue;
         plat_mutex_lock(&reg_lock);
         Ent *e = ent_find(p->inc, p->serial);
-        if (e && !runs(e) && m.from == e->runner && !(mk.st && mk.e == e)) e->want_make = 0, e->in_v = 0xffffffffu, e->gone_us = now;   // (deleted at phase 0: retire_pass)
+        // (deleted at phase 0 by retire_pass, which waits for a making of it to end: a RETIRE that comes meanwhile is
+        // kept, not dropped, review 1 finding 15)
+        if (e && !runs(e) && m.from == e->runner) e->want_make = 0, e->in_v = 0xffffffffu, e->gone_us = now, e->relinq_later = 0;
         plat_mutex_unlock(&reg_lock);
     }
     while (coop_ctr_recv_type(COOP_CTR_EVENT, &m)) {   // a switch event another game's player put on a build run here
@@ -2195,7 +2258,7 @@ static void receive(void) {
         if (m.len != (int)sizeof(EvMsg)) continue;
         plat_mutex_lock(&reg_lock);
         Ent *e = ent_find(p->inc, p->serial);
-        uint64_t actor = e && runs(e) && e->local == L_LIVE && p->part < (uint32_t)e->np ? e->parts[p->part] : 0;
+        uint64_t actor = e && runs(e) && e->local == L_LIVE && p->v == e->v && p->part < (uint32_t)e->np ? e->parts[p->part] : 0;
         if (actor && (p->bits & 5)) e->payer = m.from, e->payer_us = now;   // (switched on from there: that player pays)
         plat_mutex_unlock(&reg_lock);
         if (!actor) continue;
@@ -2209,7 +2272,7 @@ static void receive(void) {
         if (m.len != (int)sizeof(DeathMsg)) continue;
         plat_mutex_lock(&reg_lock);
         Ent *e = ent_find(p->inc, p->serial);
-        uint64_t actor = e && !runs(e) && m.from == e->runner && e->local == L_LIVE && p->part < (uint32_t)e->np ? e->parts[p->part] : 0;
+        uint64_t actor = e && !runs(e) && m.from == e->runner && e->local == L_LIVE && p->v == e->v && p->part < (uint32_t)e->np ? e->parts[p->part] : 0;
         if (actor && death_put_n < 16) death_put[death_put_n].actor = actor, death_put[death_put_n].kind = p->kind, death_put_n++;
         plat_mutex_unlock(&reg_lock);
         if (actor) rt_log("coop: contraption: part %u of %08x died where it runs (kind %u): the same asked of the copy here", p->part, cid32(e), p->kind);
@@ -2219,12 +2282,9 @@ static void receive(void) {
         if (m.len != (int)sizeof(CtlMsg)) continue;
         plat_mutex_lock(&reg_lock);
         Ent *e = ent_find(p->inc, p->serial);
-        int here = 0;
-        for (int r = 0; e && r < e->np; r++) here += alive_as(e->parts[r], e->gen[r]);
-        if (e && !runs(e) && m.from == e->runner && e->local == L_LIVE && here >= 2) {
-            uint32_t ep = (p->epoch > e->epoch ? p->epoch : e->epoch) + 1;
-            rt_log("coop: contraption: %08x: the game that ran it no longer has it (unloaded there): run here now", cid32(e));
-            set_runner(e, coop_ctr_me(), ep), send_ctl(COOP_CTR_GRANT, e, ep, coop_ctr_me()), e->resend = 1;
+        if (e && !runs(e) && m.from == e->runner) {
+            if (mk.st && mk.e == e) e->relinq_later = 1;   // (being made here: taken up once made, finding 38)
+            else take_over(e, p->epoch);
         }
         plat_mutex_unlock(&reg_lock);
     }
@@ -2258,8 +2318,9 @@ static void receive(void) {
         if (!route || coop_ctr_latest(route, COOP_CTR_STATE, e->key64, &s, sizeof s, &age) != (int)sizeof s) continue;
         if (s.inc != e->inc || s.serial != e->serial || s.epoch != e->epoch || s.us <= e->hus[2]) continue;
         e->heard_us = now;
+        if (e->v && s.v != e->v) continue;   // (another version's part numbers are other parts: devices and root alike, finding 17)
         if (s.flags & 2) e->sw = s.sw, e->on = s.on, e->payer = s.payer, e->fw = s.fw, e->fk = s.fk, e->fb = s.fb, e->fp = s.fp, e->burn = s.burn, memcpy(e->pf, s.pf, sizeof e->pf);
-        if (!(s.flags & 1) || (e->v && s.v != e->v)) continue;   // (the root of another version is another part)
+        if (!(s.flags & 1)) continue;
         memmove(e->hm[0], e->hm[1], 2 * sizeof e->hm[0]), memmove(e->hus, e->hus + 1, 2 * sizeof e->hus[0]);
         memcpy(e->hm[2], s.m, sizeof s.m), e->hus[2] = s.us;
         int64_t off = now - (int64_t)(age / 1000) - s.us;   // (min of arrival - sample time over 10 s: the jitter out)
@@ -2321,7 +2382,10 @@ static void authority(void) {   // touch (plan 5.3), asks, a runner that left, a
         for (int r = 0; e->local == L_LIVE && r < e->np; r++) {
             if (!e->parts[r]) continue;
             if (alive_as(e->parts[r], e->gen[r])) live++;
-            else made_forget(e->parts[r]), e->parts[r] = 0;
+            else {
+                if (!died_lately(e->parts[r], now)) e->unloaded |= 1u << r;
+                made_forget(e->parts[r]), e->parts[r] = 0;
+            }
         }
         // How far this game's Link is from the build (the runner's last root, else the version's centre)
         float dist = -1;
@@ -2377,8 +2441,10 @@ static void authority(void) {   // touch (plan 5.3), asks, a runner that left, a
             send_ctl(COOP_CTR_TAKE, e, e->epoch, me);
             static int64_t said;
             if (now - said > 1000000) said = now, rt_log("coop: contraption: %08x %s here: asked to run it", cid32(e), e->touched ? "held" : "changed shape");
-        } else if (differs && !mine && now - e->changed_us > 3000000 && now - e->remade_us > 10000000 && !e->want_make && !(mk.st && mk.e == e)) {
-            // changed by nothing this game's player did: made again from the version held
+        } else if (differs && !mine && live == e->np && now - e->changed_us > 3000000 && now - e->remade_us > 10000000 && !e->want_make && !(mk.st && mk.e == e)) {
+            // Changed by nothing this game's player did: made again from the version held. Only with every part still
+            // here: a part gone was unloaded or destroyed, and the game that runs it sends the next version or RETIRE;
+            // made again, a destroyed build would come back as a copy no game runs (review 1 findings 37 and 44).
             rt_log("coop: contraption: %08x is not whole here (%d members, %d parts): made again", cid32(e), gn, e->np);
             memcpy(e->in_rec, e->rec, BP_SIZE), memcpy(e->in_centre, e->centre, sizeof e->centre);
             memcpy(e->in_ids, e->ids, sizeof e->in_ids), memcpy(e->in_oinc, e->oinc, sizeof e->in_oinc);

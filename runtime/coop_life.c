@@ -425,6 +425,15 @@ static int only_standin_contacts(uint64_t victim) {
     for (uint32_t k = 0; k < cnt; k++) if (!contact_of_standin(base + (uint64_t)k * 0x1c0, st, n)) return 0;
     return 1;
 }
+int coop_ctn_part(uint64_t a), coop_ctn_follows(uint64_t a), coop_is_copy(uint64_t a);
+int coop_own_sent_objects(uint64_t *out, int max);
+static int synced_device(uint64_t a) {
+    if (coop_ctn_part(a) || coop_ctn_follows(a) || coop_is_copy(a)) return 1;
+    uint64_t own[256];
+    int n = coop_own_sent_objects(own, 256);
+    for (int i = 0; i < n; i++) if (own[i] == a) return 1;
+    return 0;
+}
 void coop_ctn_note_fuse(uint64_t node, uint64_t actor);
 int coop_life_v3(Cpu *c, uint64_t off) {
     if (off == 0x1d38a00) {
@@ -434,7 +443,10 @@ int coop_life_v3(Cpu *c, uint64_t off) {
         inner = 1;
         c->pc = MOD_MAIN_BASE + off;
         rt_dispatch(c);
-        if ((c->x[0] & 1) && only_standin_contacts(victim)) {
+        // (only on a device the core syncs: a part of a build, a lone device followed here, or an object the object
+        // mirror sends or copies. A device the map placed in each game is its own in each, and a stand-in's hit there
+        // is the hit its player made in that game too: review 1 finding 85)
+        if ((c->x[0] & 1) && synced_device(victim) && only_standin_contacts(victim)) {
             if (atomic_fetch_add(&standin_hits, 1) < 8) rt_log("coop: contraption: a stand-in's hit on a device here is not taken as a hit (its own game sends it)");
             c->x[0] = 0;
         }

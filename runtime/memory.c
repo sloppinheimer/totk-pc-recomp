@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "coop_ctn.h"
 #include "host.h"
 #include "layout.h"
 #include "platform/platform.h"
@@ -242,6 +243,7 @@ void mem_init(void) {
     // totk.ini is read here, once the address space is claimed and before the first setting: the pool size below
     // depends on TOTK_APP_POOL and on the resolution settings (resolution.c decides them once, on this first call).
     cfg_init();
+    coop_ctn_core();   // the contraption core switches the older co-op glue paths off before their first read
     const char *pool = cfg_get("TOTK_APP_POOL");
     L = (RtGuestLayout){
         .aslr = {low, RT_ADDRESS_LIMIT - low},
