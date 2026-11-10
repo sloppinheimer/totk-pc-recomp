@@ -1518,3 +1518,10 @@ Each is settled in the implementation of this milestone, from what the readers r
 - P5, after P4's are read: engine access (actor to node, blackboard), rocket and time bomb, spring and stake, balloon /
   hover stone / wing / stabilizer, wheels / sled / carts, stick and construct head, emitters, hits and status, spawns,
   energy and battery.
+
+## 31. Play-test notes (the tester, from 2026-11-09)
+Noted as they come, not acted on until their turn. Each gets its cause read before anything is written (29).
+
+| # | What was seen | What is already known about it | Status |
+|---|---|---|---|
+| 1 | Two fans placed by hand and glued with Ultrahand turned green for the other player. The green tint belongs only to parts an Autobuild made from zonaite. | The copy maker gives every part it makes the green mark (coop_ctn.c make_pass: SPR +0x150 bit 0 at the confirm and again once grouped), whatever the runner's part has. The plan's rule is "green only where the runner's part is green" (7 step 7, D5); the record sent between games does not carry which parts are green. | noted |
