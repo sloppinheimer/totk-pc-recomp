@@ -1973,6 +1973,8 @@ void coop_tick(struct Cpu *c) {
         }
     }
     coop_ctr_tick();   // the contraption channel (coop_ctr.c): before the players, so their pass sees this poll's messages
+    void coop_loadwatch_tick(void);   // coop_loadwatch.c
+    coop_loadwatch_tick();
     coop_players_tick(c);
     foe_log();
     for (int k = 0; k < 2; k++) {
