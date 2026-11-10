@@ -1510,6 +1510,7 @@ static void floats_follow(Cpu *c);
 static void burning_phase0(Cpu *c);
 static void springs_phase0(Cpu *c);
 static void retire_pass(Cpu *c);
+static void rider_weight(Cpu *c);
 void coop_ctn_phase0(Cpu *c) {
     if (!ctn_on()) return;
     record_pass(c);
@@ -1519,6 +1520,7 @@ void coop_ctn_phase0(Cpu *c) {
     deaths_put(c);
     dev_flush(c);
     abandoned_sweep();
+    rider_weight(c);
     retire_pass(c);   // (at phase 0 with in_place: they share the edge lists and the orphans, findings 9, 52, 73, 74)
     floats_follow(c);
     springs_phase0(c);
@@ -2265,6 +2267,40 @@ static int gauge_blocked(void) {
 static uint64_t chem_comp(uint64_t a) {
     uint64_t t = a ? coop_rd_ptr(a + 0x228) : 0;
     return t ? coop_rd_ptr(t + 0x180) : 0;
+}
+// ---- A rider's weight on a build this game runs (plan 41.2, P6; research notes sync-v3/p6/mass and controller) -------
+// A Link standing on a build weighs on it through the contact solver: its body is Dynamic with mass 10 kg, and a
+// standing contact is not mass-scaled (the scale 0.1 applies to pushing only), so the pair's effective mass is
+// m = 10 m_part / (10 + m_part), at most 10 kg. Another player's stand-in here is a static body kept out of contact with
+// builds (I16): it weighs nothing. So the game that runs the build adds that weight as a force at the stand-in's feet on
+// the ridden part's main body, main+0x29ae7a8 (body, &F, &P), which applies F times the physics step once per call: once
+// per frame here, so the weight is exact at one physics step per frame (not read: how many steps a frame has). Not done:
+// a stand-in made a Dynamic body that touches the build (the mass reading found a null read in the game's foot-band test
+// for a character body without a controller holder, which a stand-in may lack), and the push of a walking rider.
+static void rider_weight(Cpu *c) {
+    int coop_riders(uint64_t *ridden, float (*at)[3], int max);
+    uint64_t ridden[8];
+    float at[8][3];
+    int n = coop_riders(ridden, at, 8);
+    for (int i = 0; i < n; i++) {
+        int here = 0;
+        plat_mutex_lock(&reg_lock);
+        for (int q = 0; q < REG_N && !here; q++)
+            for (int r = 0; reg[q].used && runs(&reg[q]) && reg[q].local == L_LIVE && !reg[q].touched && r < reg[q].np && !here; r++)
+                here = reg[q].parts[r] == ridden[i];
+        plat_mutex_unlock(&reg_lock);
+        uint64_t body = here && alive(ridden[i]) ? main_body_of(ridden[i]) : 0;
+        float m = 0;
+        if (!body || !coop_rd(body + 0x130, &m, 4) || !(m > 0) || m > 1e6f) continue;
+        float me = 10.0f * m / (10.0f + m);
+        static _Alignas(16) float f[4], p[4];
+        f[0] = 0, f[1] = -9.8f * me, f[2] = 0, f[3] = 0;
+        memcpy(p, at[i], 12), p[3] = 0;
+        coop_guest_call(c, MOD_MAIN_BASE + 0x29ae7a8, body, (uint64_t)(uintptr_t)f, (uint64_t)(uintptr_t)p, 0);
+        static int64_t said;
+        int64_t now = frame_step_world_us();
+        if (now - said > 5000000) said = now, rt_log("coop: contraption: a co-op player's weight on a part run here: %.1f kg (part %.1f kg)", me, m);
+    }
 }
 static void burning_phase0(Cpu *c) {
     static int64_t last;

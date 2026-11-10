@@ -2708,3 +2708,37 @@ Everything since run 5 (66a2a23, e5439fc), and 1133e2c's empty-battery rule:
   the other game after 1 s, a hit on the device switches it.
 - Hitting a device with an empty or recharging battery does not switch it on, and the other battery does not pay.
 - An NPC vehicle, if one comes along (the decision of 44.4).
+
+## 45. P6: riding, weight, push (read 2026-11-10, R/sync-v3/p6/, four folders, all read in full; written, not run)
+
+### 45.1 What the readings established
+- **Rider lag (riderlag):** the stand-in is placed from its owner's state 60 ms behind, the build at its runner's
+  present, so it trails by about 0.06 v. The fix that puts it on the ridden part (ride_place) was almost never used:
+  the rider's game listed only loose copies as ridable, so a Link on a build sent no ride; and the build lookup sat in
+  a branch two players never reach.
+- **Pose (pose):** the stand-in replays its owner's animation slots, so it takes the owner's riding pose with no state
+  of its own. It cannot be put in a stick's seat (its pack drops the Rider component), and should not be: the stick
+  would see a driver here and switch devices on a stand-in's say. Not shown: that a stick ride's clips fit the 16 slots.
+- **Controller (controller):** the stand-in most likely has no character-controller record; nothing of ours stops one.
+  Its body is made static and teleported to the owner's delayed place every tick. What the local Link stands on can be
+  read from its contact list on the tick, with no hook.
+- **Mass (mass):** the contact-mass scale is a per-contact pair of mass factors, applied only between two Dynamic
+  bodies and, for a Link, only when it pushes (0.1: 1 kg), never when it stands. Standing, a Link meets a build with
+  its real 10 kg: the load is m = 10 m_part / (10 + m_part). Making the stand-in a Dynamic character body risks a null
+  read in the game's foot-band test (main+0x2a86318) when its controller holder is missing.
+
+### 45.2 Written (not run)
+- **The rider on the build:** build parts are listed as ridable at their place here and named as the other games know
+  them; the viewer's game finds its actor of the ridden part on the tick (all cases) and puts the stand-in on it at
+  the part's place now (b4642f3).
+- **The rider's weight:** the game that runs a build adds a co-op rider's weight (the derived m times g) at the
+  stand-in's feet on the ridden part's body, main+0x29ae7a8, once a frame. Exact only at one physics step per frame
+  (not read). The stand-in stays static and out of contact with builds (I16).
+- **Not written:** a Dynamic stand-in that touches the build (crash risk above); a walking rider's push; the stand-in's
+  facing on the part (still from its delayed state); "what the Link stands on" from the contact list (the 1.6 m test
+  stays).
+
+### 45.3 To test later
+- A player standing on and riding a build the other game runs: on the build on the other screen, not trailing.
+- A player standing on a plank or a balloon build the other game runs: it dips under them as under that game's Link.
+- A stick ride: the stand-in's pose on the stick.

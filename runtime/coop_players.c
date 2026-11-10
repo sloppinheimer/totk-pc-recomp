@@ -3941,6 +3941,17 @@ static int ride_place(const Slot *s, float out[3]) {
     for (int i = 0; i < 3; i++) out[i] = p[i] + r[i * 3 + 0] * s->ride_off[0] + r[i * 3 + 1] * s->ride_off[1] + r[i * 3 + 2] * s->ride_off[2];
     return 1;
 }
+// For coop_ctn.c's rider weight: each co-op player's Link that rides something here, the actor it rides and where its
+// stand-in stands (read from actor phase 0: the fields are single words, written by the tick)
+int coop_riders(uint64_t *ridden, float (*at)[3], int max) {
+    int n = 0;
+    for (int i = 0; i < COOP_MAX_PLAYERS && n < max; i++) {
+        uint64_t a = slots[i].ride_actor, sa = slots[i].actor;
+        if (slots[i].state != LIVE || !a || !sa || !coop_rd(sa + COOP_ACTOR_POS, at[n], 12)) continue;
+        ridden[n++] = a;
+    }
+    return n;
+}
 // This game's actor of what each co-op player's Link rides (its owner's number for it, as ride_objects names it): an
 // object this game sends, a part of a build (whichever game runs it), a copy of a third player's object, or a part made
 // here from a record. Found on the tick (the tables are the tick's), again when the ride changes and once a second;
