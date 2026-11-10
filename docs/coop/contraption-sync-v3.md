@@ -2554,3 +2554,52 @@ are kept with the research notes (sync-v3/review1). Nothing below has been run.
   and no RETIRE.
 - Unfusing a build made of both players' objects: "applied in place" with no "made again", and no twin parts.
 - A loose emitter of the other player's, turned on before it was copied here, is on here.
+
+## 43. Play-test notes, run 4 (2026-11-10, after the review repairs)
+
+**Note 15: a glued build taken by the other player flies apart.** the tester glued three fans together (P1's own objects),
+switched them on and off from each player (works), then picked them up with Ultrahand on P2. They went wild, flew off
+and destroyed themselves.
+
+What the logs show (play4 logs kept as build/play4_p1.log, play4_p2.log):
+- P2 took the build in place from the copies of P1's fans (applied in place, all three taken from the objects), was
+  asked to run it on the grab and was given it (change 2). The touch ended in the same tick.
+- From then P1 followed P2's state. P1's follow log shows the error growing to 2 to 3 m with the root velocity
+  swinging between about +60 and -65 m/s every half second: a loop, not a lag.
+- 4.5 s later P2 found its copies in no group (3 of 3 parts alive) and retired the build as broken apart; P1 then let
+  its fans go, minted them as a new build and retired that one as broken apart too.
+- Not known: what moves P2's copies against P2's own run of them. The object mirror's receiver leaves build parts alone
+  (coop_players.c, both places). Candidates to read, not to guess: whether P1's game still sends its own fans as
+  objects (or as held by P2) and something places them, and whether P2's copies (another player's objects, made by the
+  mirror) are still written by the mirror or another path while P2 runs them.
+
+**Note 16: a spring P1 stands on.** P1 made a spring and stood on it. On P2's screen the spring pressed in under P1's
+stand-in (the tester: it should not), and when it was hit, it did not spring out on P2's screen.
+
+What the logs show:
+- P2's game says "I move SpObj_SpringPiston_A_01 (key 6a6e45ab)", and P1's game says "a co-op player moves
+  SpObj_SpringPiston_A_01 ..., not updated here: a copy". So the object mirror handed P1's spring to P2 as a moved
+  placed object (keyed), and from then P1's own spring was a copy of P2's. Why P2's game took it as moved by its player
+  is not known (the stand-in standing on it pressing it in P2's game is a candidate, not shown).
+- The lone-spring sync (state sent by the owner, set on the copy) then ran the wrong way round: P2 owned the spring
+  P1 stood on.
+- Off-screen gate (note 14, the line that was awaited): a lone device of P2's at P1 switched between "update run" and
+  "not run by the game (blocked 1)" several times, and once to calc mask 0x2e041. The blocked bit (actor +0x5ac bit 6)
+  does toggle on a followed lone device.
+
+**Run 4, the tester's list (39.3 and 42.3)**
+1. Fusing by hand, not reached: objects spawned from a capsule by one player cannot be picked up with Ultrahand by
+   the other (note 10 again, now for loose capsule objects). the tester: either player moves any object, as their own;
+   this was never open. To do: read why a copy of the other's object cannot be grabbed, then write it.
+2. Breaking an Autobuild from either player: no stray copy. Works.
+3. Walking away from a build: the other player kept it and it worked (how far is not known; check the log for
+   "offered" and "run here now").
+4. Looking away: the spring still goes out of step. The awaited gate line came (note 16): the game blocks a followed
+   lone device's update on and off (actor +0x5ac bit 6). The fix is to read what sets that bit and write against it.
+5. Empty battery watching: the other's devices show on. Works. **Note 17:** the player with the empty battery can still
+   switch a device on by hitting it while the gauge recharges, and the other player's battery then pays. In the game a
+   player whose gauge cannot pay does not switch a device on; a hit here that asks the runner or the owner to switch on
+   should be refused while this game's gauge is blocked (gauge_blocked) and the device would be on this player's bill,
+   and the payer rule should not move the bill to a player who could not have switched it on.
+6. A loose emitter turned on before it was copied: not reproducible, the copy appears at once.
+7. **Note 18:** the stick now moves on the copy. The rider still lags behind the build (no cause yet; P6, 41.2).
