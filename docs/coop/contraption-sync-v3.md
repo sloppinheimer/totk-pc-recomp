@@ -1655,3 +1655,32 @@ Each entry: what the code does now, what it was written from, and what a run has
 - Not read: whether the broken-off kill main+0x271190 tests green. A copy part's death by a game rule is refused by G4
   either way.
 - A run shows: two fans glued by hand are not green for the other player; an Autobuild made from zonaite is.
+
+### 33.3 Structure in place: the design (not written yet)
+Worked out from 32 and from coop_ctn.c as it is; replaces "stable uids given by the runner" and "structure as events".
+- **A part already has a name every game shares.** A version carries, per part, the game and object number the part
+  began as (`ids`, `oinc`), and record_pass keeps them through every later version and hand-over (origin_of). That pair
+  is the stable uid; no new number is needed. The one hole: a part made here from a record whose entry is gone has none.
+- **A new version is applied in place when every part of it is found here.** For each part of the incoming version the
+  follower looks for the actor it already has: in this entry, in another entry (a merge or a split), or in the object
+  system (the mirror of that game's object, or this game's own object). If all are found alive:
+  - bonds of the old version that the new one lacks are broken with find_edge / break_edge (32, bond-break);
+  - bonds of the new version with no edge here are made with make_bond, queue path, from the relative pose the runner
+    sends (32, bond-make);
+  - the entry's parts become the actors found; nothing is deleted, no device loses its state.
+  If any part is not found (a part newly made from zonaite at the runner, or a mirror not here yet), the version is
+  made as today, with the Autobuild build object. The confirm's own "existing actor" entry (state 2) is not used: it
+  needs a hologram per part and the actor already standing in place, and it sets the device off.
+- **The runner sends, with each version, the relative pose of every bond** (inverse(pose A) * pose B of the two bodies,
+  read from its live bodies when it records), since the record holds part poses, not the poses of bodies other than
+  the main one.
+- **A part in a build belongs to the build, not to the object system, in every game.** Today a part glued on in one
+  game is made a second time in the others while their mirror, or the other player's own object, stays (31, note 5).
+  Needed in coop_players.c: (a) a mirror taken into a build is released to the build, not deleted; (b) a game whose own
+  object another game glued into a build stops sending it as its object without the others deleting theirs; (c) a part
+  that leaves a build becomes the runner's loose object, and the others' actor of it is given to the mirror of that
+  object, or deleted and made again as a mirror where that cannot be done.
+- **Lone devices (31, notes 4 and 5)** then enter the same way: a one-part entity is an entry with one part and no
+  bond, followed and switched by the core; coop_glue.c and coop_bonds.c stand down for registry parts.
+- Still to read before (a) to (c) are written: our own mirror code in coop_players.c (the slots' `mir` table, the
+  claim at its line with coop_contraption_owns, prop scan, coop_obj_find / coop_obj_ident).
