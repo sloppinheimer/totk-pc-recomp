@@ -99,6 +99,8 @@ typedef struct {
     int64_t hus[3], clock_off, clock_off_at, heard_us;
     FollowState *fs;
     uint32_t sw, on;        // at the runner: which record parts have a switch, which are on
+    uint32_t fw, fk;        // at the runner: which parts are wheels / sticks, and their floats (StMsg)
+    float pf[21][4];
     uint64_t payer;         // the incarnation whose gauge pays (who switched it on)
     int64_t toggled_us, payer_us;
     int touched;            // this game's player holds or steers it (drive off, gates open, TAKE asked)
@@ -240,6 +242,25 @@ static int part_on(uint64_t a) {
     uint32_t v = 0;
     return c11 && coop_rd(c11 + 0x348, &v, 4) && (v & 0x2000);
 }
+// The floats a part shows itself with, read where the build runs and written here on its copy: a wheel's model spin
+// and steering angle (FastWheel_ModelRotateSpeed, FastWheel_ModelSteeringAngle: the wheel's model node turns the wheel
+// by them), a steering stick's tilt (ControlStick_StickX/Y, which the rider's pose reads, and ScaledStickX/Y, which
+// the stick's own animation reads). Research notes sync-v3/m2/p5/wheels section 1, stick-head section 3.
+#define BB_WHEEL_SPIN 0x4b7368f5u
+#define BB_WHEEL_STEER 0xbc8c3de4u
+#define BB_STICK_X 0x6f1afb02u
+#define BB_STICK_Y 0xde18d120u
+#define BB_STICK_SX 0x4b809ce9u
+#define BB_STICK_SY 0x9479c43du
+static int bb_f32(uint64_t bb, uint32_t hash, float *out) {
+    int i = bb_index(bb, BB_FLOATS, hash);
+    return i >= 0 && coop_rd(coop_rd_ptr(bb + BB_FLOATS + 8) + 4 * (uint64_t)i, out, 4);
+}
+static void bb_set_f32(uint64_t bb, uint32_t hash, float v) {
+    int i = bb_index(bb, BB_FLOATS, hash);
+    uint64_t arr = i >= 0 ? coop_rd_ptr(bb + BB_FLOATS + 8) : 0;
+    if (arr && v == v) memcpy((void *)(uintptr_t)(arr + 4 * (uint64_t)i), &v, 4);
+}
 static int part_green(uint64_t a) {   // made from zonaite by an Autobuild confirm (SPR +0x150 bit 0, as main+0x1b0f7d4 reads it)
     uint64_t spr = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x480) : 0;
     uint32_t f = 0;
@@ -333,7 +354,10 @@ typedef struct {
     uint64_t payer;
     float m[12];            // its root part's main body matrix
     uint32_t sw, on, flags, pad;
+    uint32_t fw, fk;        // bit r: part r is a wheel / a steering stick, its floats in pf[r]
+    float pf[21][4];        // wheel: model spin, model steering angle; stick: x, y, scaled x, scaled y
 } StMsg;
+_Static_assert(sizeof(StMsg) <= COOP_CTR_PAYLOAD, "a state fits one channel message");
 typedef struct { uint64_t inc; uint32_t serial, epoch; uint64_t who; } CtlMsg;   // TAKE, GRANT, PULL, RETIRE
 typedef struct { uint64_t inc; uint32_t serial, part, want, pad; } TogMsg;
 
@@ -757,11 +781,13 @@ static void make_pass(Cpu *c) {
     }
 }
 static void dev_flush(Cpu *c);
+static void floats_follow(void);
 void coop_ctn_phase0(Cpu *c) {
     if (!ctn_on()) return;
     record_pass(c);
     make_pass(c);
     dev_flush(c);
+    floats_follow();
 }
 
 // ---- The rigid-field follower drive (plan section 3) ------------------------------------------------------------------
@@ -1066,10 +1092,48 @@ int coop_contraption_owns(int from, uint32_t id) {
 // sender main+0x32eb90 queues it: main+0x2b76c34(queue, {target key, id, 0}, 0), the queue an actor's +0x378 and the
 // key the device actor's +0x380. A DeviceSwitch request pair does not switch a device (the node never reads it), and
 // the toggle bit a hit sets flips it instead of setting it. Read from the game: research notes sync-v3/onoff/.
+// The on/off node of each device, noted when its calc runs (x0 = node; coop_autobuild.c): the game keeps no path
+// from an actor to its nodes (research notes sync-v3/m2/p5/engine-access, Q1). A node is used only while it still
+// names the actor.
+#define NODE_N 256
+static struct { _Atomic uint64_t actor, node; } onoff_nodes[NODE_N];
+void coop_ctn_note_onoff(uint64_t node, uint64_t actor) {
+    if (!node || !actor) return;
+    for (int p = 0; p < 4; p++) {
+        int k = (int)((actor >> 4) + (uint64_t)p) % NODE_N;
+        uint64_t have = atomic_load_explicit(&onoff_nodes[k].actor, memory_order_relaxed);
+        if (have == actor) { atomic_store_explicit(&onoff_nodes[k].node, node, memory_order_relaxed); return; }
+        if (!have || p == 3) { atomic_store(&onoff_nodes[k].node, node), atomic_store(&onoff_nodes[k].actor, actor); return; }
+    }
+}
+static uint64_t onoff_node(uint64_t actor) {
+    for (int p = 0; actor && p < 4; p++) {
+        int k = (int)((actor >> 4) + (uint64_t)p) % NODE_N;
+        if (atomic_load(&onoff_nodes[k].actor) != actor) continue;
+        uint64_t node = atomic_load(&onoff_nodes[k].node);
+        return coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(node + 8) + 8) + 0x1f8) == actor ? node : 0;
+    }
+    return 0;
+}
 static void dev_msg(Cpu *c, uint64_t actor, int on) {
     static _Alignas(16) uint8_t msg[16];
     uint32_t key = 0, id = on ? 0x6b510000u : 0x6b510001u;
     if (!actor || !coop_rd(actor + 0x380, &key, 4)) return;
+    // A device in separate-message mode (node +0x98 bit 1: the spring and the time bomb) ignores the two messages.
+    // Its latch is set as the handler of an accepted message sets it: bit 0 (on) or bit 1 (off) of the node's event
+    // byte +0x40, which the next calc turns into the latch, off tested first (research notes
+    // sync-v3/m2/p5/spring-stake, note 4; sync-v3/onoff/a_node.md). For the spring the tick the latch changes is the
+    // launch. A time bomb is not set this way: on does not arm its fuse (rocket-timebomb, 2.4).
+    {
+        uint64_t node = onoff_node(actor), sw = part_switch(actor);
+        uint8_t f98 = 0;
+        int32_t kind = 0;
+        if (node && coop_rd(node + 0x98, &f98, 1) && (f98 & 2)) {
+            if (sw && coop_rd(sw + 0x64, &kind, 4) && kind == 0x18) return;
+            __atomic_fetch_or((uint8_t *)(uintptr_t)(node + 0x40), (uint8_t)(on ? 1 : 2), __ATOMIC_SEQ_CST);
+            return;
+        }
+    }
     memset(msg, 0, sizeof msg), memcpy(msg, &key, 4), memcpy(msg + 4, &id, 4);
     coop_guest_call(c, MOD_MAIN_BASE + 0x2b76c34, actor + 0x378, (uint64_t)(uintptr_t)msg, 0, 0);
 }
@@ -1147,12 +1211,13 @@ static void dev_follow(Cpu *c, Ent *e, int64_t now) {
 // messages to every device here. The event is taken off follower groups at the sender's entry (coop_life.c): the
 // runner decides, and its state comes back by STATE.
 static _Atomic uint64_t follow_group[REG_N];
-void coop_ctn_sender_entry(uint64_t group) {
+int coop_ctn_sender_entry(uint64_t group) {   // 1: the group of a build followed here (the sender sends nothing: coop_life.c)
     for (int i = 0; group && i < REG_N; i++)
         if (atomic_load_explicit(&follow_group[i], memory_order_relaxed) == group) {
             __atomic_fetch_and((uint64_t *)(uintptr_t)(group + 0x880), ~(1ull << 26), __ATOMIC_SEQ_CST);
-            return;
+            return 1;
         }
+    return 0;
 }
 // A toggle asked on a part of a build another game runs (a hit here): not made here, sent to the runner as the state
 // wanted. From the device's switch update main+0x4a3500 (coop_autobuild.c coop_phase0_hook).
@@ -1170,6 +1235,23 @@ void coop_ctn_toggle_asked(uint64_t comp, uint64_t actor) {
     coop_ctr_send(0, COOP_CTR_TOGGLE, COOP_CTR_RELIABLE, &m, sizeof m);
     rt_log("coop: contraption: a toggle asked on %08x part %u here: sent to the game that runs it, wanted %s (switch %llx)", id, m.part, m.want ? "on" : "off",
            (unsigned long long)comp);
+}
+
+// The wheels and sticks of the builds followed here shown as where they run (at actor phase 0 and at the co-op tick:
+// when in the frame the stick's own graph writes its floats is not read, so both)
+static void floats_follow(void) {
+    plat_mutex_lock(&reg_lock);
+    for (int i = 0; i < REG_N; i++) {
+        Ent *e = &reg[i];
+        if (!e->used || runs(e) || e->local != L_LIVE || e->touched || !(e->fw | e->fk)) continue;
+        for (int r = 0; r < e->np && r < 21; r++) {
+            uint64_t bb = (e->fw | e->fk) >> r & 1 ? actor_bb(e->parts[r]) : 0;
+            if (!bb) continue;
+            if (e->fw >> r & 1) bb_set_f32(bb, BB_WHEEL_SPIN, e->pf[r][0]), bb_set_f32(bb, BB_WHEEL_STEER, e->pf[r][1]);
+            else bb_set_f32(bb, BB_STICK_X, e->pf[r][0]), bb_set_f32(bb, BB_STICK_Y, e->pf[r][1]), bb_set_f32(bb, BB_STICK_SX, e->pf[r][2]), bb_set_f32(bb, BB_STICK_SY, e->pf[r][3]);
+        }
+    }
+    plat_mutex_unlock(&reg_lock);
 }
 
 // ---- The co-op tick: messages, authority, touch, drive ------------------------------------------------------------------
@@ -1260,7 +1342,7 @@ static void receive(void) {
         if (!route || coop_ctr_latest(route, COOP_CTR_STATE, e->key64, &s, sizeof s, &age) != (int)sizeof s) continue;
         if (s.inc != e->inc || s.serial != e->serial || s.epoch != e->epoch || s.us <= e->hus[2]) continue;
         e->heard_us = now;
-        if (s.flags & 2) e->sw = s.sw, e->on = s.on, e->payer = s.payer;
+        if (s.flags & 2) e->sw = s.sw, e->on = s.on, e->payer = s.payer, e->fw = s.fw, e->fk = s.fk, memcpy(e->pf, s.pf, sizeof e->pf);
         if (!(s.flags & 1)) continue;
         memmove(e->hm[0], e->hm[1], 2 * sizeof e->hm[0]), memmove(e->hus, e->hus + 1, 2 * sizeof e->hus[0]);
         memcpy(e->hm[2], s.m, sizeof s.m), e->hus[2] = s.us;
@@ -1285,6 +1367,12 @@ static void send_states(void) {   // the builds this game runs: root and devices
             s.key = e->key64, s.inc = e->inc, s.serial = e->serial, s.epoch = e->epoch, s.v = e->v, s.shape = e->shape, s.us = now, s.flags = 2;
             for (int r = 0; r < e->np; r++)
                 if (part_switch(e->parts[r])) s.sw |= 1u << r, s.on |= (uint32_t)part_on(e->parts[r]) << r;
+            for (int r = 0; r < e->np; r++) {
+                uint64_t bb = actor_bb(e->parts[r]);
+                if (bb_f32(bb, BB_WHEEL_SPIN, &s.pf[r][0])) s.fw |= 1u << r, bb_f32(bb, BB_WHEEL_STEER, &s.pf[r][1]);
+                else if (bb_f32(bb, BB_STICK_X, &s.pf[r][0]))
+                    s.fk |= 1u << r, bb_f32(bb, BB_STICK_Y, &s.pf[r][1]), bb_f32(bb, BB_STICK_SX, &s.pf[r][2]), bb_f32(bb, BB_STICK_SY, &s.pf[r][3]);
+            }
             if (!(s.on & s.sw) && now - e->payer_us > 2000000) e->payer = 0;
             s.payer = e->payer ? e->payer : me;
             root = e->parts[0];
@@ -1488,6 +1576,7 @@ void coop_ctn_tick(Cpu *c) {
         if (drive) follow_rigid(c, e, now, &err);
         if (devs) dev_follow(c, e, now);
     }
+    floats_follow();
     send_states();
 }
 int coop_ctn_first(int run_here, uint64_t parts[21]) {   // for the tests: the first live build this game runs (or follows)

@@ -1491,7 +1491,26 @@ static void serial_run(Cpu *c, int n) {
 #define GAUGE_CONSUME_RATE 0x1fa4ed4
 #define ONOFF_CALC 0x9f9088
 #define ONOFF_SET 0x9fad68
-static __thread int in_push, in_node, in_copy_node, in_copy_force, in_paid_node;
+static __thread int in_push, in_node, in_copy_node, in_copy_force, in_paid_node, in_force_inert;
+int coop_ab_force_inert(void) { return in_force_inert; }
+void coop_ctn_note_onoff(uint64_t node, uint64_t actor);
+// The wheel that runs is ExecuteFastWheelMotion (wrapper main+0x22fa1b0, x0 = its node); main+0x22fc5f8 in motor_nodes
+// below is a twin no shipped graph uses (research notes sync-v3/m2/p5/wheels, section 0). A followed wheel's node
+// runs once with its inert test forced true: that is the game's own disabled branch, which takes the three motor
+// constraints off their bodies and disables them. After that the node is skipped, so the spin and steering floats the
+// model reads stay as coop_ctn.c writes them from the game that runs the build. A wheel no longer followed leaves the
+// table and its node runs again, re-anchoring by itself on its next working tick.
+#define WHEEL_N 64
+static struct { _Atomic uint64_t node, actor; } wheel_off[WHEEL_N];
+static int wheel_slot(uint64_t node, uint64_t actor, int add) {
+    for (int i = 0; i < WHEEL_N; i++)
+        if (atomic_load(&wheel_off[i].node) == node && atomic_load(&wheel_off[i].actor) == actor) return i;
+    for (int i = 0; add && i < WHEEL_N; i++) {
+        uint64_t none = 0;
+        if (atomic_compare_exchange_strong(&wheel_off[i].node, &none, node)) { atomic_store(&wheel_off[i].actor, actor); return i; }
+    }
+    return -1;
+}
 // The device nodes that push their own part (research devices2/: rocket, sled, balloon, wing, hover stone, stabilizer,
 // spring, stake, homing cart, steering stick): on a copy their body writes are skipped; the wheel's and the cart's
 // motor nodes drive joints, and are skipped whole
@@ -1553,7 +1572,27 @@ int coop_phase0_hook(Cpu *c, uint64_t addr) {
     // moves the contraption; the wind capsule and the look still run), and its on/off node charges no gauge
     if (off == APPLY_IMPULSE_FN && contraption_on() && coop_ctn_driven(node_actor(c->x[0]))) return 1;
     if (contraption_on()) {
-        if (in_list(body_setters, 6, off) && in_copy_force) return 1;   // (a copy's device moving its own body: not here)
+        if (off == ONOFF_CALC) coop_ctn_note_onoff(c->x[0], node_actor(c->x[0]));   // (the node of each device: coop_ctn.c)
+        if (off == 0x22fa1b0) {
+            uint64_t node = c->x[0], actor = node_actor(node);
+            if (!coop_ctn_driven(actor)) {
+                int k = wheel_slot(node, actor, 0);
+                if (k >= 0) atomic_store(&wheel_off[k].actor, 0), atomic_store(&wheel_off[k].node, 0);
+                return 0;
+            }
+            if (wheel_slot(node, actor, 0) >= 0) return 1;
+            if (wheel_slot(node, actor, 1) < 0) return 1;
+            inner = 1;
+            return wrap_call(c, addr, &in_force_inert, 1);
+        }
+        if (in_list(body_setters, 6, off) && in_copy_force) {   // (a copy's device moving its own body: not here)
+            // but a followed spring's launch is made here: its two velocity writes (the calls that return to
+            // main+0x221a9c0 and 0x221aa14) are the head thrown out and the base pushed back, and what stands on the
+            // head is thrown by that contact in this game (research notes sync-v3/m2/p5/spring-stake)
+            uint64_t lr = c->x[30] - MOD_MAIN_BASE;
+            if (off == 0x567750 && (lr == 0x221a9c0 || lr == 0x221aa14)) return 0;
+            return 1;
+        }
         if (in_list(motor_nodes, 2, off) && coop_ctn_driven(node_actor(c->x[0]))) return 1;
         if (in_list(force_nodes, 10, off) && coop_ctn_driven(node_actor(c->x[0]))) {
             inner = 1;
@@ -1571,6 +1610,17 @@ int coop_phase0_hook(Cpu *c, uint64_t addr) {
             if (coop_ctn_driven(actor) && coop_rd(comp + 0x8d, &b8d, 1) && (b8d & 8)) {
                 __atomic_fetch_and((uint8_t *)(uintptr_t)(comp + 0x8d), (uint8_t)~8, __ATOMIC_SEQ_CST);
                 coop_ctn_toggle_asked(comp, actor);
+            }
+            // A device another player pays for may always be on here. The update ends by writing "this game's gauge
+            // can pay, and the device is in range of this game's Link" into +0x8d bit 0, and the on/off node forces
+            // a device off and refuses on while it is clear: a watcher's empty gauge or distance would switch its
+            // copy off. The bit is set again after every update (research notes sync-v3/m2/p5/energy, section 0).
+            if (coop_ctn_no_charge(actor)) {
+                static __thread int dummy;
+                inner = 1;
+                wrap_call(c, addr, &dummy, 1);
+                __atomic_fetch_or((uint8_t *)(uintptr_t)(comp + 0x8d), (uint8_t)1, __ATOMIC_SEQ_CST);
+                return 1;
             }
             return 0;
         }

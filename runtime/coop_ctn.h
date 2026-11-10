@@ -15,7 +15,7 @@ int coop_ctn_no_charge(uint64_t a);          // a part whose devices another pla
 int coop_g1(Cpu *c, uint64_t off);           // G1: writes kept off the bodies of builds another game runs
 void coop_g1_counts(uint32_t out[9]);
 void coop_ctn_toggle_asked(uint64_t comp, uint64_t actor);   // a hit here on a device of a build another game runs
-void coop_ctn_sender_entry(uint64_t group);                  // the entry of the group's on/off sender main+0x32eb90
+int coop_ctn_sender_entry(uint64_t group);                   // the entry of the group's on/off sender main+0x32eb90
 
 // A made part by the numbers of the game whose object it was (coop_players.c, coop_bonds.c).
 int coop_contraption_ident(uint64_t a, int *owner, uint32_t *id);

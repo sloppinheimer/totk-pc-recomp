@@ -1917,3 +1917,24 @@ Static reading only; nothing here has been run. Each block names the folder that
   held bit and the holder handle resolving to this game's Link; a rider must be in state 2 to 6. A part that reads
   held by someone else logs "a part reads held, and not by this Link". A run shows: carrying another player's build
   still takes it over (the carry scenario), and a build is not taken by a game whose player is nowhere near.
+- **The group sender silent on a followed build (34.1 item 5)** - coop_life.c coop_life_v3 (main+0x32eb90 wrapped,
+  its queue pushes main+0x2b76c34 dropped inside), coop_ctn.c coop_ctn_sender_entry. A run shows: a copy's devices
+  change only when the runner's do; "set off" is not sent again and again.
+- **A device another player pays for may always be on (item 6)** - coop_autobuild.c, the DeviceSwitch update: +0x8d
+  bit 0 set after each update for a part this game does not pay for. A run shows: a watcher with an empty gauge, or
+  more than 20 m away, still sees the build's devices on. Not done: the payer's own empty gauge switching the build
+  off where another game runs it.
+- **Spring (item 7)** - coop_autobuild.c lets the two launch writes through for a followed spring; coop_ctn.c dev_msg
+  sets a separate-message device's latch through its on/off node's event byte (node +0x40), the node found in a
+  table filled when each on/off calc runs. A run shows: a spring in a build fires in both games on the same switch
+  and both end extended or both retracted. Lone springs are still on the old path until lone devices enter the core.
+- **Wheels and stick tilt (item 9)** - cpu.h, coop_life.c, coop_autobuild.c: the real wheel node main+0x22fa1b0 runs
+  once on a followed wheel with its inert test (return main+0x22fa5e8) forced true, then is skipped; coop_ctn.c sends
+  each wheel's model spin and steering floats and each stick's four tilt floats with the state and writes them on the
+  copy at phase 0 and at the tick. A run shows: wheels turn on both screens while driving and stop when the car
+  stops; the stick leans on the other screen. Not read: whether the stick's own graph writes 0 over the tilt on a
+  follower in between (it would flicker).
+- **Stake (item 10)** - coop_life.c: main+0x2215364 returns at once for a followed stake.
+- **Cannon (item 11)** - coop_life.c: a followed cannon's fire function main+0x224e690 runs with Shooter::shoot
+  main+0x1bf8df4 answering -1 inside it. Not checked: that the runner's ball reaches the other game as an object.
+- **The death-component hook (item 12)** - coop_life.c reads the actor at component +0x18, falling back to +0x8.

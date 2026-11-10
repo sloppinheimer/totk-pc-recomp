@@ -304,8 +304,11 @@ int coop_life_hook(Cpu *c, uint64_t addr) {
         return 1;   // (the confirm ignores the result)
     }
     if (off == DEATH_REQUEST && g4_refuse(c, "death", c->x[0], c->x[1])) return 1;
-    if (off == DEATH_COMPONENT) {   // (x0 the component; its actor at +0x8)
-        uint64_t a = coop_rd_ptr(c->x[0] + 8);
+    if (off == DEATH_COMPONENT) {
+        // x0 is the death component. The game's function takes the actor from component +0x18 (research notes
+        // sync-v3/m2/p5/rocket-timebomb, section 3); this read +0x8 before, which that reading does not support.
+        uint64_t a = coop_rd_ptr(c->x[0] + 0x18);
+        if (!bondable(a)) a = coop_rd_ptr(c->x[0] + 8);
         if (g4_refuse(c, "death (component)", a, c->x[1])) return 1;
     }
     if (off == DELETE_DEFER || off == DELETE_REQUEST) {   // only the fallbacks of the green kill and the lapse
@@ -317,8 +320,9 @@ int coop_life_hook(Cpu *c, uint64_t addr) {
     if (off == DELETE_REQUEST) log_actor_event(c, "delete", c->x[0], c->x[1]);
     else if (off == DELETE_DEFER) log_actor_event(c, "delete (deferring)", c->x[0], c->x[1]);
     else if (off == DEATH_REQUEST) log_actor_event(c, "death", c->x[0], c->x[1]);
-    else if (off == DEATH_COMPONENT) {   // (x0 is the component; its actor is at +0x8 like other components: logged as is when not)
-        uint64_t a = coop_rd_ptr(c->x[0] + 8);
+    else if (off == DEATH_COMPONENT) {   // (x0 is the component; its actor is at +0x18: logged as is when not)
+        uint64_t a = coop_rd_ptr(c->x[0] + 0x18);
+        if (!bondable(a)) a = coop_rd_ptr(c->x[0] + 8);
         log_actor_event(c, "death (component)", bondable(a) ? a : c->x[0], c->x[1]);
     } else if (off == BOND_MAKER) {
         uint64_t pool = bond_pool();
@@ -350,10 +354,66 @@ void coop_life_x6_probe(Cpu *c) {
 
 // The contraption sync v3 hooks (cpu.h COOP_HOOKED_V3): the gates G1 to G8, the touch hooks of section 5 and the
 // stand-in hooks of section 9. Each phase gives its own their behaviour; until then they let the game run as is.
+int coop_ctn_sender_entry(uint64_t group);
+int coop_ctn_driven(uint64_t a);
+int coop_phase0_hook(Cpu *c, uint64_t addr);
+int coop_ab_force_inert(void);
+static __thread int v3_inner, in_follow_sender, in_follow_cannon;
+static _Atomic uint32_t sender_dropped, shots_kept;
+uint32_t coop_life_sender_dropped(void) { return atomic_load(&sender_dropped); }
+uint32_t coop_life_shots_kept(void) { return atomic_load(&shots_kept); }
+static uint64_t v3_node_actor(uint64_t node) {   // an AI node's actor ([[node +8] +8] +0x1f8)
+    return node ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(node + 8) + 8) + 0x1f8) : 0;
+}
 int coop_life_v3(Cpu *c, uint64_t off) {
-    if (off == 0x32eb90) {   // the group's on/off sender, x0 = group: a hit's event taken off the builds followed here
-        void coop_ctn_sender_entry(uint64_t group);
-        coop_ctn_sender_entry(c->x[0]);
+    // The group's on/off sender (x0 = group). On a build another game runs it sends nothing here: its rules (some
+    // devices on and some off: ON to all; a hit while one is off: ON to all; the gauge cannot pay: OFF) would switch
+    // a copy against the game that runs it, whose state comes by STATE. The sender still runs, so the group flags it
+    // consumes are consumed; each message it queues (main+0x2b76c34) is dropped. Research notes
+    // sync-v3/m2/p5/setoff-not-taking, section 3.
+    if (off == 0x32eb90) {
+        if (v3_inner) { v3_inner = 0; return 0; }
+        if (!coop_ctn_sender_entry(c->x[0])) return 0;
+        v3_inner = 1, in_follow_sender = 1;
+        c->pc = MOD_MAIN_BASE + off;
+        rt_dispatch(c);
+        in_follow_sender = 0;
+        return 1;
+    }
+    if (off == 0x2b76c34) {
+        if (!in_follow_sender) return 0;
+        atomic_fetch_add(&sender_dropped, 1);
+        c->x[0] = 0;
+        return 1;
+    }
+    // The wheel's inert test (the call that returns to main+0x22fa5e8): true for the one run that puts a followed
+    // wheel's motors off (coop_autobuild.c, the wheel node)
+    if (off == 0x1c02914) {
+        if (!coop_ab_force_inert() || c->x[30] - MOD_MAIN_BASE != 0x22fa5e8) return 0;
+        c->x[0] = 1;
+        return 1;
+    }
+    if (off == 0x22fa1b0) return coop_phase0_hook(c, MOD_MAIN_BASE + off);
+    // A followed stake does not pin itself to this game's ground (main+0x2215364, x0 = its node, points its
+    // "ToGround" constraint at the body it hit): where it runs it is pinned, and its pose comes from there.
+    if (off == 0x2215364) return coop_ctn_driven(v3_node_actor(c->x[0]));
+    // A followed cannon shoots no ball here: its fire function (main+0x224e690, x0 = its node) runs, and the one call
+    // that launches a ball, Shooter::shoot main+0x1bf8df4, answers "none to take" (-1) inside it. The ball is the
+    // object of the game that runs the cannon. Research notes sync-v3/m2/p5/spawns.
+    if (off == 0x224e690) {
+        if (v3_inner) { v3_inner = 0; return 0; }
+        if (!coop_ctn_driven(v3_node_actor(c->x[0]))) return 0;
+        v3_inner = 1, in_follow_cannon = 1;
+        c->pc = MOD_MAIN_BASE + off;
+        rt_dispatch(c);
+        in_follow_cannon = 0;
+        return 1;
+    }
+    if (off == 0x1bf8df4) {
+        if (!in_follow_cannon) return 0;
+        atomic_fetch_add(&shots_kept, 1);
+        c->x[0] = (uint64_t)-1;
+        return 1;
     }
     return 0;
 }
