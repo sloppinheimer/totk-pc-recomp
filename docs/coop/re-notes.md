@@ -32,6 +32,31 @@ evidence), guess.
   it from its enter function main+0x231fa58 (`coop_NodeGenericRequestCreateActor_enter`); the strings "Pack/Actor/",
   ".pack", "ActorMgr" inside it. Confidence: likely (not called by us yet).
 
+## Game 2 stuck in a load after a fast travel (play6, 2026-11-10; cause not found yet)
+- What happened (play6_p2.log, the frozen game; play6_p1.log): player 1 fast travelled from the sky island to
+  Kohsustu Lightroot (CheckPoint056, Depths) and its load took about 2 s. Player 2 had its map open; about 6 s later
+  its load began ("slot 0: its Player went away (state 7)", then "the player's EquipmentUser ... is now 0") and never
+  ended: no "this Link runs" after it from 459 s to the log's end at 840 s (its clean counter), through player 1's second travel (Umamustor Lightroot).
+- The load is waiting, not working: frames are presented at 60 fps and the co-op tick runs on, but the kernel's
+  "asynchronous preemption ... interrupted" count stays at 1920 from frame 28800 to the end (no guest thread runs
+  long), deswizzles stop, and live texture pins fall from 69693 to 4 (the old world is unloaded, nothing new loads).
+- Player 2's load went further than player 1's: player 1's resident Player stayed (the co-op tick found it and asked
+  for the stand-in again during the load: "slot 0: PlayerPuppet requested"), player 2's resident list has no Player
+  (coop_game.c coop_player_actor returns 0, so coop_players.c spawn_slot asks for nothing and the global stays 0).
+- Ruled out by the logs: the failed-read counters (exe+0xe072b8a eq_gear, 0xe05ff2b / 0xe060c87 / 0xe060d87
+  coop_players_tick, 0xe08be1b coop_actors_all; build/v143/totk.map) failed at the same rate all session and only
+  fall as actors go: polling of missing actors, a symptom. No copy was made, no actor asked for and no actor frozen in
+  player 2 during its load; its enemy copies were let go at 453 s, before it.
+- Seen before: 2026-11-07, player 2 warped to where player 1 stood and stayed on the loading screen (commit 9cb26a5
+  guessed frozen enemy copies; this run had none then, so that guess does not explain this one).
+- Read next: (1) what a load waits on before it builds the new area, from the scene change's state machine, and
+  which kind of load drops the resident Player (player 2's did, player 1's did not); (2) whether an actor's link flag
+  ref+0x4c, set by the link acquire main+0x61aa24 and cleared only by the link release main+0x1aff9c, holds up its
+  deletion: coop_game.c coop_claim takes such a link and the co-op code never releases one (spawn_slot clears the
+  link bytes, the "went away" path drops the actor); (3) where player 2 travelled to (the tester's memory).
+- Side bug seen in the same run: player 1's load unloaded its copies of player 2's two fans ("went away here (state 0 /
+  11); the owner is told"), and player 2 then deleted its own fans ("player 1 picked up or destroyed my ...").
+
 ## A rider, copies coming apart, the green bit (2026-11-08 evening)
 - A rider (TOTK_COOP_TEST_ABDECK=<s>[,<name>]: this Link put on a device of the contraption, its place in the device's
   frame logged every 0.25 s): game B's Link on A's Fanboat while A holds the stick stayed put to 1-2 cm (one 0.2 m
