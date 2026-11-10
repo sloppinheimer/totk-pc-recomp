@@ -2278,3 +2278,41 @@ Game code, by Sonnet readers into R/sync-v3/m2/p7/ (one folder each):
 - A spring, a fan and an emitter stay in step with a player looking away.
 - The stick leans; the rider sits on it.
 - A watcher with an empty battery sees the other's devices on, loose or in a build.
+
+### 39.4 Read: our own three files (2026-11-09, late; read by me: coop_glue.c in full, coop_bonds.c's header and public functions, the mirror's copy loop, place_copy, copy_place, the object report and coop_obj_find / coop_obj_ident)
+- coop_glue.c: a glue made by Ultrahand is caught at doScotch (main+0x1d66e34); its maker numbers it, sends it and
+  lists it every second; the others find the two objects by coop_obj_find and glue their own; a bond missing from
+  two lists is parted with removeScotch; a break of a bond made from another game's is refused at main+0x1c0bb54
+  unless this game parted it for the maker in the last 2 s. The lasting bond of a hand glue is made at Ultrahand's
+  release through the bond maker main+0x1916830; the glue entry goes about 2 s later.
+- coop_bonds.c: the owner sends the groups its own objects form; the others bond their copies to the group's first
+  member, mark them autobuilt, follow device state, and keep claims (who holds or rides another's contraption).
+  TOTK_COOP_BONDS=0 and TOTK_COOP_GLUE=0 switch each off whole; with both off their public functions answer 0.
+- The mirror: a slot per object the owner sends; a copy is made when wanted, placed at the owner's pose every tick,
+  deleted when the owner stops sending it; a copy that dies here is taken as picked up or destroyed and the owner is
+  told, except an Autobuilt part's, which is made again. A Zonai device's copy runs its own update. An actor of the
+  game's Autobuild class is sent with a flag and made the same way.
+
+### 39.5 Written from it (not run)
+- **One owner for anything glued (39.2 item 1)**: coop_ctn.c, coop_players.c, coop_life.c.
+  - The core switches the older glue and bond paths off (TOTK_COOP_GLUE, TOTK_COOP_BONDS set to 0 when the core is
+    on and the key is not set by hand), as it does the device flips. Not checked: that each key is set before the
+    older file first reads it; a launcher that sets the three keys removes the doubt.
+  - A bond made or broken in a game (the bond maker, the two break functions) makes that game record its builds
+    every 0.1 s for 3 s instead of every 2 s. A build that is no group any more is retired after 0.6 s, not 3 s. A
+    made copy counts as made once all its parts are grouped (or after 1 s), not after 3 s (note 9).
+  - in_place takes a part no entry has from the objects: the mirror copy of the other game's object, or this game's
+    own object when another player glued it into a build. Such parts are marked taken in (Ent.adopt): never deleted
+    by the entry, let go when they leave it, their glue broken first when the build is retired. So a first fuse by
+    hand, and a loose object glued on, are applied in place.
+  - The mirror neither places nor deletes a copy while it is a part of a build (coop_ctn_part), and does not delete
+    it when its owner stops sending it; coop_contraption_owns names only what this game makes with the build object.
+  - An actor of the Autobuild class is not sent as a plain object while the core is on (note 13).
+  - A part of a followed build takes no game-rule death whether it was made here or taken in.
+- Not done in this step: a build glued only from another player's objects, with none of this game's own, is not
+  recorded by the game that glued it (record_pass starts from this game's own objects); moving another player's
+  loose object (note 10) is not decided; the handing of a let-go part back to the mirror relies on the mirror slot
+  still being there.
+- A run shows: two loose fans fused by either player appear fused on the other screen within a second, with "applied
+  in place: 2 parts kept (0x3 taken from the objects), 1 bonds made"; unfused by either, they come apart on both and
+  stay apart; a part broken off an Autobuilt build leaves no stray copy.

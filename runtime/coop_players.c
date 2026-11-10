@@ -1626,6 +1626,10 @@ static void arrow_copies(Cpu *c, Slot *s) {
         int still = 0;
         for (int j = 0; j < COOP_OBJS && !still; j++) still = s->objs_want[j].id == s->mir[k].id;
         if (still) continue;
+        // A copy that is a part of a build (coop_ctn.c took it in where it stood) is the build's while it is one: not
+        // deleted when its owner stops sending it as a plain object.
+        int coop_ctn_part(uint64_t a);
+        if (s->mir[k].state == 3 && coop_ctn_part(s->mir[k].actor)) continue;
         // A shot arrow's fused material that goes in its owner's game went off where the arrow hit (a bomb flower's
         // blast; the tester's list: all arrow effects): its copy here is set off the same way, its life taken and its
         // own update let run, instead of being deleted. (A nocked one goes when the bow is put away: deleted.)
@@ -1724,6 +1728,12 @@ static void arrow_copies(Cpu *c, Slot *s) {
         }
     }
     for (int k = 0; k < COOP_OBJS; k++) {
+        // A copy taken into a build (coop_ctn.c): the build moves it, breaks it and ends it. The mirror neither places
+        // nor deletes it, nor takes its going as a pick-up, until it is a plain object again.
+        {
+            int coop_ctn_part(uint64_t a);
+            if (s->mir[k].state == 3 && coop_ctn_part(s->mir[k].actor)) continue;
+        }
         // Far from every player (coop_far.c): a live copy is deleted and goes back to wanted; a wanted one is not made
         // until it is nearer (TotK Online's server disposes of an actor 1000 m from every player).
         if (s->mir[k].state == 3 && !s->mir[k].blowing && copy_alive(s, k) && coop_far_from_players(s->mir[k].pos)) {
@@ -2635,6 +2645,14 @@ static int report_props(uint64_t me, CoopObj *out, int max) {
         CoopObj *o = &out[n];
         float r[9];
         if (!coop_rd(props[e].actor + COOP_ACTOR_POS, o->pos, 12) || !coop_rd(props[e].actor + COOP_ACTOR_ROT, r, 36)) continue;
+        // A part made by an Autobuild is not sent as a plain object while the contraption core is on: in a build it
+        // is the core's, and loose it is dying (the game kills a part broken off an Autobuilt build). Sent, the other
+        // game made a copy of the dying part and made it again each time it went: a live fan flying off (plan 37,
+        // note 13).
+        {
+            int coop_ctn_core(void);
+            if (coop_ctn_core() && is_imaginary(props[e].actor)) continue;
+        }
         o->id = id;
         coop_actor_name(props[e].actor, o->name, sizeof o->name);
         o->flags = is_imaginary(props[e].actor) ? COOP_OBJ_AUTOBUILT : 0;   // (autobuilt_on)

@@ -294,6 +294,10 @@ int coop_life_hook(Cpu *c, uint64_t addr) {
         x3_hook(c, off);
         return 0;
     }
+    if (off == BOND_MAKER || off == 0x1cf54d4 || off == 0x2999fe8) {   // a bond made or broken here: recorded at once (coop_ctn.c)
+        void coop_ctn_structure_event(void);
+        coop_ctn_structure_event();
+    }
     if (off == 0x190f034) { x3_strain(c); return 0; }
     if (off == 0x1c0c9b0) { x3_message(c); return 0; }
     if (off == ITEM_CHANGE) {
