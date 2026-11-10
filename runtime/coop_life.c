@@ -507,6 +507,30 @@ int coop_life_v3(Cpu *c, uint64_t off) {
         if (!was && done) {
             static _Atomic int said;
             if (atomic_fetch_add(&said, 1) < 40) rt_log("coop: glue: a glue ended after %.2f s, progress %.2f (%s)", el, pr, pr > 0.5f ? "past the pull: made, or the bond maker refused" : el > 1.5f ? "timed out" : "aborted by a test");
+            // The tick's tests, read as it read them (research notes sync-v3/run5/attach, section 1): the joint (state +8),
+            // both bodies, actor A's and B's links (entry = state - 0x558, +0x420 and +0x488), the two groups' member counts
+            // (SPR +0x28 -> +0x58, 1 with none; 22 together refuse), SPR A +0x24 & 0x2380, SPR B +0x150 bit 4, and both
+            // bodies' +0x68 bits 10, 24, 26 (the entry is released unless bit 10 is set and 26 clear). Plan 47.3, note 23.
+            if (pr <= 0.5f && el <= 1.5f) {
+                uint64_t entry = gs - 0x558, aa = hnd_actor(entry + 0x420), ab = hnd_actor(entry + 0x488);
+                uint64_t sa = aa ? coop_rd_ptr(coop_rd_ptr(aa + 0x228) + 0x480) : 0, sb = ab ? coop_rd_ptr(coop_rd_ptr(ab + 0x228) + 0x480) : 0;
+                uint64_t ga = sa ? coop_rd_ptr(sa + 0x28) : 0, gb = sb ? coop_rd_ptr(sb + 0x28) : 0, f68a = 0, f68b = 0;
+                int32_t na = 1, nb = 1;
+                uint32_t a24 = 0, b150 = 0;
+                if (ga) coop_rd(ga + 0x58, &na, 4);
+                if (gb) coop_rd(gb + 0x58, &nb, 4);
+                if (sa) coop_rd(sa + 0x24, &a24, 4);
+                if (sb) coop_rd(sb + 0x150, &b150, 4);
+                if (bodies[0]) coop_rd(bodies[0] + 0x68, &f68a, 8);
+                if (bodies[1]) coop_rd(bodies[1] + 0x68, &f68b, 8);
+                char na_s[48] = "", nb_s[48] = "";
+                rt_log("coop: glue: its tests: joint %d, bodies %d %d, actors %s / %s, SPR %d %d, counts %d + %d, A +0x24 & 0x2380 = %#x, B +0x150 bit 4 = %u, "
+                       "body A +0x68 bits 10/24/26 %u%u%u, body B %u%u%u",
+                       coop_rd_ptr(gs + 8) != 0, bodies[0] != 0, bodies[1] != 0, aa ? coop_actor_name(aa, na_s, sizeof na_s) : "none",
+                       ab ? coop_actor_name(ab, nb_s, sizeof nb_s) : "none", sa != 0, sb != 0, na, nb, a24 & 0x2380, b150 >> 4 & 1,
+                       (unsigned)(f68a >> 10 & 1), (unsigned)(f68a >> 24 & 1), (unsigned)(f68a >> 26 & 1), (unsigned)(f68b >> 10 & 1),
+                       (unsigned)(f68b >> 24 & 1), (unsigned)(f68b >> 26 & 1));
+            }
         }
         return 1;
     }   // (a time bomb's fuse node: coop_ctn.c)

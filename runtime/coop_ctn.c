@@ -335,6 +335,14 @@ static int objs_ident(uint64_t a, int *owner, uint32_t *id) {   // coop_obj_iden
     for (int i = 0; a && i < objs.no && !got; i++) if (objs.own[i].a == a && objs.own[i].id) *owner = objs.own[i].owner, *id = objs.own[i].id, got = 1;
     for (int i = 0; a && i < objs.nc && !got; i++) if (objs.cp[i].a == a && objs.cp[i].id) *owner = objs.cp[i].owner, *id = objs.cp[i].id, got = 1;
     plat_mutex_unlock(&objs_lock);
+    // Any other actor with a name: this game's, by the key of where it is, as coop_obj_ident's own last rule names it
+    // (coop_world.c coop_actor_world_key). Without it every part of an Autobuild (no object the mirror sends) made the
+    // record "a part is no object the other games know" and the build was never sent (plan 47.3, note 24).
+    if (!got && a) {
+        uint32_t coop_actor_world_key(uint64_t a);
+        uint32_t key = coop_actor_world_key(a);
+        if (key) *owner = coop_net_id(), *id = COOP_OBJ_KEYED | (key & ~COOP_OBJ_KEYED), got = 1;
+    }
     return got;
 }
 static int objs_list(int copies, uint64_t *out, int max) {

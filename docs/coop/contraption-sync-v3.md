@@ -2815,3 +2815,24 @@ been run.
   not known at that point).
 - 34 (rest): bond_queue's other refusal points (no graph id, no descriptor) still come after earlier bonds are queued.
 - 37: a glue onto an object copied since the last tick is not sent (the snapshot misses it).
+
+### 47.3 Play-test notes, run 6 (2026-11-10)
+**Note 22 (note 19 again): three fans spawned by P1 from the pouch, two seen by P2.** P1: "I made SpObj_WindGenerator_A_01"
+numbers 1 and 2 only, right after leaving the menu; no "not taken as made here" line, so the third fan was never a
+candidate at all (the 19 fix only dropped the stand-in test). Not known which test kept it out: first sighting, within
+6 m, a copy pending within 1 m, the table full, or an existing entry at its address. Written (not built while the
+games run): a log line for each new Zonai device saying each of those values.
+
+**Note 23: P2 still cannot glue P1's objects.** P2 took P1's fan ("held here: this game's now (number 1)"), and the glue
+ended at once: "a glue ended after 0.02 s, progress 0.00 (aborted by a test)". No "bit 24 ... cleared" line, so the
+bodies did not carry that flag (or the actor was not found). One of the tick's first tests refused it (joint or
+bodies missing, B's link dead, the joint dead, the group counts, SPR A +0x24 & 0x2380, SPR B +0x150 bit 4, or the
+entry released by the body flags 10/26). Written (not built while the games run): the glue's end logs each of those
+values.
+
+**Note 24: an Autobuild by P2 never reached P1.** P2: "a group of 8 members, record of 8 parts: a part is no object the
+other games know: not sent" (twice). Cause, in our code: review 1's repair of findings 23/30/72 made record_pass name a
+part through the tick's copy of the object tables (objs_ident), which holds only the objects the mirror sends and the
+copies; coop_obj_ident's last rule (any named actor: this game's, by its place key) was left out, and an Autobuild's
+parts are no object the mirror sends. So no Autobuild has been sent since that repair (bcc0b2f). Written: objs_ident
+falls back to the place key as coop_obj_ident does (not built while the games run).

@@ -2574,7 +2574,11 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
         else if (free < 0 && (!props[i].actor || (prop_tick - props[i].seen > 30 && !props[i].made && !props[i].touched))) free = i;
     }
     if (e < 0) {
-        if (free < 0) return;
+        if (free < 0) {
+            static int said_full;
+            if (!strncmp(nm, "SpObj_", 6) && said_full++ < 10) rt_log("coop: new %s here: the object table is full, not taken", nm);
+            return;
+        }
         e = free;
         memset(&props[e], 0, sizeof props[e]);
         props[e].actor = a, props[e].key = key, props[e].moved = -1000, memcpy(props[e].last, p, 12);
@@ -2588,6 +2592,13 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
             int coop_actor_placed(uint64_t a);   // coop_world.c
             int mine = d2 < dco + 1 || (!strncmp(nm, "SpObj_", 6) && !coop_actor_placed(a));
             if (mine && !copy_pending_near(p) && ps->n_cand < 32) ps->cand[ps->n_cand++] = e;
+        }
+        if (!strncmp(nm, "SpObj_", 6)) {   // (why a new Zonai device here is or is not a candidate: plan 47.3, note 22)
+            int coop_actor_placed(uint64_t a);
+            static int said;
+            if (said++ < 40)
+                rt_log("coop: new %s here: first %d, %.1f m from this Link, %.1f m from a stand-in, placed %d, a copy pending near %d, candidates %d",
+                       nm, first, sqrtf(d2), dco < 1e17f ? sqrtf(dco) : -1.0f, coop_actor_placed(a), copy_pending_near(p), ps->n_cand);
         }
     } else {
         float dx = p[0] - props[e].last[0], dy = p[1] - props[e].last[1], dz = p[2] - props[e].last[2];
