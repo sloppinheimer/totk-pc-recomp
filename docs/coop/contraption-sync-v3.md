@@ -2166,3 +2166,17 @@ written with the P5 leftovers or dropped by a stated decision.
 4. One test of P4 and P5 together.
 5. P6, then P7: each read first, written whole, tested once.
 6. The long session.
+
+**12. An Autobuild by player 2 never appeared for player 1 ("disintegrated").** (37, continued)
+- Logs, player 1: the new build's record came whole and its four mirror copies were deleted (lines 9786 to 9790),
+  and no "being made here" follows. From line 9169 on, every 5 s: "6e0aa1ac: the game refused the delete of a part
+  here (asked 0x1 of 2): asked again". 6e0aa1ac is the earlier two-fan build; the fan on the ground in the
+  screenshot is its part.
+- Cause, in our code: 33.1 made a refused delete wait and ask again, and make_pass takes a build waiting to be made
+  again before any other. One part whose delete the game refuses for good therefore holds up every later build in
+  that game. The delete of that fan was refused for at least 60 s; why (a held lock of reason 0, or a delete already
+  asked) is not read.
+- Player 2's log: "6e0aa1ac, run here, is no build any more (1 of 2 parts alive): retired" (8799). Player 1 had
+  already started to make it again ("not whole here (0 members, 2 parts)", 9168) and never got to the retire.
+- Also seen in these logs, working: the stand-in's hit not taken (player 1 9373 and after), a lone device set by
+  state (player 2 8805, 8827), a toggle asked across games (player 2 8488 to 8497).
