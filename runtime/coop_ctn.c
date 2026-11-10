@@ -36,6 +36,8 @@
 int coop_own_sent_objects(uint64_t *out, int max), coop_is_copy(uint64_t a), coop_obj_ident(uint64_t a, int *owner, uint32_t *id);
 uint64_t coop_obj_find(int owner, uint32_t id, const char *name);   // coop_players.c
 static int lone_ask(uint64_t actor, uint32_t want, uint32_t bits);
+static int lone_owner_of(uint64_t actor);   // the relay id of a lone copy's owner (0: none)
+static void lone_forget(uint64_t actor);    // a lone copy that is this game's object now
 void coop_deleted_here(uint64_t a);   // coop_players.c: not told to the others as destroyed
 uint64_t coop_life_ability(void);
 void coop_life_free_confirm(int on);
@@ -99,6 +101,7 @@ typedef struct {
     uint32_t vseen;         // the highest version number heard of it: a new runner numbers on from here (finding 39)
     int relinq_later;       // a RELINQUISH that came while it was being made: taken up once made (finding 38)
     int64_t later_since;    // since when in_place has answered "later" for its incoming version (0: not)
+    int64_t paused_since;   // since when the game that runs it has been in a menu (authority)
     uint32_t no_inplace_v;  // the incoming version in_place gave up on: made with the build object
     int np;
     int absent;             // a follower whose parts the engine unloaded: 1 far, 2 near again and waiting for the version
@@ -2006,6 +2009,18 @@ void coop_ctn_toggle_asked(uint64_t comp, uint64_t actor) {
         return;
     }
     if (!found) {   // (not a build's part: a lone device of another player's)
+        // Its owner is in a menu: the ask would wait there. The device is taken over as by a grab (it is this game's
+        // object from now on) and the hit switches it here, natively (plan 44.3, note 21).
+        int owner_id = lone_owner_of(actor);
+        CoopCtrHb hb;
+        uint64_t age = 0;
+        int coop_obj_take_copy(uint64_t a);   // coop_players.c
+        if (owner_id && coop_ctr_hb(owner_id, &hb, &age) && (hb.flags & COOP_CTR_HB_PAUSED) && age < 2000000000ull && coop_obj_take_copy(actor)) {
+            lone_forget(actor);
+            __atomic_fetch_or((uint8_t *)(uintptr_t)(comp + 0x8d), (uint8_t)8, __ATOMIC_SEQ_CST);   // (the hit's toggle, taken next update)
+            rt_log("coop: contraption: player %d is in a menu: their device hit here is this game's now, switched here", owner_id);
+            return;
+        }
         if (lone_ask(actor, !part_on(actor), 0)) {
             plat_mutex_lock(&ev_lock);
             tog_seen[tog_i % 16].actor = actor, tog_seen[tog_i % 16].us = frame_step_world_us(), tog_i++;
@@ -2332,6 +2347,19 @@ static int lone_ask(uint64_t actor, uint32_t want, uint32_t bits) {   // a hit h
     coop_ctr_send(0, CTR_LONE_ASK, COOP_CTR_RELIABLE, &m, sizeof m);
     rt_log("coop: contraption: a %s on another player's %s here: sent to its owner (%s)", bits ? "switch event" : "toggle", m.name, bits ? "event" : want ? "wanted on" : "wanted off");
     return 1;
+}
+static int lone_owner_of(uint64_t actor) {
+    int id = 0;
+    plat_mutex_lock(&lone_lock);
+    for (int i = 0; actor && i < LONE_N && !id; i++) if (lone[i].actor == actor) id = lone[i].owner_id;
+    plat_mutex_unlock(&lone_lock);
+    return id;
+}
+static void lone_forget(uint64_t actor) {
+    plat_mutex_lock(&lone_lock);
+    for (int i = 0; actor && i < LONE_N; i++)
+        if (lone[i].actor == actor) lone[i].actor = 0, atomic_store_explicit(&lone_actor[i], 0, memory_order_relaxed);
+    plat_mutex_unlock(&lone_lock);
 }
 static void lone_store(uint64_t a, uint64_t from, int from_id, const LoneMsg *p, int64_t now) {   // a lone copy's state, from its owner
     plat_mutex_lock(&lone_lock);
@@ -2777,6 +2805,24 @@ static void authority(void) {   // touch (plan 5.3), asks, a runner that left, a
         // it takes it with the next change number, and of two that did, the lower relay id keeps it (the GRANT rule in
         // receive). (The lowest live id of all games was asked before, which may be a game that does not have the build:
         // then none took it, review 1 finding 21.)
+        // The game that runs it is in a menu (its heartbeat's paused flag, the world clock stood 0.3 s): its game stops
+        // the build, and the asks of this game's player wait there until it is out. In single player the menu stops
+        // everything; here the other player plays on. So a game whose Link is within 60 m takes it after 1 s (plan
+        // 44.3, note 21). The paused game's tick still runs in a menu and takes the GRANT.
+        {
+            CoopCtrHb hb;
+            uint64_t age = 0;
+            int rid = coop_ctr_route(e->runner);
+            int paused = rid && coop_ctr_hb(rid, &hb, &age) && (hb.flags & COOP_CTR_HB_PAUSED) && age < 2000000000ull;
+            if (!paused || dist < 0 || dist > 60) e->paused_since = 0;
+            else if (!e->paused_since) e->paused_since = now;
+            else if (now - e->paused_since > 1000000) {
+                uint32_t ep = e->epoch + 1;
+                rt_log("coop: contraption: %08x: the game that runs it is in a menu, this Link %.0f m from it: run here now", cid32(e), dist);
+                set_runner(e, me, ep), send_ctl(COOP_CTR_GRANT, e, ep, me), e->resend = 1, e->paused_since = 0;
+                continue;
+            }
+        }
         if (!coop_ctr_route(e->runner)) {
             uint32_t ep = e->epoch + 1;
             rt_log("coop: contraption: %08x: the game running it left: run here now", cid32(e));

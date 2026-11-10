@@ -2649,3 +2649,34 @@ the blocked bit stays set while the gauge recharges after running empty.
    slot taken with that actor, not made anew), kept 2 s while the new owner's first report comes. Both ways, any
    number of times. A keyed object (a map object a game moved) is handed over the same way, by its key.
 4. **The calc-mask log line** of 44.1 is added to the lone gate log (no change of behaviour).
+
+### 44.3 Play-test notes, run 5 (2026-11-10)
+**Note 19: three fans spawned by P1, two seen by P2.** P1's log has "I made SpObj_WindGenerator_A_01" for numbers 1 and 2
+only; P2 made copies of those two. The third fan was never taken as P1's made object, so it was never sent. The made
+gate (report_props, prop_fn) takes a new object as this game's only if it was first seen within 6 m of this Link and
+nearer this Link than any stand-in (within 1 m), with no copy pending within 1 m, at most 20 new objects near, after 20 s
+of world time and not within 10 s of a warp. P2's stand-in stood beside the fans; which test refused the third is not in
+the log. Before 44.2 an object refused there was still sent by key once it moved (it reached the other game as a copy
+of a key); 44.2 item 2 stopped run-time objects being sent by key, so now it is not sent at all until someone grabs it.
+To fix: a run-time object (no map placement) that is not a copy here exists only because this game made it; it should
+be this game's made object without the nearer-than-a-stand-in test. Log which gate test refuses a candidate.
+
+**Run 5, the hand-over:** works. P2 grabbed P1's fan: P2 "the copy of SpObj_WindGenerator_A_01 (00000002) is held here:
+this game's now (number 1)", P1 "player 2 took my ... it is theirs now (their number 1), mine follows it". P2 could then
+move P1's objects.
+
+**Note 20: P2 cannot fuse P1's objects.** P2 grabs P1's things but cannot glue them. P2's log has no contraption line
+at all after the grab (no version, no build), so no glue group formed in P2's game. Not known: whether the glue is
+refused when one end is a copy of the other game's object, or forms and is torn at once (the copy is placed by the
+mirror every tick: place_copy sets its body's speed and teleports it once a second). To read: the glue maker
+(doScotch main+0x1d66e34, the bond maker main+0x1916830) on what it refuses, against what place_copy does to a copy.
+  the tester: the glue line shows while the object is held, and pressing Attach does nothing. In his picture the target is
+  a pair of P1's fans (outlined orange), so likely a build of P1's that P2 follows; whether the attach is refused by a
+  rule of ours on a followed build's part (the break and bond hooks of coop_life.c, G1, G4) or by the game for a copy is
+  not read.
+
+**Note 21: a device whose game is in a menu.** P1 opened a menu while a device of P1's ran. On P2's screen it kept
+running, and P2 could not switch it off until P1 left the menu. P1's game runs the device and is paused, so the asks
+from P2 wait there (the pause of 44.1). In single player the paused game stops everything, but here the other player
+plays on. A game in a menu (the heartbeat's paused flag, COOP_CTR_HB_PAUSED) could hand the builds and lone devices near
+the other player to that player's game; not designed yet.

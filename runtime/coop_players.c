@@ -2570,7 +2570,13 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
         snprintf(props[e].name, sizeof props[e].name, "%s", nm);
         if (first && d2 < 36) {
             ps->n_first_near++;
-            if (d2 < dco + 1 && !copy_pending_near(p) && ps->n_cand < 32) ps->cand[ps->n_cand++] = e;
+            // Nearer this Link than any stand-in: two Links on one spot each claimed nothing before that rule. A Zonai
+            // device with no map placement that is no copy here can only have been made by this game (a capsule, the
+            // pouch): it is this game's wherever the stand-in stands (plan 44.3, note 19: P2's stand-in stood by
+            // three fans P1 made, and the third was nobody's and never sent).
+            int coop_actor_placed(uint64_t a);   // coop_world.c
+            int mine = d2 < dco + 1 || (!strncmp(nm, "SpObj_", 6) && !coop_actor_placed(a));
+            if (mine && !copy_pending_near(p) && ps->n_cand < 32) ps->cand[ps->n_cand++] = e;
         }
     } else {
         float dx = p[0] - props[e].last[0], dy = p[1] - props[e].last[1], dz = p[2] - props[e].last[2];
@@ -2622,6 +2628,11 @@ static int report_props(uint64_t me, CoopObj *out, int max) {
                  (ps.me[2] - last_p[2]) * (ps.me[2] - last_p[2]);
     if (me != last_me || jump > 30 * 30) made_quiet_until = prop_tick + 600;
     last_me = me, memcpy(last_p, ps.me, 12);
+    if (ps.n_cand && !(ps.n_first_near <= 20 && frame_step_world_us() > 20000000 && prop_tick >= made_quiet_until)) {
+        static int said;   // (which test kept new objects from being this game's: note 19)
+        if (said++ < 20) rt_log("coop: %d new objects near this Link not taken as made here: %d new at once (20 at most), world time %.1f s (20 s at least), %s",
+                                ps.n_cand, ps.n_first_near, frame_step_world_us() / 1e6, prop_tick < made_quiet_until ? "within 10 s of a warp or load" : "no warp");
+    }
     if (ps.n_first_near <= 20 && frame_step_world_us() > 20000000 && prop_tick >= made_quiet_until)
         for (int i = 0; i < ps.n_cand; i++) {
             int e = ps.cand[i];
@@ -3018,6 +3029,12 @@ static int obj_take_over(Slot *s, int k) {
     rt_log("coop: slot %d: the copy of %s (%08x) is held here: this game's now (number %u), its owner is told", (int)(s - slots), nm, s->mir[k].id, props[e].id);
     s->mir[k].state = 0, s->mir[k].actor = 0;
     return 1;
+}
+// The copy a (a lone device of another player's) taken over by this game, as by a grab (note 21: its owner is in a menu)
+int coop_obj_take_copy(uint64_t a) {
+    Slot *s;
+    int k;
+    return copy_of(a, &s, &k) && obj_take_over(s, k);
 }
 // The old owner's side: its object (by its number, or by key for a placed one it moved) is the new owner's now. Its
 // actor stays where it is and becomes the copy of the new number, in a mirror slot taken with it.
