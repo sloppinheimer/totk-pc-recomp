@@ -84,6 +84,8 @@ typedef struct {
     uint64_t parts[21];     // this game's actor of each record part (0: gone here, see parts_sweep)
     uint32_t gen[21];       // each actor's id (actor +0x10) when it was taken: a freed and reused actor has another
     uint32_t del_ok;        // bit r: the delete of part r was accepted (not asked twice)
+    int64_t del_since;      // since when a delete of a part of it has been refused (0: none)
+    int64_t stuck_until;    // not picked by the maker before this (a refused delete: the other builds go first)
     int np;
     int absent;             // a follower whose parts the engine unloaded: 1 far, 2 near again and waiting for the version
     float absent_dist;      // how far this game's Link was when they went
@@ -182,14 +184,27 @@ static int part_delete(Cpu *c, uint64_t a) {
     return 1;
 }
 // Every part of e deleted; 1 once none is left to ask (a part whose delete was accepted is not asked again)
+// A part whose delete the game still refuses after 2 s is given up: it stays in this game as it is, no longer a part
+// of the entry, and the entry goes on. Waiting for it without end held up every later build of that game (plan 37,
+// note 12: one fan's delete was refused for over a minute).
 static int parts_delete(Cpu *c, Ent *e) {
     int left = 0;
+    int64_t now = frame_step_world_us();
     for (int r = 0; r < e->np && r < 21; r++) {
         if (e->del_ok >> r & 1) continue;
         if (!alive_as(e->parts[r], e->gen[r])) { made_forget(e->parts[r]), e->del_ok |= 1u << r; continue; }
-        if (part_delete(c, e->parts[r])) e->del_ok |= 1u << r;
-        else left++;
+        if (part_delete(c, e->parts[r])) { e->del_ok |= 1u << r; continue; }
+        if (!e->del_since) e->del_since = now;
+        if (now - e->del_since > 2000000) {
+            char nm[48];
+            rt_log("coop: contraption: %08x: the game would not delete part %d (%s) for 2 s: left here as it is, the build goes on without it", cid32(e), r,
+                   coop_actor_name(e->parts[r], nm, sizeof nm));
+            e->del_ok |= 1u << r;
+            continue;
+        }
+        left++;
     }
+    if (!left) e->del_since = 0;
     return !left;
 }
 
@@ -856,8 +871,9 @@ static void make_pass(Cpu *c) {
         if (selected & 0xff) return;   // (this game's player has an Autobuild design selected: the build object is theirs)
         Ent *e = NULL;
         plat_mutex_lock(&reg_lock);
-        for (int i = 0; i < REG_N && !e; i++) if (reg[i].used && reg[i].want_make && reg[i].np) e = &reg[i];
-        for (int i = 0; i < REG_N && !e; i++) if (reg[i].used && reg[i].want_make && reg[i].absent != 1) e = &reg[i];   // (not where the engine unloads it)
+        // (no build waits behind another: one whose old part the game will not delete yet steps aside for 0.3 s)
+        for (int i = 0; i < REG_N && !e; i++) if (reg[i].used && reg[i].want_make && reg[i].np && reg[i].stuck_until <= now) e = &reg[i];
+        for (int i = 0; i < REG_N && !e; i++) if (reg[i].used && reg[i].want_make && reg[i].absent != 1 && reg[i].stuck_until <= now) e = &reg[i];   // (not where the engine unloads it)
         plat_mutex_unlock(&reg_lock);
         if (!e) return;
         if (e->in_v != 0xffffffffu && in_place(c, e, o, now)) return;   // (applied where the parts stand, or to be tried again)
@@ -887,6 +903,7 @@ static void make_pass(Cpu *c) {
             if (!parts_delete(c, e)) {   // (a delete lock held on a part: asked again next frame, nothing made meanwhile)
                 static int64_t said;
                 if (now - said > 5000000) said = now, rt_log("coop: contraption: %08x: the game refused the delete of a part here (asked %#x of %d): asked again", cid32(e), e->del_ok, e->np);
+                e->stuck_until = now + 300000;
                 return;
             }
             plat_mutex_lock(&reg_lock);

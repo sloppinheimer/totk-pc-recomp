@@ -2180,3 +2180,6 @@ written with the P5 leftovers or dropped by a stated decision.
   already started to make it again ("not whole here (0 members, 2 parts)", 9168) and never got to the retire.
 - Also seen in these logs, working: the stand-in's hit not taken (player 1 9373 and after), a lone device set by
   state (player 2 8805, 8827), a toggle asked across games (player 2 8488 to 8497).
+- **Fix after note 12 (not run)** - coop_ctn.c parts_delete, make_pass: a part whose delete the game refuses for 2 s is
+  given up and left as it is, and a build waiting on a refused delete steps aside for 0.3 s so the others are made.
+  The logs of the session up to here are kept as build/play2_p1.log and build/play2_p2.log.
