@@ -358,68 +358,171 @@ int coop_life_v3(Cpu *c, uint64_t off) {
     return 0;
 }
 
-// I16 (contraption-sync-v3.md section 9, X14b): a stand-in never collides with a contraption part, in any game. The game
-// decides every body pair through one predicate, main+0x40a240(filter, record A, record B, flags) -> 1 collide / 0 not,
-// called for two rigid bodies by main+0x6ab7d8 with each one's collision filter record, [body+0x140] + 8 (the record the
-// body's serialiser main+0x29aef20 names collision_filter; main+0x75fc94 passes [x+0x148] + 8 of another class).
-// The hook answers 0 for a pair of one stand-in body and one part body, and leaves every other pair to the game: the
-// stand-in still stands on the ground and the parts still meet everything else. The two sets of holders are rebuilt
-// each co-op tick (coop_life_veto_rebuild) and read here, on physics job threads, without a lock: two buffers and an
-// index. A remote player's weight on a build is not given by its stand-in's body (plan 9: an explicit force, P6).
+// I16 (contraption-sync-v3.md section 9): a stand-in never collides with a contraption part, in any game. The game
+// decides every body pair through one predicate, main+0x40a240(filter, record A, record B, flags) -> 1 collide / 0 not.
+// Its two callers pass each body's collision filter record: main+0x6ab7d8 [body+0x140] + 8 (the first physics world),
+// main+0x75fc94 [body+0x148] + 8 (the second, for a body with flag bit 5 at +0x68). The hook answers 0 for a pair of
+// one stand-in body and one part body and leaves every other pair to the game: the stand-in still stands on the ground
+// and the parts still meet everything else.
+//
+// "A stand-in body" is every rigid body of the stand-in's Player actor and of the gear actors it holds (sword, shield
+// and bow are actors of their own, each with a solid body warped to the hand every frame). A Player's bodies are not
+// one pointer: its physics object Ctl = [[[actor+0x228]+0x50]+0x20] holds a main body, a character controller's body,
+// a named body list, entity sets, sensor sets, a provider of more sets and an extra holder with two lists, and the
+// game's own "every body of this actor" walk main+0x3cc9b4 (with main+0x2962c58) visits them all. all_bodies below is
+// that walk, read instruction by instruction (research notes player-physics/all_bodies.c, where each line carries the
+// address it was read at). The first version of this veto listed [Ctl+0x150] alone; a second body of the stand-in's
+// then arrived inside a build's steering stick, pushed it out of its place and held it there until the stick's bond
+// strained through and the game removed it (plan section 28; research notes physics/README.md section 8).
+// The same walk lists the parts' bodies.
+//
+// The two sets of record holders are rebuilt four times a second from the co-op tick (coop_life_veto_rebuild) and read
+// here, on physics job threads, without a lock: two buffers and an index, each with a small bit filter in front so
+// that the predicate, which runs for every pair the engine considers, costs two bit tests when neither body is a
+// stand-in's. A remote player's weight on a build is not given by its stand-in's body (plan 9: an explicit force, P6).
 // TOTK_COOP_I16=0: off.
-#define VETO_S 32
-#define VETO_P 160
-static struct { uint64_t s[VETO_S], p[VETO_P]; int ns, np; } veto_buf[2];
+#define VETO_S 384
+#define VETO_P 2560
+static struct { uint64_t s[VETO_S], p[VETO_P], sbits[4], pbits[16]; int ns, np; } veto_buf[2];
 static _Atomic int veto_cur = -1;
-static _Atomic uint32_t veto_count, veto_seen;   // pairs refused; pairs with a stand-in body at all (the sets match)
+static _Atomic uint32_t veto_count, veto_seen;   // pairs refused; pairs with a stand-in body at all
+static unsigned veto_hash(uint64_t h) { return (unsigned)((h >> 4) ^ (h >> 13)); }
 static int veto_has(const uint64_t *l, int n, uint64_t v) {
     for (int i = 0; i < n; i++) if (l[i] == v) return 1;
     return 0;
 }
-static int actor_holders(uint64_t a, uint64_t *out, int max) {   // the holders of an actor's bodies: main body, then the list
-    uint64_t ctl = a ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x50) + 0x20) : 0;
-    if (!ctl) return 0;
-    int n = 0;
-    uint64_t b = coop_rd_ptr(ctl + 0x150), h = b ? coop_rd_ptr(b + 0x140) : 0;
-    if (h && n < max) out[n++] = h;
+// ---- every rigid body of an actor (main+0x3cc9b4 and main+0x2962c58) ----
+#define AB_CAP 256   // (ours: the game checks no count)
+static void ab_add(uint64_t *out, int *n, int max, uint64_t body) {
+    if (!body) return;
+    for (int i = 0; i < *n; i++) if (out[i] == body) return;
+    if (*n < max) out[(*n)++] = body;
+}
+static void ab_set(uint64_t set, uint64_t *out, int *n, int max) {   // a body set: count +0x10, slots +0x18 of 0x18 bytes, body at slot +8
     int32_t cnt = 0;
-    uint64_t list = coop_rd_ptr(ctl + 0x118);
-    if (list && coop_rd(ctl + 0x110, &cnt, 4) && cnt > 0 && cnt <= 16)
-        for (int i = 0; i < cnt && n < max; i++) {
-            uint64_t r = coop_rd_ptr(list + 8 * (uint64_t)i), hh = r ? coop_rd_ptr(r + 0x140) : 0;
-            if (hh && !veto_has(out, n, hh)) out[n++] = hh;
+    if (!set || !coop_rd(set + 0x10, &cnt, 4) || cnt <= 0) return;
+    if (cnt > AB_CAP) cnt = AB_CAP;
+    uint64_t slots = coop_rd_ptr(set + 0x18);
+    for (int k = 0; slots && k < cnt; k++) ab_add(out, n, max, coop_rd_ptr(slots + (uint64_t)k * 0x18 + 8));
+}
+// entity sets (count Ctl+0x18, records Ctl+0x20) or sensor sets (Ctl+0x38, Ctl+0x40): the local ones, set = [record+8],
+// then those of the provider [Ctl+0x128], asked as the game asks: count = vtable+0x80 / +0xa0 (provider), set =
+// vtable+0xd0 / +0xe0 (provider, index past the local ones)
+static void ab_sets(Cpu *c, uint64_t ctl, int sensor, uint64_t *out, int *n, int max) {
+    uint64_t cnt_off = sensor ? 0x38 : 0x18, arr_off = sensor ? 0x40 : 0x20, v_count = sensor ? 0xa0 : 0x80, v_get = sensor ? 0xe0 : 0xd0;
+    int32_t local = 0;
+    if (!coop_rd(ctl + cnt_off, &local, 4) || local < 0) local = 0;
+    int32_t total = local;
+    uint64_t prov = coop_rd_ptr(ctl + 0x128), vt = prov ? coop_rd_ptr(prov) : 0;
+    uint64_t f_count = vt ? coop_rd_ptr(vt + v_count) : 0, f_get = vt ? coop_rd_ptr(vt + v_get) : 0;
+    if (f_count && f_get) total += (int32_t)coop_guest_call(c, f_count, prov, 0, 0, 0);
+    if (total > AB_CAP) total = AB_CAP;
+    uint64_t arr = coop_rd_ptr(ctl + arr_off);
+    for (int32_t i = 0; i < total; i++) {
+        uint64_t set;
+        if (i < local) {
+            uint64_t rec = arr ? coop_rd_ptr(arr + 8 * (uint64_t)i) : 0;
+            set = rec ? coop_rd_ptr(rec + 8) : 0;
+        } else
+            set = coop_guest_call(c, f_get, prov, (uint32_t)(i - local), 0, 0);
+        ab_set(set, out, n, max);
+    }
+}
+// one of the extra holder's two lists: head link L+8, first link [L+0x10], link offset the int at L+0x1c, node = link -
+// offset, body [node+8], next link [link+8]; the second list takes a node only when the u32 at its +0 is 2 or more
+static void ab_list(uint64_t L, int need2, uint64_t *out, int *n, int max) {
+    int32_t off = 0;
+    if (!L) return;
+    uint64_t head = L + 8, first = coop_rd_ptr(L + 0x10);
+    if (!first || first == head || !coop_rd(L + 0x1c, &off, 4)) return;
+    uint64_t node = first - (uint64_t)(int64_t)off, end = head - (uint64_t)(int64_t)off;
+    for (int guard = 0; node != end && guard < AB_CAP; guard++) {
+        uint64_t body = coop_rd_ptr(node + 8);
+        uint32_t w = 0;
+        if (body && (!need2 || (coop_rd(node, &w, 4) && w >= 2))) ab_add(out, n, max, body);
+        uint64_t next = coop_rd_ptr(node + (uint64_t)(int64_t)off + 8);
+        if (!next) return;
+        node = next - (uint64_t)(int64_t)off;
+    }
+}
+static int all_bodies(Cpu *c, uint64_t actor, uint64_t *out, int max) {
+    int n = 0;
+    uint64_t ctl = actor ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x50) + 0x20) : 0;
+    if (!ctl) return 0;
+    ab_add(out, &n, max, coop_rd_ptr(ctl + 0x150));                       // the main body
+    uint64_t H = coop_rd_ptr(ctl + 0x10), P = H ? coop_rd_ptr(H + 8) : 0;
+    if (P) ab_add(out, &n, max, coop_rd_ptr(P + 0x18));                   // the character controller's
+    int32_t hn = 0;
+    if (H && coop_rd(H + 0x10, &hn, 4) && hn >= 1) {                      // the named list: count H+0x10, array H+0x18
+        uint64_t arr = coop_rd_ptr(H + 0x18);
+        for (int i = 0; arr && i < hn && i < AB_CAP; i++) ab_add(out, &n, max, coop_rd_ptr(arr + 8 * (uint64_t)i));
+    }
+    ab_sets(c, ctl, 0, out, &n, max);
+    ab_sets(c, ctl, 1, out, &n, max);
+    uint64_t X = coop_rd_ptr(ctl + 0x160);                                // the extra holder
+    if (X) ab_list(coop_rd_ptr(X + 8), 0, out, &n, max), ab_list(coop_rd_ptr(X + 0x10), 1, out, &n, max);
+    return n;
+}
+// the record holders of every body of an actor, of both physics worlds
+static int actor_holders(Cpu *c, uint64_t a, uint64_t *out, int n, int max) {
+    uint64_t b[96];
+    int nb = all_bodies(c, a, b, 96);
+    for (int i = 0; i < nb; i++)
+        for (int w = 0; w < 2; w++) {
+            uint64_t h = coop_rd_ptr(b[i] + (w ? 0x148 : 0x140));
+            if (h && n < max && !veto_has(out, n, h)) out[n++] = h;
         }
     return n;
 }
-void coop_life_veto_rebuild(const uint64_t *parts, int nparts) {
+void coop_life_veto_rebuild(Cpu *c, const uint64_t *parts, int nparts) {
     static int on = -1;
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_I16"); on = !(e && *e == '0'); }
     if (!on) return;
-    int coop_players_all(uint64_t *out, int max);
-    uint64_t sa[8];
-    int ns = coop_players_all(sa, 8), w = atomic_load(&veto_cur) == 0 ? 1 : 0;
-    veto_buf[w].ns = veto_buf[w].np = 0;
-    for (int i = 0; i < ns; i++) veto_buf[w].ns += actor_holders(sa[i], veto_buf[w].s + veto_buf[w].ns, VETO_S - veto_buf[w].ns);
-    for (int i = 0; i < nparts && veto_buf[w].np < VETO_P; i++) veto_buf[w].np += actor_holders(parts[i], veto_buf[w].p + veto_buf[w].np, VETO_P - veto_buf[w].np);
-    atomic_store(&veto_cur, veto_buf[w].ns && veto_buf[w].np ? w : -1);
-    static int64_t said;
+    static int64_t last;
     int64_t now = frame_step_world_us();
-    if (now - said > 10000000 && veto_buf[w].ns && veto_buf[w].np) {
+    if (now - last < 250000 && now >= last) return;
+    last = now;
+    int coop_players_all(uint64_t *out, int max);
+    uint64_t coop_eq_row_ref(uint64_t actor, int row);
+    uint64_t sa[8];
+    int nsa = coop_players_all(sa, 8), w = atomic_load(&veto_cur) == 0 ? 1 : 0, gear = 0;
+    int ns = 0, np = 0;
+    for (int i = 0; i < nsa; i++) {
+        ns = actor_holders(c, sa[i], veto_buf[w].s, ns, VETO_S);
+        for (int row = 0; row < 24; row++) {   // the gear actors it holds (EquipmentUser rows, as coop_players.c reads them)
+            uint64_t ref = coop_eq_row_ref(sa[i], row), item = ref ? coop_rd_ptr(ref + 0x40) : 0;
+            if (item && item != sa[i]) ns = actor_holders(c, item, veto_buf[w].s, ns, VETO_S), gear++;
+        }
+    }
+    for (int i = 0; i < nparts; i++) np = actor_holders(c, parts[i], veto_buf[w].p, np, VETO_P);
+    memset(veto_buf[w].sbits, 0, sizeof veto_buf[w].sbits), memset(veto_buf[w].pbits, 0, sizeof veto_buf[w].pbits);
+    for (int i = 0; i < ns; i++) { unsigned h = veto_hash(veto_buf[w].s[i]) & 255; veto_buf[w].sbits[h >> 6] |= 1ull << (h & 63); }
+    for (int i = 0; i < np; i++) { unsigned h = veto_hash(veto_buf[w].p[i]) & 1023; veto_buf[w].pbits[h >> 6] |= 1ull << (h & 63); }
+    veto_buf[w].ns = ns, veto_buf[w].np = np;
+    atomic_store(&veto_cur, ns && np ? w : -1);
+    static int64_t said;
+    if (now - said > 10000000 && ns && np) {
         said = now;
-        rt_log("coop: i16: %d stand-in bodies kept off %d contraption part bodies; %u pairs refused so far, %u stand-in pairs looked at",
-               veto_buf[w].ns, veto_buf[w].np, atomic_load(&veto_count), atomic_load(&veto_seen));
+        rt_log("coop: i16: %d bodies' records of %d stand-ins and %d gear actors kept off %d records of %d contraption parts; %u pairs refused so far, "
+               "%u stand-in pairs looked at", ns, nsa, gear, np, nparts, atomic_load(&veto_count), atomic_load(&veto_seen));
     }
 }
 int coop_life_veto(Cpu *c) {   // main+0x40a240's entry: 1 when the pair is refused (x0 = 0, the caller reads no collision)
     int cur = atomic_load_explicit(&veto_cur, memory_order_acquire);
     if (cur < 0) return 0;
     const uint64_t ha = c->x[1] - 8, hb = c->x[2] - 8;
+    const uint64_t *sb = veto_buf[cur].sbits;
+    unsigned qa = veto_hash(ha) & 255, qb = veto_hash(hb) & 255;
+    int ma = (sb[qa >> 6] >> (qa & 63)) & 1, mb = (sb[qb >> 6] >> (qb & 63)) & 1;
+    if (!ma && !mb) return 0;   // (neither can be a stand-in's)
     const uint64_t *s = veto_buf[cur].s, *p = veto_buf[cur].p;
     int ns = veto_buf[cur].ns, np = veto_buf[cur].np;
-    int as = veto_has(s, ns, ha), bs = !as && veto_has(s, ns, hb);
+    int as = ma && veto_has(s, ns, ha), bs = !as && mb && veto_has(s, ns, hb);
     if (!as && !bs) return 0;
     atomic_fetch_add_explicit(&veto_seen, 1, memory_order_relaxed);
-    if (!veto_has(p, np, as ? hb : ha)) return 0;
+    uint64_t other = as ? hb : ha;
+    unsigned qo = veto_hash(other) & 1023;
+    if (!((veto_buf[cur].pbits[qo >> 6] >> (qo & 63)) & 1) || !veto_has(p, np, other)) return 0;
     atomic_fetch_add_explicit(&veto_count, 1, memory_order_relaxed);
     c->x[0] = 0;
     return 1;

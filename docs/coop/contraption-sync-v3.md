@@ -1444,4 +1444,21 @@ second stand-in body and five more bodies that the collision veto does not cover
   ways to make two bodies ignore each other (X14b's candidates).
 
 ### 29.2 Implemented and not yet tested
-(kept current; empty when this section was written: the rebuilt core and device on/off were run in 28)
+Scope agreed with the tester: "everything" before the next test is the stick fix.
+
+- **The stand-in veto covers every body (I16), coop_life.c.** Read first (research notes player-physics/,
+  gear-physics/, collision-filter/): a Player's bodies sit in six places of its physics object, and the game has its
+  own walk over all of them (main+0x3cc9b4 with main+0x2962c58); a Player's sword, shield and bow are actors of their
+  own with one solid body each; a body's filter record is at +0x140 or, for the second physics world, +0x148. The veto
+  now lists, by that walk, every body of each stand-in and of the gear actors it holds, and every body of each part,
+  in both worlds. It listed one body per actor before.
+  - What it rests on that a run has shown: the pair test does see the stand-in's second body (28, the last run).
+  - What it calls without its body having been read: the provider's four getters (vtable +0x80, +0xa0, +0xd0,
+    +0xe0), with the arguments the game's walk passes, from the co-op tick, four times a second.
+  - What changes besides the stick: a stand-in's sensors no longer meet parts either, so a remote player's swing no
+    longer reaches a build through the stand-in in another game. It reaches it through that player's own game (8.2).
+  - Not used, because not read to the end: the filter's tag (record +0x2a) and the per-owner masks.
+- **One run is asked for when the tester says so:** the stick scenario. It passes when the stick is still part of the
+  build in the first owner's game after the other player has taken it, the i16 line counts more than one stand-in
+  body, and every clean line reads 0. If the stick still breaks, the cause is not a stand-in or gear body meeting a
+  part, and the next step is reading, not another run.

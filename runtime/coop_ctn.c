@@ -37,7 +37,7 @@ int coop_own_sent_objects(uint64_t *out, int max), coop_is_copy(uint64_t a), coo
 void coop_deleted_here(uint64_t a);   // coop_players.c: not told to the others as destroyed
 uint64_t coop_life_ability(void);
 void coop_life_free_confirm(int on);
-void coop_life_veto_rebuild(const uint64_t *parts, int nparts);
+void coop_life_veto_rebuild(Cpu *c, const uint64_t *parts, int nparts);
 uint32_t coop_life_refused(void);
 extern uint8_t coop_ab_cai[0x1820];
 extern _Atomic int64_t coop_ultrahand_hold_us;
@@ -1255,7 +1255,7 @@ static void retire_pass(Cpu *c) {   // builds their runner retired: the parts he
     }
     plat_mutex_unlock(&reg_lock);
 }
-static void lists_rebuild(void) {
+static void lists_rebuild(Cpu *c) {
     uint64_t l[DRIVEN_N], b[DRIVEN_N], me = coop_ctr_me();
     static uint64_t all[REG_N * 21];
     int n = 0, nb = 0, na = 0;
@@ -1278,7 +1278,7 @@ static void lists_rebuild(void) {
         uint64_t g = reg[i].used && !runs(&reg[i]) && reg[i].local == L_LIVE && reg[i].np ? part_group(reg[i].parts[0]) : 0;
         atomic_store_explicit(&follow_group[i], g, memory_order_relaxed);
     }
-    coop_life_veto_rebuild(all, na);   // every contraption part here, for the stand-in collision veto (coop_life.c, I16)
+    coop_life_veto_rebuild(c, all, na);   // every contraption part here, for the stand-in collision veto (coop_life.c, I16)
 }
 // Every game logs this line every 10 s: the counts a clean run keeps at 0 (plan 25.2 point 4).
 static void clean_line(int64_t now) {
@@ -1340,7 +1340,7 @@ void coop_ctn_tick(Cpu *c) {
     receive();
     retire_pass(c);
     authority();
-    lists_rebuild();
+    lists_rebuild(c);
     cptoggle_test();
     for (int i = 0; i < REG_N; i++) {
         Ent *e = &reg[i];
