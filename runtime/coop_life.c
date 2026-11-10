@@ -317,7 +317,7 @@ int coop_life_hook(Cpu *c, uint64_t addr) {
         // x0 is the death component. The game's function takes the actor from component +0x18 (research notes
         // sync-v3/m2/p5/rocket-timebomb, section 3); this read +0x8 before, which that reading does not support.
         uint64_t a = coop_rd_ptr(c->x[0] + 0x18);
-        if (!bondable(a)) a = coop_rd_ptr(c->x[0] + 8);
+        if (!a) a = coop_rd_ptr(c->x[0] + 8);   // (only when +0x18 holds none: finding 54)
         if (g4_refuse(c, "death (component)", a, c->x[1])) return 1;
         void coop_ctn_death_seen(uint64_t actor, uint32_t kind);
         coop_ctn_death_seen(a, (uint32_t)c->x[1]);
@@ -333,7 +333,7 @@ int coop_life_hook(Cpu *c, uint64_t addr) {
     else if (off == DEATH_REQUEST) log_actor_event(c, "death", c->x[0], c->x[1]);
     else if (off == DEATH_COMPONENT) {   // (x0 is the component; its actor is at +0x18: logged as is when not)
         uint64_t a = coop_rd_ptr(c->x[0] + 0x18);
-        if (!bondable(a)) a = coop_rd_ptr(c->x[0] + 8);
+        if (!a) a = coop_rd_ptr(c->x[0] + 8);
         log_actor_event(c, "death (component)", bondable(a) ? a : c->x[0], c->x[1]);
     } else if (off == BOND_MAKER) {
         uint64_t pool = bond_pool();
@@ -394,8 +394,12 @@ static uint64_t hnd_actor(uint64_t h) {
     uint64_t a = coop_rd_ptr(ref + 0x40);
     return a && coop_rd(a + 0x24, &st, 4) && (st < 7 || st > 11) ? a : 0;
 }
-static uint64_t owner_step(uint64_t a) {   // who holds or shot a: the first four owner links of main+0x1d19380, in its order
-    static const uint32_t link[4][2] = {{0x208, 0x20}, {0x508, 0x530}, {0x120, 0x2f0}, {0x440, 0x70}};
+// Who holds or shot a: the first four owner links of main+0x1d19380, in its order (research notes sync-v3/m2/p6/
+// hit-attacker, README section on owner_root: weapon +0x208/+0x20, shooter link +0x508/+0x530, linked holder
+// +0x440/+0x70, comp #36 +0x120/+0x2f0; the third and fourth were swapped here, review 1 finding 50). Not reproduced:
+// the game takes the third only when [a +0x3e8] answers a type test (its virtual call not read), and its fifth source.
+static uint64_t owner_step(uint64_t a) {
+    static const uint32_t link[4][2] = {{0x208, 0x20}, {0x508, 0x530}, {0x440, 0x70}, {0x120, 0x2f0}};
     uint64_t t = a ? coop_rd_ptr(a + 0x228) : 0;
     for (int k = 0; t && k < 4; k++) {
         uint64_t comp = coop_rd_ptr(t + link[k][0]), o = comp ? hnd_actor(comp + link[k][1]) : 0;
@@ -501,7 +505,7 @@ int coop_life_v3(Cpu *c, uint64_t off) {
     if (off == 0x1bf8df4) {
         if (!in_follow_cannon) return 0;
         atomic_fetch_add(&shots_kept, 1);
-        c->x[0] = (uint64_t)-1;
+        c->x[0] = 0xffffffffull;   // (the 32-bit -1 the function answers, zero-extended: finding 88)
         return 1;
     }
     return 0;

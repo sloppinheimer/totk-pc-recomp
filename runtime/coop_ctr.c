@@ -352,7 +352,10 @@ static void receive(void) {   // (lock held)
                 event(peers[from].inc, from, 0);
             } else
                 rt_log("coop: ctr: player %d is incarnation %016llx", from, (unsigned long long)h.inc);
-            peer_reset(from);
+            // A new incarnation's streams start again. The first one heard of from a relay id keeps what was queued
+            // to it already: hello() may have sent its HELLO as message 0 before any packet came back, and a reset sent
+            // the next message as 0 again, which the peer then took as a repeat and dropped (review 1 finding 16).
+            if (peers[from].inc) peer_reset(from);
             peers[from].inc = h.inc;
             event(h.inc, from, 1);
         }

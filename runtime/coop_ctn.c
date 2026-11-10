@@ -224,6 +224,20 @@ static int part_delete(Cpu *c, uint64_t a) {
     made_forget(a);
     return 1;
 }
+// Parts whose delete the game kept refusing, left where they are: still copies (marked as made) while they are that
+// actor, forgotten once gone, so that another actor at the address later is not taken for a copy (review 1 finding 33)
+static struct { uint64_t a; uint32_t gen; } abandoned[32];
+static void abandon(uint64_t a, uint32_t gen) {
+    for (int i = 0; i < 32; i++) if (!abandoned[i].a || !alive_as(abandoned[i].a, abandoned[i].gen)) {
+        if (abandoned[i].a) made_forget(abandoned[i].a);
+        abandoned[i].a = a, abandoned[i].gen = gen;
+        return;
+    }
+}
+static void abandoned_sweep(void) {   // (actor phase 0)
+    for (int i = 0; i < 32; i++)
+        if (abandoned[i].a && !alive_as(abandoned[i].a, abandoned[i].gen)) made_forget(abandoned[i].a), abandoned[i].a = 0;
+}
 // Every part of e deleted; 1 once none is left to ask (a part whose delete was accepted is not asked again)
 // A part whose delete the game still refuses after 2 s is given up: it stays in this game as it is, no longer a part
 // of the entry, and the entry goes on. Waiting for it without end held up every later build of that game (plan 37,
@@ -243,6 +257,7 @@ static int parts_delete(Cpu *c, Ent *e) {
             char nm[48];
             rt_log("coop: contraption: %08x: the game would not delete part %d (%s) for 2 s: left here as it is, the build goes on without it", cid32(e), r,
                    coop_actor_name(e->parts[r], nm, sizeof nm));
+            abandon(e->parts[r], e->gen[r]);
             e->del_ok |= 1u << r;
             continue;
         }
@@ -948,10 +963,10 @@ static int bond_pool_recycle(Cpu *c, uint64_t o) {
 // piece of a split) takes them within a second, or they are deleted (a part loose where the build runs comes back as
 // that game's object).
 #define ORPHAN_N 64
-static struct { uint64_t actor, oinc; uint32_t gen, id; int adopt; int64_t us; } orphans[ORPHAN_N];
+static struct { uint64_t actor, oinc; uint32_t gen, id; int adopt, tries; int64_t us; } orphans[ORPHAN_N];
 static void orphan_add(uint64_t a, uint32_t gen, uint32_t id, uint64_t oinc, int64_t now, int adopt) {   // (reg_lock held)
     for (int i = 0; a && i < ORPHAN_N; i++)
-        if (!orphans[i].actor) { orphans[i].actor = a, orphans[i].gen = gen, orphans[i].id = id, orphans[i].oinc = oinc, orphans[i].us = now, orphans[i].adopt = adopt; return; }
+        if (!orphans[i].actor) { orphans[i].actor = a, orphans[i].gen = gen, orphans[i].id = id, orphans[i].oinc = oinc, orphans[i].us = now, orphans[i].adopt = adopt, orphans[i].tries = 0; return; }
     static int said;
     if (a && !said++) rt_log("coop: contraption: the orphan table is full (%d): a part left by an in-place change stays where it is", ORPHAN_N);
 }
@@ -960,13 +975,15 @@ static void orphans_pass(Cpu *c, int64_t now) {
         plat_mutex_lock(&reg_lock);
         uint64_t a = orphans[i].actor && now - orphans[i].us > 1000000 ? orphans[i].actor : 0;
         uint32_t gen = orphans[i].gen;
-        int adopted = orphans[i].adopt;
+        int adopted = orphans[i].adopt, tries = orphans[i].tries;
         if (a) orphans[i].actor = 0;
         plat_mutex_unlock(&reg_lock);
         if (a && (adopted || !coop_contraption_made(a))) continue;   // (an object of the mirror's or of this game's: it is a plain object again)
-        if (a && alive_as(a, gen) && !part_delete(c, a)) {   // (refused now: asked again)
+        if (a && alive_as(a, gen) && !part_delete(c, a)) {   // (refused now: asked again, for 2 s as parts_delete does: finding 11)
+            if (tries >= 20) { abandon(a, gen); continue; }
             plat_mutex_lock(&reg_lock);
             orphan_add(a, gen, 0, 0, now - 900000, 0);
+            for (int k = 0; k < ORPHAN_N; k++) if (orphans[k].actor == a) orphans[k].tries = tries + 1;
             plat_mutex_unlock(&reg_lock);
         }
     }
@@ -1222,7 +1239,7 @@ static void make_pass(Cpu *c) {
             memcpy(mk.rec, e->in_rec, BP_SIZE), memcpy(mk.centre, e->in_centre, sizeof mk.centre);
             memcpy(mk.ids, e->in_ids, sizeof mk.ids), memcpy(mk.oinc, e->in_oinc, sizeof mk.oinc);
             mk.v = e->in_v, mk.shape = e->in_shape, mk.green = e->in_green, e->want_make = 0;
-            e->local = L_MAKING, mk.e = e, mk.st = 1, mk.t = now, mk.n = 0;
+            e->local = L_MAKING, mk.e = e, mk.st = 1, mk.t = now, mk.n = 0, memset(mk.parts, 0, sizeof mk.parts);
         }
         plat_mutex_unlock(&reg_lock);
         if (!whole) return;
@@ -1245,10 +1262,11 @@ static void make_pass(Cpu *c) {
         uint64_t pc = o + 0x4d10, pu = o + 0x4f48;
         uint32_t ctr = LD32(pc), used = LD32(pu);
         ST64(pc + 0x220, 0), ST32(pc, ++ctr);
-        if ((int32_t)used >= 1) {
-            uint64_t head = LD64(o + 0x4f58);
-            for (uint32_t i = 0; i < used; i++) {
-                uint64_t ent = LD64(LD64(o + 0x4f50) + 8 * (uint64_t)i);
+        if ((int32_t)used >= 1 && LD64(o + 0x4f50)) {   // (the array there, at most 64 of it, no empty entry: finding 34)
+            uint64_t head = LD64(o + 0x4f58), arr = LD64(o + 0x4f50);
+            for (uint32_t i = 0; i < used && i < 64; i++) {
+                uint64_t ent = LD64(arr + 8 * (uint64_t)i);
+                if (!ent) continue;
                 ST64(ent, head), ST64(o + 0x4f58, ent), head = ent;
             }
         }
@@ -1377,6 +1395,7 @@ void coop_ctn_phase0(Cpu *c) {
     events_put();
     deaths_put(c);
     dev_flush(c);
+    abandoned_sweep();
     retire_pass(c);   // (at phase 0 with in_place: they share the edge lists and the orphans, findings 9, 52, 73, 74)
     floats_follow(c);
     springs_phase0(c);
@@ -1691,6 +1710,10 @@ int coop_contraption_owns(int from, uint32_t id) {
             yes = reg[i].v && reg[i].ids[r] == id && reg[i].oinc[r] == oinc && !(reg[i].adopt >> r & 1);
     }
     for (int r = 0; oinc && mk.st && r < 21 && !yes; r++) yes = mk.ids[r] == id && mk.oinc[r] == oinc;   // (being made now)
+    // (and while a build's old parts leave before it is made again: the mirror made loose copies of them meanwhile and
+    // deleted them once the build was made, finding 12)
+    for (int i = 0; oinc && i < REG_N && !yes; i++)
+        for (int r = 0; reg[i].used && reg[i].old_us && !reg[i].np && r < 21 && !yes; r++) yes = reg[i].in_ids[r] == id && reg[i].in_oinc[r] == oinc;
     plat_mutex_unlock(&reg_lock);
     return yes;
 }
@@ -2110,12 +2133,21 @@ static void burning_phase0(Cpu *c) {
             plat_mutex_unlock(&reg_lock);
             continue;
         }
+        // (asked at most every 2 s per part, and said once per change: a request that does not hold was asked and logged
+        // five times a second for as long as the part burned there, finding 64)
+        static struct { uint64_t a; int64_t us; int want; } asked[64];
         for (int r = 0; r < np && r < 21; r++) {
             uint64_t comp = ((want ^ have) >> r & 1) && alive(parts[r]) ? chem_comp(parts[r]) : 0;
             if (!comp) continue;
-            if (want >> r & 1) coop_guest_call(c, MOD_MAIN_BASE + 0x1b34a44, comp, 2, (uint64_t)-1, 0);
+            int k = -1, w = (int)(want >> r & 1), said = 0;
+            for (int q = 0; q < 64 && k < 0; q++) if (asked[q].a == parts[r]) k = q;
+            if (k >= 0 && asked[k].want == w && now - asked[k].us < 2000000) continue;
+            if (k >= 0) said = asked[k].want == w;
+            if (k < 0) k = (int)((parts[r] >> 4) % 64);
+            asked[k].a = parts[r], asked[k].us = now, asked[k].want = w;
+            if (w) coop_guest_call(c, MOD_MAIN_BASE + 0x1b34a44, comp, 2, (uint64_t)-1, 0);
             else coop_guest_call(c, MOD_MAIN_BASE + 0xb2b804, comp, 0, (uint64_t)-1, 0);
-            rt_log("coop: contraption: part %d of a build followed here %s where it runs: %s here", r, want >> r & 1 ? "burns" : "does not burn", want >> r & 1 ? "set alight" : "put out");
+            if (!said) rt_log("coop: contraption: part %d of a build followed here %s where it runs: %s here", r, w ? "burns" : "does not burn", w ? "set alight" : "put out");
         }
     }
 }
@@ -2497,7 +2529,22 @@ static void receive(void) {
             if (m.len != (int)sizeof(CtlMsg)) continue;
             plat_mutex_lock(&reg_lock);
             Ent *e = ent_find(p->inc, p->serial);
-            if (e && type == COOP_CTR_GRANT) set_runner(e, p->who, p->epoch);
+            if (e && type == COOP_CTR_GRANT) {
+                // Two games that took it at once with the same change number (a RELINQUISH, or its runner leaving,
+                // heard by both): the lower relay id runs it, the other follows (review 1 findings 13, 21, 45).
+                int their = coop_ctr_route(p->who);
+                if (p->epoch == e->epoch && runs(e) && p->who != coop_ctr_me() && their && their < coop_net_id()) {
+                    rt_log("coop: contraption: %08x was taken by player %d too (change %u): theirs to run, the lower number", cid32(e), their, p->epoch);
+                    e->epoch = p->epoch - 1;   // (so set_runner takes the equal change number)
+                }
+                set_runner(e, p->who, p->epoch);
+                // Given a build whose copy here is not whole (being made again): offered back, and the game that gave
+                // it, which has its parts, runs it again (review 1 finding 42).
+                if (runs(e) && e->local != L_LIVE) {
+                    send_ctl(COOP_CTR_RELINQUISH, e, e->epoch, coop_ctr_me());
+                    rt_log("coop: contraption: %08x given to run here while its copy here is not whole: offered back", cid32(e));
+                }
+            }
             else if (e && runs(e) && e->local == L_LIVE) {   // asked: handed over unless this game's player holds it
                 if (!any_held(e->parts, e->np)) {
                     uint32_t ep = e->epoch + 1;
@@ -2675,6 +2722,7 @@ static void authority(void) {   // touch (plan 5.3), asks, a runner that left, a
         if (!runs(e) && e->absent == 1 && dist >= 0 && dist < e->absent_dist * 0.5f) {
             rt_log("coop: contraption: %08x: this Link is back within %.0f m: its version asked again", cid32(e), dist);
             e->absent = 2, e->pulled_us = 0;
+            e->want_make = 0, e->in_have = 0;   // (made from the runner's answer, where the build is now: finding 46)
         }
         if (!runs(e) && e->absent == 2 && e->local == L_NONE && !e->want_make && now - e->pulled_us > 3000000 && coop_ctr_route(e->runner))
             e->pulled_us = now, send_ctl(COOP_CTR_PULL, e, e->epoch, me);
@@ -2684,16 +2732,14 @@ static void authority(void) {   // touch (plan 5.3), asks, a runner that left, a
         if (t != e->touched) rt_log("coop: contraption: %08x %s here", cid32(e), t ? "touched: run by this game's touch until the grant" : "let go");
         e->touched = t;
         if (!follows) continue;
-        // Silence never deletes or moves a build (I7). The game that runs it leaving the session makes the
-        // lowest-numbered game still here run it (plan 5.9).
+        // Silence never deletes or moves a build (I7). The game that runs it leaving the session: every game that has
+        // it takes it with the next change number, and of two that did, the lower relay id keeps it (the GRANT rule in
+        // receive). (The lowest live id of all games was asked before, which may be a game that does not have the build:
+        // then none took it, review 1 finding 21.)
         if (!coop_ctr_route(e->runner)) {
-            int lowest = coop_net_id();
-            for (int id = 1; id < lowest; id++) if (coop_net_live(id)) { lowest = id; break; }
-            if (lowest == coop_net_id()) {
-                uint32_t ep = e->epoch + 1;
-                rt_log("coop: contraption: %08x: the game running it left: run here now", cid32(e));
-                set_runner(e, me, ep), send_ctl(COOP_CTR_GRANT, e, ep, me), e->resend = 1;
-            }
+            uint32_t ep = e->epoch + 1;
+            rt_log("coop: contraption: %08x: the game running it left: run here now", cid32(e));
+            set_runner(e, me, ep), send_ctl(COOP_CTR_GRANT, e, ep, me), e->resend = 1;
             continue;
         }
         // its parts here no longer one group of the record's size
