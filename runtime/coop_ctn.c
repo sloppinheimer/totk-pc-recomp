@@ -437,6 +437,15 @@ static int part_green(uint64_t a) {   // made from zonaite by an Autobuild confi
 // good, +0x40 the actor). The bit alone read true for one tick on a copy just made, with no hold by this game's
 // player, and the other game lost its car to it (plan 31, note 6a): so the holder has to be this game's Link.
 // Research notes sync-v3/m2/p5/stick-head, section 4.
+// This game's Link holds a with Ultrahand: SPR +0x20 bit 16, and the holder handle at [SPR +0x30] +0x10 this Link
+int coop_held_here(uint64_t a) {
+    uint64_t spr = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x480) : 0, me = coop_player_actor();
+    uint64_t f = 0;
+    if (!spr || !me || !coop_rd(spr + 0x20, &f, 8) || !(f & 0x10000)) return 0;
+    uint64_t h = coop_rd_ptr(spr + 0x30), slot = h ? coop_rd_ptr(h + 0x10 + 8) : 0;
+    uint32_t id = 0, sid = 0;
+    return slot && coop_rd(h + 0x10 + 0x10, &id, 4) && id != ~0u && coop_rd(slot + 0x48, &sid, 4) && sid == id && coop_rd_ptr(slot + 0x40) == me;
+}
 static int part_held(uint64_t a) {
     uint64_t spr = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x480) : 0, me = coop_player_actor();
     uint64_t f = 0;
@@ -2404,8 +2413,25 @@ static void lone_tick(void) {
             uint32_t gate = (m3fc & 0xc7) | (f5ac & 0x40) << 2;
             if (gate != lone[i].gate) {
                 lone[i].gate = gate;
-                rt_log("coop: contraption: player %d's lone device %u here: its update is %s (calc mask %#x, blocked %u)", lone[i].owner_id, lone[i].id,
-                       gate & 0x103 ? "not run by the game now" : gate ? "run in part" : "run", m3fc, f5ac >> 6 & 1);
+                // (and the reasons the calc mask is made of: the tree at actor +0x400, each node key +0x18 and mask +0x1c,
+                // children +0 and +8; with +0x4b0, +0x440, +0x5ac. Research notes sync-v3/run4/blocked, section 4)
+                char rs[200] = "";
+                int rn = 0, sp = 0, seen = 0;
+                uint64_t stack[16], nd = coop_rd_ptr(a + 0x400);
+                if (nd) stack[sp++] = nd;
+                while (sp && seen < 8 && rn < (int)sizeof rs - 24) {
+                    uint64_t x = stack[--sp], l = coop_rd_ptr(x), r = coop_rd_ptr(x + 8);
+                    uint32_t key = 0, mask = 0;
+                    coop_rd(x + 0x18, &key, 4), coop_rd(x + 0x1c, &mask, 4), seen++;
+                    rn += snprintf(rs + rn, sizeof rs - (size_t)rn, " %08x:%x", key, mask);
+                    if (l && sp < 16) stack[sp++] = l;
+                    if (r && sp < 16) stack[sp++] = r;
+                }
+                uint32_t f4b0 = 0, f440 = 0;
+                coop_rd(a + 0x4b0, &f4b0, 4), coop_rd(a + 0x440, &f440, 4);
+                rt_log("coop: contraption: player %d's lone device %u here: its update is %s (calc mask %#x, blocked %u; +0x4b0 %x +0x440 %x +0x5ac %x; reasons%s)",
+                       lone[i].owner_id, lone[i].id, gate & 0x103 ? "not run by the game now" : gate ? "run in part" : "run", m3fc, f5ac >> 6 & 1,
+                       f4b0, f440, f5ac, rn ? rs : " none");
             }
         }
         if (!a || now - lone[i].set_us < 500000 || part_on(a) == (int)lone[i].on) continue;

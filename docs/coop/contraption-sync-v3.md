@@ -2603,3 +2603,49 @@ What the logs show:
    and the payer rule should not move the bill to a player who could not have switched it on.
 6. A loose emitter turned on before it was copied: not reproducible, the copy appears at once.
 7. **Note 18:** the stick now moves on the copy. The rider still lags behind the build (no cause yet; P6, 41.2).
+
+**Note 17, written (1133e2c, not run):** a hit that would switch on a device another game runs is not sent while
+this game's gauge is blocked (gauge_blocked: manager +0x50 bit 0, or +0xe8 bit 0 clear). Not shown by reading: that
+the blocked bit stays set while the gauge recharges after running empty.
+
+## 44. Objects: one owner, handed over by a grab (notes 10, 15, 16; read 2026-11-10, R/sync-v3/run4/, four folders, all read in full)
+
+### 44.1 What the readings established
+- **Note 10 (grab, run4/grab):** nothing refuses a grab of a copy. The object mirror puts the copy back at its owner's
+  place every tick (place_copy: actor place, model, body velocity, a teleport once a second), and prop_fn skips every
+  copy, so a move of it is undone and never reported. The mirror had no way for an object to change owner; builds
+  have one (TAKE/GRANT), loose objects did not.
+- **Note 15 (takeover, run4/takeover):** the loop that threw the build apart was the mirror's keyed path, not the
+  core: P1 kept sending its glued fans as moved objects; P2's props_receive found its copies of them by key and drove
+  them with force_to toward P1's places. While P2 followed, G1 dropped those writes; once P2 ran the build they
+  landed, and the two games chased each other's positions one network delay apart.
+- **Note 16 (springowner, run4/springowner):** "moved by this game's player" was any change of place over 1 cm, with no
+  cause; a device made at run time has a different key in each game (name plus where each game first saw it). So a
+  game took a spring it had as moved by its own player and sent it by key; the other game, finding no actor with that
+  key, made a copy of it, and from then the spring's state ran from the wrong game.
+- **Note 14 (blocked, run4/blocked):** "blocked 1" on the lone devices was the game-wide pause of a menu open in that
+  game (every entry is followed by "this Link is paused"), not the camera. The owner's devices stop the same way in
+  single player: nothing to unblock; the copy is set again on resume (the lone set every 0.5 s, spring_apply). A
+  second thing, a calc mask 0x2e041 that comes and goes on single devices with blocked 0, skips the device's whole
+  update; what sets it is not read. One log line at the next entry into it (the actor's calc-reason tree, +0x4b0,
+  +0x440, +0x5ac) would name the key.
+
+### 44.2 Design (written as one change in coop_players.c and coop_world.c)
+1. **A build's parts are the core's.** The mirror neither sends (report_props) nor moves (props_receive, props_hold) an
+   actor that is a part of a build known here (coop_ctn_part) or a device followed here (coop_ctn_follows). A part that
+   leaves its build is a plain object again: sent again if this game made it.
+2. **Moved by this player means a cause.** A placed object (one with a map placement) moved here is sent by key only
+   when this game's Link holds it, or when no co-op player's stand-in is within 3 m of it (a stand-in standing on it or
+   walking into it moves it in its own game, which sends it). An object made at run time (no map placement) is never
+   sent by key: it is sent by its maker's number, or handed over (3).
+3. **A grab hands a loose object over.** When this game's Link holds a copy of another game's object (SPR +0x20 bit 16,
+   the holder this Link), this game:
+   - takes it as its own made object under a new number of its own, and sends it from then on;
+   - frees the copy's mirror slot without deleting the actor, and does not make that object again while its old owner
+     still reports it (taken list, 10 s);
+   - tells the old owner (an OBJS packet with header word 2: the old number, the old owner's id in flags, the new
+     number in the entry's first position word).
+   The old owner, told, stops sending its object and makes its actor the copy of the new owner's new number (a mirror
+   slot taken with that actor, not made anew), kept 2 s while the new owner's first report comes. Both ways, any
+   number of times. A keyed object (a map object a game moved) is handed over the same way, by its key.
+4. **The calc-mask log line** of 44.1 is added to the lone gate log (no change of behaviour).

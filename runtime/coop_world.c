@@ -162,6 +162,7 @@ static uint64_t place_hash(uint64_t a) {
     if (pp) coop_rd(pp + PLACE_HASH, &ph, 8);
     return ph == ~0ull ? 0 : ph;
 }
+int coop_actor_placed(uint64_t a) { return place_hash(a) != 0; }   // an actor of the map's placement (the same in every game)
 static uint32_t place_key(uint64_t a, const char *name) {
     uint64_t ph = place_hash(a);
     if (!ph) return 0;
