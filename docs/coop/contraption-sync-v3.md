@@ -2046,3 +2046,17 @@ Static reading only; nothing here has been run.
   own glued into another game's build; the handing of a pulled-off part to the object mirror (it is deleted and comes
   back as the runner's object, one blink). Not shown by reading: that the record's body number is the physics slot
   for a part's second and third body.
+- **Lone devices in the core (31, note 4)** - coop_ctn.c lone_tick, lone_ask, coop_ctn_follows. A device in no
+  build stays its owner's object, moved by the object mirror; its on state is sent by the owner as a state (five
+  times a second, at once on a change) and set on the copies with the set messages (a spring through its node); a hit
+  or jump attack on a copy is sent to the owner as the state wanted or the switch event; the copy's owner pays. The
+  older flip path (coop_bonds.c, TOTK_COOP_DEVICE_SYNC) is switched off by setting that key to 0 when the contraption
+  core is on and the key is not set by hand. A run shows: a single spring or fan switched by either player ends the
+  same in both games, with the line "lone device N is on there, off here: set" at most once per switch.
+  Not checked: that the key is set before coop_bonds.c first reads it (it keeps the first value it reads); a
+  launcher that sets TOTK_COOP_DEVICE_SYNC=0 itself removes the doubt. Not covered: devices placed by the map (both
+  games have their own actor of those; neither path follows them).
+- **Still not written of 33.3**: a part of one player's glued into another player's build (31, note 5). The object
+  mirror would have to keep a mirror alive, and stop placing it, while it is a part of a build, and the owner would
+  have to stop sending its object without the others deleting theirs; the older claim code in coop_glue.c and
+  coop_bonds.c does a version of this and has to be read and retired piece by piece, not patched around.

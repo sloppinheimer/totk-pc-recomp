@@ -1576,7 +1576,7 @@ int coop_phase0_hook(Cpu *c, uint64_t addr) {
         if (off == ONOFF_CALC) {   // (the node of each device, and a switch event put on a followed one here: coop_ctn.c)
             uint64_t actor = node_actor(c->x[0]);
             coop_ctn_note_onoff(c->x[0], actor);
-            if (coop_ctn_driven(actor)) coop_ctn_event_seen(actor);
+            if (coop_ctn_follows(actor)) coop_ctn_event_seen(actor);
         }
         if (off == 0x22fa1b0) {
             uint64_t node = c->x[0], actor = node_actor(node);
@@ -1612,7 +1612,7 @@ int coop_phase0_hook(Cpu *c, uint64_t addr) {
                 if (coop_rd(comp + 0x8d, &bb, 1) && (bb & 8) && coop_contraption_made(actor) && atomic_fetch_add(&said, 1) < 6)
                     rt_log("coop: contraption: switch update of a copy part with a toggle request: driven %d, ours %d", coop_ctn_driven(actor), 0);
             }
-            if (coop_ctn_driven(actor) && coop_rd(comp + 0x8d, &b8d, 1) && (b8d & 8)) {
+            if (coop_ctn_follows(actor) && coop_rd(comp + 0x8d, &b8d, 1) && (b8d & 8)) {
                 __atomic_fetch_and((uint8_t *)(uintptr_t)(comp + 0x8d), (uint8_t)~8, __ATOMIC_SEQ_CST);
                 coop_ctn_toggle_asked(comp, actor);
             }

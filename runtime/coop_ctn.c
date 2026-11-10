@@ -34,6 +34,8 @@
 #define VER_CHUNKS ((BP_SIZE + VER_CHUNK - 1) / VER_CHUNK)
 
 int coop_own_sent_objects(uint64_t *out, int max), coop_is_copy(uint64_t a), coop_obj_ident(uint64_t a, int *owner, uint32_t *id);
+uint64_t coop_obj_find(int owner, uint32_t id, const char *name);   // coop_players.c
+static int lone_ask(uint64_t actor, uint32_t want, uint32_t bits);
 void coop_deleted_here(uint64_t a);   // coop_players.c: not told to the others as destroyed
 uint64_t coop_life_ability(void);
 void coop_life_free_confirm(int on);
@@ -44,7 +46,11 @@ extern _Atomic int64_t coop_ultrahand_hold_us;
 
 static int ctn_on(void) {
     static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_COOP_CONTRAPTION") && *cfg_get("TOTK_COOP_CONTRAPTION") == '1';
+    if (on < 0) {
+        on = cfg_get("TOTK_COOP_CONTRAPTION") && *cfg_get("TOTK_COOP_CONTRAPTION") == '1';
+        // (devices' on and off are this file's then, lone ones too: the older flip path of coop_bonds.c stands down)
+        if (on && !cfg_get("TOTK_COOP_DEVICE_SYNC")) cfg_set("TOTK_COOP_DEVICE_SYNC", "0");
+    }
     return on;
 }
 
@@ -1443,7 +1449,7 @@ static void events_out(void) {   // the co-op tick: events seen 50 ms ago or mor
             for (int r = 0; reg[i].used && !runs(&reg[i]) && r < reg[i].np && !found; r++)
                 if (reg[i].parts[r] == actor) m.inc = reg[i].inc, m.serial = reg[i].serial, m.part = (uint32_t)r, id = cid32(&reg[i]), found = 1;
         plat_mutex_unlock(&reg_lock);
-        if (!found) continue;
+        if (!found) { lone_ask(actor, 0, bits); continue; }
         m.bits = bits;
         coop_ctr_send(0, COOP_CTR_EVENT, COOP_CTR_RELIABLE, &m, sizeof m);
         rt_log("coop: contraption: a switch event %#x put on %08x part %u here (a jump attack, or another set-on): sent to the game that runs it", bits, id, m.part);
@@ -1573,7 +1579,14 @@ void coop_ctn_toggle_asked(uint64_t comp, uint64_t actor) {
         for (int r = 0; reg[i].used && !runs(&reg[i]) && r < reg[i].np && !found; r++)
             if (reg[i].parts[r] == actor) m.inc = reg[i].inc, m.serial = reg[i].serial, m.part = (uint32_t)r, id = cid32(&reg[i]), found = 1;
     plat_mutex_unlock(&reg_lock);
-    if (!found) return;
+    if (!found) {   // (not a build's part: a lone device of another player's)
+        if (lone_ask(actor, !part_on(actor), 0)) {
+            plat_mutex_lock(&ev_lock);
+            tog_seen[tog_i % 16].actor = actor, tog_seen[tog_i % 16].us = frame_step_world_us(), tog_i++;
+            plat_mutex_unlock(&ev_lock);
+        }
+        return;
+    }
     plat_mutex_lock(&ev_lock);   // (the same hit's switch event, if any, is not sent besides: events_out)
     tog_seen[tog_i % 16].actor = actor, tog_seen[tog_i % 16].us = frame_step_world_us(), tog_i++;
     plat_mutex_unlock(&ev_lock);
@@ -1610,6 +1623,113 @@ static void floats_follow(void) {
         }
     }
     plat_mutex_unlock(&reg_lock);
+}
+
+// ---- Lone devices (plan 31, notes 4 and 5) -------------------------------------------------------------------------------
+// A device in no build (a single fan, spring, light) is its owner's object, and the other games show its copy through
+// the object mirror, which moves it. Its on state goes the way a build's does: the owner's game sends the state it has
+// (five times a second and at once on a change), the others set their copy to it with the same set messages, and a
+// hit or a jump attack here on a copy is sent to the owner as the state wanted or the switch event. Nothing is flipped.
+// The older path (coop_bonds.c, TOTK_COOP_DEVICE_SYNC) flipped the copy with the hit bit and tested "on" by a word
+// that is not the latch, so two games drifted apart by one flip; it is switched off when this file is on.
+#define CTR_LONE COOP_CTR_PUSH        // (two message numbers of the channel the rebuilt core had left unused)
+#define CTR_LONE_ASK COOP_CTR_IMPULSE
+typedef struct { uint64_t key; uint32_t id, on; } LoneMsg;   // (key first: the channel keeps the latest per sender and key)
+typedef struct { uint64_t owner; uint32_t id, want, bits, pad; char name[48]; } LoneAsk;
+#define LONE_N 48
+static struct { uint64_t actor, owner; int owner_id; uint32_t id, on; int64_t heard_us, set_us; } lone[LONE_N];
+static _Atomic uint64_t lone_actor[LONE_N];
+static PlatMutex lone_lock = PLAT_MUTEX_INIT;
+int coop_ctn_follows(uint64_t a) {
+    if (coop_ctn_driven(a)) return 1;
+    for (int i = 0; a && i < LONE_N; i++) if (atomic_load_explicit(&lone_actor[i], memory_order_relaxed) == a) return 1;
+    return 0;
+}
+static int lone_ask(uint64_t actor, uint32_t want, uint32_t bits) {   // a hit here on a lone copy: to its owner. 1: it was one
+    LoneAsk m = {0};
+    plat_mutex_lock(&lone_lock);
+    for (int i = 0; i < LONE_N && !m.id; i++) if (lone[i].actor == actor) m.owner = lone[i].owner, m.id = lone[i].id;
+    plat_mutex_unlock(&lone_lock);
+    if (!m.id) return 0;
+    m.want = want, m.bits = bits;
+    coop_actor_name(actor, m.name, sizeof m.name);
+    coop_ctr_send(0, CTR_LONE_ASK, COOP_CTR_RELIABLE, &m, sizeof m);
+    rt_log("coop: contraption: a %s on another player's %s here: sent to its owner (%s)", bits ? "switch event" : "toggle", m.name, bits ? "event" : want ? "wanted on" : "wanted off");
+    return 1;
+}
+static void lone_tick(void) {
+    int64_t now = frame_step_world_us();
+    uint64_t me = coop_ctr_me();
+    static int64_t sent_us;
+    static struct { uint32_t id, on; } last[64];
+    CoopCtrMsg m;
+    // this game's own lone switch devices: their state out
+    {
+        uint64_t own[256];
+        int no = coop_own_sent_objects(own, 256), k = 0, all = now - sent_us > 200000;
+        if (all) sent_us = now;
+        for (int i = 0; i < no && k < 64; i++) {
+            int owner = 0;
+            uint32_t id = 0;
+            if (coop_is_copy(own[i]) || coop_contraption_made(own[i]) || !part_switch(own[i]) || part_group(own[i]) || !coop_obj_ident(own[i], &owner, &id) || !id) continue;
+            LoneMsg s = {cid_key(me, id) ^ 0x4c4f4e45ull, id, (uint32_t)part_on(own[i])};
+            int changed = 1;
+            for (int q = 0; q < 64; q++) if (last[q].id == id) changed = last[q].on != s.on;
+            if (all || changed) coop_ctr_send(0, CTR_LONE, changed ? COOP_CTR_RELIABLE : 0, &s, sizeof s);
+            last[k].id = id, last[k].on = s.on, k++;
+        }
+        for (; all && k < 64; k++) last[k].id = 0;
+    }
+    // the other games' lone devices: their copies here found and set
+    while (coop_ctr_recv_type(CTR_LONE, &m)) {
+        const LoneMsg *p = (const LoneMsg *)m.d;
+        if (m.len != (int)sizeof(LoneMsg) || !p->id) continue;
+        uint64_t a = coop_obj_find(m.from_id, p->id, "");
+        if (!a || !coop_is_copy(a) || coop_contraption_made(a) || !part_switch(a)) continue;
+        plat_mutex_lock(&lone_lock);
+        int k = -1;
+        for (int i = 0; i < LONE_N && k < 0; i++) if (lone[i].actor == a) k = i;
+        for (int i = 0; i < LONE_N && k < 0; i++) if (!lone[i].actor || now - lone[i].heard_us > 3000000) k = i;
+        if (k >= 0) {
+            if (lone[k].actor != a) lone[k].set_us = 0;
+            lone[k].actor = a, lone[k].owner = m.from, lone[k].owner_id = m.from_id, lone[k].id = p->id, lone[k].on = p->on, lone[k].heard_us = now;
+        }
+        plat_mutex_unlock(&lone_lock);
+    }
+    plat_mutex_lock(&lone_lock);
+    for (int i = 0; i < LONE_N; i++) {
+        uint64_t a = lone[i].actor;
+        if (a && (now - lone[i].heard_us > 3000000 || !alive(a))) a = lone[i].actor = 0;
+        atomic_store_explicit(&lone_actor[i], a, memory_order_relaxed);
+        if (!a || now - lone[i].set_us < 500000 || part_on(a) == (int)lone[i].on) continue;
+        uint64_t parts[21] = {a};
+        lone[i].set_us = now;
+        plat_mutex_lock(&reg_lock);
+        dev_set_later(parts, 1, lone[i].on ? 1 : 0, 'f');
+        plat_mutex_unlock(&reg_lock);
+        rt_log("coop: contraption: player %d's lone device %u is %s there, %s here: set", lone[i].owner_id, lone[i].id, lone[i].on ? "on" : "off", lone[i].on ? "off" : "on");
+    }
+    plat_mutex_unlock(&lone_lock);
+    // asks from the other games about a device of this game's
+    while (coop_ctr_recv_type(CTR_LONE_ASK, &m)) {
+        LoneAsk q;
+        if (m.len != (int)sizeof(LoneAsk)) continue;
+        memcpy(&q, m.d, sizeof q), q.name[sizeof q.name - 1] = 0;
+        if (q.owner != me) continue;
+        uint64_t a = coop_obj_find(coop_net_id(), q.id, q.name);
+        if (!a || !part_switch(a)) continue;
+        if (q.bits) {
+            plat_mutex_lock(&ev_lock);
+            if (ev_put_n < 16) ev_put[ev_put_n].actor = a, ev_put[ev_put_n].bits = (uint8_t)(q.bits & 7), ev_put_n++;
+            plat_mutex_unlock(&ev_lock);
+        } else {
+            uint64_t parts[21] = {a};
+            plat_mutex_lock(&reg_lock);
+            dev_set_later(parts, 1, q.want ? 1 : 0, 'a');
+            plat_mutex_unlock(&reg_lock);
+        }
+        rt_log("coop: contraption: player %d asked this game's lone %s %s", m.from_id, q.name, q.bits ? "a switch event" : q.want ? "on" : "off");
+    }
 }
 
 // ---- The co-op tick: messages, authority, touch, drive ------------------------------------------------------------------
@@ -1873,6 +1993,10 @@ static void lists_rebuild(Cpu *c) {
     plat_mutex_unlock(&reg_lock);
     for (int i = 0; i < DRIVEN_N; i++) atomic_store_explicit(&driven[i], i < n ? l[i] : 0, memory_order_relaxed);
     for (int i = 0; i < DRIVEN_N; i++) atomic_store_explicit(&driven_body[i], i < n ? main_body_of(l[i]) : 0, memory_order_relaxed);
+    for (int i = 0; i < LONE_N && nb < DRIVEN_N; i++) {   // (another player's lone device: its owner pays)
+        uint64_t la = atomic_load_explicit(&lone_actor[i], memory_order_relaxed);
+        if (la) b[nb++] = la;
+    }
     for (int i = 0; i < DRIVEN_N; i++) atomic_store_explicit(&nocharge[i], i < nb ? b[i] : 0, memory_order_relaxed);
     for (int i = 0; i < REG_N; i++) {   // (the groups of the builds followed here: coop_ctn_sender_entry)
         uint64_t g = reg[i].used && !runs(&reg[i]) && reg[i].local == L_LIVE && reg[i].np ? part_group(reg[i].parts[0]) : 0;
@@ -1954,6 +2078,7 @@ void coop_ctn_tick(Cpu *c) {
         if (devs) dev_follow(c, e, now);
     }
     floats_follow();
+    lone_tick();
     events_out();
     send_states();
 }

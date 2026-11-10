@@ -11,6 +11,7 @@ void coop_ctn_tick(Cpu *c);     // from the co-op tick: messages, authority, dri
 int coop_contraption_made(uint64_t a);       // a part made here from a record
 int coop_contraption_follower(uint64_t a);   // a made part of a build this game does not run, or one being made
 int coop_ctn_driven(uint64_t a);             // a part of a build another game runs (not held here)
+int coop_ctn_follows(uint64_t a);            // driven, or a lone device of another player's followed here
 int coop_ctn_no_charge(uint64_t a);          // a part whose devices another player pays for
 int coop_g1(Cpu *c, uint64_t off);           // G1: writes kept off the bodies of builds another game runs
 void coop_g1_counts(uint32_t out[9]);
