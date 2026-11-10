@@ -1510,7 +1510,15 @@ static uint32_t actor_gen(uint64_t a) {
     uint32_t g = 0;
     return a && coop_rd(a + 0x10, &g, 4) ? g : 0;
 }
+static PlatMutex wheel_lock = PLAT_MUTEX_INIT;   // (two game threads claiming and sweeping at once: review 2 finding 18)
+static int wheel_slot_locked(uint64_t node, uint64_t actor, int add);
 static int wheel_slot(uint64_t node, uint64_t actor, int add) {
+    plat_mutex_lock(&wheel_lock);
+    int k = wheel_slot_locked(node, actor, add);
+    plat_mutex_unlock(&wheel_lock);
+    return k;
+}
+static int wheel_slot_locked(uint64_t node, uint64_t actor, int add) {
     uint32_t gen = actor_gen(actor);
     for (int i = 0; i < WHEEL_N; i++)
         if (atomic_load(&wheel_off[i].node) == node && atomic_load(&wheel_off[i].actor) == actor && atomic_load(&wheel_off[i].gen) == gen) return i;
@@ -1603,8 +1611,10 @@ int coop_phase0_hook(Cpu *c, uint64_t addr) {
         if (off == 0x22fa1b0) {
             uint64_t node = c->x[0], actor = node_actor(node);
             if (!coop_ctn_driven(actor)) {
-                int k = wheel_slot(node, actor, 0);
+                plat_mutex_lock(&wheel_lock);
+                int k = wheel_slot_locked(node, actor, 0);
                 if (k >= 0) atomic_store(&wheel_off[k].actor, 0), atomic_store(&wheel_off[k].node, 0);
+                plat_mutex_unlock(&wheel_lock);
                 return 0;
             }
             if (wheel_slot(node, actor, 0) >= 0) return 1;

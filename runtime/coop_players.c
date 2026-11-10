@@ -58,6 +58,7 @@ typedef struct {
     int recharacter;                   // its stand-in is being deleted to be made again as another actor
     int ride_owner;                    // the owner's Link rides that player's object ride_id at ride_off (proxy_drive)
     uint64_t ride_actor;               // ... this game's actor of it (ride_resolve, on the tick; 0 none)
+    uint32_t ride_gen;                 // ... and its id (actor +0x10) when found
     int ride_res_owner, ride_res_tick; // ... for which (owner, id) it was found, and when
     uint32_t ride_res_id;
     uint32_t ride_id;
@@ -734,7 +735,7 @@ static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc);
 // tells the owner (an OBJS packet with header word 1: the entries' ids, each with its owner's player id in flags),
 // which deletes its own, and does not make the copy again while the owner still reports it (5 s).
 static int pickable(const char *nm) { return !strncmp(nm, "Item_", 5) || !strncmp(nm, "Weapon_", 7); }
-static struct { int owner; uint32_t id; int until; } taken[32];
+static struct { int owner; uint32_t id; int until, cap; } taken[32];   // cap: a hand-over's entry is kept while reported, up to this
 static int taken_tick;
 static int was_taken(int owner, uint32_t id) {
     for (int i = 0; i < 32; i++) if (taken[i].id == id && taken[i].owner == owner && taken[i].until > taken_tick) return 1;
@@ -753,6 +754,7 @@ static void take_note(int owner, uint32_t id) {
 }
 static void place_copy(Cpu *c, Slot *s, int k);
 int coop_held_here(uint64_t a);   // coop_ctn.c: this game's Link holds a with Ultrahand
+int coop_ctn_part(uint64_t a);    // coop_ctn.c: a part of a build known here
 // ---- An object handed over by a grab (plan 44.2 item 3). An object belongs to one game, which sends it; the others
 // show a copy, put at the owner's place every tick (place_copy), and a move of a copy here was undone and never told
 // (plan 43, note 10). So when this game's Link holds the copy of another game's object, this game takes it: the actor
@@ -1698,7 +1700,13 @@ static void arrow_copies(Cpu *c, Slot *s) {
     for (int j = 0; j < COOP_OBJS; j++) {   // new arrows, and where each one is now
         const CoopObj *o = &s->objs_want[j];
         if (!o->id || ((o->id & COOP_OBJ_KEYED) && !key_missing(o->id))) continue;   // keyed: this game's own is moved
-        if (was_taken(s->net_id, o->id)) continue;   // picked up here: the owner deletes its own
+        if (was_taken(s->net_id, o->id)) {   // picked up here: the owner deletes its own
+            // (a hand-over's old number: kept from being made again while its old owner still sends it, up to its cap;
+            // 10 s alone was short for an owner in a menu, review 2 finding 14)
+            for (int t = 0; t < 32; t++)
+                if (taken[t].owner == s->net_id && taken[t].id == o->id && taken[t].cap > taken_tick && taken[t].until < taken_tick + 90) taken[t].until = taken_tick + 90;
+            continue;
+        }
         int went = 0;   // set off here already: not made again (one was, and went off a second time, see report_arrows)
         for (int b = 0; b < 16 && !went; b++)
             went = blown[b].key == ((uint64_t)s->net_id << 32 | o->id) && blown[b].until_ms > plat_now_ns() / 1000000;
@@ -2595,7 +2603,7 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
             int held = coop_held_here(a);
             if (coop_actor_placed(a)) {
                 if (held || dco > 9) props[e].touched = 1;
-            } else if (held && !props[e].made)
+            } else if (held && !props[e].made && !coop_ctn_part(a))
                 props[e].made = 1, props[e].id = next_arrow_id++, props[e].born = prop_tick - 10;
         }
     }
@@ -3010,6 +3018,10 @@ static int obj_take_over(Slot *s, int k) {
     if (!copy_alive(s, k) || s->mir[k].blowing || (s->mir[k].flags & (COOP_OBJ_LOCAL | COOP_OBJ_ONLINK | COOP_OBJ_FUSED)) ||
         strstr(nm, "Arrow") || is_beam(nm) || !strncmp(nm, "Parasail", 8) || !strcmp(nm, "PlayerBeam"))
         return 0;
+    // (nor a part of a build: the build's own TAKE and GRANT decide who runs it; taken as an object, the part left its
+    // build in one game and was sent by a number no game made, review 2 finding 13)
+    int coop_ctn_part(uint64_t a);
+    if (coop_ctn_part(a)) return 0;
     int e = -1;
     for (int i = 0; i < PROPS_N && e < 0; i++) if (props[i].actor == a) props[i].actor = 0;
     for (int i = 0; i < PROPS_N && e < 0; i++) if (!props[i].actor) e = i;
@@ -3021,7 +3033,7 @@ static int obj_take_over(Slot *s, int k) {
     coop_rd(a + COOP_ACTOR_POS, props[e].last, 12);
     int f = 0;   // (the old number not made again while its old owner still sends it)
     for (int i = 0; i < 32; i++) if (taken[i].until < taken[f].until) f = i;
-    taken[f].owner = s->net_id, taken[f].id = s->mir[k].id, taken[f].until = taken_tick + 300;
+    taken[f].owner = s->net_id, taken[f].id = s->mir[k].id, taken[f].until = taken_tick + 300, taken[f].cap = taken_tick + 1800;
     CoopObj o = {.id = s->mir[k].id, .flags = (uint8_t)s->net_id};
     snprintf(o.name, sizeof o.name, "handed over");
     memcpy(&o.pos[0], &props[e].id, 4);
@@ -3033,11 +3045,30 @@ static int obj_take_over(Slot *s, int k) {
     s->mir[k].state = 0, s->mir[k].actor = 0;
     return 1;
 }
-// The copy a (a lone device of another player's) taken over by this game, as by a grab (note 21: its owner is in a menu)
-int coop_obj_take_copy(uint64_t a) {
-    Slot *s;
-    int k;
-    return copy_of(a, &s, &k) && obj_take_over(s, k);
+// The copy a (a lone device of another player's) taken over by this game, as by a grab (note 21: its owner is in a
+// menu). Asked from the device's switch update on a game thread: queued, and taken over on the co-op tick, where the
+// object tables are written (review 2 finding 12); comp's toggle request (DeviceSwitch +0x8d bit 3) is set then, so the
+// hit switches it here once it is this game's.
+static struct { _Atomic uint64_t actor, comp; } take_q[8];
+int coop_obj_take_copy(uint64_t a, uint64_t comp) {
+    for (int i = 0; a && i < 8; i++) {
+        uint64_t none = 0;
+        if (atomic_compare_exchange_strong(&take_q[i].actor, &none, a)) { atomic_store(&take_q[i].comp, comp); return 1; }
+    }
+    return 0;
+}
+static void take_q_pass(void) {   // the co-op tick
+    for (int i = 0; i < 8; i++) {
+        uint64_t a = atomic_load(&take_q[i].actor), comp = atomic_load(&take_q[i].comp);
+        if (!a) continue;
+        Slot *s;
+        int k;
+        if (copy_of(a, &s, &k) && obj_take_over(s, k)) {
+            if (comp) __atomic_fetch_or((uint8_t *)(uintptr_t)(comp + 0x8d), (uint8_t)8, __ATOMIC_SEQ_CST);
+        } else
+            rt_log("coop: a device asked to be taken over (its owner in a menu) is no copy here now: not taken");
+        atomic_store(&take_q[i].comp, 0), atomic_store(&take_q[i].actor, 0);
+    }
 }
 // The old owner's side: its object (by its number, or by key for a placed one it moved) is the new owner's now. Its
 // actor stays where it is and becomes the copy of the new number, in a mirror slot taken with it.
@@ -3886,8 +3917,8 @@ static void stand_test(Cpu *c, uint64_t me) {
 // half the glider's speed); objects are sent within 20 m of any Link (a glider flown 20 m from its maker went away
 // under its rider). At 5 m/s B rode the 50 m, 0.1-0.2 m from where it stood, and came down with the glider after.
 // Seen in the other games the rider is put on their one of the object (ride_place). TOTK_COOP_RIDE=0 turns it off.
-typedef struct { uint64_t actor; float pos[3], rot[9]; int owner; uint32_t id; } RideObj;
-static int ride_objects(RideObj *out, int max) {
+typedef struct { uint64_t actor; float pos[3], rot[9]; int owner; uint32_t id; int native; } RideObj;   // native: a part of a build this game runs
+static int ride_objects(RideObj *out, int max, const float near[3]) {
     int n = 0;
     for (int i = 0; i < COOP_MAX_PLAYERS; i++)
         for (int k = 0; k < COOP_OBJS && n < max && copies_live[i]; k++)
@@ -3897,7 +3928,7 @@ static int ride_objects(RideObj *out, int max) {
                 !pickable(slots[i].mir[k].name) && !(slots[i].mir[k].flags & COOP_OBJ_ONLINK) && strcmp(slots[i].mir[k].name, "PlayerBeam")) {
                 int coop_ctn_part(uint64_t a);
                 if (coop_ctn_part(slots[i].mir[k].actor)) continue;   // (a build's part: below, at its place now)
-                out[n].actor = slots[i].mir[k].actor, out[n].owner = slots[i].net_id, out[n].id = slots[i].mir[k].id;
+                out[n].actor = slots[i].mir[k].actor, out[n].owner = slots[i].net_id, out[n].id = slots[i].mir[k].id, out[n].native = 0;
                 memcpy(out[n].pos, slots[i].mir[k].pos, 12), memcpy(out[n].rot, slots[i].mir[k].rot, 36);
                 n++;
             }
@@ -3910,19 +3941,26 @@ static int ride_objects(RideObj *out, int max) {
         int coop_obj_ident(uint64_t a, int *owner, uint32_t *id);
         static uint64_t parts[512];
         int np = coop_ctn_parts_all(parts, 512);
+        // (only parts near this Link, 4 m across: 64 entries filled from the registry's order crowded out the one it
+        // stood on, and the keyed objects after them; and only live ones: the list is rebuilt at actor phase 0, review 2
+        // findings 6 and 7)
+        int coop_ctn_runs_part(uint64_t a);
         for (int j = 0; j < np && n < max; j++) {
             int owner = 0;
             uint32_t id = 0;
-            if (!coop_obj_ident(parts[j], &owner, &id) || !id || !coop_rd(parts[j] + COOP_ACTOR_POS, out[n].pos, 12) ||
-                !coop_rd(parts[j] + COOP_ACTOR_ROT, out[n].rot, 36))
-                continue;
-            out[n].actor = parts[j], out[n].owner = owner, out[n].id = id;
+            int32_t st = 0;
+            if (!coop_rd(parts[j] + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || !coop_rd(parts[j] + COOP_ACTOR_POS, out[n].pos, 12)) continue;
+            float dx = out[n].pos[0] - near[0], dz = out[n].pos[2] - near[2];
+            if (dx * dx + dz * dz > 16.0f || !coop_rd(parts[j] + COOP_ACTOR_ROT, out[n].rot, 36) || !coop_obj_ident(parts[j], &owner, &id) || !id) continue;
+            // (a part of a build this game runs carries the Link by its own physics: listed so the ride is sent, never
+            // moved by ride_carry, which moved the Link a second time each tick, finding 5)
+            out[n].actor = parts[j], out[n].owner = owner, out[n].id = id, out[n].native = coop_ctn_runs_part(parts[j]);
             n++;
         }
     }
     for (int k = 0; k < 128 && n < max; k++)
         if (key_found[k].actor && key_found[k].last && prop_tick - key_found[k].last < 150 && !pickable(key_found[k].name)) {
-            out[n].actor = key_found[k].actor, out[n].owner = key_found[k].from, out[n].id = COOP_OBJ_KEYED | key_found[k].key;
+            out[n].actor = key_found[k].actor, out[n].owner = key_found[k].from, out[n].id = COOP_OBJ_KEYED | key_found[k].key, out[n].native = 0;
             memcpy(out[n].pos, key_found[k].pos, 12), quat_mat(key_found[k].q, out[n].rot);
             n++;
         }
@@ -3937,7 +3975,9 @@ static int ride_place(const Slot *s, float out[3]) {
     float p[3], r[9];
     if (!s->ride_owner || s->ride_owner == COOP_RIDE_MOUNT || !s->ride_id || !a) return 0;
     int32_t st = 0;
-    if (!coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || !coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(a + COOP_ACTOR_ROT, r, 36)) return 0;
+    uint32_t g = 0;
+    if (!coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || !coop_rd(a + 0x10, &g, 4) || g != s->ride_gen ||
+        !coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(a + COOP_ACTOR_ROT, r, 36)) return 0;   // (the same actor still: finding 8)
     for (int i = 0; i < 3; i++) out[i] = p[i] + r[i * 3 + 0] * s->ride_off[0] + r[i * 3 + 1] * s->ride_off[1] + r[i * 3 + 2] * s->ride_off[2];
     return 1;
 }
@@ -3947,7 +3987,8 @@ int coop_riders(uint64_t *ridden, float (*at)[3], int max) {
     int n = 0;
     for (int i = 0; i < COOP_MAX_PLAYERS && n < max; i++) {
         uint64_t a = slots[i].ride_actor, sa = slots[i].actor;
-        if (slots[i].state != LIVE || !a || !sa || !coop_rd(sa + COOP_ACTOR_POS, at[n], 12)) continue;
+        int32_t st = 0;   // (the stand-in alive too: one deleted for a new character gave a point read from freed memory, finding 11)
+        if (slots[i].state != LIVE || !a || !sa || !coop_rd(sa + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || !coop_rd(sa + COOP_ACTOR_POS, at[n], 12)) continue;
         ridden[n++] = a;
     }
     return n;
@@ -3965,7 +4006,12 @@ static void ride_resolve(void) {
             s->ride_actor = 0;
             continue;
         }
-        if (s->ride_actor && s->ride_res_owner == s->ride_owner && s->ride_res_id == s->ride_id && prop_tick - s->ride_res_tick < 30) continue;
+        // (kept for a second, a miss too, unless the actor found is gone or another at its address: findings 8 and 10)
+        if (s->ride_res_owner == s->ride_owner && s->ride_res_id == s->ride_id && prop_tick - s->ride_res_tick < 30) {
+            int32_t st = 0;
+            uint32_t g = 0;
+            if (!s->ride_actor || (coop_rd(s->ride_actor + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6 && coop_rd(s->ride_actor + 0x10, &g, 4) && g == s->ride_gen)) continue;
+        }
         uint64_t a = 0;
         if (s->ride_owner == coop_net_id())
             for (int e = 0; e < PROPS_N && !a; e++)
@@ -3993,6 +4039,8 @@ static void ride_resolve(void) {
             char nm[48];
             if (said++ < 20) rt_log("coop: stand-in: slot %d rides %s here (owner %d, %08x)", i, a ? coop_actor_name(a, nm, sizeof nm) : "nothing found", s->ride_owner, s->ride_id);
         }
+        s->ride_gen = 0;
+        if (a) coop_rd(a + 0x10, &s->ride_gen, 4);
         s->ride_actor = a, s->ride_res_owner = s->ride_owner, s->ride_res_id = s->ride_id, s->ride_res_tick = prop_tick;
     }
 }
@@ -4128,9 +4176,9 @@ static void ride_carry(Cpu *c, uint64_t me) {
     static float last_pos[3], last_rot[9];
     static int said;
     RideObj objs[64];
-    int n = ride_objects(objs, 64);
     float p[3], r[9];
     if (!coop_rd(me + COOP_ACTOR_POS, p, 12) || !coop_rd(me + COOP_ACTOR_ROT, r, 36)) return;
+    int n = ride_objects(objs, 64, p);
     static float stand_y;   // this Link's height above the object's origin, in its frame, when it stepped on
     const RideObj *on = NULL;
     for (int i = 0; i < n && !on; i++) {
@@ -4175,7 +4223,7 @@ static void ride_carry(Cpu *c, uint64_t me) {
                 memcpy(put, np, 12);
             }
         }
-        if (mv > 1e-6f && !nocarry && !coop_bonds_claimed(on->actor)) {   // (a claimed copy carries it by its own physics)
+        if (mv > 1e-6f && !nocarry && !coop_bonds_claimed(on->actor) && !on->native) {   // (a claimed copy carries it by its own physics)
             float m[12];
             for (int i = 0; i < 3; i++) {
                 for (int j = 0; j < 3; j++) m[i * 4 + j] = nr[i * 3 + j];
@@ -4235,7 +4283,7 @@ static void ride_test(Cpu *c, uint64_t me) {
         return;
     }
     RideObj objs[64];
-    int n = ride_objects(objs, 64);
+    int n = ride_objects(objs, 64, p);
     if (!n) return;
     const RideObj *g = &objs[0];
     if (stage == 0 && now > 27) {
@@ -5587,7 +5635,7 @@ void coop_players_tick(Cpu *c) {
         void coop_blur_pack(Cpu *c, uint64_t me, NetState *st);   // coop_world.c: the sword trail
         coop_blur_pack(c, me, &st);
         coop_net_publish(&st);
-        props_receive(c), ride_resolve(), ride_carry(c, me), destroy_watch(me), old_items_tick(c);   // placed objects co-op players move; riding them; destroyed
+        props_receive(c), take_q_pass(), ride_resolve(), ride_carry(c, me), destroy_watch(me), old_items_tick(c);   // placed objects co-op players move; riding them; destroyed
         props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test(), bone_arrow_test(me), impact_test(), glide_log(me), newnear_test(me), beam_test(me), beam_end_tick(), link_hit_test(me);
     }
     armor_probe(me);

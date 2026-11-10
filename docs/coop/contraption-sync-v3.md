@@ -2770,3 +2770,48 @@ Everything since run 5 (66a2a23, e5439fc), and 1133e2c's empty-battery rule:
 - Walking away and back: the build is made again only once well inside its parts' radius, and not deleted at once.
 - Many builds switched at once (four or more): every device switches.
 - The tables line every 10 s in both logs.
+
+## 47. Review 2 and its repairs (2026-11-10)
+Seven reviewers read the code written since review 1 (c929ef5..6bf8cfd) and gave 38 findings (8 wrong, 17 risk, 13
+minor, no crash). The findings and the triage are kept with the research notes (sync-v3/review2). Nothing below has
+been run.
+
+### 47.1 Repaired
+- **Gluing onto another player's object:** the bond queue clears the copy flag (body +0x68 bit 24) on a live actor's
+  body instead of refusing it, so an edit request onto an object, and an in-place bond onto an adopted copy, are made
+  (29, 34 for that cause).
+- **Grabbing a part of another player's build** is no object hand-over: the build's TAKE decides (13).
+- **A device taken over while its owner is in a menu** is queued from the hook and taken over on the co-op tick, which
+  sets the hit's toggle then (12).
+- **The old number after a hand-over** is kept from being made again while its old owner still sends it, up to 60 s
+  (14).
+- **Riding:** build parts are listed only within 4 m and only alive; a part of a build this game runs is not carried
+  by ride_carry (its own physics carries the Link); the ridden actor is checked by its id and a miss is cached; the
+  stand-in must be alive for its weight; the weight is the Link's 10 kg, from a point within 3 m of the part (5 to 11).
+- **Walking away and back:** the smallest delete radius seen is kept; the radius rule only when the build went beyond
+  it; a follower that lost some parts to an unload lets the rest go and waits as absent; the runner's unload offer
+  lasts 5 s, then the smaller group is recorded (1, 2, 24, 25).
+- **Hand-overs:** the equal-change tie-break at every game that holds the build; a RELINQUISH that comes while the copy
+  is not whole is kept and taken up only if the same game still runs it; it is dropped when the runner changes (16, 27).
+- **Messages:** toggles and events fall back to all games when the runner's route fails; a queued event keeps its
+  actor's id read under the lock; queued device sets keep their actors' ids; edit requests check their slots (3, 17,
+  23, 32).
+- **Queues and tables:** the 40-message cap counts an entry's own messages; full queues are logged; the event-seen
+  bound is the queue's; the abandoned table, when full, forgets at once; the object lookups have 128 slots and never
+  evict a fresh one; a record that finds the registry full says so; the death window is 10 s over 128 entries (4, 20,
+  22, 26, 33, 38).
+- **Smaller:** owns() matches the old version's ids too during a remake's wait; "later" and the in-place give-up reset
+  when a new version is armed; a lone refresh older than the last reliable change is not taken; the wheel table is
+  locked (18, 21, 35, 36).
+
+### 47.2 Not repaired, and why
+- 15: two games each taking the same unplaced device near a dispenser: a dispenser is used by a Link in its own game,
+  so both games do not spawn one; left as it is.
+- 19: a gate list read while it is rebuilt can miss a part for a frame; left.
+- 28: an explicit totk.ini value 1 for the older paths is overridden with the core on, without a log line (the core
+  needs them off; ctn_on runs before the log is set up).
+- 30: the glue tick clears the copy flag on any live actor; a body torn down on a live actor is not read.
+- 31: a hit by something other than this game's Link is refused too while this gauge is blocked (the hit's source is
+  not known at that point).
+- 34 (rest): bond_queue's other refusal points (no graph id, no descriptor) still come after earlier bonds are queued.
+- 37: a glue onto an object copied since the last tick is not sent (the snapshot misses it).
