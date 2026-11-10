@@ -2836,3 +2836,19 @@ part through the tick's copy of the object tables (objs_ident), which holds only
 copies; coop_obj_ident's last rule (any named actor: this game's, by its place key) was left out, and an Autobuild's
 parts are no object the mirror sends. So no Autobuild has been sent since that repair (bcc0b2f). Written: objs_ident
 falls back to the place key as coop_obj_ident does (not built while the games run).
+
+### 47.4 Play-test notes, run 7 (2026-11-10, logs play7_p1/p2)
+- **Note 22 settled:** all fans showed; each new fan was a candidate (first 1, 3 to 5 m from the Link).
+- **Note 25: P2's Autobuild never reached P1.** P2's new parts (two fans and a stick) were first seen 7.4 to 8 m from
+  P2's Link and not on their first sighting ("first 0 ... candidates 0"): the Autobuild makes them farther than 6 m and
+  shows them before it confirms. So none was an object the mirror took as made here, record_pass never had them among
+  its candidates, and the build was never recorded (no "run here", no "not sent"). Written (not built while the
+  games run): the tick lists this game's own actors that are in a glue group (from the actors updated in the last
+  second), and record_pass takes them as candidates, so any build this game made is recorded.
+- **Note 26: a glue onto a copy of the other player's object.** Two glues of P2's fan onto a copy of P1's fan ended at
+  once; their tests read: joint, bodies, links, SPRs present, counts 1 + 1, both SPR flags clear, body A (the held fan,
+  just taken over) +0x68 bits 10/24/26 = 1 0 0, body B (the target, still a mirror copy) = 1 0 1. Bit 26 is set on the
+  copy, and the game releases a glue entry unless both bodies have bit 10 set and bit 26 clear (research notes
+  sync-v3/run5/attach, 0x1d62f44). One glue worked: onto a fan P2 had taken over before (no longer placed by the
+  mirror), and it made a build (e3c3a9e4) that P1 then made too. So bit 26 comes with what the object mirror does to a
+  copy each tick (place_copy), and is gone once a copy is taken over. What bit 26 is and what sets it: not read.

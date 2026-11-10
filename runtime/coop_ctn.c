@@ -286,7 +286,18 @@ static int parts_delete(Cpu *c, Ent *e) {
 // 30, 72). The tick copies what phase 0 needs here; phase 0 reads only this copy. An object phase 0 has to find by its
 // owner's number (coop_obj_find, which may scan every actor) is asked here and found by the next tick.
 typedef struct { uint64_t a; int owner; uint32_t id; } ObjId;
-static struct { ObjId own[256], cp[256]; int no, nc; } objs;
+static struct { ObjId own[256], cp[256]; uint64_t grp[128]; int no, nc, ng; } objs;   // grp: this game's actors in a group
+static uint64_t part_group(uint64_t a);
+// This game's own actors that are in a glue group, from the actors the game updated in the last second (coop_world.c
+// coop_actors_keyed): a build this game made, whether or not the object mirror sends its parts. An Autobuild made
+// more than 6 m from the Link is no object the mirror took as made here, and its build was never recorded (plan 47.3,
+// note 25).
+typedef struct { uint64_t a[128]; int n; } GrpScan;
+static void grp_fn(uint64_t a, const char *nm, uint32_t key, int first, void *arg) {
+    GrpScan *g = arg;
+    (void)nm, (void)key, (void)first;
+    if (g->n < 128 && part_group(a) && !coop_is_copy(a) && !coop_contraption_made(a) && !coop_ctn_part(a)) g->a[g->n++] = a;
+}
 #define FINDS_N 128   // (a build asks up to 21 at once: 16 evicted each other's answers, review 2 finding 33)
 static struct { int owner; uint32_t id; char name[0x40]; uint64_t actor; int state; int64_t us; } finds[FINDS_N];   // state 1 asked, 2 found
 static PlatMutex objs_lock = PLAT_MUTEX_INIT;
@@ -310,7 +321,12 @@ static void objs_publish(void) {   // the co-op tick
         cp[nc++] = (ObjId){a[i], owner, id};
     }
     int ask[FINDS_N], na = 0;
+    static GrpScan gs;
+    gs.n = 0;
+    void coop_actors_keyed(void (*fn)(uint64_t, const char *, uint32_t, int, void *), void *arg);   // coop_world.c
+    coop_actors_keyed(grp_fn, &gs);
     plat_mutex_lock(&objs_lock);
+    memcpy(objs.grp, gs.a, sizeof(uint64_t) * (size_t)gs.n), objs.ng = gs.n;
     memcpy(objs.own, own, sizeof(ObjId) * (size_t)no), objs.no = no;
     memcpy(objs.cp, cp, sizeof(ObjId) * (size_t)nc), objs.nc = nc;
     for (int i = 0; i < FINDS_N; i++) if (finds[i].state == 1) ask[na++] = i;
@@ -345,10 +361,11 @@ static int objs_ident(uint64_t a, int *owner, uint32_t *id) {   // coop_obj_iden
     }
     return got;
 }
-static int objs_list(int copies, uint64_t *out, int max) {
+static int objs_list(int copies, uint64_t *out, int max) {   // copies: 0 own sent objects, 1 copies, 2 own grouped actors
     int n = 0;
     plat_mutex_lock(&objs_lock);
-    for (int i = 0; i < (copies ? objs.nc : objs.no) && n < max; i++) out[n++] = copies ? objs.cp[i].a : objs.own[i].a;
+    if (copies == 2) for (int i = 0; i < objs.ng && n < max; i++) out[n++] = objs.grp[i];
+    else for (int i = 0; i < (copies ? objs.nc : objs.no) && n < max; i++) out[n++] = copies ? objs.cp[i].a : objs.own[i].a;
     plat_mutex_unlock(&objs_lock);
     return n;
 }
@@ -621,7 +638,7 @@ static void record_pass(Cpu *c) {
     // (every 2 s, and every 0.1 s for 3 s after a bond was made or broken here: coop_ctn_structure_event)
     if (off || !me || now - last < (now < atomic_load(&record_soon_until) ? 100000 : 2000000)) return;
     last = now;
-    static uint64_t cand[256 + REG_N * 21];
+    static uint64_t cand[384 + REG_N * 21];
     uint64_t groups[32];
     int n = 0, ng = 0;
     {
@@ -632,6 +649,8 @@ static void record_pass(Cpu *c) {
         // they are a build this game mints and runs, plan 39.5)
         no = objs_list(1, own, 256);
         for (int i = 0; i < no && n < 256; i++) if (!coop_ctn_part(own[i]) && !coop_contraption_made(own[i]) && part_group(own[i])) cand[n++] = own[i];
+        no = objs_list(2, own, 128);   // (and this game's own grouped actors: an Autobuild far from the Link, note 25)
+        for (int i = 0; i < no && n < 384; i++) if (!coop_ctn_part(own[i])) cand[n++] = own[i];
     }
     plat_mutex_lock(&reg_lock);
     for (int i = 0; i < REG_N; i++)
