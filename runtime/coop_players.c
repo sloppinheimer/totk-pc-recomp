@@ -3829,6 +3829,13 @@ int coop_own_sent_objects(uint64_t *out, int max) {
         if (props[e].actor && (props[e].made || props[e].touched) && actor_is(props[e].actor, props[e].name)) out[n++] = props[e].actor;
     return n;
 }
+int coop_copies_all(uint64_t *out, int max) {   // every live copy here of another game's object (coop_ctn.c)
+    int n = 0;
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++)
+        for (int k = 0; k < COOP_OBJS && slots[i].state != FREE && n < max; k++)
+            if (slots[i].mir[k].state == 3 && slots[i].mir[k].actor && copy_alive(&slots[i], k)) out[n++] = slots[i].mir[k].actor;
+    return n;
+}
 int coop_is_copy(uint64_t a) {
     Slot *cs;
     int ck;

@@ -2380,3 +2380,19 @@ Static reading only.
 - **A device's own beam is not sent as a plain object** (coop_players.c report): each game's copy fires its own.
 - Not written: the stick's lean beyond the float write (cause not found); the off-screen difference itself (to be
   decided by the gate log); the rider's lag.
+
+### 40.2 Written while the next reads run (not run; ordered by the tester: "do all of that")
+- **Deaths made the same on the copies (36 item 4)**: coop_ctn.c coop_ctn_death_seen, deaths_put; coop_life.c. The
+  game that runs a build sends each death one of its parts is asked, with the kind; the others ask the same death of
+  their copy with the game's own request at phase 0, the G4 refusal lifted for that call. A run shows: a time bomb in
+  a build blasts on both screens; a part broken off an Autobuild vanishes on the copy with the game's own effect.
+  To watch: a copy's blast is a real blast in that game (it pushes and hurts there too).
+- **The payer's empty gauge (36 item 3)**: coop_ctn.c gauge_blocked, dev_follow. The gauge manager is noted from the
+  game's own charge calls; when this game's player pays for a build another game runs and the manager reads blocked,
+  the build is asked off where it runs, once a second. Not known: that "blocked" is what an empty gauge reads (the
+  energy reading has it as likely).
+- **A build glued only from another player's objects (39.5)**: record_pass also starts from this game's copies of
+  the other games' objects that no build has and that are in a group here; coop_players.c coop_copies_all lists them.
+- Reads started (Sonnet, R/sync-v3/m2/p8/): wood-status (burning parts alike), weight-push (P6: standing on, weighing
+  down and pushing a build another game runs), unload-travel (P7: what removes and restores builds), limits
+  (capacities a session with several builds can reach).

@@ -264,8 +264,10 @@ static int g4_on(void) {
 }
 static _Atomic uint32_t g4_refused;   // all refusals since the start (coop_life_refused, the clean-run line)
 uint32_t coop_life_refused(void) { return atomic_load(&g4_refused); }
+static __thread int death_allowed;   // (coop_ctn.c asks a copy the death its part had where the build runs)
+void coop_life_death_allow(int on) { death_allowed = on; }
 static int g4_refuse(Cpu *c, const char *what, uint64_t actor, uint64_t arg) {
-    if (!g4_on() || !coop_contraption_follower(actor)) return 0;
+    if (death_allowed || !g4_on() || !coop_contraption_follower(actor)) return 0;
     uint64_t lr[4];
     lr_chain(c, lr);
     static struct { uint64_t lr; uint64_t arg; uint32_t n; } seen[64];
@@ -308,12 +310,15 @@ int coop_life_hook(Cpu *c, uint64_t addr) {
         return 1;   // (the confirm ignores the result)
     }
     if (off == DEATH_REQUEST && g4_refuse(c, "death", c->x[0], c->x[1])) return 1;
+    if (off == DEATH_REQUEST) { void coop_ctn_death_seen(uint64_t actor, uint32_t kind); coop_ctn_death_seen(c->x[0], (uint32_t)c->x[1]); }
     if (off == DEATH_COMPONENT) {
         // x0 is the death component. The game's function takes the actor from component +0x18 (research notes
         // sync-v3/m2/p5/rocket-timebomb, section 3); this read +0x8 before, which that reading does not support.
         uint64_t a = coop_rd_ptr(c->x[0] + 0x18);
         if (!bondable(a)) a = coop_rd_ptr(c->x[0] + 8);
         if (g4_refuse(c, "death (component)", a, c->x[1])) return 1;
+        void coop_ctn_death_seen(uint64_t actor, uint32_t kind);
+        coop_ctn_death_seen(a, (uint32_t)c->x[1]);
     }
     if (off == DELETE_DEFER || off == DELETE_REQUEST) {   // only the fallbacks of the green kill and the lapse
         uint64_t lr = c->x[30] - MOD_MAIN_BASE;

@@ -472,6 +472,11 @@ static void record_pass(Cpu *c) {
         uint64_t own[256];
         int no = coop_own_sent_objects(own, 256);
         for (int i = 0; i < no; i++) if (!coop_is_copy(own[i]) && !coop_contraption_made(own[i])) cand[n++] = own[i];
+        // (and the copies of the other games' objects that no build has: glued together here by this game's player,
+        // they are a build this game mints and runs, plan 39.5)
+        int coop_copies_all(uint64_t *out, int max);
+        no = coop_copies_all(own, 256);
+        for (int i = 0; i < no && n < 256; i++) if (!coop_ctn_part(own[i]) && !coop_contraption_made(own[i]) && part_group(own[i])) cand[n++] = own[i];
     }
     plat_mutex_lock(&reg_lock);
     for (int i = 0; i < REG_N; i++)
@@ -1111,6 +1116,8 @@ static void make_pass(Cpu *c) {
 }
 static void dev_flush(Cpu *c);
 static void events_put(void);
+static void deaths_put(Cpu *c);
+static int gauge_blocked(void);
 static void floats_follow(Cpu *c);
 static void springs_phase0(Cpu *c);
 void coop_ctn_phase0(Cpu *c) {
@@ -1118,6 +1125,7 @@ void coop_ctn_phase0(Cpu *c) {
     record_pass(c);
     make_pass(c);
     events_put();
+    deaths_put(c);
     dev_flush(c);
     floats_follow(c);
     springs_phase0(c);
@@ -1619,6 +1627,17 @@ static void dev_follow(Cpu *c, Ent *e, int64_t now) {
         }
     }
     if (!sw || !due) return;
+    // This game's player pays for the build and another game runs it: when this game's gauge can no longer pay, the
+    // build is asked off where it runs, as the player's own would go off (plan 36 item 3).
+    if ((on & sw) && e->payer == coop_ctr_me() && gauge_blocked()) {
+        TogMsg t = {e->inc, e->serial, 0, 0, 0};
+        plat_mutex_lock(&reg_lock);
+        e->toggled_us = now + 500000;   // (once a second)
+        plat_mutex_unlock(&reg_lock);
+        coop_ctr_send(0, COOP_CTR_TOGGLE, COOP_CTR_RELIABLE, &t, sizeof t);
+        rt_log("coop: contraption: %08x: this player pays and the gauge cannot: asked off where it runs", cid32(e));
+        return;
+    }
     int set = 0, there_on = (on & sw) != 0, here_on = 0;
     for (int r = 0; r < np; r++) here_on |= (sw >> r & 1) && part_switch(parts[r]) && part_on(parts[r]);
     (void)c;
@@ -1708,6 +1727,61 @@ static void floats_follow(Cpu *c) {
         }
     }
     plat_mutex_unlock(&reg_lock);
+}
+
+// ---- A part's death where the build runs, made the same on the copies (plan 36 item 4) ------------------------------------
+// A copy part takes no death from this game's own rules (G4). The game that runs the build sends each death its part
+// is asked (the kind: 8 exploded, 9 burned, 16 life gone, 20 an Autobuilt part broken off, ...), and the others ask
+// the same death of their copy with the game's own request main+0x1953184(actor, kind, 0), at actor phase 0, with the
+// refusal lifted for that call. So a time bomb's blast, a burned board and a broken-off part's vanishing play on the
+// copy too. Death kinds: research notes sync-v3/m2/p5/rocket-timebomb (table at main+0x366f8b0).
+#define CTR_DEATH COOP_CTR_HIT   // (a message number of the channel the rebuilt core had left unused)
+typedef struct { uint64_t inc; uint32_t serial, part, kind, pad; } DeathMsg;
+static struct { uint64_t actor; uint32_t kind; int64_t us; } death_said[16], death_put[16];
+static int death_said_i, death_put_n;
+void coop_life_death_allow(int on);
+void coop_ctn_death_seen(uint64_t actor, uint32_t kind) {   // from the death hooks (any thread), a request not refused
+    if (!ctn_on() || !coop_ctn_part(actor)) return;
+    DeathMsg m = {0};
+    int found = 0;
+    int64_t now = frame_step_world_us();
+    plat_mutex_lock(&reg_lock);
+    for (int i = 0; i < 16 && !found; i++) found = death_said[i].actor == actor && now - death_said[i].us < 3000000;   // (asked every frame by some rules)
+    if (!found) {
+        for (int i = 0; i < REG_N && !m.inc; i++)
+            for (int r = 0; reg[i].used && runs(&reg[i]) && reg[i].local == L_LIVE && r < reg[i].np && !m.inc; r++)
+                if (reg[i].parts[r] == actor) m.inc = reg[i].inc, m.serial = reg[i].serial, m.part = (uint32_t)r;
+        if (m.inc) death_said[death_said_i % 16].actor = actor, death_said[death_said_i % 16].kind = kind, death_said[death_said_i++ % 16].us = now;
+    }
+    plat_mutex_unlock(&reg_lock);
+    if (found || !m.inc) return;
+    m.kind = kind;
+    coop_ctr_send(0, CTR_DEATH, COOP_CTR_RELIABLE, &m, sizeof m);
+    rt_log("coop: contraption: part %u of a build run here is asked death kind %u: told to the other games", m.part, kind);
+}
+static void deaths_put(Cpu *c) {   // actor phase 0
+    uint64_t actor[16];
+    uint32_t kind[16];
+    plat_mutex_lock(&reg_lock);
+    int n = death_put_n;
+    for (int i = 0; i < n; i++) actor[i] = death_put[i].actor, kind[i] = death_put[i].kind;
+    death_put_n = 0;
+    plat_mutex_unlock(&reg_lock);
+    for (int i = 0; i < n; i++) {
+        if (!alive(actor[i])) continue;
+        coop_life_death_allow(1);
+        coop_guest_call(c, MOD_MAIN_BASE + 0x1953184, actor[i], kind[i], 0, 0);
+        coop_life_death_allow(0);
+    }
+}
+// The gauge manager of this game (x0 of its charge functions, noted by coop_autobuild.c), and whether it can pay:
+// blocked = byte +0x50 bit 0, or byte +0xe8 bit 0 clear (research notes sync-v3/m2/p5/energy, section 0.1).
+static _Atomic uint64_t gauge_mgr;
+void coop_ctn_gauge_seen(uint64_t mgr) { if (mgr) atomic_store_explicit(&gauge_mgr, mgr, memory_order_relaxed); }
+static int gauge_blocked(void) {
+    uint64_t mgr = atomic_load_explicit(&gauge_mgr, memory_order_relaxed);
+    uint8_t b50 = 0, be8 = 1;
+    return mgr && coop_rd(mgr + 0x50, &b50, 1) && coop_rd(mgr + 0xe8, &be8, 1) && ((b50 & 1) || !(be8 & 1));
 }
 
 // ---- A spring's head (plan 37 note 14; research notes sync-v3/m2/p7/spring-bodies) ---------------------------------------
@@ -2073,6 +2147,16 @@ static void receive(void) {
         if (ev_put_n < 16) ev_put[ev_put_n].actor = actor, ev_put[ev_put_n].bits = (uint8_t)(p->bits & 7), ev_put_n++;
         plat_mutex_unlock(&ev_lock);
         rt_log("coop: contraption: player %d put switch event %#x on part %u of a build run here", m.from_id, p->bits, p->part);
+    }
+    while (coop_ctr_recv_type(CTR_DEATH, &m)) {   // a part's death where its build runs: asked of the copy at phase 0
+        const DeathMsg *p = (const DeathMsg *)m.d;
+        if (m.len != (int)sizeof(DeathMsg)) continue;
+        plat_mutex_lock(&reg_lock);
+        Ent *e = ent_find(p->inc, p->serial);
+        uint64_t actor = e && !runs(e) && m.from == e->runner && e->local == L_LIVE && p->part < (uint32_t)e->np ? e->parts[p->part] : 0;
+        if (actor && death_put_n < 16) death_put[death_put_n].actor = actor, death_put[death_put_n].kind = p->kind, death_put_n++;
+        plat_mutex_unlock(&reg_lock);
+        if (actor) rt_log("coop: contraption: part %u of %08x died where it runs (kind %u): the same asked of the copy here", p->part, cid32(e), p->kind);
     }
     while (coop_ctr_recv_type(COOP_CTR_PULL, &m)) {   // a game back in reach of a build it had unloaded: the version again
         const CtlMsg *p = (const CtlMsg *)m.d;

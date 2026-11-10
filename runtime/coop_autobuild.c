@@ -1568,6 +1568,7 @@ int coop_phase0_hook(Cpu *c, uint64_t addr) {
     double t = frame_step_world_us() / 1e6;
     uint64_t off = addr - MOD_MAIN_BASE;
     static __thread int inner;   // (the hooked function's own entry, reached again through rt_dispatch)
+    if (off == GAUGE_CONSUME || off == GAUGE_CONSUME_RATE) { void coop_ctn_gauge_seen(uint64_t mgr); coop_ctn_gauge_seen(c->x[0]); }
     if (inner) { inner = 0; return 0; }
     // A part of another player's contraption made here (TOTK_COOP_CONTRAPTION): its fan pushes nothing (the owner's game
     // moves the contraption; the wind capsule and the look still run), and its on/off node charges no gauge
