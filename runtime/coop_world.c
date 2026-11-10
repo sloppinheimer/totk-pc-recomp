@@ -2920,6 +2920,16 @@ static void contacts_filter(uint64_t dc) {
         size_t wl = strlen(wn);
         int arrow = wl >= 5 && !strcmp(wn + wl - 5, "Arrow");   // NormalArrow, FireArrow, ...
         int who = ct_is_link(by), drop = who && (!strncmp(wn, "Weapon_", 7) || (arrow && who == 1));
+        // A beam, a flame or a cannon ball of a device this game only follows: the game that runs the device has the
+        // same emitter on the same enemy, and that one counts (coop_ctn.c coop_ctn_emitter_of_followed).
+        int coop_ctn_emitter_of_followed(uint64_t a);
+        int emitter = !drop && ((w && coop_ctn_emitter_of_followed(w)) || (by && coop_ctn_emitter_of_followed(by)));
+        if (emitter) {
+            static _Atomic int said_e;
+            if (atomic_fetch_add(&said_e, 1) < 10) rt_log("coop: contact on the copy of %s by a followed device's %s: taken out (the game that runs the device counts it)", coop_actor_name(a, an, sizeof an), wn[0] ? wn : "emitter");
+            out++;
+            continue;
+        }
         static _Atomic int said;
         if (atomic_fetch_add(&said, 1) < 40)
             rt_log("coop: contact on the copy of %s by %s with %s (kind %u): %s", coop_actor_name(a, an, sizeof an),

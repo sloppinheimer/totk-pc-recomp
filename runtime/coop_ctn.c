@@ -1645,6 +1645,48 @@ int coop_ctn_follows(uint64_t a) {
     for (int i = 0; a && i < LONE_N; i++) if (atomic_load_explicit(&lone_actor[i], memory_order_relaxed) == a) return 1;
     return 0;
 }
+// 1: actor a is a device this game only follows, or a shot of one (a beam, a cannon ball): its hits on an enemy's copy
+// here are not counted, since the game that runs the device has the same emitter hitting the same enemy and the
+// enemy's life is its owner's. A shot is tied to its device both ways the game keeps: the shot's Shootable component
+// ([shot +0x228] +0x440) names its creator by the handle at +0x70, and the device's Shooter ([device +0x228] +0x448)
+// lists its shots: rows at +0x20 (0x38 bytes each, count +0x2c), a row's entries at +0x10 (0xf8 bytes each, count the
+// byte +0x2c), an entry's shot the handle at +0x20. Research notes sync-v3/m2/p6/emitter-harm, section 0.3.
+static uint64_t handle_actor(uint64_t h) {
+    int32_t serial = -1, have = 0;
+    uint64_t ref = h ? coop_rd_ptr(h + 8) : 0;
+    if (!ref || !coop_rd(h + 0x10, &serial, 4) || serial == -1 || !coop_rd(ref + 0x48, &have, 4) || have != serial) return 0;
+    return coop_rd_ptr(ref + 0x40);
+}
+static int shot_of(uint64_t device, uint64_t a) {
+    uint64_t t = coop_rd_ptr(device + 0x228), sh = t ? coop_rd_ptr(t + 0x448) : 0, rows = sh ? coop_rd_ptr(sh + 0x20) : 0;
+    uint32_t nrows = 0;
+    if (!rows || !coop_rd(sh + 0x2c, &nrows, 4) || nrows > 16) return 0;
+    for (uint32_t r = 0; r < nrows; r++) {
+        uint64_t row = rows + 0x38ull * r, en = coop_rd_ptr(row + 0x10);
+        uint8_t ne = 0;
+        if (!en || !coop_rd(row + 0x2c, &ne, 1) || ne > 16) continue;
+        for (uint32_t k = 0; k < ne; k++) if (handle_actor(en + 0xf8ull * k + 0x20) == a) return 1;
+    }
+    return 0;
+}
+int coop_ctn_emitter_of_followed(uint64_t a) {
+    uint64_t x = a;
+    for (int hop = 0; x && hop < 3; hop++) {
+        if (coop_ctn_follows(x)) return 1;
+        uint64_t t = coop_rd_ptr(x + 0x228), sb = t ? coop_rd_ptr(t + 0x440) : 0;
+        x = sb ? handle_actor(sb + 0x70) : 0;
+    }
+    for (int i = 0; a && i < DRIVEN_N; i++) {
+        uint64_t d = atomic_load_explicit(&driven[i], memory_order_relaxed);
+        if (!d) break;
+        if (shot_of(d, a)) return 1;
+    }
+    for (int i = 0; a && i < LONE_N; i++) {
+        uint64_t d = atomic_load_explicit(&lone_actor[i], memory_order_relaxed);
+        if (d && shot_of(d, a)) return 1;
+    }
+    return 0;
+}
 static int lone_ask(uint64_t actor, uint32_t want, uint32_t bits) {   // a hit here on a lone copy: to its owner. 1: it was one
     LoneAsk m = {0};
     plat_mutex_lock(&lone_lock);

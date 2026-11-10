@@ -3780,8 +3780,15 @@ static int ride_place(const Slot *s, float out[3]) {
         Slot *o = slot_for(SRC_NET, s->ride_owner);
         int k = 0;
         while (o && k < COOP_OBJS && !(o->mir[k].state == 3 && o->mir[k].id == s->ride_id)) k++;
-        if (!o || k == COOP_OBJS) return 0;
-        memcpy(p, o->mir[k].pos, 12), memcpy(r, o->mir[k].rot, 36);
+        if (!o || k == COOP_OBJS) {
+            // No copy of it in the object mirror: a part of a contraption made here from its record (coop_ctn.c), which
+            // has no mirror. The rider goes where that part is in this game now. Without this the rider of a build's
+            // stick stayed where its own state put it, off the stick and behind it (plan 31, note 6c).
+            uint64_t coop_contraption_find(int owner, uint32_t id);
+            a = coop_contraption_find(s->ride_owner, s->ride_id);
+            if (!a || !coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(a + COOP_ACTOR_ROT, r, 36)) return 0;
+        } else
+            memcpy(p, o->mir[k].pos, 12), memcpy(r, o->mir[k].rot, 36);
     }
     for (int i = 0; i < 3; i++) out[i] = p[i] + r[i * 3 + 0] * s->ride_off[0] + r[i * 3 + 1] * s->ride_off[1] + r[i * 3 + 2] * s->ride_off[2];
     return 1;

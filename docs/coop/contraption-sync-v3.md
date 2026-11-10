@@ -2060,3 +2060,28 @@ Static reading only; nothing here has been run.
   mirror would have to keep a mirror alive, and stop placing it, while it is a part of a build, and the owner would
   have to stop sending its object without the others deleting theirs; the older claim code in coop_glue.c and
   coop_bonds.c does a version of this and has to be read and retired piece by piece, not patched around.
+- **Emitter hits of a followed device (35, emitter-harm)** - coop_world.c contacts_filter, coop_ctn.c
+  coop_ctn_emitter_of_followed: a contact on an enemy's copy whose attacker is a device this game only follows, or a
+  shot of one (by the shot's creator link or the device's Shooter list), is taken out. A run shows: an enemy hit by a
+  followed build's beam loses life once, and the line "by a followed device's ...: taken out". Not read: what a
+  flame's sensor names as its owner; if it is neither the device nor a shot of it, flame contacts are still kept.
+- **The rider on a build's stick (31, note 6c)** - coop_players.c ride_place: a ridden object with no mirror copy (a
+  part made from a record) is looked up in the registry and the rider placed on it where it is in this game. Likely
+  the cause of the rider floating behind the car, not shown by a read of a log.
+
+## 36. Milestone 2 before its run (2026-11-09)
+Written and built, none of it run: 33.1, 33.2, 34.3 (all entries), 35.1 (all entries) and the entries after it.
+Each says what a run has to show.
+
+Not written:
+1. A part of one player's glued into another player's build (31, note 5; the last part of 33.3). The older claim code
+   in coop_glue.c and coop_bonds.c has to be read and retired for this, and the object mirror changed.
+2. Wooden parts burning and losing life the same in both games (35, part-status-damage). Needs a read of how a status
+   is written.
+3. The paying player's own empty gauge switching off a build another game runs.
+4. The blast of a time bomb shown on the copy, and any death replayed with its kind.
+5. A loose object glued onto a build applied in place (today: made again with the build object, as before).
+
+Known limits of what is written, to watch for in the run: the stand-in hit rule when both players hit one device in
+one frame; the stick's tilt flickering if the copy's own graph writes over it; the record's body number taken as the
+physics slot for second and third bodies; the order in which TOTK_COOP_DEVICE_SYNC is switched off.
