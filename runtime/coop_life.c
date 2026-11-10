@@ -291,14 +291,16 @@ static int g4_refuse(Cpu *c, const char *what, uint64_t actor, uint64_t arg) {
 
 int coop_life_hook(Cpu *c, uint64_t addr) {
     uint64_t off = addr - MOD_MAIN_BASE;
+    // A bond made or broken here: the builds recorded at once (coop_ctn.c). Before the x3 branch, which returns for the
+    // break addresses (review 1 findings 68 and 79: breaks never reached it).
+    if (off == BOND_MAKER || off == 0x1cf54d4 || off == 0x2999fe8 || off == 0x1c042bc) {
+        void coop_ctn_structure_event(void);
+        coop_ctn_structure_event();
+    }
     if (off == 0x2995024 || off == 0x2995068 || off == 0x2999fe8 || off == 0x18ac48 || off == 0x8aaab0 || off == 0x1c042bc ||
         off == 0x1cf54d4) {
         x3_hook(c, off);
         return 0;
-    }
-    if (off == BOND_MAKER || off == 0x1cf54d4 || off == 0x2999fe8) {   // a bond made or broken here: recorded at once (coop_ctn.c)
-        void coop_ctn_structure_event(void);
-        coop_ctn_structure_event();
     }
     if (off == 0x190f034) { x3_strain(c); return 0; }
     if (off == 0x1c0c9b0) { x3_message(c); return 0; }

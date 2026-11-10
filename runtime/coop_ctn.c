@@ -504,26 +504,36 @@ static void record_pass(Cpu *c) {
     for (int i = 0; i < REG_N; i++)
         for (int r = 0; reg[i].used && runs(&reg[i]) && reg[i].local == L_LIVE && r < reg[i].np; r++) if (alive(reg[i].parts[r])) cand[n++] = reg[i].parts[r];
     plat_mutex_unlock(&reg_lock);
-    int claimed[REG_N] = {0};
+    // Pass 1: every group, its members, and where the registry has them from, all read before any entry changes. (Read
+    // group by group, the second piece of a split found its parts already taken by the first piece's entry and lost
+    // their origin numbers, review 1 finding 47.)
+    static struct { uint64_t g, a, used[21], oinc[21]; uint32_t ids[21]; int known[21], nmem, skipped, best, foreign; uint64_t best_inc; uint32_t best_serial; } G[32];
     for (int i = 0; i < n; i++) {
         uint64_t a = cand[i], g = part_group(a);
         if (!g) continue;
         int seen = 0;
         for (int k = 0; k < ng; k++) seen |= groups[k] == g;
         if (seen || ng >= 32) continue;
-        groups[ng++] = g;
+        groups[ng] = g;
         // Its members in the order the history writer gives them (main+0x1913694): the group's members (group +0x60,
         // count +0x58) sorted by name ([actor+0x218], byte order) with swaps of unequal neighbours only, so parts of
-        // one name keep the group's order (its comparator main+0x1914be0); one record part per member.
-        uint64_t used[21] = {0};
-        int nmem = 0;
+        // one name keep the group's order (its comparator main+0x1914be0); one record part per member the writer
+        // keeps. It skips a member with no SPR, with SPR byte +0x26 bit 1 set, or with SPR byte +0x2e8 bit 0 set
+        // (research notes sync-v3/m2/p4/graph-groups, section 5; review 1 finding 48).
+        uint64_t *used = G[ng].used;
+        int nmem = 0, skipped = 0;
+        memset(&G[ng], 0, sizeof G[ng]), G[ng].g = g, G[ng].a = a, G[ng].best = -1, ng++;
         {
             int32_t gcount = 0;
             uint64_t arr = coop_rd_ptr(g + 0x60);
             if (!arr || !coop_rd(g + 0x58, &gcount, 4) || gcount < 2 || gcount > 21) continue;
             for (int j = 0; j < gcount && nmem < 21; j++) {
                 uint64_t b = link_actor(coop_rd_ptr(arr + 8 * (uint64_t)j));
-                if (b) used[nmem++] = b;
+                uint64_t spr = b ? coop_rd_ptr(coop_rd_ptr(b + 0x228) + 0x480) : 0;
+                uint8_t f26 = 0, f2e8 = 0;
+                if (!spr) continue;
+                if ((coop_rd(spr + 0x26, &f26, 1) && (f26 & 2)) || (coop_rd(spr + 0x2e8, &f2e8, 1) && (f2e8 & 1))) { skipped++; continue; }
+                used[nmem++] = b;
             }
             char key[21][0x40];
             for (int j = 0; j < nmem; j++) {
@@ -539,34 +549,71 @@ static void record_pass(Cpu *c) {
                     memcpy(t, key[q], sizeof t), memcpy(key[q], key[q - 1], sizeof t), memcpy(key[q - 1], t, sizeof t);
                 }
         }
-        // Whose it is: the entry most of its members belong to (R4, R5). A group holding a part of a build another game
-        // runs is not this game's to record (R3 asks for it first).
-        uint32_t ids[21] = {0}, best_serial = 0;
-        uint64_t oinc[21] = {0}, best_inc = 0;
-        int known[21] = {0};
+        G[ng - 1].nmem = nmem, G[ng - 1].skipped = skipped;
+    }
+    // Whose each is: an entry this game runs goes to the group holding most of its parts, so the larger piece of a split
+    // keeps the build's identity (R4; a tie: the piece with its first part). A group holding a part of a build another
+    // game runs is not this game's to record (R3 asks for it first).
+    {
+        static int shared[32][REG_N];
         plat_mutex_lock(&reg_lock);
-        int best = -1, best_n = 0, foreign = 0;
-        for (int q = 0; q < REG_N; q++) {
-            if (!reg[q].used || reg[q].local != L_LIVE) continue;
-            int shared = 0;
-            for (int r = 0; r < nmem; r++)
-                for (int u = 0; u < reg[q].np; u++) shared += used[r] == reg[q].parts[u];
-            if (shared && !runs(&reg[q])) foreign = 1;
-            if (shared > best_n && !claimed[q]) best_n = shared, best = q;
+        for (int k = 0; k < ng; k++) {
+            for (int r = 0; r < G[k].nmem; r++) G[k].known[r] = origin_of(G[k].used[r], &G[k].ids[r], &G[k].oinc[r]);
+            for (int q = 0; q < REG_N; q++) {
+                shared[k][q] = 0;
+                if (!reg[q].used || reg[q].local != L_LIVE) continue;
+                for (int r = 0; r < G[k].nmem; r++)
+                    for (int u = 0; u < reg[q].np; u++) shared[k][q] += G[k].used[r] == reg[q].parts[u];
+                if (shared[k][q] && !runs(&reg[q])) G[k].foreign = 1;
+            }
         }
-        if (best >= 0) best_inc = reg[best].inc, best_serial = reg[best].serial;
-        for (int r = 0; r < nmem; r++) known[r] = origin_of(used[r], &ids[r], &oinc[r]);
+        for (int q = 0; q < REG_N; q++) {
+            if (!reg[q].used || reg[q].local != L_LIVE || !runs(&reg[q])) continue;
+            int kb = -1;
+            for (int k = 0; k < ng; k++) {
+                if (G[k].foreign || !shared[k][q]) continue;
+                int first = 0;
+                for (int r = 0; r < G[k].nmem; r++) first |= reg[q].parts[0] && G[k].used[r] == reg[q].parts[0];
+                if (kb < 0 || shared[k][q] > shared[kb][q] || (shared[k][q] == shared[kb][q] && first)) kb = k;
+            }
+            if (kb >= 0 && (G[kb].best < 0 || shared[kb][q] > shared[kb][G[kb].best])) G[kb].best = q;
+        }
+        for (int k = 0; k < ng; k++) if (G[k].best >= 0) G[k].best_inc = reg[G[k].best].inc, G[k].best_serial = reg[G[k].best].serial;
         plat_mutex_unlock(&reg_lock);
-        if (foreign) continue;
+    }
+    // Pass 2: each group recorded and compared with its entry
+    for (int k = 0; k < ng; k++) {
+        if (G[k].foreign || G[k].nmem < 2) continue;
+        uint64_t a = G[k].a, *used = G[k].used, *oinc = G[k].oinc, best_inc = G[k].best_inc;
+        uint32_t *ids = G[k].ids, best_serial = G[k].best_serial;
+        int *known = G[k].known, nmem = G[k].nmem, best = G[k].best;
         static _Alignas(16) uint8_t link[0x40], rec[0x3000];
         static _Alignas(16) float align[12] = {1, 0, 0, 0, 1, 0, 0, 0, 1}, info[12];
         memset(link, 0, sizeof link), memset(rec, 0, sizeof rec), memset(link + 0x10, 0xff, 4), link[0x14] = 1;
+        // (a bond end whose part the writer skipped keeps the byte the buffer had: 0xff marks it, and that bond is
+        // dropped below; a skipped part's bonds are still written, graph-groups section 6)
+        memset(rec + 0x1704, 0xff, 21 * 12);
         coop_guest_call(c, MOD_MAIN_BASE + LINK_SET_FN, (uint64_t)(uintptr_t)link, a, 1, 0);
         uint64_t mgr = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + HISTORY_MGR_SLOT));
         if (!(call5(c, MOD_MAIN_BASE + HISTORY_WRITE, mgr, (uint64_t)(uintptr_t)link, (uint64_t)(uintptr_t)align, (uint64_t)(uintptr_t)rec,
                     (uint64_t)(uintptr_t)info) & 1) || rec[9] < 2) continue;
         // (the writer leaves the header to its caller: magic and version 2, as the Autobuild's loader checks them)
         memcpy(rec, "CmbAct", 6), rec[6] = 0, rec[7] = 0, rec[8] = 2;
+        {
+            int nb = rec[10] < 21 ? rec[10] : 21, kept = 0;
+            for (int i = 0; i < nb; i++) {
+                const uint8_t *b = rec + 0x1704 + i * 12;
+                if (b[8] >= rec[9] || b[9] >= rec[9]) continue;
+                if (kept != i) memmove(rec + 0x1704 + kept * 12, b, 12);
+                kept++;
+            }
+            memset(rec + 0x1704 + kept * 12, 0, (size_t)(21 - kept) * 12);
+            if (kept != rec[10] || G[k].skipped) {
+                static int64_t said_skip;
+                if (now - said_skip > 10000000) said_skip = now, rt_log("coop: contraption: a group of %d members: %d the game does not record, %d of its %u bonds to them left out", nmem + G[k].skipped, G[k].skipped, rec[10] - kept, rec[10]);
+            }
+            rec[10] = (uint8_t)kept;
+        }
         int bad = nmem != rec[9];
         for (int r = 0; r < rec[9] && r < 21 && !bad; r++) {
             char want[0x40] = "", nm[0x40] = "";
@@ -595,7 +642,6 @@ static void record_pass(Cpu *c) {
             e->runner = me, e->epoch = 1, e->local = L_LIVE, e->original = 1;
             for (int r = 0; r < nmem; r++) e->original &= !coop_contraption_made(used[r]);
         }
-        claimed[e - reg] = 1;
         // A part of it gone here with no death asked: the engine is unloading the build part by part (each part at its
         // own radius from this game's player). Recorded, each smaller group would be a new version, the other games'
         // copies would lose those parts and, at the end, the whole build. It is offered to them instead, unchanged; a
@@ -732,7 +778,7 @@ static uint64_t body_slot(Cpu *c, uint64_t a, uint32_t slot) {
     uint64_t sys = phys_sys(a);
     return sys ? coop_guest_call(c, MOD_MAIN_BASE + 0x44bba4, sys, slot, 0, 0) : 0;
 }
-typedef struct { uint64_t edge, other; int part, slot, oslot; } EdgeAt;
+typedef struct { uint64_t edge, other; int part, slot, oslot, ed; } EdgeAt;   // ed: glue by +0xed alone (broken with withEd 1)
 static int part_edges(Cpu *c, uint64_t actor, int part, EdgeAt *out, int max) {
     static _Alignas(16) uint8_t list[0x440];
     uint64_t L = (uint64_t)(uintptr_t)list, body0 = body_slot(c, actor, 0);
@@ -757,7 +803,7 @@ static int part_edges(Cpu *c, uint64_t actor, int part, EdgeAt *out, int max) {
             if (!oa) continue;
             int os = -1;
             for (uint32_t k = 0; k < 3 && os < 0; k++) if (body_slot(c, oa, k) == ob) os = (int)k;
-            out[n++] = (EdgeAt){edge, oa, part, (int)slot, os};
+            out[n++] = (EdgeAt){edge, oa, part, (int)slot, os, !g && g2};
         }
     }
     return n;
@@ -844,6 +890,7 @@ static int in_place(Cpu *c, Ent *e, uint64_t o, int64_t now) {
     static EdgeAt ed[21 * 12];
     uint32_t ids[21];
     uint64_t oinc[21], act[21] = {0}, breaks[64];
+    int breaks_ed[64];
     uint32_t gens[21] = {0};
     int n, nb, ne = 0, nbreak = 0, have[21] = {0}, made = 0;
     uint32_t in_v, in_shape, in_green;   // (the version read here is the one committed: another may come meanwhile, finding 3)
@@ -904,7 +951,7 @@ static int in_place(Cpu *c, Ent *e, uint64_t o, int64_t now) {
         if (bond >= 0) { have[bond] = 1; continue; }
         int seen = 0;
         for (int q = 0; q < nbreak; q++) seen |= breaks[q] == ed[x].edge;
-        if (!seen && nbreak < 64) breaks[nbreak++] = ed[x].edge;
+        if (!seen && nbreak < 64) breaks_ed[nbreak] = ed[x].ed, breaks[nbreak++] = ed[x].edge;
     }
     int missing = 0;
     for (int i = 0; i < nb; i++) missing += !have[i];
@@ -929,7 +976,7 @@ static int in_place(Cpu *c, Ent *e, uint64_t o, int64_t now) {
     for (int q = 0; q < nbreak; q++) {
         uint64_t ea = coop_guest_call(c, MOD_MAIN_BASE + 0x2993f98, breaks[q], 0, 0, 0), owner = ea ? coop_rd_ptr(ea + 0x110) : 0;
         uint64_t qa = owner ? link_actor(owner + 0x18) : 0;
-        if (qa) coop_guest_call(c, MOD_MAIN_BASE + 0x1cf54d4, qa + 0x378, breaks[q], 0, 0);
+        if (qa) coop_guest_call(c, MOD_MAIN_BASE + 0x1cf54d4, qa + 0x378, breaks[q], 0, (uint64_t)breaks_ed[q]);   // (withEd for a +0xed edge: bond-break, finding 49)
     }
     // the entry takes the actors; what it had and the version lacks waits for another entry (orphans)
     plat_mutex_lock(&reg_lock);
@@ -1695,7 +1742,19 @@ static void dev_follow(Cpu *c, Ent *e, int64_t now) {
     if (!sw || !due) return;
     // This game's player pays for the build and another game runs it: when this game's gauge can no longer pay, the
     // build is asked off where it runs, as the player's own would go off (plan 36 item 3).
-    if ((on & sw) && e->payer == coop_ctr_me() && gauge_blocked()) {
+    // The same when its parts here cannot run on this game's battery for another reason: the update writes "the gauge
+    // can pay and the device is in range of this game's Link" into DeviceSwitch +0x8d bit 0, and the on/off node turns a
+    // device off while it is clear (research notes sync-v3/m2/p5/energy, section 0.2: 20 m from the Link, the substitute
+    // energy window). All of them so: asked off. Some: those are not set on here, where the node would turn them off
+    // again every half second (review 1 finding 61).
+    uint32_t unpowered = 0;
+    if (e->payer == coop_ctr_me())
+        for (int r = 0; r < np && r < 21; r++) {
+            uint64_t d = (on & sw) >> r & 1 ? part_switch(parts[r]) : 0;
+            uint8_t b8d = 1;
+            if (d && coop_rd(d + 0x8d, &b8d, 1) && !(b8d & 1)) unpowered |= 1u << r;
+        }
+    if ((on & sw) && e->payer == coop_ctr_me() && (gauge_blocked() || unpowered == (on & sw))) {
         TogMsg t = {e->inc, e->serial, 0, 0, 0};
         plat_mutex_lock(&reg_lock);
         e->toggled_us = now + 500000;   // (once a second)
@@ -1704,6 +1763,7 @@ static void dev_follow(Cpu *c, Ent *e, int64_t now) {
         rt_log("coop: contraption: %08x: this player pays and the gauge cannot: asked off where it runs", cid32(e));
         return;
     }
+    on &= ~unpowered;
     int set = 0, there_on = (on & sw) != 0, here_on = 0;
     for (int r = 0; r < np; r++) here_on |= (sw >> r & 1) && part_switch(parts[r]) && part_on(parts[r]);
     (void)c;
@@ -2057,6 +2117,18 @@ static int lone_ask(uint64_t actor, uint32_t want, uint32_t bits) {   // a hit h
     rt_log("coop: contraption: a %s on another player's %s here: sent to its owner (%s)", bits ? "switch event" : "toggle", m.name, bits ? "event" : want ? "wanted on" : "wanted off");
     return 1;
 }
+static void lone_store(uint64_t a, uint64_t from, int from_id, const LoneMsg *p, int64_t now) {   // a lone copy's state, from its owner
+    plat_mutex_lock(&lone_lock);
+    int k = -1;
+    for (int i = 0; i < LONE_N && k < 0; i++) if (lone[i].actor == a) k = i;
+    for (int i = 0; i < LONE_N && k < 0; i++) if (!lone[i].actor || now - lone[i].heard_us > 3000000) k = i;
+    if (k >= 0) {
+        if (lone[k].actor != a) lone[k].set_us = 0;
+        lone[k].actor = a, lone[k].owner = from, lone[k].owner_id = from_id, lone[k].id = p->id, lone[k].on = p->on, lone[k].heard_us = now;
+        lone[k].spring = (int)p->spring, lone[k].spr.ext = p->ext, lone[k].spr.limit = p->limit, lone[k].spr.flags = p->flags;
+    }
+    plat_mutex_unlock(&lone_lock);
+}
 static void lone_tick(void) {
     int64_t now = frame_step_world_us();
     uint64_t me = coop_ctr_me();
@@ -2082,27 +2154,39 @@ static void lone_tick(void) {
         }
         for (; all && k < 64; k++) last[k].id = 0;
     }
-    // the other games' lone devices: their copies here found and set
+    // the other games' lone devices: their copies here found and set. A change comes reliable; the refresh five times a
+    // second comes unreliable, kept by the channel as the latest per sender and key, and is read from there for each
+    // copy here of another game's switch device: a copy made after the last change is set too, and an entry stays while
+    // its owner keeps sending (review 1 finding 14; the reliable queue alone saw only changes, and an entry lapsed 3 s
+    // after the last one).
     while (coop_ctr_recv_type(CTR_LONE, &m)) {
         const LoneMsg *p = (const LoneMsg *)m.d;
         if (m.len != (int)sizeof(LoneMsg) || !p->id) continue;
         uint64_t a = coop_obj_find(m.from_id, p->id, "");
-        if (!a || !coop_is_copy(a) || coop_contraption_made(a) || coop_ctn_part(a) || !part_switch(a)) continue;
-        plat_mutex_lock(&lone_lock);
-        int k = -1;
-        for (int i = 0; i < LONE_N && k < 0; i++) if (lone[i].actor == a) k = i;
-        for (int i = 0; i < LONE_N && k < 0; i++) if (!lone[i].actor || now - lone[i].heard_us > 3000000) k = i;
-        if (k >= 0) {
-            if (lone[k].actor != a) lone[k].set_us = 0;
-            lone[k].actor = a, lone[k].owner = m.from, lone[k].owner_id = m.from_id, lone[k].id = p->id, lone[k].on = p->on, lone[k].heard_us = now;
-            lone[k].spring = (int)p->spring, lone[k].spr.ext = p->ext, lone[k].spr.limit = p->limit, lone[k].spr.flags = p->flags;
+        if (a && coop_is_copy(a) && !coop_contraption_made(a) && !coop_ctn_part(a) && part_switch(a)) lone_store(a, m.from, m.from_id, p, now);
+    }
+    static int64_t polled_us;
+    if (now - polled_us > 200000) {
+        polled_us = now;
+        int coop_copies_all(uint64_t *out, int max);
+        uint64_t cp[256];
+        int nc = coop_copies_all(cp, 256);
+        for (int i = 0; i < nc; i++) {
+            int owner = 0;
+            uint32_t id = 0;
+            uint64_t age = 0;
+            LoneMsg p;
+            if (coop_contraption_made(cp[i]) || coop_ctn_part(cp[i]) || !part_switch(cp[i]) || !coop_obj_ident(cp[i], &owner, &id) || !id || owner == coop_net_id()) continue;
+            uint64_t oinc = coop_ctr_incarnation(owner);
+            if (!oinc || coop_ctr_latest(owner, CTR_LONE, cid_key(oinc, id) ^ 0x4c4f4e45ull, &p, sizeof p, &age) != (int)sizeof p) continue;
+            if (p.id != id || age > 1000000000ull) continue;   // (the owner stopped sending it a second ago or more)
+            lone_store(cp[i], oinc, owner, &p, now);
         }
-        plat_mutex_unlock(&lone_lock);
     }
     plat_mutex_lock(&lone_lock);
     for (int i = 0; i < LONE_N; i++) {
         uint64_t a = lone[i].actor;
-        if (a && (now - lone[i].heard_us > 3000000 || !alive(a))) a = lone[i].actor = 0;
+        if (a && (now - lone[i].heard_us > 3000000 || !alive(a) || coop_ctn_part(a))) a = lone[i].actor = 0;   // (a build's part now: the build's state sets it, finding 67)
         atomic_store_explicit(&lone_actor[i], a, memory_order_relaxed);
         if (a) {   // Whether the game runs this copy's update: its calc mask (actor +0x3fc: bits 0 and 1 skip the whole
             // update, 0xc4 its components) and the blocked bit (+0x5ac bit 6), said when they change. A device out of
@@ -2470,7 +2554,7 @@ static void retire_pass(Cpu *c) {   // builds their runner retired: the parts he
             for (int x = 0; x < ne; x++) {
                 int seen = 0;
                 for (int q = 0; q < x; q++) seen |= red[q].edge == red[x].edge;
-                if (!seen) coop_guest_call(c, MOD_MAIN_BASE + 0x1cf54d4, e->parts[red[x].part] + 0x378, red[x].edge, 0, 0);
+                if (!seen) coop_guest_call(c, MOD_MAIN_BASE + 0x1cf54d4, e->parts[red[x].part] + 0x378, red[x].edge, 0, (uint64_t)red[x].ed);
             }
             e->adopt &= 0;   // (once: the parts are plain objects from here on; parts_delete below finds none to delete)
             for (int r = 0; r < e->np && r < 21; r++) if (alive_as(e->parts[r], e->gen[r]) && !coop_contraption_made(e->parts[r])) e->del_ok |= 1u << r;
