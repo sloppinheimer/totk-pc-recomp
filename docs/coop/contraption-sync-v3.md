@@ -2485,3 +2485,72 @@ Static reading only.
    over frames if the ring would overflow.
 6. Three players: the two-game assumptions to remove are the take-over on RELINQUISH (41.1) and the toggle and
    event messages sent to all.
+
+## 42. Review 1 and its repairs (2026-11-10)
+Eight reviewers read the whole contraption code (coop_ctn.c, coop_life.c, coop_autobuild.c, the core's parts of
+coop_players.c and coop_world.c, coop_ctr.c) and gave 88 findings, about 55 distinct: 1 crash (latent), 28 wrong,
+42 risks, 17 minor. Each finding was checked against the code before it was changed. The findings and the triage
+are kept with the research notes (sync-v3/review1). Nothing below has been run.
+
+### 42.1 Repaired, by what it does in play
+- **The settings file**: the core switched the older glue, bond and device paths off with the menu's setting call,
+  which totk.ini keeps after the session; now in the process environment, set right after the settings are read,
+  before the older files read theirs (84, 77).
+- **A player's own objects are never deleted**: only a part this game made from a record is deleted; objects taken
+  into a build are let go (1, 2).
+- **Versions are not lost or mixed**: in place commits the version it read; a record is used only while whole; a
+  RETIRE or RELINQUISH that comes while a build is made is kept; a new runner numbers on from the highest version
+  heard (3, 15, 29, 38, 39, 40, 70, 71).
+- **Part numbers land on their own version**: state, events and deaths carry or are tested against the version
+  (17, 59).
+- **Walking away**: a build unloaded part by part where it runs is handed to a game that still has it, not shrunk
+  version by version and retired; a destroyed build is retired and a follower does not make it again; the repair
+  rule waits for every part to be there (36, 37, 44).
+- **Hits on map devices**: a stand-in's hit is refused only on devices the core syncs (85).
+- **Lone devices**: the five-a-second refresh is read from the channel's latest-only slot, so a copy made later is
+  set and the entry stays (14, 58, 69, 67).
+- **Builds the writer leaves a part out of** are sent, without that part and its bonds (48).
+- **Breaking**: an edge glued only by its second flag is broken with the call's fourth argument; a break records
+  the builds at once as a bond did (49, 68, 79).
+- **Splits**: every piece is read before any entry changes, the piece with most parts keeps the identity, the
+  others keep their origin numbers (47).
+- **Who pays**: a payer whose copy cannot run on its battery (range, substitute window) asks the build off or leaves
+  those parts off (61).
+- **Two deaths of one part** are both sent (63, 87).
+- **The maker**: "later" is bounded to 3 s; a version partly here waits for the missing part instead of making
+  twins; bonds are checked before any is queued; one edge per record bond; a timed-out making is asked again; the
+  entry is marked as being made at the moment it is picked (4, 5, 6, 7, 8, 10, 41).
+- **Threads**: retiring and orphans run at phase 0 beside in place; phase 0 reads the tick's copy of the object
+  tables and finds objects through the tick; floats are written after the lock is let go (9, 23, 30, 32, 52, 72,
+  73, 74, 76, 81).
+- **Capacity**: the gate lists and the made-part table hold every part the registry can; G1's body list has no
+  gaps; the queues are larger and say when full; a build sent while the registry is full is asked for again;
+  wheel slots are taken back (19, 20, 24, 26, 31, 60, 65, 75, 80, 82, 83).
+- **Stale pointers**: queued sets, events and deaths are checked against the same actor; on/off and fuse nodes are
+  used only while their actor lives; the node table index stays unsigned (25, 27, 28, 66).
+- **Three players**: of two games that take a build with the same change number the lower relay id keeps it; every
+  holder takes a build whose runner left (13, 21, 45). A game given a build whose copy is not whole offers it
+  back (42).
+- **Smaller**: 11, 12, 16 (the channel's first stream to a player), 33, 34, 35 (the maker's part list), 46, 50, 54,
+  56, 64, 88.
+
+### 42.2 Not repaired, and why
+- 62: at the runner, the group sender's own "cannot pay" off uses the runner's gauge while another player pays. It
+  needs a hook on the gauge test main+0x1fa4bfc for the sender's call (return address main+0x32f500); not written.
+- 78: G1 never matches main+0x29a4afc (its x0 is the body table, the body comes from a handle). Covered today by the
+  force-node rule; to fix with P6 (41.2 point 5).
+- 51: body slots beyond 0 to 2 and the record's body numbers (body +0x1e8 bits): to read before changing.
+- 18: a failed send is not retried (the channel reports success if one peer took it); 22 and 86: guest calls and
+  memory reads on hot paths (cost, not correctness); 43: a build first heard of is made wherever it is.
+- 35 (second half): the death kind from the wire is not range-checked; the table's size was not read.
+- 53, 55, 57: facts the comments use without their research tag; to mark.
+- The three-player rules for toggles and events sent to all (41.3 point 6).
+- Hooks on game threads still ask coop_is_copy, and phase 0 still calls coop_deleted_here; the object-table copy
+  covers record_pass, in place and the springs only.
+
+### 42.3 What the next run has to show, beyond 39.3
+- totk.ini has no TOTK_COOP_GLUE, TOTK_COOP_BONDS or TOTK_COOP_DEVICE_SYNC line after a session with the core on.
+- Walking away from a build: "is being unloaded here ... offered" at the runner, "run here now" at the other game,
+  and no RETIRE.
+- Unfusing a build made of both players' objects: "applied in place" with no "made again", and no twin parts.
+- A loose emitter of the other player's, turned on before it was copied here, is on here.
