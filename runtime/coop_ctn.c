@@ -569,6 +569,258 @@ static void record_pass(Cpu *c) {
     }
 }
 
+// ---- A follower: a version applied in place (plan 33.3) -------------------------------------------------------------------
+// When every part of an incoming version is an actor this game already has in the registry (the same build with a bond
+// more or less, a build split in two, two builds joined), nothing is deleted and made again: the glue edges the new
+// record does not have are broken as the game breaks one, the bonds it has and this game lacks are made as an Autobuild
+// confirm makes them, and the entry takes the actors. A part is known across versions and games by where it began
+// (ids, oinc). Read from the game: research notes sync-v3/m2/p4/bond-make and bond-break.
+//   edges of a body: main+0x191327c(list) then main+0x27c1c0(body, list); list +0 count, +8 cells, a cell's first word
+//     the edge; an edge is live when main+0x2993218 says so and +0x10 bit 2 (destroy asked) is clear, glue when byte
+//     +0xec or +0xed is set; its ends main+0x2993f98 / 0x2994078; a body's owner object at +0x110, its ActorLink +0x18
+//   break: main+0x1cf54d4(actor +0x378, edge, 0, 0) posts the game's own break message to the owner of the edge's end A
+//   make: a descriptor of the build object's pool (main+0x1d3ccf0 on object +0x3c88) with the two bodies' graph ids
+//     (main+0xa2d39c, result through x8), their poses in one space and the pivot main+0x299daec gives, pushed on the
+//     first part's SPR (main+0x1c07604); the part's own update makes the bond in a frame where SPR +0x27c bit 0 is set
+//   a body by slot: main+0x44bba4([[[actor +0x228] +0x50] +0x20], slot). The record's bond names bodies 0 to 2 and
+//     holds each part's three body poses relative to the build's root (CmbActPart.frame), so the relative pose of a
+//     bond is inverse(frame A) * frame B. That the record's body number is this slot number for bodies 1 and 2 is the
+//     reading's "likely", not shown; for body 0 (the main body, nearly every bond) both are the main body.
+static uint64_t call_x8(Cpu *c, uint64_t fn, uint64_t x8, uint64_t a0) {   // (rt_call sets x0..x7 and leaves x8)
+    uint64_t saved_x[31], sp0 = c->sp;
+    memcpy(saved_x, c->x, sizeof saved_x);
+    c->sp = (sp0 - 0x100) & ~0xfull;
+    c->x[8] = x8;
+    uint64_t r = rt_call(c, fn, 1, a0);
+    c->sp = sp0;
+    memcpy(c->x, saved_x, sizeof saved_x);
+    return r;
+}
+static void m34_mul(float out[12], const float a[12], const float b[12]) {
+    float t[12];
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) t[i * 4 + j] = a[i * 4] * b[j] + a[i * 4 + 1] * b[4 + j] + a[i * 4 + 2] * b[8 + j];
+        t[i * 4 + 3] = a[i * 4 + 3] + a[i * 4] * b[3] + a[i * 4 + 1] * b[7] + a[i * 4 + 2] * b[11];
+    }
+    memcpy(out, t, sizeof t);
+}
+static int m34_inv(float out[12], const float m[12]) {
+    float c0 = m[5] * m[10] - m[9] * m[6], c1 = m[8] * m[6] - m[4] * m[10], c2 = m[4] * m[9] - m[8] * m[5];
+    float det = m[0] * c0 + m[1] * c1 + m[2] * c2;
+    if (det == 0.0f || det != det) return 0;
+    float k = 1.0f / det, r[9];
+    r[0] = c0 * k, r[1] = (m[2] * m[9] - m[1] * m[10]) * k, r[2] = (m[1] * m[6] - m[2] * m[5]) * k;
+    r[3] = c1 * k, r[4] = (m[0] * m[10] - m[2] * m[8]) * k, r[5] = (m[2] * m[4] - m[0] * m[6]) * k;
+    r[6] = c2 * k, r[7] = (m[1] * m[8] - m[0] * m[9]) * k, r[8] = (m[0] * m[5] - m[1] * m[4]) * k;
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) out[i * 4 + j] = r[i * 3 + j];
+        out[i * 4 + 3] = -(r[i * 3] * m[3] + r[i * 3 + 1] * m[7] + r[i * 3 + 2] * m[11]);
+    }
+    return 1;
+}
+static uint64_t phys_sys(uint64_t a) { return a ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x50) + 0x20) : 0; }
+static uint64_t body_slot(Cpu *c, uint64_t a, uint32_t slot) {
+    uint64_t sys = phys_sys(a);
+    return sys ? coop_guest_call(c, MOD_MAIN_BASE + 0x44bba4, sys, slot, 0, 0) : 0;
+}
+typedef struct { uint64_t edge, other; int part, slot, oslot; } EdgeAt;
+static int part_edges(Cpu *c, uint64_t actor, int part, EdgeAt *out, int max) {
+    static _Alignas(16) uint8_t list[0x440];
+    uint64_t L = (uint64_t)(uintptr_t)list, body0 = body_slot(c, actor, 0);
+    int n = 0;
+    for (uint32_t slot = 0; slot < 3; slot++) {
+        uint64_t body = slot ? body_slot(c, actor, slot) : body0;
+        if (!body || (slot && body == body0)) continue;
+        coop_guest_call(c, MOD_MAIN_BASE + 0x191327c, L, 0, 0, 0);
+        coop_guest_call(c, MOD_MAIN_BASE + 0x27c1c0, body, L, 0, 0);
+        int32_t cnt = 0;
+        memcpy(&cnt, list, 4);
+        uint64_t cells = coop_rd_ptr(L + 8);
+        for (int i = 0; cells && i < cnt && i < 0x40 && n < max; i++) {
+            uint64_t cell = coop_rd_ptr(cells + 8 * (uint64_t)i), edge = cell ? coop_rd_ptr(cell) : 0;
+            uint8_t g = 0, g2 = 0;
+            uint32_t fl = 0;
+            if (!edge || !(coop_guest_call(c, MOD_MAIN_BASE + 0x2993218, edge, 0, 0, 0) & 1)) continue;
+            if (!coop_rd(edge + 0xec, &g, 1) || !coop_rd(edge + 0xed, &g2, 1) || (!g && !g2) || !coop_rd(edge + 0x10, &fl, 4) || (fl & 4)) continue;
+            uint64_t ea = coop_guest_call(c, MOD_MAIN_BASE + 0x2993f98, edge, 0, 0, 0), eb = coop_guest_call(c, MOD_MAIN_BASE + 0x2994078, edge, 0, 0, 0);
+            if (ea != body && eb != body) continue;
+            uint64_t ob = ea == body ? eb : ea, owner = ob ? coop_rd_ptr(ob + 0x110) : 0, oa = owner ? link_actor(owner + 0x18) : 0;
+            if (!oa) continue;
+            int os = -1;
+            for (uint32_t k = 0; k < 3 && os < 0; k++) if (body_slot(c, oa, k) == ob) os = (int)k;
+            out[n++] = (EdgeAt){edge, oa, part, (int)slot, os};
+        }
+    }
+    return n;
+}
+// One bond queued on a's SPR between a's body sa and b's body sb, b held at rel from a. 0: refused (why says where).
+static int bond_queue(Cpu *c, uint64_t o, uint64_t a, uint32_t sa, uint64_t b, uint32_t sb, const float rel[12], int *why) {
+    static _Alignas(16) float wa[12], wb[12], pivot[12];
+    static _Alignas(16) int32_t idout;
+    uint64_t ta = coop_rd_ptr(a + 0x228), spr = ta ? coop_rd_ptr(ta + 0x480) : 0, c288 = ta ? coop_rd_ptr(ta + 0x288) : 0, sys = phys_sys(a);
+    uint64_t mgr = sys ? coop_rd_ptr(sys + 0xd8) : 0;
+    *why = 1;
+    if (!spr || !c288 || !sys || !coop_rd_ptr(sys + 0x150) || !mgr || !coop_rd_ptr(mgr + 0x18) || !coop_rd_ptr(coop_rd_ptr(b + 0x228) + 0x480)) return 0;
+    uint64_t ba = body_slot(c, a, sa), bb = body_slot(c, b, sb), fa = 0, fb = 0;
+    *why = 2;
+    if (!ba || !bb || ba == bb) return 0;
+    *why = 3;   // (a body torn down once keeps bit 24 of +0x68 and has no graph id: the game would drop the bond silently)
+    if (!coop_rd(ba + 0x68, &fa, 8) || !coop_rd(bb + 0x68, &fb, 8) || ((fa | fb) >> 24 & 1)) return 0;
+    int32_t ida, idb;
+    idout = -1, call_x8(c, MOD_MAIN_BASE + 0xa2d39c, (uint64_t)(uintptr_t)&idout, ba), ida = idout;
+    idout = -1, call_x8(c, MOD_MAIN_BASE + 0xa2d39c, (uint64_t)(uintptr_t)&idout, bb), idb = idout;
+    *why = 4;
+    if (ida == -1 || idb == -1) return 0;
+    *why = 5;
+    if (!coop_rd(ba + 0x98, wa, 48)) return 0;
+    m34_mul(wb, wa, rel);
+    static const float id12[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+    memcpy(pivot, id12, sizeof id12);
+    call5(c, MOD_MAIN_BASE + 0x299daec, (uint64_t)(uintptr_t)pivot, ba, bb, (uint64_t)(uintptr_t)wa, (uint64_t)(uintptr_t)wb);
+    uint64_t d = coop_guest_call(c, MOD_MAIN_BASE + 0x1d3ccf0, o + 0x3c88, 0, 0, 0);
+    *why = 7;
+    if (!d) return 0;
+    ST32(d + 0x28, (uint32_t)ida), ST32(d + 0x2c, (uint32_t)idb);
+    memcpy((void *)(uintptr_t)(d + 0x30), wa, 48), memcpy((void *)(uintptr_t)(d + 0x60), wb, 48), memcpy((void *)(uintptr_t)(d + 0x90), pivot, 48);
+    coop_guest_call(c, MOD_MAIN_BASE + 0x1c07604, spr, d, 0, 0);
+    __atomic_fetch_or((uint32_t *)(uintptr_t)(spr + 0x27c), 1u, __ATOMIC_SEQ_CST);
+    *why = 0;
+    return 1;
+}
+// The build object's 21 bond descriptors back on its free list, as the confirm does first; 0 while one is still queued
+static int bond_pool_recycle(Cpu *c, uint64_t o) {
+    uint32_t count = 0;
+    coop_rd(o + 0x3c88, &count, 4);
+    uint64_t arr = coop_rd_ptr(o + 0x3c90), freeh = coop_rd_ptr(o + 0x3c98);
+    for (uint32_t i = 0; i < count && i < 21; i++) {
+        uint64_t d = coop_rd_ptr(arr + 8ull * i), owner = 1;
+        if (!d || !coop_rd(d + 0x20, &owner, 8) || owner) return 0;
+    }
+    for (uint32_t i = 0; i < count && i < 21; i++) {
+        uint64_t d = coop_rd_ptr(arr + 8ull * i);
+        coop_guest_call(c, MOD_MAIN_BASE + 0x1d43e84, d, 0, 0, 0);
+        ST64(d, freeh), freeh = d;
+    }
+    ST64(o + 0x3c98, freeh), ST32(o + 0x3c88, 0);
+    return 1;
+}
+// Parts an in-place change took out of their build and no entry has taken since: another entry's version (the other
+// piece of a split) takes them within a second, or they are deleted (a part loose where the build runs comes back as
+// that game's object).
+#define ORPHAN_N 32
+static struct { uint64_t actor, oinc; uint32_t gen, id; int64_t us; } orphans[ORPHAN_N];
+static void orphan_add(uint64_t a, uint32_t gen, uint32_t id, uint64_t oinc, int64_t now) {   // (reg_lock held)
+    for (int i = 0; a && i < ORPHAN_N; i++)
+        if (!orphans[i].actor) { orphans[i].actor = a, orphans[i].gen = gen, orphans[i].id = id, orphans[i].oinc = oinc, orphans[i].us = now; return; }
+}
+static void orphans_pass(Cpu *c, int64_t now) {
+    for (int i = 0; i < ORPHAN_N; i++) {
+        plat_mutex_lock(&reg_lock);
+        uint64_t a = orphans[i].actor && now - orphans[i].us > 1000000 ? orphans[i].actor : 0;
+        uint32_t gen = orphans[i].gen;
+        if (a) orphans[i].actor = 0;
+        plat_mutex_unlock(&reg_lock);
+        if (a && alive_as(a, gen) && !part_delete(c, a)) {   // (refused now: asked again)
+            plat_mutex_lock(&reg_lock);
+            orphan_add(a, gen, 0, 0, now - 900000);
+            plat_mutex_unlock(&reg_lock);
+        }
+    }
+}
+// 1: e's incoming version applied in place; 0: not possible (made with the build object instead); -1: later
+static int in_place(Cpu *c, Ent *e, uint64_t o, int64_t now) {
+    static uint8_t r[BP_SIZE];
+    static EdgeAt ed[21 * 12];
+    uint32_t ids[21];
+    uint64_t oinc[21], act[21] = {0}, breaks[64];
+    uint32_t gens[21] = {0};
+    int n, nb, ne = 0, nbreak = 0, have[21] = {0}, made = 0;
+    plat_mutex_lock(&reg_lock);
+    memcpy(r, e->in_rec, BP_SIZE), memcpy(ids, e->in_ids, sizeof ids), memcpy(oinc, e->in_oinc, sizeof oinc);
+    n = r[9], nb = r[10];
+    int ok = n >= 2 && n <= 21 && nb >= 1 && nb <= 21 && !memcmp(r, "CmbAct", 6);
+    for (int j = 0; ok && j < n; j++) {
+        for (int q = 0; ids[j] && q < REG_N && !act[j]; q++)
+            for (int u = 0; reg[q].used && reg[q].local == L_LIVE && u < reg[q].np && !act[j]; u++)
+                if (reg[q].parts[u] && reg[q].ids[u] == ids[j] && reg[q].oinc[u] == oinc[j]) act[j] = reg[q].parts[u], gens[j] = reg[q].gen[u];
+        for (int q = 0; ids[j] && q < ORPHAN_N && !act[j]; q++)
+            if (orphans[q].actor && orphans[q].id == ids[j] && orphans[q].oinc == oinc[j]) act[j] = orphans[q].actor, gens[j] = orphans[q].gen;
+        ok = act[j] && alive_as(act[j], gens[j]);
+        for (int q = 0; ok && q < j; q++) ok = act[q] != act[j];
+    }
+    plat_mutex_unlock(&reg_lock);
+    for (int j = 0; ok && j < n; j++) {
+        char want[0x40] = "", nm[0x40] = "";
+        memcpy(want, r + 0xc + j * 0x118 + 0x98, sizeof want - 1);
+        coop_actor_name(act[j], nm, sizeof nm);
+        ok = !want[0] || !strcmp(nm, want);
+    }
+    if (!ok) return 0;
+    // the glue edges on the parts now: each is one of the record's bonds, or is broken
+    for (int j = 0; j < n; j++) ne += part_edges(c, act[j], j, ed + ne, (int)(sizeof ed / sizeof ed[0]) - ne);
+    for (int x = 0; x < ne; x++) {
+        int k = -1, bond = -1;
+        for (int j = 0; j < n; j++) if (act[j] == ed[x].other) k = j;
+        for (int i = 0; k >= 0 && ed[x].oslot >= 0 && i < nb && bond < 0; i++) {
+            const uint8_t *b = r + 0x1704 + i * 12;
+            uint32_t ba, bb;
+            memcpy(&ba, b, 4), memcpy(&bb, b + 4, 4);
+            if ((b[8] == ed[x].part && (int)ba == ed[x].slot && b[9] == k && (int)bb == ed[x].oslot) ||
+                (b[9] == ed[x].part && (int)bb == ed[x].slot && b[8] == k && (int)ba == ed[x].oslot)) bond = i;
+        }
+        if (bond >= 0) { have[bond] = 1; continue; }
+        int seen = 0;
+        for (int q = 0; q < nbreak; q++) seen |= breaks[q] == ed[x].edge;
+        if (!seen && nbreak < 64) breaks[nbreak++] = ed[x].edge;
+    }
+    int missing = 0;
+    for (int i = 0; i < nb; i++) missing += !have[i];
+    if (missing && !bond_pool_recycle(c, o)) return -1;   // (bonds of the last change still queued)
+    for (int i = 0; i < nb; i++) {
+        if (have[i]) continue;
+        const uint8_t *b = r + 0x1704 + i * 12;
+        uint32_t ba, bb;
+        float fa[12], fb[12], inv[12], rel[12];
+        int why = 0;
+        memcpy(&ba, b, 4), memcpy(&bb, b + 4, 4);
+        if (b[8] >= n || b[9] >= n || ba > 2 || bb > 2) return 0;
+        memcpy(fa, r + 0xc + b[8] * 0x118 + ba * 0x30, 48), memcpy(fb, r + 0xc + b[9] * 0x118 + bb * 0x30, 48);
+        if (!m34_inv(inv, fa)) return 0;
+        m34_mul(rel, inv, fb);
+        if (!bond_queue(c, o, act[b[8]], ba, act[b[9]], bb, rel, &why)) {
+            rt_log("coop: contraption: %08x version %u: a bond could not be made in place (step %d, parts %u and %u): made again instead", cid32(e), e->in_v, why, b[8], b[9]);
+            return 0;
+        }
+        made++;
+    }
+    for (int q = 0; q < nbreak; q++) {
+        uint64_t ea = coop_guest_call(c, MOD_MAIN_BASE + 0x2993f98, breaks[q], 0, 0, 0), owner = ea ? coop_rd_ptr(ea + 0x110) : 0;
+        uint64_t qa = owner ? link_actor(owner + 0x18) : 0;
+        if (qa) coop_guest_call(c, MOD_MAIN_BASE + 0x1cf54d4, qa + 0x378, breaks[q], 0, 0);
+    }
+    // the entry takes the actors; what it had and the version lacks waits for another entry (orphans)
+    plat_mutex_lock(&reg_lock);
+    for (int u = 0; u < e->np; u++) {
+        int kept = 0;
+        for (int j = 0; j < n; j++) kept |= e->parts[u] == act[j];
+        if (!kept && e->parts[u]) orphan_add(e->parts[u], e->gen[u], e->ids[u], e->oinc[u], now);
+    }
+    for (int q = 0; q < REG_N; q++)
+        for (int u = 0; reg[q].used && &reg[q] != e && u < reg[q].np; u++)
+            for (int j = 0; j < n; j++) if (reg[q].parts[u] == act[j]) reg[q].parts[u] = 0;
+    for (int q = 0; q < ORPHAN_N; q++)
+        for (int j = 0; j < n; j++) if (orphans[q].actor == act[j]) orphans[q].actor = 0;
+    memset(e->parts, 0, sizeof e->parts), memset(e->gen, 0, sizeof e->gen);
+    memcpy(e->parts, act, sizeof(uint64_t) * (size_t)n), memcpy(e->gen, gens, sizeof(uint32_t) * (size_t)n);
+    memcpy(e->rec, r, BP_SIZE), memcpy(e->ids, ids, sizeof e->ids), memcpy(e->oinc, oinc, sizeof e->oinc), memcpy(e->centre, e->in_centre, sizeof e->centre);
+    e->np = n, e->v = e->in_v, e->shape = e->in_shape, e->green = e->in_green, e->local = L_LIVE, e->original = 0, e->want_make = 0, e->del_ok = 0;
+    e->absent = 0, e->old_us = 0, e->changed_us = 0, e->remade_us = now;
+    for (int j = 0; j < n; j++) made_add(act[j]);
+    plat_mutex_unlock(&reg_lock);
+    rt_log("coop: contraption: %08x version %u applied in place: %d parts kept, %d bonds made, %d broken", cid32(e), e->v, n, made, nbreak);
+    return 1;
+}
+
 // ---- A follower: a version made with the Autobuild build object (plan 7) ------------------------------------------------
 // One at a time, over several frames, from actor phase 0: the part maker main+0x1d3b470, the parts put in the world
 // just before the confirm main+0x1d3c0d4 (every cost record at 0), the confirm's mark and the green at the confirm.
@@ -602,6 +854,7 @@ static void make_pass(Cpu *c) {
         for (int i = 0; i < REG_N && !e; i++) if (reg[i].used && reg[i].want_make && reg[i].absent != 1) e = &reg[i];   // (not where the engine unloads it)
         plat_mutex_unlock(&reg_lock);
         if (!e) return;
+        if (e->in_v != 0xffffffffu && in_place(c, e, o, now)) return;   // (applied where the parts stand, or to be tried again)
         {   // Not while this game's Link stands where the copy goes: parts made inside it are pushed apart before they
             // bond. The old copy, if any, stays and follows until the Link has moved off (plan 7, step 11).
             const uint8_t *rr = e->in_rec;
@@ -1462,7 +1715,7 @@ static void receive(void) {
         if (s.inc != e->inc || s.serial != e->serial || s.epoch != e->epoch || s.us <= e->hus[2]) continue;
         e->heard_us = now;
         if (s.flags & 2) e->sw = s.sw, e->on = s.on, e->payer = s.payer, e->fw = s.fw, e->fk = s.fk, e->fb = s.fb, memcpy(e->pf, s.pf, sizeof e->pf);
-        if (!(s.flags & 1)) continue;
+        if (!(s.flags & 1) || (e->v && s.v != e->v)) continue;   // (the root of another version is another part)
         memmove(e->hm[0], e->hm[1], 2 * sizeof e->hm[0]), memmove(e->hus, e->hus + 1, 2 * sizeof e->hus[0]);
         memcpy(e->hm[2], s.m, sizeof s.m), e->hus[2] = s.us;
         int64_t off = now - (int64_t)(age / 1000) - s.us;   // (min of arrival - sample time over 10 s: the jitter out)
@@ -1588,6 +1841,7 @@ static void authority(void) {   // touch (plan 5.3), asks, a runner that left, a
     plat_mutex_unlock(&reg_lock);
 }
 static void retire_pass(Cpu *c) {   // builds their runner retired: the parts here deleted, the entry freed
+    orphans_pass(c, frame_step_world_us());
     plat_mutex_lock(&reg_lock);
     for (int i = 0; i < REG_N; i++) {
         Ent *e = &reg[i];

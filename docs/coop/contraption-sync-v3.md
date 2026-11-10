@@ -2032,3 +2032,17 @@ Static reading only; nothing here has been run.
 - Rider placement and the stick car's lag (31, 6c): coop_players.c ride_place.
 - Wooden parts on a copy: burning and life sent by the runner. Needs a read of how a status is written.
 - The payer's own empty gauge switching off a build another game runs.
+- **A structure change applied in place (33.3, first part)** - coop_ctn.c in_place, part_edges, bond_queue,
+  bond_pool_recycle, orphans. When every part of an incoming version is an actor already in the registry here (a bond
+  more or less, a part pulled off, a build split in two, two builds joined), the follower breaks the glue edges the
+  record lacks, queues the bonds it has and this game lacks, and the entry takes the actors: nothing is deleted, no
+  device loses its state. The relative pose of a bond comes from the record itself (each part's three body poses), so
+  nothing new is sent. A part the change leaves over waits one second for another entry's version (the other piece
+  of a split), then is deleted. Anything else (a part not here yet, a refused bond) is made with the build object as
+  before. The follow drive takes root samples only of the version it holds.
+  A run shows: the line "applied in place: N parts kept, B bonds made, K broken" when a part is pulled off or two
+  builds are joined, with the build not blinking and its devices keeping their state.
+  Not done by this: a loose object glued on (it is not in the registry: made again as before); a part of this game's
+  own glued into another game's build; the handing of a pulled-off part to the object mirror (it is deleted and comes
+  back as the runner's object, one blink). Not shown by reading: that the record's body number is the physics slot
+  for a part's second and third body.
