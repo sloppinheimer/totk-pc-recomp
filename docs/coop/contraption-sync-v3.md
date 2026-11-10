@@ -2226,3 +2226,55 @@ either way round.** (37, continued; session of 23:0x, logs build/v143/logs/totk.
   body is put at the owner's place every tick; nothing of ours stops a copy that is off screen. A spring's extension is
   its second body, which is not placed. So the off-screen difference is either the game's own (what it stops for an
   actor out of view: not read) or the second body going its own way. To be read before anything is changed.
+
+## 39. The rework: what is to be read, written and shown (2026-11-09, late; ordered by the tester: fill the plan, then read and write)
+Rule of 29 holds: nothing below is written before its read is done, and no game is started for a test without
+the tester's yes. Every item names the notes it answers.
+
+### 39.1 Reads
+Our own code, read by me in full before 39.2 is written:
+- coop_glue.c (the older glue sync: its lists, its veto, its retries, what it expects of coop_obj_find).
+- coop_bonds.c as it is in this checkout, read only (its bonding, claims, device sync, "came apart" handling).
+- The object mirror in coop_players.c: the slots' mir table, arrow_copies, copy_place and place_copy, prop scan and
+  report (what is sent as an object and when), the "came apart ... made again" rule for autobuilt copies,
+  coop_obj_find / coop_obj_ident, ride_place and how a ride is reported.
+
+Game code, by Sonnet readers into R/sync-v3/m2/p7/ (one folder each):
+- offscreen: what the game stops or changes for an actor that is out of view or not drawn (its AI calc, its
+  physics, sleeping bodies), and what wakes it (14, the spring out of step when a player turns away).
+- spring-bodies: a spring's second body when its main body is placed from outside each tick: what holds the head,
+  whether the extension can be set (the joint's target and flags) so a copy shows the runner's (14, 4).
+- stick-graph: the order of the stick's nodes against outside writes to its tilt floats, and where the rider's pose
+  reads them; what a copy needs so the stick leans (14, 6b).
+- gate-stuck: what keeps a device off after its energy gate closed once: every latch the on/off node and the
+  DeviceSwitch keep from a closed gate, and what clears them (14, the loose emitters that stayed off).
+- delete-refused: who holds the delete lock of reason 0 on a part, and how long (12).
+
+### 39.2 Writes, in this order
+1. **One owner for anything glued** (38's decision; notes 5, 9, 10, 11, 13).
+   - A glue in any game makes a build in the core at once (the glue hook reports it; no 2 s wait for the record).
+   - A loose object taken into a build is taken in place: the mirror copy, or this game's own object, becomes the
+     part; nothing is deleted and made.
+   - The object mirror: an object that is a part of a build is neither placed nor deleted by the mirror, and is not
+     sent as a plain object, in every game; an actor made by an Autobuild is never sent or mirrored as a plain
+     object (13); a part that comes off is the runner's plain object again and the others' actor becomes its mirror.
+   - coop_glue.c and the bonding of coop_bonds.c switched off from the core (TOTK_COOP_GLUE, TOTK_COOP_BONDS set
+     to 0 by the core when it is on, as TOTK_COOP_DEVICE_SYNC is); the old "came apart ... made again" rule off for
+     core parts.
+   - Moving another player's loose object with Ultrahand (10): decided after the mirror read; either the grab hands
+     the object over, as a build's does, or it is said plainly that it cannot.
+   - The waits out: record on the event, not every 2 s; the 3 s after a make; the 3 s before a retire (9).
+2. **What the reads of 39.1 settle**: the off-screen difference, the spring's head, the stick's lean, the device
+   stuck off after an empty gauge, the refused delete.
+3. **The rider on a build (6c, 14)**: after the mirror read shows how a ride is reported and placed.
+4. **The P5 leftovers of 36**: wooden parts burning alike (one read first), the bomb's blast on the copy, the
+   payer's empty gauge, and the two things 38 named (map and NPC vehicles; spawned things as entities), each
+   written or dropped by a stated decision.
+
+### 39.3 What the next test has to show (the tester's list, to be run by him)
+- Fusing by hand, either player's objects, appears at once on the other screen and can be unfused by either.
+- Breaking an Autobuild leaves no stray copy on the other screen.
+- A loose object of the other player's can be moved, or the plan says why not.
+- A spring, a fan and an emitter stay in step with a player looking away.
+- The stick leans; the rider sits on it.
+- A watcher with an empty battery sees the other's devices on, loose or in a build.
