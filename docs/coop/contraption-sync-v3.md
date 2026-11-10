@@ -2200,3 +2200,23 @@ either way round.** (37, continued; session of 23:0x, logs build/v143/logs/totk.
 - Same root as the decision of 38: a part that is or was a build's belongs to the core, and the object mirror must
   not show it. The narrow rule here: an actor made by an Autobuild (the game's "imaginary" class) is never sent or
   mirrored as a plain object while the core is on; loose, it is a dying part.
+
+**14. Results of the list of the milestone 2 build (same session; the tester's words, then what the logs show).**
+- *Jump attack works.* The logs have no "switch event ... sent" line in either game, so it did not go through the
+  event forwarding of 35.1; which change made it work is not known (the on read of 34.3 is a candidate).
+- *Springs (and likely every item) go out of step when one player is looking away.* The lone-device path ran: 30
+  "lone device N is ... there, ... here: set" lines in player 2's log, one per change, and player 2's hits on a
+  copy reached the owner (player 1 lines 8997 to 9048). So the state arrives; what a copy does with it while its
+  player looks away is not known. To read: whether the object mirror or the game stops a copy's update (its AI
+  calc, its physics) when it is off screen. The screenshot shows the spring extended in one game and retracted in
+  the other.
+- *The stick does not lean.* Not explained; 34.3 named the risk that the copy's own stick node writes over the
+  floats. To read: the order of the stick's graph against the writes, or skip the node on a copy.
+- *Wheels stop spinning.* The wheel change of 34.3 held for that.
+- *The rider still lags behind.* The ride_place change of 35 did not fix 6c; its cause is still open.
+- *A watcher with an empty battery: beam emitters did not turn on; after the battery refilled a hit still did not
+  turn them on until new ones were spawned.* Not explained. Whether those emitters were lone devices or parts of a
+  build, and which game's gauge the copy read, is to be taken from the logs with the time of the attempt.
+- *Cannon, stake, time bomb, beam (items 9 to 12) look right; not tried on enemies.*
+- Counted in the logs of this session: stand-in hits not taken, 8 in each game; versions applied in place, 2 and 3;
+  no refused delete; no part read as held by someone else.
