@@ -39,18 +39,25 @@ evidence), guess.
   ended: no "this Link runs" after it from 459 s to the log's end at 840 s (its clean counter), through player 1's second travel (Umamustor Lightroot).
 - The load is waiting, not working: frames are presented at 60 fps and the co-op tick runs on, but the kernel's
   "asynchronous preemption ... interrupted" count stays at 1920 from frame 28800 to the end (no guest thread runs
-  long), deswizzles stop, and live texture pins fall from 69693 to 4 (the old world is unloaded, nothing new loads).
-- Player 2's load went further than player 1's: player 1's resident Player stayed (the co-op tick found it and asked
-  for the stand-in again during the load: "slot 0: PlayerPuppet requested"), player 2's resident list has no Player
-  (coop_game.c coop_player_actor returns 0, so coop_players.c spawn_slot asks for nothing and the global stays 0).
+  long), deswizzles stop, and the textures drawn fall from 69693 to 4 (texture pins at submit: the screen draws
+  almost nothing; this does not say the world was unloaded).
+- Player 2's Link stayed through it: the failed reads during the freeze come from coop_players_tick past its "no Link"
+  return (hold_send, objs_receive; addr2line on build/v143/totk.exe). So coop_players.c spawn_slot ran every tick and
+  the game refused each create request (no "PlayerPuppet requested" line; player 1's same request during its own load
+  was taken at once). requestCreateActor (main+0x599670) refuses at once, with no side effect, while bit 1 of the
+  actor manager's byte +0xe1 is set; with it clear and the pack not loaded it registers the actor's resource
+  (main+0x2c35f8, once per name) and returns 0. Which of the two happened here is not known, nor whether either
+  holds the load: the refusal may only be a sign that the manager is closed for the load.
 - Ruled out by the logs: the failed-read counters (exe+0xe072b8a eq_gear, 0xe05ff2b / 0xe060c87 / 0xe060d87
   coop_players_tick, 0xe08be1b coop_actors_all; build/v143/totk.map) failed at the same rate all session and only
   fall as actors go: polling of missing actors, a symptom. No copy was made, no actor asked for and no actor frozen in
   player 2 during its load; its enemy copies were let go at 453 s, before it.
 - Seen before: 2026-11-07, player 2 warped to where player 1 stood and stayed on the loading screen (commit 9cb26a5
   guessed frozen enemy copies; this run had none then, so that guess does not explain this one).
-- Read next: (1) what a load waits on before it builds the new area, from the scene change's state machine, and
-  which kind of load drops the resident Player (player 2's did, player 1's did not); (2) whether an actor's link flag
+- Read next: (1) what a fast travel's load waits on before it builds the new area (the warp sequence: strings
+  WarpOutEventWithJunction, DefaultWarpOutEvent, Game/WarpInfoTable; and what sets bit 1 of the actor manager's
+  +0xe1), and whether a Player-class stand-in 2.7 km away in an unloaded area (player 1's, put in the Depths 3 s
+  before player 2's load began; on 2026-11-07 player 2 also "warped to where player 1 stood") takes part in it; (2) whether an actor's link flag
   ref+0x4c, set by the link acquire main+0x61aa24 and cleared only by the link release main+0x1aff9c, holds up its
   deletion: coop_game.c coop_claim takes such a link and the co-op code never releases one (spawn_slot clears the
   link bytes, the "went away" path drops the actor); (3) where player 2 travelled to (the tester's memory).
