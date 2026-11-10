@@ -70,12 +70,18 @@ typedef struct {
     uint32_t epoch;         // rises at each change of runner
     int local;              // L_*: this game's parts
     uint32_t v, shape;      // the version the parts here are (0: none)
+    uint32_t green, in_green; // bit r: record part r was made from zonaite by an Autobuild (SPR +0x150 bit 0 where it runs)
     uint8_t rec[BP_SIZE];   // its record, centre, and where each part came from: a game's object number (0: none)
     float centre[3];
     uint32_t ids[21];
     uint64_t oinc[21];
-    uint64_t parts[21];     // this game's actor of each record part
+    uint64_t parts[21];     // this game's actor of each record part (0: gone here, see parts_sweep)
+    uint32_t gen[21];       // each actor's id (actor +0x10) when it was taken: a freed and reused actor has another
+    uint32_t del_ok;        // bit r: the delete of part r was accepted (not asked twice)
     int np;
+    int absent;             // a follower whose parts the engine unloaded: 1 far, 2 near again and waiting for the version
+    float absent_dist;      // how far this game's Link was when they went
+    int64_t pulled_us;
     int original;           // the parts are this game's own objects (minted here, not made from a record)
     // a newer version coming in, and whether it waits to be made
     uint32_t in_v, in_shape, in_have, in_ids[21];
@@ -145,15 +151,38 @@ int coop_contraption_made(uint64_t a) {
     for (int i = 0; a && i < MADE_N; i++) if (atomic_load(&made_parts[i]) == a) return 1;
     return 0;
 }
-static void part_delete(Cpu *c, uint64_t a) {   // a part of a version being replaced
-    if (!a) return;
-    coop_deleted_here(a);
-    made_forget(a);
-    coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, a, COOP_DELETE_REASON, 0, 0);
-}
 static int alive(uint64_t a) {
     int32_t st = 0;
     return a && coop_rd(a + 0x24, &st, 4) && st >= 2 && st <= 6;
+}
+static uint32_t gen_of(uint64_t a) {   // the actor's id (actor +0x10, what an ActorLink's +0x10 is compared with)
+    uint32_t g = 0;
+    return a && coop_rd(a + 0x10, &g, 4) ? g : 0;
+}
+static int alive_as(uint64_t a, uint32_t gen) { return alive(a) && gen_of(a) == gen; }
+// A part of a version being replaced or retired. 1: gone, going, or the request was accepted; 0: the game refused it
+// now (a delete lock is held), to be asked again. The request main+0x63baa8 reads the actor's lock object
+// ([actor +0x1a8]) first, and the game drops that object once the actor has passed state 7: asked on such an actor it
+// read address 0x50 and the game died (plan 31, note 7). So it is asked only of an actor in state 2..6 with the object
+// there. Reason 0 is "delete this actor"; reason 3 is the far delete of an unload (research sync-v3/m2/p4/death-delete).
+static int part_delete(Cpu *c, uint64_t a) {
+    if (!a) return 1;
+    if (!alive(a) || !coop_rd_ptr(a + 0x1a8)) { made_forget(a); return 1; }
+    coop_deleted_here(a);
+    if (!(coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, a, 0, 0, 0) & 1)) return 0;
+    made_forget(a);
+    return 1;
+}
+// Every part of e deleted; 1 once none is left to ask (a part whose delete was accepted is not asked again)
+static int parts_delete(Cpu *c, Ent *e) {
+    int left = 0;
+    for (int r = 0; r < e->np && r < 21; r++) {
+        if (e->del_ok >> r & 1) continue;
+        if (!alive_as(e->parts[r], e->gen[r])) { made_forget(e->parts[r]), e->del_ok |= 1u << r; continue; }
+        if (part_delete(c, e->parts[r])) e->del_ok |= 1u << r;
+        else left++;
+    }
+    return !left;
 }
 
 // ---- Game reads ------------------------------------------------------------------------------------------------------
@@ -179,6 +208,11 @@ static int part_on(uint64_t a) {   // the device's on bool ([comp 11] +0x348 bit
     uint64_t t = a ? coop_rd_ptr(a + 0x228) : 0, c11 = t ? coop_rd_ptr(t + 8 * 11) : 0;
     uint32_t v = 0;
     return c11 && coop_rd(c11 + 0x348, &v, 4) && (v & 0x2000);
+}
+static int part_green(uint64_t a) {   // made from zonaite by an Autobuild confirm (SPR +0x150 bit 0, as main+0x1b0f7d4 reads it)
+    uint64_t spr = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x480) : 0;
+    uint32_t f = 0;
+    return spr && coop_rd(spr + 0x150, &f, 4) && (f & 1);
 }
 static int part_held(uint64_t a) {
     uint64_t spr = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x480) : 0;
@@ -238,6 +272,7 @@ typedef struct {
     uint64_t runner;
     float centre[3];
     uint16_t chunk, chunks, len, pad;
+    uint32_t green, pad2;
     uint32_t ids[21];
     uint64_t oinc[21];
     uint8_t d[VER_CHUNK];
@@ -257,7 +292,7 @@ typedef struct { uint64_t inc; uint32_t serial, part, want, pad; } TogMsg;
 static void send_version(Ent *e) {   // (reg_lock held) the runner's version to every game
     static VerMsg m;
     memset(&m, 0, sizeof m);
-    m.key = e->key64, m.inc = e->inc, m.serial = e->serial, m.epoch = e->epoch, m.v = e->v, m.shape = e->shape, m.runner = e->runner;
+    m.key = e->key64, m.inc = e->inc, m.serial = e->serial, m.epoch = e->epoch, m.v = e->v, m.shape = e->shape, m.runner = e->runner, m.green = e->green;
     memcpy(m.centre, e->centre, sizeof m.centre), memcpy(m.ids, e->ids, sizeof m.ids), memcpy(m.oinc, e->oinc, sizeof m.oinc);
     m.chunks = VER_CHUNKS;
     int ok = 1;
@@ -408,8 +443,9 @@ static void record_pass(Cpu *c) {
             for (int r = 0; r < nmem; r++) e->original &= !coop_contraption_made(used[r]);
         }
         claimed[e - reg] = 1;
-        uint32_t shape = bp_shape(rec);
-        int same = e->v && shape == e->shape && e->np == nmem;
+        uint32_t shape = bp_shape(rec), green = 0;
+        for (int r = 0; r < nmem; r++) green |= (uint32_t)part_green(used[r]) << r;
+        int same = e->v && shape == e->shape && e->np == nmem && green == e->green;
         for (int r = 0; same && r < nmem; r++) same = e->parts[r] == used[r];
         if (!same) {
             // parts that left it and are in no group now become this game's own loose objects (R4)
@@ -418,8 +454,10 @@ static void record_pass(Cpu *c) {
                 for (int u = 0; u < nmem; u++) kept |= used[u] == e->parts[r];
                 if (!kept && !part_group(e->parts[r])) made_forget(e->parts[r]);
             }
-            e->v++, e->shape = shape, e->np = nmem, e->resend = 1;
+            e->v++, e->shape = shape, e->green = green, e->np = nmem, e->resend = 1;
             memcpy(e->rec, rec, BP_SIZE), memcpy(e->parts, used, sizeof e->parts), memcpy(e->ids, ids, sizeof e->ids), memcpy(e->oinc, oinc, sizeof e->oinc);
+            e->del_ok = 0;
+            for (int r = 0; r < 21; r++) e->gen[r] = gen_of(e->parts[r]);
             rt_log("coop: contraption: %08x, run here: version %u (%u parts, %u bonds, shape %08x)", cid32(e), e->v, rec[9], rec[10], shape);
         }
         e->centre[0] = -info[3], e->centre[1] = -info[7], e->centre[2] = -info[11];   // (info is [I | -centre])
@@ -468,7 +506,7 @@ static struct {
     int64_t t;
     uint64_t parts[21];
     int n;
-    uint32_t v, shape, ids[21];   // the version being made, taken from the entry when the making starts
+    uint32_t v, shape, green, ids[21];   // the version being made, taken from the entry when the making starts
     uint64_t oinc[21];
     float centre[3];
     uint8_t rec[BP_SIZE];
@@ -489,7 +527,7 @@ static void make_pass(Cpu *c) {
         Ent *e = NULL;
         plat_mutex_lock(&reg_lock);
         for (int i = 0; i < REG_N && !e; i++) if (reg[i].used && reg[i].want_make && reg[i].np) e = &reg[i];
-        for (int i = 0; i < REG_N && !e; i++) if (reg[i].used && reg[i].want_make) e = &reg[i];
+        for (int i = 0; i < REG_N && !e; i++) if (reg[i].used && reg[i].want_make && reg[i].absent != 1) e = &reg[i];   // (not where the engine unloads it)
         plat_mutex_unlock(&reg_lock);
         if (!e) return;
         {   // Not while this game's Link stands where the copy goes: parts made inside it are pushed apart before they
@@ -515,11 +553,15 @@ static void make_pass(Cpu *c) {
             e->waited_us = 0;
         }
         if (e->np) {   // the parts of the version held: deleted; the new one made once they have left
-            for (int i = 0; i < e->np; i++) part_delete(c, e->parts[i]);
-            rt_log("coop: contraption: %08x changed shape (version %u): its %d parts here deleted, made again once gone", cid32(e), e->in_v, e->np);
+            if (!parts_delete(c, e)) {   // (a delete lock held on a part: asked again next frame, nothing made meanwhile)
+                static int64_t said;
+                if (now - said > 5000000) said = now, rt_log("coop: contraption: %08x: the game refused the delete of a part here (asked %#x of %d): asked again", cid32(e), e->del_ok, e->np);
+                return;
+            }
             plat_mutex_lock(&reg_lock);
+            rt_log("coop: contraption: %08x changed shape (version %u): its %d parts here deleted, made again once gone", cid32(e), e->in_v, e->np);
             memcpy(e->old, e->parts, sizeof e->old), e->old_us = now;
-            e->np = 0, e->local = L_NONE, e->original = 0, e->v = 0, memset(e->parts, 0, sizeof e->parts);
+            e->np = 0, e->local = L_NONE, e->original = 0, e->v = 0, e->del_ok = 0, memset(e->parts, 0, sizeof e->parts);
             plat_mutex_unlock(&reg_lock);
             return;
         }
@@ -532,7 +574,7 @@ static void make_pass(Cpu *c) {
         plat_mutex_lock(&reg_lock);
         memcpy(mk.rec, e->in_rec, BP_SIZE), memcpy(mk.centre, e->in_centre, sizeof mk.centre);
         memcpy(mk.ids, e->in_ids, sizeof mk.ids), memcpy(mk.oinc, e->in_oinc, sizeof mk.oinc);
-        mk.v = e->in_v, mk.shape = e->in_shape, e->want_make = 0;
+        mk.v = e->in_v, mk.shape = e->in_shape, mk.green = e->in_green, e->want_make = 0;
         plat_mutex_unlock(&reg_lock);
         const uint8_t *r = mk.rec;
         int n = r[9];
@@ -600,10 +642,11 @@ static void make_pass(Cpu *c) {
         }
         mk.n = ne < 21 ? ne : 21, mk.st = 2;
         plat_mutex_lock(&reg_lock);   // (the entry's parts from now on: held where the runner's is while being made)
-        memcpy(e->parts, mk.parts, sizeof e->parts), e->np = mk.n;
+        memcpy(e->parts, mk.parts, sizeof e->parts), e->np = mk.n, e->del_ok = 0, e->absent = 0;
+        for (int i = 0; i < 21; i++) e->gen[i] = gen_of(e->parts[i]);
         memcpy(e->rec, mk.rec, BP_SIZE), memcpy(e->centre, mk.centre, sizeof e->centre);
         memcpy(e->ids, mk.ids, sizeof e->ids), memcpy(e->oinc, mk.oinc, sizeof e->oinc);
-        e->v = mk.v, e->shape = mk.shape, e->original = 0;
+        e->v = mk.v, e->shape = mk.shape, e->green = mk.green, e->original = 0;
         plat_mutex_unlock(&reg_lock);
         return;
     }
@@ -639,20 +682,21 @@ static void make_pass(Cpu *c) {
             __atomic_fetch_or((uint32_t *)(uintptr_t)(spr + 0x27c), 1u, __ATOMIC_SEQ_CST);
             ST64(spr + 0x20, (LD64(spr + 0x20) & ~(1ull << 51)) | (1ull << 28));
             __atomic_fetch_and((uint32_t *)(uintptr_t)(mk.parts[i] + 0x5ac), ~4u, __ATOMIC_SEQ_CST);
-            // Green at the confirm, as the game's own confirm gives it: given later, a fan's spinning blade pressed the
-            // wing it is glued to in the first frames and the wing died of it (plan section 23, P1). The broken-off
-            // kill the later green used to avoid is refused for copies by G4 (coop_life.c).
-            __atomic_fetch_or((uint32_t *)(uintptr_t)(spr + 0x150), 1u, __ATOMIC_SEQ_CST);
+            // Green as where the build runs: the game gives the mark (SPR +0x150 bit 0, set only by main+0x1c07114) to a
+            // part its confirm made from zonaite, and to none it took from the world or a player glued by hand (plan 31,
+            // note 1). At the confirm, as the game's own confirm gives it. A game rule's death of a copy part is refused
+            // by G4 (coop_life.c) whether the part is green or not.
+            if (mk.green >> i & 1) __atomic_fetch_or((uint32_t *)(uintptr_t)(spr + 0x150), 1u, __ATOMIC_SEQ_CST);
         }
         rt_log("coop: contraption: %08x: confirmed (%llu)", cid32(e), (unsigned long long)(r & 1));
         mk.st = 3, mk.t = now;
         return;
     }
-    if (mk.st == 3) {   // green once grouped; done after 3 s
+    if (mk.st == 3) {   // done after 3 s
         int grouped = 0;
         for (int i = 0; i < mk.n; i++) {
             uint64_t spr = mk.parts[i] ? coop_rd_ptr(coop_rd_ptr(mk.parts[i] + 0x228) + 0x480) : 0;
-            if (spr && coop_rd_ptr(spr + 0x28)) __atomic_fetch_or((uint32_t *)(uintptr_t)(spr + 0x150), 1u, __ATOMIC_SEQ_CST), grouped++;
+            if (spr && coop_rd_ptr(spr + 0x28)) grouped++;
         }
         if (now - mk.t > 3000000) {
             rt_log("coop: contraption: %08x: made, %d of %d parts in one group", cid32(e), grouped, mk.n);
@@ -990,6 +1034,7 @@ static void dev_msg(Cpu *c, uint64_t actor, int on) {
 static struct { uint64_t parts[21]; int n; uint32_t on; char why; } setq[SETQ];
 static int setq_n;
 static void dev_set_later(const uint64_t *parts, int np, uint32_t on, char why) {   // (reg_lock held) on: bit r, part r wanted on
+    if (!parts[0]) return;   // (its first part gone here: the build is about to be made again)
     for (int i = 0; i < setq_n; i++)
         if (setq[i].parts[0] == parts[0]) { memcpy(setq[i].parts, parts, sizeof setq[i].parts), setq[i].n = np, setq[i].on = on; return; }
     if (setq_n == SETQ) return;
@@ -1097,6 +1142,7 @@ static void receive(void) {
             int making = mk.st && mk.e == e && p->v <= mk.v;   // (the version being made right now, sent again)
             if (!runs(e) && !making && p->v > e->v && p->v >= e->in_v) {
                 if (p->v != e->in_v) e->in_v = p->v, e->in_shape = p->shape, e->in_have = 0, e->want_make = 0;
+                e->in_green = p->green;
                 memcpy(e->in_rec + p->chunk * VER_CHUNK, p->d, p->len);
                 memcpy(e->in_ids, p->ids, sizeof e->in_ids), memcpy(e->in_oinc, p->oinc, sizeof e->in_oinc), memcpy(e->in_centre, p->centre, sizeof e->in_centre);
                 e->in_have |= 1u << p->chunk;
@@ -1134,6 +1180,14 @@ static void receive(void) {
         plat_mutex_lock(&reg_lock);
         Ent *e = ent_find(p->inc, p->serial);
         if (e && !runs(e) && m.from == e->runner && !(mk.st && mk.e == e)) e->want_make = 0, e->in_v = 0xffffffffu, e->gone_us = now;   // (deleted at phase 0: retire_pass)
+        plat_mutex_unlock(&reg_lock);
+    }
+    while (coop_ctr_recv_type(COOP_CTR_PULL, &m)) {   // a game back in reach of a build it had unloaded: the version again
+        const CtlMsg *p = (const CtlMsg *)m.d;
+        if (m.len != (int)sizeof(CtlMsg)) continue;
+        plat_mutex_lock(&reg_lock);
+        Ent *e = ent_find(p->inc, p->serial);
+        if (e && runs(e) && e->local == L_LIVE) e->resend = 1;
         plat_mutex_unlock(&reg_lock);
     }
     while (coop_ctr_recv_type(COOP_CTR_TOGGLE, &m)) {
@@ -1202,6 +1256,36 @@ static void authority(void) {   // touch (plan 5.3), asks, a runner that left, a
     for (int i = 0; i < REG_N; i++) {
         Ent *e = &reg[i];
         if (!e->used) continue;
+        // Parts that are gone here (state past 6, or the actor freed and its memory another actor's now) leave the entry
+        // at once, so nothing below reads or writes through them.
+        int live = 0;
+        for (int r = 0; e->local == L_LIVE && r < e->np; r++) {
+            if (!e->parts[r]) continue;
+            if (alive_as(e->parts[r], e->gen[r])) live++;
+            else made_forget(e->parts[r]), e->parts[r] = 0;
+        }
+        // How far this game's Link is from the build (the runner's last root, else the version's centre)
+        float dist = -1;
+        {
+            float lp[3], at[3] = {e->centre[0], e->centre[1], e->centre[2]};
+            uint64_t link = coop_player_actor();
+            if (e->hus[2]) at[0] = e->hm[2][3], at[1] = e->hm[2][7], at[2] = e->hm[2][11];
+            if (link && coop_rd(link + COOP_ACTOR_POS, lp, 12)) dist = sqrtf((lp[0] - at[0]) * (lp[0] - at[0]) + (lp[1] - at[1]) * (lp[1] - at[1]) + (lp[2] - at[2]) * (lp[2] - at[2]));
+        }
+        // A followed build with no part left here and this game's Link far from it was unloaded by the engine: it is not
+        // made again there (10.3). It is made again, from the runner's version asked anew, once the Link is back within
+        // half the distance it went at.
+        if (!runs(e) && e->local == L_LIVE && e->np && !live && !(mk.st && mk.e == e) && (dist < 0 || dist > 30)) {
+            rt_log("coop: contraption: %08x: its %d parts here are gone with this Link %.0f m away: unloaded, not made again until back", cid32(e), e->np, dist);
+            e->absent = 1, e->absent_dist = dist < 0 ? 120 : dist, e->local = L_NONE, e->np = 0, e->v = 0, e->del_ok = 0, e->changed_us = 0;
+            memset(e->parts, 0, sizeof e->parts);
+        }
+        if (!runs(e) && e->absent == 1 && dist >= 0 && dist < e->absent_dist * 0.5f) {
+            rt_log("coop: contraption: %08x: this Link is back within %.0f m: its version asked again", cid32(e), dist);
+            e->absent = 2, e->pulled_us = 0;
+        }
+        if (!runs(e) && e->absent == 2 && e->local == L_NONE && !e->want_make && now - e->pulled_us > 3000000 && coop_ctr_route(e->runner))
+            e->pulled_us = now, send_ctl(COOP_CTR_PULL, e, e->epoch, me);
         int follows = !runs(e) && e->local == L_LIVE && e->np;
         // held or steered here: this game moves it from that frame on, before the grant; the drive and the gates step aside
         int t = follows && any_held(e->parts, e->np);
@@ -1239,7 +1323,7 @@ static void authority(void) {   // touch (plan 5.3), asks, a runner that left, a
             rt_log("coop: contraption: %08x is not whole here (%d members, %d parts): made again", cid32(e), gn, e->np);
             memcpy(e->in_rec, e->rec, BP_SIZE), memcpy(e->in_centre, e->centre, sizeof e->centre);
             memcpy(e->in_ids, e->ids, sizeof e->in_ids), memcpy(e->in_oinc, e->oinc, sizeof e->in_oinc);
-            e->in_v = e->v, e->in_shape = e->shape, e->want_make = 1, e->remade_us = now;
+            e->in_v = e->v, e->in_shape = e->shape, e->in_green = e->green, e->want_make = 1, e->remade_us = now;
         }
     }
     plat_mutex_unlock(&reg_lock);
@@ -1249,7 +1333,10 @@ static void retire_pass(Cpu *c) {   // builds their runner retired: the parts he
     for (int i = 0; i < REG_N; i++) {
         Ent *e = &reg[i];
         if (!e->used || e->in_v != 0xffffffffu || (mk.st && mk.e == e)) continue;
-        for (int r = 0; r < e->np; r++) part_delete(c, e->parts[r]);
+        plat_mutex_unlock(&reg_lock);   // (the request runs game code, which asks this file about parts)
+        int all = parts_delete(c, e);
+        plat_mutex_lock(&reg_lock);
+        if (!all || !e->used || e->in_v != 0xffffffffu) continue;   // (a delete refused now: asked again next tick)
         rt_log("coop: contraption: %08x retired by the game that ran it: its %d parts here deleted", cid32(e), e->np);
         free(e->fs), memset(e, 0, sizeof *e);
     }
@@ -1265,10 +1352,10 @@ static void lists_rebuild(Cpu *c) {
         if (!e->used || e->local == L_NONE) continue;
         for (int r = 0; r < e->np; r++) if (e->parts[r]) all[na++] = e->parts[r];
         if (!runs(e) && e->local == L_LIVE && !e->touched)
-            for (int r = 0; r < e->np && n < DRIVEN_N; r++) l[n++] = e->parts[r];
+            for (int r = 0; r < e->np && n < DRIVEN_N; r++) if (e->parts[r]) l[n++] = e->parts[r];
         uint64_t payer = e->payer ? e->payer : e->runner;
         if (e->local == L_LIVE && payer != me)
-            for (int r = 0; r < e->np && nb < DRIVEN_N; r++) b[nb++] = e->parts[r];
+            for (int r = 0; r < e->np && nb < DRIVEN_N; r++) if (e->parts[r]) b[nb++] = e->parts[r];
     }
     plat_mutex_unlock(&reg_lock);
     for (int i = 0; i < DRIVEN_N; i++) atomic_store_explicit(&driven[i], i < n ? l[i] : 0, memory_order_relaxed);

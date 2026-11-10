@@ -1624,3 +1624,34 @@ Static reading only; nothing here has been run. Each line names the folder that 
   folders are to be read in full, README first, before anything of P5 is written.
 - Then: implement milestone 2 whole (30), list it in 29.2 as implemented and not tested, and ask the tester for the run.
 - Rules in force: 29 (no guessing, no run to find out, read first, test only when all is implemented and with a yes).
+
+## 33. Milestone 2 as written (nothing in this section has been run)
+Each entry: what the code does now, what it was written from, and what a run has to show. Added as each piece lands.
+
+### 33.1 The delete crash and unloads (31, note 7) - coop_ctn.c part_delete, parts_delete, authority
+- From: R/sync-v3/m2/p4/death-delete (the delete request reads [actor+0x1a8] first; the game drops that object after
+  state 7; reason 0 is "delete this actor", reason 3 the far delete; a held lock lane makes the request return 0).
+- A delete is asked only of an actor in state 2 to 6 whose lock object is there, with reason 0. A refusal is not an
+  accepted delete: the part is asked again the next frame, and the new version is not made until every old part's
+  delete was accepted. An accepted delete is not asked twice.
+- Each entry keeps the id of every part's actor (actor +0x10, the number an ActorLink compares). A part that has left
+  state 2 to 6, or whose id is another's now, is taken out of the entry at the next tick, so the drive, the device
+  follow and the lists no longer read or write through it.
+- A followed build with no part left here while this game's Link is more than 30 m from it is an unload (10.3): the
+  entry is kept without parts and nothing is made there. When the Link is back within half the distance it was at,
+  the entry asks the runner for its version again (PULL) and the build is made from it. Nearer than 30 m, parts that
+  all went are made again by the repair rule as before.
+- Not read: who holds the delete lock of reason 0 on a part (32.2). If it is held for long, the log line "the game
+  refused the delete of a part here" repeats every 5 s and the remake waits.
+- A run shows: no crash after a build's parts unload in a follower; the line "unloaded, not made again until back";
+  the build back after "its version asked again".
+
+### 33.2 Green as where the build runs (31, note 1) - coop_ctn.c part_green, record_pass, make_pass
+- From: R/autobuild and R/sync-v3/m2/p4/part-maker (SPR +0x150 bit 0, set only by main+0x1c07114 for a part the
+  confirm made from zonaite).
+- The runner reads the bit of each part when it records the build and sends the mask with the version; a change of the
+  mask is a new version. The copy maker sets green only on the parts whose bit is set, at the confirm; the second
+  "green once grouped" pass is gone.
+- Not read: whether the broken-off kill main+0x271190 tests green. A copy part's death by a game rule is refused by G4
+  either way.
+- A run shows: two fans glued by hand are not green for the other player; an Autobuild made from zonaite is.
