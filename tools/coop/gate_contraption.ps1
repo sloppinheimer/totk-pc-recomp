@@ -15,7 +15,7 @@ $on = 'TOTK_COOP_CONTRAPTION=1;TOTK_COOP_TEST_ABLOG=1'   # (ABLOG turns the ABHI
 $runs = @(
   @{ n = 'tog'; s = 120; a = 'tools\coop\autobuild_noy_3rd.txt'; b = 'tools\coop\idle_3rd.txt'
      ea = "$on;TOTK_COOP_TEST_CTRLOAD=25,3"; eb = "$on;TOTK_COOP_TEST_CPTOGGLE=46,54;TOTK_COOP_TEST_CTRLOAD=25,3"
-     stop = 'B:its devices off where it runs, on here: set off||B:ctr test: sent [6-9]\d control'; grace = 2 }
+     stop = 'B:its devices are as where it runs: off||B:ctr test: sent [6-9]\d control'; grace = 5 }
   @{ n = 'carry'; s = 125; a = 'tools\coop\autobuild_noy_3rd.txt'; b = 'tools\coop\autobuild_carry_b_3rd.txt'
      ea = $on; eb = "$on;TOTK_COOP_TEST_ABHIT=46;TOTK_COOP_TEST_ABHIT_B=46;TOTK_COOP_TEST_ABHIT_DIST=2.2;TOTK_COOP_TEST_ABHIT_FANX=1"
      stop = 'B:asked to run it||A:handed over'; grace = 10 }

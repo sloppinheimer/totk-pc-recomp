@@ -351,7 +351,10 @@ void coop_life_x6_probe(Cpu *c) {
 // The contraption sync v3 hooks (cpu.h COOP_HOOKED_V3): the gates G1 to G8, the touch hooks of section 5 and the
 // stand-in hooks of section 9. Each phase gives its own their behaviour; until then they let the game run as is.
 int coop_life_v3(Cpu *c, uint64_t off) {
-    (void)c, (void)off;
+    if (off == 0x32eb90) {   // the group's on/off sender, x0 = group: a hit's event taken off the builds followed here
+        void coop_ctn_sender_entry(uint64_t group);
+        coop_ctn_sender_entry(c->x[0]);
+    }
     return 0;
 }
 

@@ -1372,3 +1372,52 @@ The "CB??" packets on the hit channel (CBBP, CBMV, CBAU, CBOW, CBTG) go.
 1. The device read of 26 finished and written into the notes (three readers).
 2. coop_ctn.c written whole from the table and rules above; the measured pieces moved in unchanged.
 3. One build, one gate run, then the play-test.
+
+## 28. The rebuilt core: results (2026-11-09, night)
+Section 27 is written: `runtime/coop_ctn.c` holds the registry, versions, copy making, the drive, authority and device
+state; `runtime/coop_autobuild.c` keeps the experiments. The five "CB??" packets on the hit channel are gone.
+
+**Device on and off (the open piece of 26), read before it was written** (research notes sync-v3/onoff/)
+- A device's on state is a latch in its on/off node. The DeviceSwitch request and the group state do not switch it.
+- The node takes two true set operations, messages 0x6b510000 (on) and 0x6b510001 (off): on only when off, off only
+  when on. Co-op sends them per device with the call the build's own sender makes.
+- A hit writes a hit event on the build and a flip bit on the device and does not look at the on state. On a build
+  another game runs, both are taken off and the wanted state is sent to the runner (TOGGLE).
+- The game keeps a build's devices in one state: while some are on and some are off, the build sends "on" to all.
+
+**Runs**
+| Run | Result | What it told |
+|---|---|---|
+| core1 (gate) | carry, partoff, stick pass; tog fails | "on" works by the set message in both games; B never asked for off |
+| core2, core3 (tog) | pass | B's fans read off 1.5 s after A's and stay off |
+| core4 (gate) | carry, partoff, stick pass; tog fails | A, asked off, sent three set-offs and kept reporting on |
+| core5 (tog, three times) | pass, pass, pass | the fix below |
+Every clean line in every run reads 0. partoff ran the version path whole: version 2 with three parts, the four deleted,
+the three made.
+
+**The fault and its fix.** The three set-off messages of one build were sent from the co-op tick, which is not lined
+up with the frame. When they landed on different sides of the devices' node updates, one fan went off a frame before
+the others and the game's one-state rule switched all three back on. The wanted states are now queued and sent
+together at actor phase 0, before any device update.
+
+**What went wrong in the process again, and the rules added to 25.2**
+- core2 was needed only because the lines showing each game's view of the other had been dropped; core3 only because
+  the scenario passed on B asking for off, not on the fans being off; core4 because one pass was taken as proof.
+- 8. Every write into the game states its thread and its point in the frame before it is built.
+- 9. A scenario passes on the final state in both games, never on a request.
+- 10. Each game logs its own view and the other's, every second while something is changing.
+- 11. A failure that is not explained counts as intermittent and gets its repeat runs once.
+
+**Open**
+- **The stick breaks off in the first owner's game when another player's stand-in arrives at it**, before any
+  hand-over: the build sinks about 19 cm in that half second, the game takes the stick out of the group 0.9 s later and
+  the loose stick dies. 6 of 16 stick runs today (h1, m1c, m1e, x0, core1; not m1a, core4). The veto refused 382
+  stand-in pairs in core1, so what presses the build is something of the stand-in the veto does not cover. The new
+  repair rule (27.3 R3) then makes the build again, which is what is seen as an explosion. To read first: how the
+  player's bodies are set up, and which of them the veto's holder lists miss.
+- The tog scenario sets the flip bit a hit sets; it does not swing a sword. A scenario with real swings at a fan,
+  judged on the fans' final state, is to be added.
+- A follower whose own Link's gauge is empty may refuse or drop the on state (the node's gauge gate; 8.7).
+- A build that unloads or is destroyed at its runner lapses there only; the others keep their copy (10.3).
+- B's first core1 run never asked for off; not seen again in six runs, not explained.
+- Not carried over: the self-mirror lab, ABON, ABPUSH and the root-only drive mode.
