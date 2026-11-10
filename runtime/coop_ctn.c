@@ -102,6 +102,7 @@ typedef struct {
     int relinq_later;       // a RELINQUISH that came while it was being made: taken up once made (finding 38)
     int64_t later_since;    // since when in_place has answered "later" for its incoming version (0: not)
     int64_t paused_since;   // since when the game that runs it has been in a menu (authority)
+    float del_r;            // the smallest delete radius of its parts here (DisplayRadius + DeleteRadiusOffset; 0 unknown)
     uint32_t no_inplace_v;  // the incoming version in_place gave up on: made with the build object
     int np;
     int absent;             // a follower whose parts the engine unloaded: 1 far, 2 near again and waiting for the version
@@ -1178,6 +1179,15 @@ typedef struct {
 _Static_assert(sizeof(EditMsg) <= COOP_CTR_PAYLOAD, "an edit request fits one channel message");
 static struct { EditMsg m; int64_t us; } edits[8];
 static int edits_n;
+// An actor's own delete radius: beyond it from the game's first observer (the player) it deletes itself (reason 3).
+// DisplayRadius + DeleteRadiusOffset of its ActorInfo radius record [[actor +0x370] +0x18] +0xc8, floats +0xac and
+// +0xa8; none or negative: never out of range (research notes sync-v3/m2/p8/unload-travel, section 1.2). 0: unknown.
+static float delete_radius(uint64_t a) {
+    uint64_t P = a ? coop_rd_ptr(a + 0x370) : 0, info = P ? coop_rd_ptr(P + 0x18) : 0, R = info ? coop_rd_ptr(info + 0xc8) : 0;
+    float disp = -1, off = -1;
+    if (!R || !coop_rd(R + 0xac, &disp, 4) || !coop_rd(R + 0xa8, &off, 4) || disp != disp || off != off || disp < 0 || off < 0) return 0;
+    return disp + off;
+}
 static uint64_t body_owner(uint64_t body) { return body ? link_actor(coop_rd_ptr(body + 0x110) + 0x18) : 0; }
 void coop_ctn_glue_made(Cpu *c, uint64_t ba, uint64_t bb, const float wa[12], const float wb[12], uint64_t edge) {
     if (!ctn_on() || !edge) return;
@@ -1960,16 +1970,17 @@ static void events_out(void) {   // the co-op tick: events seen 50 ms ago or mor
         if (toggled) continue;
         if ((bits & 5) && gauge_blocked()) { refused_on(actor); continue; }   // (plan 43 note 17: see refused_on)
         EvMsg m = {0};
+        uint64_t ev_runner = 0;
         int found = 0;
         uint32_t id = 0;
         plat_mutex_lock(&reg_lock);
         for (int i = 0; i < REG_N && !found; i++)
             for (int r = 0; reg[i].used && !runs(&reg[i]) && r < reg[i].np && !found; r++)
-                if (reg[i].parts[r] == actor) m.inc = reg[i].inc, m.serial = reg[i].serial, m.part = (uint32_t)r, m.v = reg[i].v, id = cid32(&reg[i]), found = 1;
+                if (reg[i].parts[r] == actor) m.inc = reg[i].inc, m.serial = reg[i].serial, m.part = (uint32_t)r, m.v = reg[i].v, id = cid32(&reg[i]), ev_runner = reg[i].runner, found = 1;
         plat_mutex_unlock(&reg_lock);
         if (!found) { lone_ask(actor, 0, bits); continue; }
         m.bits = bits;
-        coop_ctr_send(0, COOP_CTR_EVENT, COOP_CTR_RELIABLE, &m, sizeof m);
+        coop_ctr_send_inc(ev_runner, COOP_CTR_EVENT, COOP_CTR_RELIABLE, &m, sizeof m);   // (to the game that runs it)
         rt_log("coop: contraption: a switch event %#x put on %08x part %u here (a jump attack, or another set-on): sent to the game that runs it", bits, id, m.part);
     }
 }
@@ -2029,7 +2040,19 @@ static void dev_flush(Cpu *c) {   // from actor phase 0
     int n = setq_n;
     memcpy(q, setq, sizeof q), setq_n = 0;
     plat_mutex_unlock(&reg_lock);
+    int total = 0;
     for (int i = 0; i < n; i++) {
+        // (at most 40 set messages a frame: a 21-part build switching puts up to 21 on the game's actor message ring,
+        // 100 by default, and a full ring drops messages with no trace; the rest wait for the next frame. Research
+        // notes sync-v3/m2/p8/limits; plan 41.3 item 5)
+        if (total >= 40) {
+            plat_mutex_lock(&reg_lock);
+            int newer = 0;
+            for (int k = 0; k < setq_n; k++) newer |= setq[k].parts[0] == q[i].parts[0];
+            if (!newer && setq_n < SETQ) memcpy(setq[setq_n].parts, q[i].parts, sizeof q[i].parts), setq[setq_n].n = q[i].n, setq[setq_n].on = q[i].on, setq[setq_n].why = q[i].why, setq_n++;
+            plat_mutex_unlock(&reg_lock);
+            continue;
+        }
         char was[24] = "";
         int sent = 0;
         for (int r = 0; r < q[i].n && r < 21; r++) {
@@ -2038,6 +2061,7 @@ static void dev_flush(Cpu *c) {   // from actor phase 0
             was[r] = sw ? (on ? '1' : '0') : '-', was[r + 1] = 0;
             if (sw && on != want) dev_msg(c, q[i].parts[r], want), sent++;
         }
+        total += sent;
         if (q[i].why == 'a') rt_log("coop: contraption: devices asked %s here: they were %s, %d set", q[i].on ? "on" : "off", was, sent);
     }
 }
@@ -2077,8 +2101,9 @@ static void dev_follow(Cpu *c, Ent *e, int64_t now) {
         TogMsg t = {e->inc, e->serial, 0, 0, 0};
         plat_mutex_lock(&reg_lock);
         e->toggled_us = now + 500000;   // (once a second)
+        uint64_t runner = e->runner;
         plat_mutex_unlock(&reg_lock);
-        coop_ctr_send(0, COOP_CTR_TOGGLE, COOP_CTR_RELIABLE, &t, sizeof t);
+        coop_ctr_send_inc(runner, COOP_CTR_TOGGLE, COOP_CTR_RELIABLE, &t, sizeof t);
         rt_log("coop: contraption: %08x: this player pays and the gauge cannot: asked off where it runs", cid32(e));
         return;
     }
@@ -2121,10 +2146,11 @@ void coop_ctn_toggle_asked(uint64_t comp, uint64_t actor) {
     TogMsg m = {0};
     int found = 0;
     uint32_t id = 0;
+    uint64_t runner = 0;
     plat_mutex_lock(&reg_lock);
     for (int i = 0; i < REG_N && !found; i++)
         for (int r = 0; reg[i].used && !runs(&reg[i]) && r < reg[i].np && !found; r++)
-            if (reg[i].parts[r] == actor) m.inc = reg[i].inc, m.serial = reg[i].serial, m.part = (uint32_t)r, id = cid32(&reg[i]), found = 1;
+            if (reg[i].parts[r] == actor) m.inc = reg[i].inc, m.serial = reg[i].serial, m.part = (uint32_t)r, id = cid32(&reg[i]), runner = reg[i].runner, found = 1;
     plat_mutex_unlock(&reg_lock);
     if (!part_on(actor) && gauge_blocked()) {   // (switching on with a gauge that cannot pay: not asked, note 17)
         refused_on(actor);   // (called only for a device followed here: coop_autobuild.c, the switch update)
@@ -2154,7 +2180,7 @@ void coop_ctn_toggle_asked(uint64_t comp, uint64_t actor) {
     tog_seen[tog_i % 16].actor = actor, tog_seen[tog_i % 16].us = frame_step_world_us(), tog_i++;
     plat_mutex_unlock(&ev_lock);
     m.want = !part_on(actor);   // (a toggle on the copy as it shows: the other state)
-    coop_ctr_send(0, COOP_CTR_TOGGLE, COOP_CTR_RELIABLE, &m, sizeof m);
+    coop_ctr_send_inc(runner, COOP_CTR_TOGGLE, COOP_CTR_RELIABLE, &m, sizeof m);   // (to the game that runs it)
     rt_log("coop: contraption: a toggle asked on %08x part %u here: sent to the game that runs it, wanted %s (switch %llx)", id, m.part, m.want ? "on" : "off",
            (unsigned long long)comp);
 }
@@ -2926,8 +2952,13 @@ static void authority(void) {   // touch (plan 5.3), asks, a runner that left, a
         // Parts that are gone here (state past 6, or the actor freed and its memory another actor's now) leave the entry
         // at once, so nothing below reads or writes through them.
         int live = 0;
+        float dr = 0;
         for (int r = 0; e->local == L_LIVE && r < e->np; r++) {
             if (!e->parts[r]) continue;
+            if (alive_as(e->parts[r], e->gen[r])) {
+                float pr = delete_radius(e->parts[r]);
+                if (pr > 0 && (dr == 0 || pr < dr)) dr = pr;
+            }
             if (alive_as(e->parts[r], e->gen[r])) live++;
             else {
                 if (!died_lately(e->parts[r], now)) e->unloaded |= 1u << r;
@@ -2950,7 +2981,11 @@ static void authority(void) {   // touch (plan 5.3), asks, a runner that left, a
             e->absent = 1, e->absent_dist = dist < 0 ? 120 : dist, e->local = L_NONE, e->np = 0, e->v = 0, e->del_ok = 0, e->changed_us = 0;
             memset(e->parts, 0, sizeof e->parts);
         }
-        if (!runs(e) && e->absent == 1 && dist >= 0 && dist < e->absent_dist * 0.5f) {
+        if (dr > 0) e->del_r = dr;
+        // Back in reach: made again once this Link is well inside its parts' own delete radius (20 m inside the
+        // smallest; made at the edge, the engine would delete it again at once), else within half the distance it
+        // went at (plan 41.3 item 1).
+        if (!runs(e) && e->absent == 1 && dist >= 0 && dist < (e->del_r > 30 ? e->del_r - 20 : e->absent_dist * 0.5f)) {
             rt_log("coop: contraption: %08x: this Link is back within %.0f m: its version asked again", cid32(e), dist);
             e->absent = 2, e->pulled_us = 0;
             e->want_make = 0, e->in_have = 0;   // (made from the runner's answer, where the build is now: finding 46)
@@ -3092,6 +3127,16 @@ static void clean_line(int64_t now) {
     static int64_t last;
     if (now - last < 10000000) return;
     last = now;
+    {   // the build tables' fill (plan 41.3 item 5): the registry, the parts, the made parts, the queues
+        int used = 0, parts = 0, made = 0, here = 0;
+        plat_mutex_lock(&reg_lock);
+        for (int i = 0; i < REG_N; i++) used += reg[i].used, parts += reg[i].used ? reg[i].np : 0, here += reg[i].used && runs(&reg[i]);
+        int sq = setq_n, ed = edits_n;
+        plat_mutex_unlock(&reg_lock);
+        for (int i = 0; i < MADE_N; i++) made += atomic_load(&made_parts[i]) != 0;
+        rt_log("coop: contraption: tables: builds %d of %d (%d run here), parts %d, made here %d of %d, device sets queued %d, edit requests %d",
+               used, REG_N, here, parts, made, MADE_N, sq, ed);
+    }
     int copies = 0, not_whole = 0, dead = 0, unread = 0;
     plat_mutex_lock(&reg_lock);
     for (int i = 0; i < REG_N; i++) {

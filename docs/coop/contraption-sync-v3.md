@@ -2742,3 +2742,31 @@ Everything since run 5 (66a2a23, e5439fc), and 1133e2c's empty-battery rule:
 - A player standing on and riding a build the other game runs: on the build on the other screen, not trailing.
 - A player standing on a plank or a balloon build the other game runs: it dips under them as under that game's Link.
 - A stick ride: the stand-in's pose on the stick.
+
+## 46. P7: lifetime and session (written from R/sync-v3/m2/p8/unload-travel and limits; not run)
+
+### 46.1 Written
+- **Back in reach by the parts' own radius (41.3 item 1):** each tick a build's entry keeps the smallest delete radius
+  of its live parts here (ActorInfo DisplayRadius + DeleteRadiusOffset through [[actor+0x370]+0x18]+0xc8, +0xac and
+  +0xa8: 60 m for capsule items, 90 m for a fan, 130 m for a wing, 310 m for a spring). A follower whose copy the engine
+  unloaded makes it again once its Link is 20 m inside that radius; with no radius known, within half the distance it
+  went at, as before.
+- **Fast travel against walking away (41.3 item 2):** both end the same way here, by design: every part deletes
+  itself (reason 3) once the observer is beyond its radius, the game that ran the build hands it to a game that still
+  has it (36, 41.1), and a follower marks the build absent. Nothing in the core needs to tell them apart; not written.
+- **The tables' fill (41.3 item 5):** every 10 s, "tables: builds n of 24 (n run here), parts, made here, device sets
+  queued, edit requests". The game's own pools (bond slots, the actor message ring) are not read here.
+- **Device sets spread over frames (41.3 item 5):** at most 40 set messages a frame; the rest wait for the next frame,
+  unless a newer set for the same build has been queued meanwhile.
+- **Three players (41.3 item 6):** toggles and switch events go to the game that runs the build, not to every game;
+  two games that take a build at once settle on the lower relay id (42, findings 13, 21, 45).
+
+### 46.2 Not written
+- A game that leaves and joins again under a new incarnation: its old builds' entries are not matched to it (41.3
+  item 4).
+- The game's own pool fill (bond slots, the actor message ring) in the status line.
+
+### 46.3 To test later
+- Walking away and back: the build is made again only once well inside its parts' radius, and not deleted at once.
+- Many builds switched at once (four or more): every device switches.
+- The tables line every 10 s in both logs.
