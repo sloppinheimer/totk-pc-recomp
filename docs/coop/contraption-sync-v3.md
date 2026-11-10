@@ -2085,3 +2085,34 @@ Not written:
 Known limits of what is written, to watch for in the run: the stand-in hit rule when both players hit one device in
 one frame; the stick's tilt flickering if the copy's own graph writes over it; the record's body number taken as the
 physics slot for second and third bodies; the order in which TOTK_COOP_DEVICE_SYNC is switched off.
+
+## 37. Play-test notes of the milestone 2 build (the tester, 2026-11-09 late; logs build/v143/logs/totk.log = player 1, build/v143play/logs/totk.log = player 2; one gamepad moving both games)
+Recorded, not acted on yet (rule of 31).
+
+**8. Two fans fused by hand: no green on the other screen (note 1 fixed, seen).**
+
+**9. Fusing and breaking off reach the other game slowly.**
+- Logs: player 1 glues at line 1510; its record of the build is taken at 1519; player 2's copy is "made, 2 of 2 parts"
+  at 1611. In between player 2's two mirror copies are deleted and the build is made new with the build object.
+  The older glue path also bonds the two mirrors first (player 2 line 1555), and those are then deleted.
+- Known causes in the code: the runner records builds every 2 s; a first fuse is two loose objects, which the
+  in-place path does not take (36, item 5), so it is delete and make; the maker's last step waits 3 s before the
+  copy counts as made.
+- Unfusing: player 1's build "is no build any more ... retired" comes 3 s after the group is gone (the wait in
+  record_pass), then player 2 deletes its copy and the mirror copies come back.
+
+**10. After player 1 unfused the fans, player 2 could not move them with Ultrahand; after player 1 fused them again
+it could.**
+- Logs: after the retire player 2 has plain mirror copies of player 1's two fans (lines 1717, 1718). Fused, the
+  build is taken over by touch as designed (player 2 lines 2937 to 2940).
+- Not known: whether a loose mirror copy of another player's object could ever be moved by Ultrahand in this build,
+  or whether that went through the older claim code and broke now. To be read before anything is changed.
+
+**11. Player 2 cannot unfuse the fans: they come apart for a moment and join again, "as if magnetized".**
+- Logs: player 2 runs the build by its touch (change 2, line 2939) and no line shows a new version, a retire or a
+  repair there; player 1 then takes it (player 2 line 3193, player 1 lines 3313 to 3315: "touched ... held here"),
+  and player 2 again (3267 to 3270). With one gamepad moving both games both Links grab at once, and the build
+  changes hands each time.
+- Not known: what joins the parts again. Candidates, none confirmed: the older glue path making player 1's bond
+  again on player 2's parts (it does so once at line 1555); the other game, whose copy is still whole, taking the
+  build and its state winning; the game's own rule for bonds between two parts made by a confirm. To be read.
