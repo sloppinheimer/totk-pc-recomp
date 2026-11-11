@@ -1,4 +1,4 @@
-// Co-op notices: a line on screen when a player joins, leaves or fast travels, with the place's name ("the tester
+// Co-op notices: a line on screen when a player joins, leaves or fast travels, with the place's name ("The tester
 // travelled to Lookout Landing Skyview Tower"). TOTK_COOP_NOTICES=0 turns all of it off.
 //
 // Shown with the port's overlay (ui/coop_notices.cpp, the way ui/coop_tags.cpp draws the name tags), not the game's

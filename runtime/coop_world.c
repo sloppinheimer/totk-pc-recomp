@@ -1785,7 +1785,7 @@ static int near_other(const PeerScan *s, const float p[3], float *d2_out) {
 // An enemy's part that is an actor of its own: a Frox's eyes (Enemy_Mogurudo_WeakPoint beside Enemy_Mogurudo_Junior),
 // a Stone Talus's ore (Enemy_Golem_WeakPoint), a Stalnox's eye (Enemy_Giant_Bone_Eye), a Stalkoblin's head. Each was
 // handed over as an enemy of its own: a Frox's eyes went to one game and its body stayed with the other, so an arrow
-// in the eye knocked it down in the eyes' game only (a play session, 2026-11-08). A part is run by the game that runs
+// in the eye knocked it down in the eyes' game only. A part is run by the game that runs
 // its body: the nearest enemy within PART_BODY_M whose name starts as the part's does before its suffix (and is no
 // part), as last scanned; never handed over by itself.
 #define PART_BODY_M 25.0f
@@ -1911,7 +1911,7 @@ static void peer_one(int cell, uint64_t a, void *arg) {
         // HANDOVER_M) keeps it, before the longest-held. A game whose Link was 30 m off let its enemies go and took
         // them back as they went in and out of the part of the world it updates; each time the nearer player's game
         // went from its own one, fighting, to the far game's, which had stood still: one stayed knocked down and could
-        // not be locked on to for a while (a play session, 2026-11-07).
+        // not be locked on to for a while.
         float ep[3];
         if (n_claims && handover_on() && s->have_me && coop_rd(a + COOP_ACTOR_POS, ep, 12)) {
             int ids[COOP_MAX_PLAYERS + 1], nid = 0, near_id = 0;
@@ -2776,13 +2776,13 @@ static void ground_take(const GroundPacket *p, int n) {
 #define ECONTACT_KIND 0x4543   // "CE"
 // An arrow's contact (the owner's game adds it with the stand-in's bow as the weapon): like a sword's, so the enemy
 // plays its hit there. Kept on the copy, an arrow only took life off the copy, sent on as lost life, which played no
-// hit: a Stalkoblin never fell apart and its life came back (a play session, 2026-11-07).
+// hit: a Stalkoblin never fell apart and its life came back.
 #define ECONTACT_ARROW 0x4541  // "AE"
 // The contacts sent go in a packet of each hit update's own (hit updates run on several threads at once). Each one
 // received waits in a slot of ce_in, under ce_lock (taken on the game thread, added on a hit update's), until its
 // enemy's next hit update, or CE_WAIT_NS: an enemy that died or went to sleep has no hit update. With one slot for
 // every enemy, a packet that came while one waited was dropped unlogged: a Stalkoblin shot ten times took none of the
-// arrows (a play session, 2026-11-08). CE_SLOTS wait at once; a packet with none free is logged.
+// arrows. CE_SLOTS wait at once; a packet with none free is logged.
 #define CE_WAIT_NS 1000000000ull
 #define CE_SLOTS 16
 static PlatMutex ce_lock = PLAT_MUTEX_INIT;
@@ -3383,7 +3383,7 @@ static void far_copy_test(Cpu *c) {
 // An enemy of this game sent to the others when it is placed nowhere in the map (every game has those) and is no
 // copy of another's (made here for a player, or handed over to this game). From the create queues (born) and, since
 // those never handed over an enemy in play (TOTK_COOP_TEST_BORN: only effects and prefab sets; a Keese in one game only,
-// a play session, 2026-11-07), from the scan of the live enemies too (spawn_scan).
+// A play session, 2026-11-07), from the scan of the live enemies too (spawn_scan).
 static int spawn_send(uint64_t a, const char *nm) {
     uint64_t ph = 0, pp = coop_rd_ptr(a + PLACE_HASH_PTR);
     if (pp) coop_rd(pp + PLACE_HASH, &ph, 8);
@@ -3718,7 +3718,7 @@ static void peer_tick(Cpu *c, uint64_t me) {
 // records, the model push, and its physics body put there (main+0x25a450, which takes on a body whose actor does not
 // run). Poses missing for PUP_STALE_NS: its own update runs again.
 // Its weapons: an enemy's weapon is an actor of its own, which put itself on the hand a frame late and could be taken
-// from the frozen enemy's hand (a play session, 2026-11-06), as an arrow's copy could. No pointer from a held
+// from the frozen enemy's hand, as an arrow's copy could. No pointer from a held
 // weapon to its holder was found, so they go by place: the owner sends with each pose the Weapon_ actors within
 // EPOSE_ITEM_M of the enemy that are no Link's (coop_is_players_item), by name and world place; here the Weapon_ of
 // that name nearest that place is frozen as the enemy is and put there right after the enemy's model push, with its
@@ -3898,7 +3898,7 @@ static uint64_t enemy_body(uint64_t a) {
 static uint64_t audit_skeleton(uint64_t a) { return enemy_skeleton(a); }
 // Test (TOTK_COOP_TEST_ENEMYWEAPON=1): for each enemy this game runs, the Weapon_ actors within 3 m, and the offsets
 // in each one's first 0x1000 bytes that hold the enemy's actor, its model or its body skeleton: how a held weapon
-// knows its holder (the tester, 2026-11-06: an enemy puppet's weapon lags and can be taken from its hand).
+// knows its holder (play test, 2026-11-06: an enemy puppet's weapon lags and can be taken from its hand).
 typedef struct { uint64_t enemy; float at[3]; } WeapScan;
 static void weap_one(uint64_t a, void *arg) {
     WeapScan *ws = arg;
@@ -5401,7 +5401,7 @@ void coop_anim_pack(uint64_t me, CoopAnim *out) {
     AnimSlot s[COOP_ANIM_SLOTS];
     int n = anim_read(anim_player_of(me), s, COOP_ANIM_SLOTS);
     {   // How many slots this Link's animation player has, and which past the 7 sent carry weight (a two-handed weapon's
-        // left hand did not reach it on the stand-in; a play session, 2026-11-08). Logged when that set changes.
+        // left hand did not reach it on the stand-in). Logged when that set changes.
         static AnimSlot all[24];
         static uint32_t last_mask = ~0u;
         static int said;
@@ -5452,7 +5452,7 @@ void coop_anim_pack(uint64_t me, CoopAnim *out) {
 // The stand-in's animation, measured (every 5 s, at most 720 lines: an hour): how often slot 0 is set a second, how many of
 // those set the same frame as the one before (a held frame: the "choppy" look), the mean and largest step between
 // sets, how many new states came, and the oldest state age used. To tell a stand-in fed too rarely from one fed
-// unevenly (a play session, 2026-11-07).
+// unevenly.
 static void anim_watch(uint16_t idx, float sent, float fr, float age) {
     static uint64_t t0;
     static int calls, held, news, said;

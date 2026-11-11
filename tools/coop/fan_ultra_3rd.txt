@@ -1,6 +1,6 @@
 # The 100% save (third in the Continue list): with TOTK_COOP_TEST_FANSET=9 the Link faces a fan 1 m away on flat ground
 # from 22 s; at 28 s L (Ultrahand, the ability the save has selected), at 29.5 s A grabs what it aims at (the fan),
-# the stick lifts it from 30 s to 32 s, at 34 s B lets go. For the Ultrahand crash (the tester, 2026-11-05).
+# the stick lifts it from 30 s to 32 s, at 34 s B lets go. For the Ultrahand crash.
 480 A 4
 700 DOWN 4
 760 DOWN 4

@@ -292,7 +292,7 @@ static int prof4;
 static int prof7;   // TOTK_COOP_PROF=7, below coop_fn_hit
 // TOTK_COOP_PROF=L: every function entered inside a co-op Link's life update (the life hook, main+0x4400b0), all of
 // them reported: for finding what shows its life on this game's hearts (they filled and emptied at each of its
-// updates, the tester's capture, 2026-11-06).
+// updates).
 static int profL;
 static __thread int in_coop_life;
 static __thread uint64_t enemy_calc;
@@ -812,13 +812,13 @@ int coop_hook(Cpu *c, uint64_t addr) {
     }
     // Test (TOTK_COOP_TEST_HELDCALL=1): who calls main+0x45a460 (a held item's component placing it in its holder's
     // hand; x1 points to the holder actor) and for which holder: the stand-in's sword reached its hand only while this
-    // game's Link had a weapon (the tester, 2026-11-07). Each caller and holder once, at most 40 lines.
+    // game's Link had a weapon. Each caller and holder once, at most 40 lines.
     if (addr == MOD_MAIN_BASE + 0x45a460) {
         // A held item's component placing it (x0 the component, x1 points to its holder). Before it reads the holder's
         // in-hand byte (EquipmentUser +0x4620) it follows eq+0x1620, an object every EquipmentUser shares, and with that
         // object's +0x2cc set asks game data (key 0x90b81999, by slot) for this game's player's own item in that slot;
         // with none it never reads the byte, and a PlayerPuppet stand-in's sword stayed on its back in its owner's
-        // swings while this game's Link had no weapon (the tester, 2026-11-07: equipped, the stand-in held it). For a
+        // swings while this game's Link had no weapon (play test, 2026-11-07: equipped, the stand-in held it). For a
         // stand-in's item the call runs with the stand-in's eq+0x1620 on a copy of that object with +0x2f4 bit 0 set
         // (its chain ends there) and +0x2cc clear (no game data asked), so it goes to the byte. A copy, not 0: another
         // thread read the field during the call and crashed on 0 (main+0xc9ad84, 2026-11-07). TOTK_COOP_STANDIN_HELDFIX=0:
@@ -1118,7 +1118,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
         if (!run_it) return 1;
         // TOTK_COOP_LIFT=none: the update runs on the life as it is, and a drop is put back after (a lethal hit inside
         // one update can then kill it here). Lifted (the default), this game's hearts filled and emptied at each of
-        // its updates (each of its owner's swings; the tester's capture, 2026-11-06): tried to tell which.
+        // its updates (each of its owner's swings): tried to tell which.
         static int nolift = -1;
         if (nolift < 0) { const char *e = cfg_get("TOTK_COOP_LIFT"); nolift = e && !strcmp(e, "none"); }
         if (!nolift) ST32(p + 8, 0x3fffffffu);

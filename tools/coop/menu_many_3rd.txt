@@ -1,5 +1,5 @@
 # The 100% save (third in the Continue list): from 20 s open the inventory (+) and close it 2 s later, every 4 s, 15
-# times: how often its backdrop is black (the tester, 2026-11-06: about 1 opening in 5).
+# times: how often its backdrop is black (play test, 2026-11-06: about 1 opening in 5).
 480 A 4
 700 DOWN 4
 760 DOWN 4

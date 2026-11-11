@@ -1,6 +1,6 @@
 # The 100% save (third in the Continue list), for TOTK_COOP_TEST_CHEST=1: the test puts this Link in front of a chest
 # of its own at 21-22 s; game B opens it (A) at 30 s and walks away from the chest (stick down) at 36 s: frozen input shows as no
-# movement (the chest freeze, a play session, 2026-11-05).
+# movement (the chest freeze).
 480 A 4
 700 DOWN 4
 760 DOWN 4

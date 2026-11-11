@@ -69,7 +69,7 @@ typedef struct {
     // The glue's look: entry +0x554 bit 1 and the four vectors at +0x51c, +0x528, +0x534, +0x540, which createScotch's
     // tail (main+0x1d61858) copies from the request's getters (vtable +0x28..+0x40) when its +0x20 answers 1, as
     // Ultrahand's does. Our request's base class answers 0, and the glue made again here showed as a large green slab
-    // between the parts (the tester's screenshot, 2026-11-08): sent, and written into the entry made here.
+    // between the parts: sent, and written into the entry made here.
     uint32_t look;                        // 1: the vectors below are the maker's
     float pts[4][3];
 } GlueBond;
@@ -717,7 +717,7 @@ static void glue_test(Cpu *c, uint64_t me) {
         }
         // TOTK_COOP_TEST_GLUECLEAR=1: body +0x68 bit 24 cleared on both first. Every object made by our create request
         // has it (as the copies do), and a body with it is left out of any edge (main+0xa2d39c): why this test's glue,
-        // on two made objects, gave them no group while glue by hand does (the tester's play log)
+        // on two made objects, gave them no group while glue by hand does
         uint64_t w68[2] = {0, 0};
         coop_rd(ba + 0x68, &w68[0], 8), coop_rd(bb + 0x68, &w68[1], 8);
         rt_log("coop: test: glue: bodies' +0x68 %llx %llx", (unsigned long long)w68[0], (unsigned long long)w68[1]);

@@ -1,6 +1,6 @@
 # Proxy puppet: status and plan (2026-11-05)
 
-the tester decided on 2026-11-05 to replace the live puppet with a proxy: a display-only copy of the other player's Link,
+The tester decided on 2026-11-05 to replace the live puppet with a proxy: a display-only copy of the other player's Link,
 as co-op games build them. This note is the handover. It says what is proven, what is not, and how to work.
 `docs/coop/re-notes.md` has the full findings (sections from "Puppet spike" onward).
 
@@ -24,7 +24,7 @@ Each fix overrode one system, then the next problem showed up. A day of this did
 right in the tester's own two-pad session.
 
 ## Parity with TotK Online (2026-11-07)
-the tester asked for its methods everywhere, peer to peer and with each player's own save. What it does is written up
+The tester asked for its methods everywhere, peer to peer and with each player's own save. What it does is written up
 outside the repo (the session notes, "totk-online-how-it-works"; read for behaviour only, the mod has no licence).
 Its addresses are for 1.2.1; `tools/coop/xver_match.py` finds them in 1.4.3 (1.2.1's main from the v393216 update;
 its addWeapon and isEquipmentInHand came out where we had found them ourselves).
@@ -42,7 +42,7 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
 - **Same as the mod: enemies do not fight the stand-in.** TotK Online does nothing to make enemies target its
   PlayerPuppet (category Enemy, affiliation Enemy); each enemy runs in the nearest player's game. Here that is the
   hand-over (coop_world.c handover_to). Making enemies fight the stand-in natively was tried and left off as a test
-  (`make_puppet_pack.py --target-fix`; "Enemies and the stand-in" below). the tester's call, 2026-11-07: hand-over.
+  (`make_puppet_pack.py --target-fix`; "Enemies and the stand-in" below). The tester's call, 2026-11-07: hand-over.
 - **Done, not seen end to end: enemies made at run time** (a night's Stalkoblins) are made in the other games: the
   create queues' getActor (main+0x50d364, 0x61a8b4, 0x6609b4, 0x89841c), an Enemy_ with no placement hash
   ([actor+0x370]+0x88, the same in 1.4.3), sent with its key; the others make one and give it that key. The test
@@ -111,7 +111,7 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   drawn (bow_walk_3rd.txt) it walked with the bow up (full-size frames, 2026-11-07).
   **Correction (2026-11-07, late), and the cause:** "held its sword" here and below was read from still frames. On the
   test save (nothing equipped by either player) the stand-in's sword stayed on its back and it swung an empty hand; in
-  the tester's own play it was held. the tester found the rule: it is held only while this game's own Link has an item in that
+  The tester's own play it was held. The tester found the rule: it is held only while this game's own Link has an item in that
   slot (equipped, even put away again in the same menu, it is not). The cause: the held item's placing, main+0x45a460
   (a method of the item's component, x1 the holder; called from main+0x455108 for every holder), follows the holder's
   EquipmentUser +0x1620, an object every EquipmentUser shares (the stand-in's and this Link's point to the same one),
@@ -120,7 +120,7 @@ its addWeapon and isEquipmentInHand came out where we had found them ourselves).
   read watch on the stand-in's in-hand bytes (TOTK_COOP_TEST_WATCHWHAT=coopeq: main+0x45a460 read them only when this
   Link was armed) and the hook's logs (TOTK_COOP_TEST_HELDCALL). Fix (coop_spawn.c, the main+0x45a460 hook): for an
   item a PlayerPuppet holds, the call runs with the stand-in's +0x1620 on a copy of that object with +0x2f4 bit 0 set
-  and +0x2cc clear, so it reads the stand-in's own byte; 0 there crashed another thread (main+0xc9ad84). the tester saw
+  and +0x2cc clear, so it reads the stand-in's own byte; 0 there crashed another thread (main+0xc9ad84). The tester saw
   the stand-in hold the Master Sword through its swings on the test save; `TOTK_COOP_STANDIN_HELDFIX=0` turns it off.
   Tried first and left off (test switches): the item made again in hand, the in-hand bit (TOTK_COOP_STANDIN_HANDBIT=1),
   a placeholder item in each empty slot (TOTK_COOP_STANDIN_PRIME=1), the item put at the hand bone
@@ -534,7 +534,7 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
 4. **One-off probes** (104 `TOTK_COOP_TEST_*` switches in runtime/coop_*.c): each whose finding is written down
    here or in re-notes.md and that no suite case uses.
 
-## Wanted (the tester, 2026-11-07)
+## Wanted (play test, 2026-11-07)
 - **Map and minimap markers** for the other players (2026-11-07). Full map: works (pair test, merge 9f4178d: B's map
   showed A's dot named "A" about where A walked, and "(you)" by B's arrow). Minimap: wrong in that test, every marker
   held at the corner of its square, because the ground pane's matrix puts this Link at (0, 0) there, not at the
@@ -546,7 +546,7 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
   - What it does: runtime/coop_markers.c finds the game's map screen (AppMap_00, which is also the HUD minimap) and
     reads the global matrix of its ground pane, then ui/coop_markers.cpp draws a coloured dot and the player's name
     for each other player with the overlay, clipped to the map's area; a player off the view is a ring on its edge.
-    The minimap shows the dots alone, no names (the tester, 2026-11-07: the dot's colour says who it is). The name tags over the Links are hidden while the full map shows. Nothing is written
+    The minimap shows the dots alone, no names (play test, 2026-11-07: the dot's colour says who it is). The name tags over the Links are hidden while the full map shows. Nothing is written
     to the game or the save: no pin, no stamp, no pane. `TOTK_COOP_MARKERS=0` turns it off. Evidence and offsets:
     re-notes.md "Map and minimap markers".
   - New hook: main+0x96c1ac (the map screen's set-up) in COOP_HOOKED, so the generated code rebuilds.
@@ -726,7 +726,7 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
 - If a stage fails its test twice, stop and write up the results for the tester. Don't keep trying.
 - Button mirroring stays the default until stages 1 and 2 pass.
 
-## Status (2026-11-05, overnight session)
+## Status (2026-11-05)
 - **Stage 1 passed** (`TOTK_COOP_PROXY=1`, commit b0a3969; numbers in re-notes "Proxy mode, stage 1"): on the In-isa
   stairs no standing frame steps more than 1 cm off its owner (largest 0.53 cm of 1569), position error mean 0.5 cm,
   body top mean 0.7 cm; on tour.txt position mean 0.9 cm, body top mean 1.1 cm; the faked sword is in hand. One gap:
@@ -816,7 +816,7 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
     (`link-hands`, in every session). The biggest one.
   - Dropped items rest at another place in each game, 1 to 12 m apart, for minutes (`object-place`); some copies'
     actors went away while still shown (`dead`).
-  - Enemies: place and life match within 1 to 3 m, but each game runs its own AI, so what they do differs (the tester:
+  - Enemies: place and life match within 1 to 3 m, but each game runs its own AI, so what they do differs (play test:
     "desync BADLY"). Done since (protocol 15, below): one game runs each enemy, the others pose it.
   - A Zonai device fused to a shield: the proxy's shield made with it shows it at full size; it is not sent for now.
     TOTK_COOP_TEST_FUSELOG logs the actor on each shield, its scale and place, to compare the owner's with the
@@ -893,7 +893,7 @@ git history. Sizes are not measured yet (coop_world.c 4848 lines, coop_players.c
     nearest that place and put it there after the enemy's model push, its body 300 m under it. Pair test on the tester's
     save: a Dark Bokoblin's sword and shield and a Bokoblin's bow found and held. Not seen on screen; the camp stood
     still. A weapon lying within 2.5 m of a frozen enemy is held too and cannot be picked up while it is there.
-    a play session (2026-11-07) still saw the weapons lag. Measured on a Bokoblin's sword (TOTK_COOP_TEST_WEAPLAG=1):
+    A play session (2026-11-07) still saw the weapons lag. Measured on a Bokoblin's sword (TOTK_COOP_TEST_WEAPLAG=1):
     in the owner's game its actor place is where its model is drawn (0.0 cm apart, the model moving up to 1.4 m a
     frame in a swing); in the follower's, the place put on the copy's model was still there a frame later (nothing
     else writes it) and moved as much a frame as the owner's. So the weapon follows the owner's weapon; what is left

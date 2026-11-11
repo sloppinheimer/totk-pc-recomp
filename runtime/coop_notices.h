@@ -1,4 +1,4 @@
-// Co-op notices (coop_notices.c): a line on screen when a player joins, leaves or fast travels ("the tester travelled to
+// Co-op notices (coop_notices.c): a line on screen when a player joins, leaves or fast travels ("The tester travelled to
 // Lookout Landing Skyview Tower"), drawn with the overlay by ui/coop_notices.cpp. TOTK_COOP_NOTICES=0 turns them off.
 #pragma once
 #include <stdint.h>

@@ -1,6 +1,6 @@
 # The 100% save (third in the Continue list), for game B in the stand-in sword test: equip the first weapon (the Master
 # Sword) at 10 s, before game A's Link equips its own at 14 s (sword_swing_3rd.txt), then nothing: whether the stand-in
-# holds its sword when this game's own Link has one (the tester's idea, 2026-11-07).
+# holds its sword when this game's own Link has one.
 480 A 4
 700 DOWN 4
 760 DOWN 4

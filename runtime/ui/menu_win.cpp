@@ -69,7 +69,7 @@ extern "C" int menu_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res)
             bool down = m == WM_KEYDOWN || m == WM_SYSKEYDOWN;
             menu_event_key(k, down);
             // ImGui takes Ctrl and Shift for its shortcuts (Ctrl+V pastes) from these modifier keys only, not from
-            // LeftCtrl: without them a link could not be pasted into the Co-op tab (the tester, 2026-11-08).
+            // LeftCtrl: without them a link could not be pasted into the Co-op tab.
             if (k == ImGuiKey_LeftCtrl) menu_event_key(ImGuiMod_Ctrl, down);
             if (k == ImGuiKey_LeftShift) menu_event_key(ImGuiMod_Shift, down);
         }

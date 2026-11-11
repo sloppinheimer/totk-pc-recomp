@@ -1,12 +1,12 @@
 # Co-op design (decisions and plans)
 
 ## Shape
-- Shared world, online, two PCs (the tester, 2026-11-03). One host runs the world (enemies, physics, quests, time); the
+- Shared world, online, two PCs (play test, 2026-11-03). One host runs the world (enemies, physics, quests, time); the
   guest plays a second Player actor in it. Local two-gamepad play is the test bench on the way there.
 - Each PC renders its own view, so the online camera simply follows that PC's own Link. Split-screen on one PC is not
   planned (it would render the world twice); local testing switches which Link the camera follows.
 
-## Sessions: drop in, drop out, more than two (the tester, 2026-11-04)
+## Sessions: drop in, drop out, more than two (play test, 2026-11-04)
 - Seamless, plug-and-play joining and leaving at any time; more than 2 players.
 - Transport: a small relay server (stdlib Python, server/coop_relay.py) that every game connects to; it forwards each
   player's state to the others. Anyone can join or leave a session at any time, there is no fixed pairing, and it
@@ -18,7 +18,7 @@
   (camera-relative stick turned into this PC's camera frame) and pulled back to the owner's reported position when
   they drift. World sync (enemies, items, host-authoritative state) and the save rules below come after.
 
-## Saves: drop-in co-op, like Elden Ring (the tester, 2026-11-03) — plan, not built
+## Saves: drop-in co-op, like Elden Ring (play test, 2026-11-03) — plan, not built
 - Everyone plays their own save alone. At any time a player can join another player's game.
 - The host's save is the game state: world, quests, map, time, shrines. The guest's world state is not touched.
 - The guest brings their own character from their save: inventory (weapons, bows, shields, materials, food), armor,

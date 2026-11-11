@@ -83,7 +83,7 @@ static void keyboard(float scale) {
     }
     ImGui::SameLine();
     // Paste: the clipboard's text added at the end, spaces and line breaks around it left out (a GameBanana link
-    // copied in a browser; the keys above have no '/', the tester, 2026-11-08)
+    // copied in a browser; the keys above have no '/')
     if (ImGui::Button(menu_text(UI_MENU_COOP_KEY_PASTE), ImVec2(wide, kh))) {
         const char *clip = ImGui::GetClipboardText();
         if (clip) {
@@ -159,7 +159,7 @@ static bool action(const char *id, UiTextId label, UiTextId desc, float scale, b
 
 const char *copied_id;
 double copied_at;
-// A button that puts text on the clipboard (the tester: the host's address with a copy button).
+// A button that puts text on the clipboard (play test: the host's address with a copy button).
 static void copy_button(const char *id, UiTextId label, UiTextId desc, const char *text, float scale) {
     if (action(id, label, desc, scale) && plat_clipboard_set(text)) copied_id = id, copied_at = ImGui::GetTime();
 }
@@ -315,7 +315,7 @@ extern "C" void tab_coop(float scale) {
             coop_host(g_name);
         }
         field("##coop_addr", UI_MENU_COOP_ADDRESS, g_addr, sizeof g_addr, scale);
-        // Join shows from the start (the tester); pressed with no address, it says to type one.
+        // Join shows from the start; pressed with no address, it says to type one.
         static double need_at = -10;
         if (action("##coop_join", UI_MENU_COOP_JOIN, UI_MENU_COOP_JOIN_DESC, scale)) {
             if (!g_addr[0]) need_at = ImGui::GetTime();

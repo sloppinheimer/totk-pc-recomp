@@ -404,7 +404,7 @@ static void stick(SDL_GamepadAxis ax, SDL_GamepadAxis ay, float dead, int32_t ou
 static void scan_pads(void) {
     // With TOTK_PAD_INDEX (one game per gamepad) the open pad must stay the n-th: when the list changes (a pad
     // dropped and came back, now first), pick again. Otherwise a game left holding the other player's pad while
-    // its own was away keeps it, and one pad drives both games (the tester, 2026-11-04: a DualSense reconnecting).
+    // its own was away keeps it, and one pad drives both games (play test, 2026-11-04: a DualSense reconnecting).
     static int last_n = -1;
     if (pad && SDL_GamepadConnected(pad) && cfg_get("TOTK_PAD_INDEX")) {
         int n = 0;

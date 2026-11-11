@@ -185,7 +185,7 @@ static char my_gear[COOP_GEAR_SLOTS][32];
 static int8_t my_dye[COOP_GEAR_SLOTS] = {-1, -1, -1, -1, -1, -1};
 // This PC's weapon, bow and shield's fused materials, from its own weapon creates (main+0xaf100c's 7th argument, a
 // string object: AsbObj_RockParts_C_S_01 for a rock-fused stick; "" none). The proxy's copy was made with "" and
-// showed no material (a play session, 2026-11-05).
+// showed no material.
 static char my_fuse[3][32];
 
 // ---- the host's world. Time of day: the world manager [main+0x3a83968] +0x98 is the time object; +0x28 the second
@@ -229,7 +229,7 @@ static void read_weather(Cpu *c, uint64_t me) {
 }
 
 // Set again every 2 s while the weather here is not the host's: set once, it went back to this game's forecast (it
-// read 0, 3, 1, 0 and 2 while the host's stayed 7, a play session, 2026-11-06).
+// read 0, 3, 1, 0 and 2 while the host's stayed 7).
 static void follow_host_weather(Cpu *c, int32_t host) {   // host -1: no host (alone, or it left)
     uint64_t wx = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + WX_SLOT));
     static uint64_t last_ms;
@@ -284,7 +284,7 @@ static void follow_host_time(Cpu *c, float host) {
     // was set back, and the sky, light and weather jumped with it, the frame rate dropping at each (a play session,
     // 2026-11-08: the map open in both games, then closed in one). Its time unchanged for 2 s: it stands. (0.9 s was
     // too short: in the Depths at a low frame rate the clock moved in steps about a second apart, the host's clock read
-    // as standing most of the time, and this game fell 5 game minutes behind it; a play session, 2026-11-08.)
+    // as standing most of the time, and this game fell 5 game minutes behind it.)
     static float last_host = -1;
     static uint64_t host_at;
     if (host != last_host) last_host = host, host_at = t;
@@ -515,7 +515,7 @@ static uint64_t gear_owner(uint64_t eq, uint64_t me) {
     // (The cached owner is kept: checked again whenever the EquipmentUser still pointed to it, as a code review asked,
     // a co-op Link's one that did not for a moment was looked for again and found this PC's Link in it first (its
     // words hold a pointer to it too), and this PC's gear was read from the co-op Link's: each game took the other
-    // player's weapon and fused material for its own; a play session, 2026-11-06. A gone EquipmentUser is dropped
+    // player's weapon and fused material for its own. A gone EquipmentUser is dropped
     // where its Player goes, coop_players_tick.)
     for (int i = 0; i < 32; i++) if (eq_owner[i].eq == eq) return eq_owner[i].actor;
     uint64_t words[0x400 / 8];
@@ -724,7 +724,7 @@ static int bow_frame(uint64_t link, float rot[9], float pos[3]) {
 }
 static void keep_player_eq(uint64_t me, uint64_t my_eq);
 static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc);
-// Picking up another player's item (the tester's list, 2026-11-05). A frozen copy could not be picked up
+// Picking up another player's item. A frozen copy could not be picked up
 // (pickup_b_3rd.txt: three A presses beside a copied apple at rest, nothing). An item's copy (Item_, Weapon_) runs its
 // own update instead; when it goes away here (state 7..11, or its actor is something else now: picked up), this game
 // tells the owner (an OBJS packet with header word 1: the entries' ids, each with its owner's player id in flags),
@@ -1246,7 +1246,7 @@ static int is_imaginary(uint64_t a) {
     return s && coop_rd(s, buf, sizeof buf) && !memcmp(buf, tag, sizeof tag);
 }
 // The preview, before the build is confirmed: the see-through devices; copied, it showed solid in the other game
-// (a play session, 2026-11-05). A memory diff over a build (a play session, 2026-11-05) found what confirming does
+//. A memory diff over a build found what confirming does
 // to every device at once: actor +0x440 gains bit 0x10 and +0x5d0 (a position, NaN until then) is filled in.
 static int is_preview(uint64_t a) {
     uint32_t f440 = 0, p = 0;
@@ -1404,7 +1404,7 @@ static void arrow_log(uint64_t me) {
     void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);
     coop_actors_live(arrow_fn, &me);
 }
-// ---- arrows (the tester's list, 2026-11-05). A bow's arrow is an actor (NormalArrow...): made at the bow when it is drawn
+// ---- arrows. A bow's arrow is an actor (NormalArrow...): made at the bow when it is drawn
 // (1.4 m from Link), held there, and on release it flies (21 m in 0.12 s) and sticks where it hits (TOTK_COOP_TEST_
 // ARROWLOG, bow_shoot_3rd.txt). Each game reports the arrows that were first seen within 3 m of its own Link, up to
 // COOP_OBJS, with position and rotation, in its state, and a fused arrow's material with them; the other games show a
@@ -1500,7 +1500,7 @@ static void arrow_track_fn(uint64_t a, void *arg) {
             my_arrows[i].fused_to = 0, my_arrows[i].shot = 0, my_arrows[i].gone = 0, my_arrows[i].enemy = 0;
             // An arrow made within 3 m of an enemy this game runs, at least 1 m from every Link (a Link's quiver
             // arrows are made 0.45 m from it at load): that enemy's, sent so the other games see it (they saw none:
-            // a play session, 2026-11-07).
+            // A play session, 2026-11-07).
             int coop_near_my_enemy(const float p[3], float m);   // coop_world.c
             if (!my_arrows[i].mine && arrow_tick >= 30 && d2 >= 1 && dco >= 1 && coop_near_my_enemy(p, 3))
                 my_arrows[i].mine = 1, my_arrows[i].enemy = 1, my_arrows[i].shot = 1;
@@ -1521,7 +1521,7 @@ static int report_arrows(Cpu *c, uint64_t me, CoopObj *out) {
     int n = 0;
     memset(out, 0, sizeof(CoopObj) * COOP_OBJS);
     // Whether the bow is in hand: an arrow near this Link is sent only while it is. After the bow was put away the
-    // nocked arrow's copy stayed at the proxy's hand for a while (a play session, 2026-11-05): the arrow is still
+    // nocked arrow's copy stayed at the proxy's hand for a while: the arrow is still
     // there in this game for a moment.
     // (only on this Link's own EquipmentUser, and not while the game is paused: during a save load eq_of_actor gave a
     // co-op Link's half-built one and main+0x3e322c on it crashed, load_3rd.txt; unknown counts as in hand)
@@ -1562,7 +1562,7 @@ static int report_arrows(Cpu *c, uint64_t me, CoopObj *out) {
         }
         // Nocked: within 1.5 m of the bow and never farther since it was made. Once farther it is shot for good: a
         // shot arrow lying near its owner was taken for a nocked one, sent on the bow, and followed the owner about
-        // on the other screen (a play session, 2026-11-05).
+        // on the other screen.
         float br[9], bp[3];
         int on_bow = bow_frame(me, br, bp) && (o->pos[0] - bp[0]) * (o->pos[0] - bp[0]) + (o->pos[1] - bp[1]) * (o->pos[1] - bp[1]) +
                                                   (o->pos[2] - bp[2]) * (o->pos[2] - bp[2]) < 1.5f * 1.5f;
@@ -1578,7 +1578,7 @@ static int report_arrows(Cpu *c, uint64_t me, CoopObj *out) {
         // Within 2.5 m of this Link (nocked): sent in the frame of its bow's model, so the other games put it on the
         // proxy's bow as they show it. Sent as a world place, with this Link's own place in another packet, it shook
         // 0.3 m about the proxy's bow as the owner walked (bow_walk_3rd.txt); in the Link's frame it still trailed the
-        // bow a little, which comes with the proxy's pose (a play session, 2026-11-05).
+        // bow a little, which comes with the proxy's pose.
         float lp[3], lr[9], mp[3];
         if (nocked && coop_rd(me + COOP_ACTOR_POS, mp, 12) && bow_frame(me, lr, lp)) {
             float d[3] = {o->pos[0] - lp[0], o->pos[1] - lp[1], o->pos[2] - lp[2]};
@@ -1672,7 +1672,7 @@ static void arrow_copies(Cpu *c, Slot *s) {
         }
         // A copy let go is not taken for this game's own object while it goes away: a fused BombFruit's copy, left
         // after its blast, was sent back as a placed BombFruit this game moved, and the other game showed a copy of it,
-        // a bomb that could go off there (a play session, 2026-11-06).
+        // a bomb that could go off there.
         if (s->mir[k].actor && copy_alive(s, k))   // (not another actor in its memory)
             coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0), set_driven(s->mir[k].actor);
         if (s->mir[k].state == 2) continue;   // its create is still pending: claimed (then deleted) once it is there
@@ -1758,7 +1758,7 @@ static void arrow_copies(Cpu *c, Slot *s) {
             if (s->mir[k].ticks == 5 && !strcmp(s->mir[k].name, "PlayerBeam")) beam_dump(s->mir[k].actor, 1);
             if (!strcmp(s->mir[k].name, "PlayerBeam") && cfg_get("TOTK_COOP_TEST_BEAMLOG")) beam_log(s->mir[k].actor, s->mir[k].id, "copy");
             // picked up here? An arrow's copy too: awake, a stuck arrow's copy could be picked up again and again
-            // (a play session, 2026-11-05)
+            //
             if (pickable(s->mir[k].name) || strstr(s->mir[k].name, "Arrow")) {
                 int32_t st = 0;
                 char nm[48];
@@ -1834,7 +1834,7 @@ static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc) {
     // tick (place_copy).
     // An arrow's copy is frozen too, after it is woken (place_copy): running its update, a nocked arrow's copy at the
     // other player's bow could be picked up again and again, and a fused arrow's kept falling asleep and did not
-    // show (a play session, 2026-11-05).
+    // show.
     // (a paraglider's copy from its first tick: it went away by itself about 0.5 s after it was made, glide.txt)
     int coop_bonds_member(uint64_t actor);   // coop_bonds.c: bonded into a contraption here
     if (coop_bonds_member(actor)) return 0;   // (one rigid contraption: all its parts run their update, placed or not)
@@ -1843,7 +1843,7 @@ static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc) {
            strcmp(s->mir[k].name, "LightningStrike");   // (a strike's copy plays out by itself)
 }
 // A beam's copy. Made at scale 1, it showed much larger: the owner's beam is at 0.3 (actor +0x2e4..+0x2ec, set by the
-// swing that makes it; TOTK_COOP_TEST_BEAMDUMP, a play session, 2026-11-06). Driven from the reports, its speed went
+// swing that makes it; TOTK_COOP_TEST_BEAMDUMP). Driven from the reports, its speed went
 // 0, 50 and 100 m/s from tick to tick (the reports come unevenly), where the owner's beam goes a steady 50 m/s
 // (+0x320 and +0x338, TOTK_COOP_TEST_BEAMLOG), and it spun much faster than the owner's. So it is put at its first
 // place until it has moved 0.4 m, then given that way at 50 m/s and left to fly; put back on the reported place only
@@ -1894,7 +1894,7 @@ static void place_copy(Cpu *c, Slot *s, int k) {
     if (coop_bonds_carried(actor)) return;    // bonded to its group's root, which is placed: the bonds carry it
     // An arrow's copy asks to sleep in its first tick (reason 0, through main+0x55251c: TOTK_COOP_TEST_ARROWWATCH)
     // and sleeps from the third (actor state 6, its model's +0x244 6), where this game's own arrows stay awake (4); a
-    // sleeping arrow is not drawn (a play session, 2026-11-05). It is woken as the actor state machine
+    // sleeping arrow is not drawn. It is woken as the actor state machine
     // (main+0x54cb00) wakes one: +0x28's reason bits at 0x10, then bit 19 set and the actor queued for the machine
     // (main+0x2ae413c). Frozen after its warmup (copy_place), it does not ask again.
     // (the paraglider's, the beam's, and a fused material's set off: asleep, it did not go off until this Link's camera
@@ -1918,7 +1918,7 @@ static void place_copy(Cpu *c, Slot *s, int k) {
     if (!strcmp(s->mir[k].name, "PlayerBeam")) { beam_copy(c, s, k, m); return; }
     // An arrow the owner sends in its bow's frame (COOP_OBJ_LOCAL: nocked): put on the proxy's bow as it is drawn here
     // (also from proxy_drive, right after the push that puts the bow on the hand). Put at the reported world place,
-    // it lagged behind the proxy's bow as the owner moved (a play session, 2026-11-05).
+    // it lagged behind the proxy's bow as the owner moved.
     float pp[3], pr[9];
     if (((s->mir[k].flags & COOP_OBJ_LOCAL) && s->actor && bow_frame(s->actor, pr, pp)) ||
         ((s->mir[k].flags & COOP_OBJ_ONLINK) && s->actor && coop_rd(s->actor + COOP_ACTOR_POS, pp, 12) && coop_rd(s->actor + COOP_ACTOR_ROT, pr, 36))) {
@@ -1973,7 +1973,7 @@ static void place_copy(Cpu *c, Slot *s, int k) {
     int ride_on(void);
     if (arrowish) {
         // An arrow's copy could be taken once where it was first made, and left a "Take" prompt on the floor there
-        // (a play session, 2026-11-05): its model is moved, but its body stayed. The body is kept 300 m under it,
+        //: its model is moved, but its body stayed. The body is kept 300 m under it,
         // out of any Link's reach, set on the body itself (main+0x25a450 (body, m), which the physics takes; the
         // actor's own ForceSetMatrix is applied in its update, which a frozen copy does not run); the frozen copy
         // does not take its place from the body.
@@ -2094,7 +2094,7 @@ static void set_driven(uint64_t a) {
 // Not world objects: Links and what they wear and carry, people, animals, enemies (synced on their own), arrows.
 // (The Link's own attack effects, PlayerBeam, the Master Sword's beam, and PlayerAttackGrave, the Earthwake
 // Technique's shockwave, are left out with the "Player" names: sent as copies they played out wrong, the beam spun in
-// place and the shockwave's glow stayed in the air, a play session, 2026-11-05. The proxy makes its own: its
+// place and the shockwave's glow stayed in the air. The proxy makes its own: its
 // attack thaw lasts while its owner holds the button, and its life follows its owner's, see "proxy attacks".)
 // The beam, though, is sent: the proxy made none (it seems to go by this game's own hearts). It has no model: what
 // shows is its effect, on its body. Frozen and kept 300 m under as an arrow's copy is, the effect stayed spinning
@@ -2103,7 +2103,7 @@ static void set_driven(uint64_t a) {
 static int is_beam(const char *nm) { return !strcmp(nm, "PlayerBeam"); }
 // Test (TOTK_COOP_TEST_BEAMLOG=1): a beam's (this Link's, "own", or a copy's) place, turn (its rotation's first row),
 // state and the words that differed between the owner's beam and its copy (TOTK_COOP_TEST_BEAMDUMP), each tick. For the
-// copy spinning faster than the beam and showing no hit (a play session, 2026-11-06).
+// copy spinning faster than the beam and showing no hit.
 static void beam_log(uint64_t a, uint32_t id, const char *who) {
     float p[3] = {0}, r[9] = {0}, v320[6] = {0};
     int32_t st = 0;
@@ -2152,7 +2152,7 @@ static int prop_skip(const char *nm) {
     // Ultrahand crash, which was the beam's race (beam_hook). It is sent in its Link's frame: COOP_OBJ_ONLINK.)
     // Sage_: the sages' companion spirits, and Weapon_Bow_128, Tulin's bow, which follow the Link: sent as moved
     // objects, their copies came and went over and over and the bow showed on the other Link (glide.txt on the Rito
-    // save, the tester watching, 2026-11-05).
+    // save).
     static const char *pre[] = {"Player", "Armor_", "Accessory_", "PlayerRaul", "Npc", "Animal_", "Enemy_",
                                 "Weapon_Sheath", "Weapon_Quiver", "TBox_", "Sage_", "Weapon_Bow_128",
                                 // the Link's own helpers (its edges): a save load took the WakeBoardRope for a destroyed
@@ -2165,7 +2165,7 @@ static int prop_skip(const char *nm) {
                                 "DgnObj_ZonauShrineEntrance", "DgnObj_WarpPoint", "ZonauShrine_EntranceGate", "FldObj_Cannon",
                                 // the Gloom Hands (MiasmaSwarm and its MiasmaTentacle hands): made in one game when its
                                 // Link came near, then sent as moved objects; the other game's copy of a MiasmaTentacle
-                                // crashed it at once (access violation in main+0x4f2894, a play session, 2026-11-07)
+                                // crashed it at once (access violation in main+0x4f2894)
                                 "Miasma",
                                 // the pooled helper actor the game gives each combined contraption (an autobuild's):
                                 // the idle ones wait at the origin, so the other game took one of its own idle ones for
@@ -2174,16 +2174,16 @@ static int prop_skip(const char *nm) {
                                 // the map's merged-mesh groups (MergedActorD100): a game moves them as world objects;
                                 // the other, which had not got them (after a fast travel), asked for copies by name, the
                                 // game cannot make one (handle status 4), and the requests asked for again every tick
-                                // took the actor manager down: no actor could be made there (a play session, 2026-11-08)
+                                // took the actor manager down: no actor could be made there
                                 "MergedActor",
                                 // the Link's Ultrahand glue-effect actor (one per Link, made by its effect manager,
                                 // main+0x994048, which it draws every glue joint from): a copy made by name has no
                                 // manager and drew a large green slab between glued parts and a glow in a loose fan in
-                                // the other game (the tester's screenshots, 2026-11-08)
+                                // the other game
                                 "UltraHand_Connection_Effect"};
     // (UltraHand_Connection_Effect2: left out again, above)
     // (LightningStrike, a thunderstorm's strike, was left out here for a while; it is sent again, the one that hits
-    // this Link, so the others see it struck: the tester's list, 2026-11-06. Its copy runs its own update, copy_place.)   // chests: each player's own
+    // this Link, so the others see it struck: The tester's list, 2026-11-06. Its copy runs its own update, copy_place.)   // chests: each player's own
     for (size_t i = 0; i < sizeof pre / sizeof *pre; i++) if (!strncmp(nm, pre[i], strlen(pre[i]))) return 1;
     if (strstr(nm, "Arrow")) return 1;
     // Helpers that go with this Link and are not things in the world: EventCamera and CameraXLinkControl were sent
@@ -2263,7 +2263,7 @@ static void watch_old_item(uint64_t eq, int k, uint64_t old, int remade) {
 }
 // An old item deleted, and the material fused to it: an actor of its own stuck to the item, which a delete of the item
 // alone left lying in the world, where it could be picked up in that game only (a Silver Moblin Horn off a stand-in's
-// stick when its owner went unarmed; a play session, 2026-11-08). Its fused part is the actor of that material's name
+// stick when its owner went unarmed). Its fused part is the actor of that material's name
 // within 1 m of the item.
 typedef struct { float at[3]; const char *name; uint64_t found[4]; int n; float r2; } FuseFind;
 static void fuse_find_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
@@ -2281,7 +2281,7 @@ static int fuse_on_held(uint64_t a) {
     if (!coop_rd(a + COOP_ACTOR_POS, q, 12)) return 1;
     // An item that is gear now, or being made as gear: a fused material can be a weapon (a stick fused to a sword), and
     // the stand-in's new Weapon_Spear_109 was taken for its old sword's fused Weapon_Spear_109 and deleted, so the
-    // stand-in held nothing (a play session, 2026-11-08). Never deleted: one in an EquipmentUser, or of a name a
+    // stand-in held nothing. Never deleted: one in an EquipmentUser, or of a name a
     // co-op Link's or this Link's gear has.
     char nm[48];
     coop_actor_name(a, nm, sizeof nm);
@@ -2324,7 +2324,7 @@ static void delete_old_item(Cpu *c, int i) {
 // give_gear on a co-op Link, and its weapon, bow or shield as it was before watched as an old item (deleted once out
 // of its gear, never sent meanwhile). Each item made again (taken out, put away, its gear fixed) is a new actor; the
 // one before stayed in the world, the prop sync sent it, and the other player had swords, shields and fused parts
-// lying about them (a play session, 2026-11-07).
+// lying about them.
 static void regive_gear(Cpu *c, uint64_t eq, int k, const char *name, int dye, int out_want, uint8_t st[0x60], const char *fuse,
                         uint8_t att_st[0x60]) {
     uint64_t old = k <= 2 ? eq_item(eq, k) : 0;
@@ -2345,7 +2345,7 @@ static void regive_gear(Cpu *c, uint64_t eq, int k, const char *name, int dye, i
 // Test (TOTK_COOP_TEST_INHAND=1): before each in-hand call, what setEquipmentInHand (main+0x4f5700) reads: the object
 // at eq+0x1620 that its chain starts from, that object's +0x325 bit 0, its [+0x10], [+0x18] and the byte +0x2d2 that
 // gates the hand attach; and the same for this game's own Link (the stand-in held its sword only while this Link had
-// one equipped: the tester, 2026-11-07).
+// one equipped: The tester, 2026-11-07).
 static void inhand_probe(uint64_t eq, const char *who) {
     static int on = -1, said;
     if (on < 0) on = cfg_get("TOTK_COOP_TEST_INHAND") != NULL;
@@ -2410,7 +2410,7 @@ static void old_items_tick(Cpu *c) {
     for (int i = 0; i < 16; i++) {
         if (!old_items[i].actor) continue;
         // Its fused material come loose while it is watched (emptying a slot knocked a stand-in's horn off its spear,
-        // and the horn lay there and was sent as a world object: a play session, 2026-11-08): deleted, within 1.5 m
+        // and the horn lay there and was sent as a world object: A play session, 2026-11-08): deleted, within 1.5 m
         // of the item, unless it is on an item a co-op Link holds now. Checked every 10 ticks.
         if (old_items[i].fuse[0] && prop_tick % 10 == 0) {
             FuseFind ff = {.name = old_items[i].fuse};
@@ -2449,7 +2449,7 @@ static void old_items_tick(Cpu *c) {
         int held = cur == old_items[i].actor;
         if (held && (old_items[i].remade || prop_tick - old_items[i].since < 60)) continue;
         // One made again: deleted only once another item holds its slot. Out of the gear alone, it was deleted while
-        // the slot was between items, and the co-op Link drew an empty hand (a play session, 2026-11-07).
+        // the slot was between items, and the co-op Link drew an empty hand.
         if (old_items[i].remade && !cur) continue;
         char nm[48];
         rt_log("coop: proxy: its old %s, %s, is deleted", coop_actor_name(old_items[i].actor, nm, sizeof nm), held ? "still in its gear" : "out of its gear");
@@ -2827,7 +2827,7 @@ static void destroy_apply(Cpu *c, const CoopObj *o, int from) {
     uint64_t a = kf.actor[0];
     char nm[48];
     // (never a Link's gear or a stand-in's, nor one of a name their gear has: a fused stick deleted in the other game
-    // was told as destroyed, and the stand-in's held stick of that name broke here; a play session, 2026-11-08)
+    // was told as destroyed, and the stand-in's held stick of that name broke here)
     if (!a || strcmp(coop_actor_name(a, nm, sizeof nm), o->name) || coop_is_resident(a) || !strncmp(nm, "Parasail", 8) || fuse_on_held(a)) {
         rt_log("coop: player %d destroyed %s (key %08x): not here (or one not to destroy)", from, o->name, o->id & ~COOP_OBJ_KEYED);
         return;
@@ -3065,7 +3065,7 @@ static void pickup_test(Cpu *c, uint64_t me) {
 // is put on the flat ground the fan test uses (player 1 at x 31.5, the other 3 m along x), facing +z; at 22 s a chest
 // (TBox_Field_Iron) of this game's own is made 1.2 m in front of it. The scripts open it (player 1 at 25 s, player 2
 // at 30 s) and walk at 36 s; every 30 ticks from 24 s to 42 s this Link's place is logged. For the input freeze when
-// player 2 opened a chest (a play session, 2026-11-05).
+// player 2 opened a chest.
 static void chest_test(Cpu *c, uint64_t me) {
     static int on = -1, stage;
     static _Alignas(16) uint8_t handle[0x40], link[0x40];
@@ -3128,7 +3128,7 @@ static void arrow_dump(void) {
 }
 // Test (TOTK_COOP_TEST_PROXYARROWS=1): every 30 ticks, each actor (the reference pool: at rest too) with "Arrow" or a fused material in its name
 // within 2 m of a co-op Link here: whether it is one of this game's copies, its state, how far from the Link. For
-// the one arrow another player could still take at the proxy's bow (a play session, 2026-11-05).
+// the one arrow another player could still take at the proxy's bow.
 typedef struct { float at[3]; int n; } ProxyArrowScan;
 static void proxy_arrow_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
     ProxyArrowScan *ps = arg;
@@ -3341,7 +3341,7 @@ static void glide_log(uint64_t me) {
 }
 // Test (TOTK_COOP_TEST_NEWNEAR=1): every actor that shows up within 5 m of this Link (in the live list: running its
 // own calc), once, with its name and whether it is left out of the world objects (prop_skip) or a copy. For finding
-// what the Master Sword's beam and the Earthwake Technique make (the tester's list, 2026-11-05). At most 400 lines.
+// what the Master Sword's beam and the Earthwake Technique make. At most 400 lines.
 static void newnear_fn(uint64_t a, void *arg) {
     static uint64_t seen[2048];
     static int n, logged;
@@ -3363,7 +3363,7 @@ static void newnear_fn(uint64_t a, void *arg) {
 }
 // Test (with TOTK_COOP_TEST_BEAMLOG): for 30 ticks after this Link's beam ends, every actor that shows up within 5 m
 // of where it was last, as newnear_test logs them. For finding what makes the burst where a beam hits (its copy shows
-// none, a play session, 2026-11-06). In that session a PlayerBeam woke 0.83 m from each end; taking any beam that
+// none). In that session a PlayerBeam woke 0.83 m from each end; taking any beam that
 // wakes within 2 m of an end in the 20 ticks after as this Link's matched none in the next one, so it is not done.
 static void beam_end_watch(const float at[3]) {
     memcpy(bend_at, at, 12), bend_tick = prop_tick;
@@ -3708,7 +3708,7 @@ static void stand_test(Cpu *c, uint64_t me) {
         }
     }
 }
-// ---- riding another player's object (the tester: ride a flying Zonai contraption together, 2026-11-05). This Link
+// ---- riding another player's object (play test: ride a flying Zonai contraption together, 2026-11-05). This Link
 // rides an object a co-op player sends (a copy, or this game's own one moved to their report) when it stands on it:
 // within 1.6 m of it across and 0-1.6 m above its origin. While it rides, each tick the object's move since the last
 // tick (its turn about its origin and its shift) is put on this Link too (COOP_FORCE_MATRIX), so it goes along as on
@@ -3726,7 +3726,7 @@ static int ride_objects(RideObj *out, int max) {
     for (int i = 0; i < COOP_MAX_PLAYERS; i++)
         for (int k = 0; k < COOP_OBJS && n < max && copies_live[i]; k++)
             // not ridden: arrows, and items (an item's copy runs its own physics and is put back at its owner's
-            // place; a Link carried by it went through the floor, a play session, 2026-11-05)
+            // place; a Link carried by it went through the floor)
             if (slots[i].mir[k].state == 3 && slots[i].mir[k].ticks >= COPY_WARMUP && !strstr(slots[i].mir[k].name, "Arrow") &&
                 !pickable(slots[i].mir[k].name) && !(slots[i].mir[k].flags & COOP_OBJ_ONLINK) && strcmp(slots[i].mir[k].name, "PlayerBeam")) {
                 out[n].actor = slots[i].mir[k].actor, out[n].owner = slots[i].net_id, out[n].id = slots[i].mir[k].id;
@@ -4274,7 +4274,7 @@ static void shield_place(Cpu *c, Slot *s) {
 // (model +0x1f8, 3x4 rows); taken as model matrix times record, the hand was 11 m from the sword.
 // Off unless TOTK_COOP_STANDIN_HOLD=1 (a test): the game places the stand-in's held items itself once its read of this
 // Link's own equipment is taken out (coop_spawn.c, main+0x45a460), and placing items by hand on the old co-op Link had
-// led to items taken out of hands and fused parts at the wrong size (the tester). Its bones are not found on a PlayerPuppet
+// led to items taken out of hands and fused parts at the wrong size. Its bones are not found on a PlayerPuppet
 // yet either (body_skeleton is a Player's path).
 static int hold_on(void) {
     static int on = -1;
@@ -4391,7 +4391,7 @@ static void hold_place(Cpu *c, Slot *s) {
 }
 // Test (TOTK_COOP_TEST_SURFLOG=1): every 15 ticks, for this Link and each co-op Link here, where its shield is
 // (relative to it), whether the shield is in hand, and its EquipmentUser's per-slot bytes +0x4620..+0x4627. For the
-// shield surf, which the proxy showed with the shield on its back (a play session, 2026-11-05).
+// shield surf, which the proxy showed with the shield on its back.
 static void surf_log(Cpu *c, uint64_t me) {
     static int on = -1, t;
     if (on < 0) on = cfg_get("TOTK_COOP_TEST_SURFLOG") != NULL;
@@ -4803,7 +4803,7 @@ int coop_runs_for_ms(void) { return runs_since_ns ? (int)((plat_now_ns() - runs_
 // to the other game as loose objects). Taken here as the actor that stays within 0.8 m of the shield for 5 looks in a
 // row (every 10 ticks), not a Link's, a weapon or armor; none for 3 looks, the shield has none. An actor nearer to the
 // Link's weapon or bow than to its shield is that item's fused part: with the sword put away on the back, its rock lay
-// within 0.8 m of the shield and was taken and sent as the shield's (a play session, 2026-11-08). The item's own
+// within 0.8 m of the shield and was taken and sent as the shield's. The item's own
 // place is not enough for that (the sword's is at its hilt, the rock at its tip, nearer the shield): the actor of the
 // weapon's or bow's material name nearest that item, within 2 m, is skipped as well (shield_scan_skip).
 typedef struct { float at[3]; uint64_t best; float best_d2; uint64_t shield, others[2], skip[2]; } ShieldScan;
@@ -5236,7 +5236,7 @@ void coop_players_tick(Cpu *c) {
         hold_send(me, my_eq, &st);
         // Lightning about to strike this Link (its metal gear sparks): AI node OneShotEquipmentUserSetLightningWait sets
         // bit 16 of the EquipmentUser's flags at +0x4600 (and the wait time at +0x3f14 to 0; main+0x2529c3c, its
-        // ResetLightningWait clears it). Sent as NetState flags bit 12, so the proxy sparks too (the tester's list).
+        // ResetLightningWait clears it). Sent as NetState flags bit 12, so the proxy sparks too.
         if (my_eq && eq_points_to(my_eq, me) && (LD64(my_eq + 0x4600) >> 16 & 1)) st.flags |= 1u << 12;
         // The weapon's attack is on (EquipmentUser +0x660, 1 for about 0.1 s in each swing in 1.4.3 as in 1.2.1:
         // TOTK_COOP_TEST_EQDIFF, 2026-11-07): flags bit 13. TotK Online writes it onto its stand-in every frame (read
@@ -5261,7 +5261,7 @@ void coop_players_tick(Cpu *c) {
         fuse_log(me, my_eq);
         audit_tick(c, me, cur, n_objs, &st);
         {   // test: this Link's life when it changes, with each proxy's and whether it runs its own update then (P1's
-            // hearts went up and down while P2 swung, a play session, 2026-11-06)
+            // hearts went up and down while P2 swung)
             int coop_life_of(uint64_t a);
             static int was = -1, said;
             int l = coop_life_of(me);
@@ -5390,7 +5390,7 @@ void coop_players_tick(Cpu *c) {
         if (id < host_id && age < 2000000000ull) {
             host_id = id, host_time = st.day_seconds, host_weather = st.weather, have_host = 1;
             // The weather is the place's: the host's only within 300 m of the host's Link. Followed from afar, a
-            // Link warped away kept the cold of where the host stood and lost life to it (a play session, 2026-11-06).
+            // Link warped away kept the cold of where the host stood and lost life to it.
             float mp[3];
             if (coop_rd(me + COOP_ACTOR_POS, mp, 12) &&
                 (mp[0] - st.pos[0]) * (mp[0] - st.pos[0]) + (mp[1] - st.pos[1]) * (mp[1] - st.pos[1]) + (mp[2] - st.pos[2]) * (mp[2] - st.pos[2]) > 300.0f * 300.0f)
@@ -5493,7 +5493,7 @@ void coop_players_tick(Cpu *c) {
         memcpy(s->hold_bone, st.hold_bone, sizeof s->hold_bone), memcpy(s->hold, st.hold, sizeof s->hold);
         {   // its owner's lightning wait (flags bit 12) on the stand-in's EquipmentUser, as the AI node
             // OneShotEquipmentUserSetLightningWait sets it (bit 16 of +0x4600, the wait time +0x3f14 to 0), so its metal
-            // gear sparks too; cleared when its owner's is (the tester's list)
+            // gear sparks too; cleared when its owner's is
             int want_l = (st.flags >> 12) & 1;
             uint64_t peq = s->actor && s->state == LIVE ? eq_of_actor(s->actor) : 0;
             if (peq && eq_points_to(peq, s->actor)) {
@@ -5579,7 +5579,7 @@ void coop_players_tick(Cpu *c) {
             // this game's Link has empty is given an item once first, before its owner's: an item made into a slot
             // that never held one stayed on the stand-in's back in its owner's hand, whatever was asked (in-hand calls,
             // made again in hand, the in-hand bit, put at its hand bone), when both players had nothing equipped and
-            // one equipped first; with this game's Link holding one it was held (the tester, 2026-11-07, who suggested
+            // one equipped first; with this game's Link holding one it was held (play test, 2026-11-07, who suggested
             // equipping one at load). The gear code below then makes it the owner's, or empties it.
             // Off: it did not help (the cause was this Link's own equipment read for the stand-in's item: coop_spawn.c,
             // main+0x45a460). TOTK_COOP_STANDIN_PRIME=1: done (a test).
@@ -5691,12 +5691,12 @@ void coop_players_tick(Cpu *c) {
                 // TOTK_COOP_PUPPET_SNAP_M: that distance in m (default 0: every tick). Its body every tick: its own
                 // root motion moved it 15-67 mm a frame, its mesh was drawn from that body, and snapped back at 10 cm
                 // it went in a sawtooth, the drawn root's offset from its placing changing
-                // by 20 mm a frame and up to 148 (the tester: choppy on slow walks and jumps); every tick 8 mm, worst 17
+                // by 20 mm a frame and up to 148 (play test: choppy on slow walks and jumps); every tick 8 mm, worst 17
                 // (the suite's tour walk, stairs included, 2026-11-08).
                 static float lim = -1;
                 if (lim < 0) { const char *e = cfg_get("TOTK_COOP_PUPPET_SNAP_M"); lim = e ? (float)atof(e) : 0.0f; }
                 // ... or once it faces another way: the step writes the body's rotation before placement goes over
-                // it, and a body left turned 12 degrees away flickered between the two (a play session, 2026-11-05).
+                // it, and a body left turned 12 degrees away flickered between the two.
                 float rd = 0;
                 for (int r = 0; s->have_body && r < 3; r++)
                     for (int k = 0; k < 3; k++) { float d = fabsf(s->body_rot[r * 3 + k] - om[r * 4 + k]); if (d > rd) rd = d; }

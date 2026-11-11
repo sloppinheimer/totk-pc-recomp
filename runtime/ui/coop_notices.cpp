@@ -1,6 +1,6 @@
 // The co-op notices (coop_notices.c: a player joined, left or fast travelled), drawn with the overlay
 // (ui/menu.cpp menu_overlay_frame) while the menu is closed: one line each at the bottom left of the screen, where the
-// game's HUD has nothing (the tester: top centre was too much in the way, 2026-11-07), the newest lowest, the older ones
+// game's HUD has nothing (play test: top centre was too much in the way, 2026-11-07), the newest lowest, the older ones
 // above it, for COOP_NOTICE_SECONDS, fading in and out. Drawn as ui/coop_tags.cpp draws the name tags.
 #include <float.h>
 #include <math.h>

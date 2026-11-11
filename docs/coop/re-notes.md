@@ -51,7 +51,7 @@ evidence), guess.
   bonds carry them (TOTK_COOP_PLACE_ALL=1 for every part). Not shown to change the breaks above.
 
 ## Glue by hand in the other game (2026-11-08 evening, the tester's live session)
-- the tester glued fan 3 to fan 1 by hand in game 1 (logs of build143 and build143play, 16:33): game 1 sent bond 1
+- The tester glued fan 3 to fan 1 by hand in game 1 (logs of build143 and build143play, 16:33): game 1 sent bond 1
   and "a contraption of mine (2 parts)"; its glue entry was "no longer glued here: taken off the list" a few seconds
   on, and game 2 then "parted here" (removeScotch), which undid coop_bonds' bond: "show no shared group here yet".
   Game 2 also made "a copy of object 4 (UltraHand_Connection_Effect2)", and the tester saw a large green slab between the
@@ -74,7 +74,7 @@ evidence), guess.
   both games have (coop_bonds bonds copies only).
 
 ## A failed create request must be released (fixed 2026-11-08)
-- a play session (main d84dcc4, game 2 from build143play): after a fast travel game 2 made no actor at all
+- A play session (main d84dcc4, game 2 from build143play): after a fast travel game 2 made no actor at all
   (copies, its own capsule devices: the item left the inventory and nothing came), and the ground was missing. Its
   log: "the copy of object N could not be made" 1498 times, for four objects only: keys f36511da, fdad097d, 8f82aab6,
   f1b2abdf, which game 1 logged as "I move MergedActorD100": the map's merged-mesh groups, moved as world objects;
@@ -102,7 +102,7 @@ evidence), guess.
 ## Spawn test results (2026-11-03, runtime/coop_spawn.c)
 - Request -> handle status 2 (loading) -> 3 (created, waiting) within a few frames; claiming it with main+0x1877160
   (handle, link out, 1, 0) puts the actor in the world. The link is 16 bytes; [0] stays 0, [1] holds a pointer.
-- Item_Fruit_A (apple) and Npc_Kokiri007 (Korok): appear in front of Link. Confidence: confirmed (the tester).
+- Item_Fruit_A (apple) and Npc_Kokiri007 (Korok): appear in front of Link. Confidence: confirmed (play test).
 - Player: created and claimed, then the next game frame crashes in main+0x4b46a4 reading +0x228 of a null actor.
   That function walks the resident actor list (scene component 13) for "ThrowBox" and takes an actor from the entry
   it finds (or a default entry). Cause and fix: next section.
@@ -123,11 +123,11 @@ evidence), guess.
   the equipped weapon/sheath/armour/quiver, Accessory_SupportDevice/Battery, PlayerRaulHand, Parasail,
   Dm_Npc_RevivalFairy, CarryBox, ThrowBox) is queued again with Player#2 as parent (runtime/coop_spawn.c
   copy_dependencies). Result: a second Link stands in the world and takes a combat stance at a Soldier Construct
-  next to the first one; no crash. Confidence: confirmed (the tester, screenshot).
+  next to the first one; no crash. Confidence: confirmed (play test, screenshot).
 - Open: Player#2 is now parent of Player#1's own equipment; it needs its own, with only the shared helpers copied.
 
 ## Input (2026-11-03, unattended tests, tools/coop/run_test.ps1)
-- Link#2 copies every input of Link#1 (the tester): both Players read controller 0.
+- Link#2 copies every input of Link#1 (play test): both Players read controller 0.
 - coop_getController main+0x37ccc0 (mgr = [[main+0x3960150]], index, &user name): index 0 -> [mgr+0xa0], 1..3 ->
   [mgr+0xf0 + 8 * (i - 1)], 4 -> [mgr+0xa8]; a registered "Custom_Controller_<name>" or flag bit 13 of +0x13c -> +0xc0.
   Per-frame callers: main+0xb012fc, main+0x37c980 / main+0x37c9b8 (UI), main+0x100d07c (Camera), main+0x5e197c (UI);
@@ -155,7 +155,7 @@ evidence), guess.
   right stick 24-27. Plus / Minus not measured.
 - Player 2 now: the second connected gamepad by default (TOTK_COOP_P2=pad; input.c input_pad2_read), through the
   private controller. Test 2026-11-03: player 1's script and player 2's test pattern moved the two Links on their own
-  paths at the same time. Real second gamepad: works (the tester, 2026-11-03: player 1 DualSense, player 2 Xbox One Elite 2).
+  paths at the same time. Real second gamepad: works (play test, 2026-11-03: player 1 DualSense, player 2 Xbox One Elite 2).
 
 ## Equipment, HUD, camera (2026-11-04)
 - Equipment: Player#2 creates its own weapons, armor, quiver, Zonai devices, PlayerRaulHand, Obj_OneTouch_Connection
@@ -196,7 +196,7 @@ evidence), guess.
   script and game B's copy of A followed the same path within about 1 m (A 386.3,1320.8 -> 397.5,1351.9; B's copy
   386.6,1319.8 -> 398.4,1350.9). ForceSetMatrix's snap path did not trigger in it (untested). Confidence: confirmed
   for walking.
-- Drift (the tester, 2026-11-04, two windows): input alone left a remote Link about 2 m off (other side of a staircase).
+- Drift (play test, 2026-11-04, two windows): input alone left a remote Link about 2 m off (other side of a staircase).
   Now put back past 1.5 m while its owner moves and past 0.25 m once they stand still, at most every 10 polls.
   Pair test: three put-backs of about 0.5 m when A stopped; final gap 0.1 m (A 392.06,1357.91, B's copy
   392.09,1357.80). ForceSetMatrix (main+0x45ce70) confirmed working from the input thread.
@@ -261,7 +261,7 @@ evidence), guess.
   one at once. Confidence: confirmed (pair test).
 
 ## Router (UPnP), 2026-11-04
-- This PC's router: two devices answer the SSDP search; the one with WANIPConnection:2 is at the gateway (control
+- A test router: two devices answer the SSDP search; the one with WANIPConnection:2 is the gateway (control
   /ctl/IPConn). AddPortMapping with a 3600 s lease works. DeletePortMapping with an empty NewRemoteHost answers 402
   Invalid Args (both service versions); with NewRemoteHost "*" it works. runtime/coop_upnp.c tries both.
 
@@ -488,12 +488,12 @@ instead of by action:
   and clears it otherwise. Checked with a faked Master Sword (run_pair -FakeGearA Weapon_Sword_070 -FakeHandA 1):
   without the flag the hilt sticks up over the shoulder, with it the sword is in the right hand. The other route,
   [[item+0x228]+0x208] +0x3d0 bit 0 / +0x3d4 == 1, is the item's own hold state and is left alone.
-- Not checked: the owner's arm and lean while holding a real sword. the tester saw the puppet leaning back with its arm
+- Not checked: the owner's arm and lean while holding a real sword. The tester saw the puppet leaning back with its arm
   out, which may have been the puppet's own state (not holding) fighting the owner's holding pose. Bow and shield
   use the same flag.
 
 ## Puppet shake (2026-11-05)
-- the tester's capture: a puppet standing on stairs dips about 7 cm on irregular frames. Its placed position doesn't
+- The tester's capture: a puppet standing on stairs dips about 7 cm on irregular frames. Its placed position doesn't
   move, and the poses sent and applied are smooth (TOTK_COOP_POSE_LOG), so the dip comes after both.
 - Measured with TOTK_COOP_TOP_LOG (the highest bone in skeleton +0x20, every frame): standing still, the owner moves
   0.01 cm per frame and its puppet 0.1-0.55 cm (runs vary), up to about 2 cm.
@@ -512,7 +512,7 @@ instead of by action:
   by more than 0.02. Checked with pose_walk.txt (the owner turns on the spot): rotation off 0.000 afterwards.
 
 ## Gear after loading another save (2026-11-05)
-- a play session: after both games loaded another save, game 1 kept reporting the first save's default armor.
+- A play session: after both games loaded another save, game 1 kept reporting the first save's default armor.
   Causes: (1) the new Link's gear is built while coop_player_actor() is still 0, so the gear hook dropped those
   creates; (2) an eq_owner entry could outlive its EquipmentUser.
 - Now unmatched creates are kept along with their armor dyes. match_my_eq pairs them with this PC's Link on the next
@@ -636,7 +636,7 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   rock-fused stick, as A's own Link.
 
 ## Proxy mode, gear while a game is in a menu (2026-11-05)
-- the tester: both players in the equipment menu, one changes armor, both leave: the other screen keeps the old armor.
+- The tester: both players in the equipment menu, one changes armor, both leave: the other screen keeps the old armor.
   Test: tools/coop/menu_3rd.txt in game B (inventory open 22-32 s), tools/coop/step_up_3rd.txt in game A with
   -FakeGearA ,,,Armor_001_Head,Armor_001_Upper,Armor_001_Lower -FakeAtA 26. Before: B's view after the menu shows
   A's proxy in the old outfit, although the changes arrived and were made during the menu.
@@ -819,7 +819,7 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   place every tick). Pair test (TOTK_COOP_TEST_FANSET=9 in A, fan_hits_3rd.txt): A's hit turns A's fan on (0xa000,
   energy 10) and B's proxy's swing turns B's copy on the same way 1.2 s later in B's clock. The copy draws on B's
   Link's battery (the game's rule), and the proxy's swing hits what else is there too. TOTK_COOP_PROXY_SWING=0 off.
-- the tester's Ultrahand crash (both games): A crashed in a pool's free list (main+0x19164e0, read of -1, from the actor
+- The tester's Ultrahand crash (both games): A crashed in a pool's free list (main+0x19164e0, read of -1, from the actor
   job, main+0x915a90's object +0xcf40) while holding its fan with Ultrahand; B's log stops just after it made a copy
   of "Parasail" (A's paraglider, sent as a made object). The paraglider is no longer sent. A's crash is not
   understood: scripted L / A (fan_ultra_3rd.txt) did not grab the fan, so it was not reproduced.
@@ -829,7 +829,7 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   co-op Link there are two Players; both running it at once on two worker threads breaks the list. It is hooked
   now and run by one thread at a time (coop_spawn.c beam_hook, logs "drawn by two threads at once" when that
   happens). Not yet confirmed in play.
-- the tester's autobuild test: (1) the autobuild preview's devices (real actors drawn as a hologram) were sent as moved
+- The tester's autobuild test: (1) the autobuild preview's devices (real actors drawn as a hologram) were sent as moved
   objects and copied solid; (2) built devices are tinted green, copies by name are not; (3) the steering stick
   (SpObj_ControlStick) was never sent: "Control" was in the helper filter, now not for SpObj_; (5) a Link on a copy
   jiggled: the rider's forced height is not taken (the Link's own physics keeps its up and down), so holding it at
@@ -855,7 +855,7 @@ packets and no input). Code: coop_players.c proxy_drive, coop_world.c coop_proxy
   to log the record during a build.
 
 ## Autobuild copies (one unit: done; green: open; 2026-11-08)
-the tester: an autobuilt contraption with three fans turns all its fans on at one hit in the builder's game, one fan per
+The tester: an autobuilt contraption with three fans turns all its fans on at one hit in the builder's game, one fan per
 hit in the other game; the copies are not green. Pair test: tools/coop/autobuild_3rd.txt in game A (the 100% save
 autobuilds the Fanplane, the first schematic: a wing, three fans; Autobuild is the wheel's down-right slot) with
 `TOTK_COOP_TEST_ABLOG=1 TOTK_COOP_TEST_ABHIT=36` (runtime/coop_autobuild.c: A's Link is put by a fan at 36 s and the
@@ -938,7 +938,7 @@ three fans go on (on, energy 10) 0.4 s after the hit; in B only the copy fan the
   them to a model is not found.
 
 ## Device state on the copies, the steering stick, glue by hand (open, 2026-11-08)
-the tester's reports on main 46b510c: flame emitters on in the builder's game and off in the other; the steering stick
+The tester's reports on main 46b510c: flame emitters on in the builder's game and off in the other; the steering stick
 works only for the game that made the contraption (held by player 2 nothing turns on anywhere, held by player 1 only
 player 1's game); a contraption glued by hand shows no glue in the other game and one hit turns on one piece there.
 TotK Online (side-session notes, totk-online-how-it-works.md 3 and 7): one owning game per glued group, handed to the
@@ -1141,7 +1141,7 @@ other game reaching the owner's devices, both wait on one. A hit does it (the pr
   session (the "(N parts)" line and coop_glue's "made here") is the way to get it.
 
 ## Running the game's own Autobuild in the other game (feasibility, open, 2026-11-08)
-the tester's idea: the other game builds the owner's blueprint itself, so the parts come out green and as one unit.
+The tester's idea: the other game builds the owner's blueprint itself, so the parts come out green and as one unit.
 - Where the parts are made: the Autobuild ability's update (main+0x9a2c00, a large state machine, called through a
   vtable) fills per-part records and then calls main+0x1d3b470(obj) directly (at main+0x9a70ec, on a job thread:
   frame chain main+0x9a70ec <- 0x75d9c <- 0x74218 <- 0xacf8dc). main+0x1d3b470 makes each part with requestCreateActor
@@ -1215,7 +1215,7 @@ the tester's idea: the other game builds the owner's blueprint itself, so the pa
   screenshots in B at 40-44 s): B's copy Fanplane is green, as A's; the hit pair (autobuild_3rd.txt with Y at 48 and
   50 s) still shows B's copies on, off and on with A. TOTK_COOP_TEST_GREEN=0 leaves it out, =all marks every bonded copy.
 - Taking a part off (2026-11-08 evening). An autobuilt contraption is meant to come apart whole when a piece is taken
-  off (the tester), whoever takes it. Marked as soon as their bond was asked for, a copy was destroyed by the game before
+  off (play test), whoever takes it. Marked as soon as their bond was asked for, a copy was destroyed by the game before
   the graph had joined it (a fan copy gone in B with nobody near it; then the owner deleted its own): copies are now
   marked only once they share a group. Pair tests: B pulls the wing off its copy (autobuild_part_b_3rd.txt with
   `TOTK_COOP_TEST_ABHIT_B=46`): B's copy goes, B's other copies follow, the owner deletes its wing and its fans go too:
@@ -1253,7 +1253,7 @@ the tester's idea: the other game builds the owner's blueprint itself, so the pa
   it, and player 1's log was not there.
 
 ## Proxy hair and clothes stay blown after a fan (open)
-the tester (2026-11-05): after a fan's wind hits the proxy, its hair and clothes keep flapping as if in wind, on that
+The tester (2026-11-05): after a fan's wind hits the proxy, its hair and clothes keep flapping as if in wind, on that
 screen only, after the fan is off. Likely cause: the proxy runs none of its own update, and something in it sets the
 wind its cloth feels; the proxy's swing thaw (40 frames of its own update) ran while the copy fan blew, and nothing
 reset it after. Pair test fan_hits_3rd.txt with TOTK_COOP_TEST_FANSET=9 (the copy fan in B blows on A's proxy).
@@ -1269,7 +1269,7 @@ Next: find what moves the hair on screen (a bone set after the pose write, or a 
 wind; a write watch (coop_watch_arm with coop_watch_writes) on it would name the setter.
 
 ## Arrow copies are not drawn (open)
-the tester (2026-11-05): the other player's arrows do not show. The copies are made ("a copy of object N (NormalArrow)
+The tester (2026-11-05): the other player's arrows do not show. The copies are made ("a copy of object N (NormalArrow)
 is here") and placed, but sleep. TOTK_COOP_TEST_ARROWDUMP=1 with bow_shoot_3rd.txt in both games dumps this
 game's own nocked arrow and a copy side by side; in both games the copy is at actor state 6 (+0x24) where the own
 arrow is at 4, its model's +0x244 at 6 (own 5), and +0x28 had bit 0 set (own 0). The actor state machine is

@@ -110,7 +110,7 @@ static void net_thread(void *arg) {
 #ifdef _WIN32
     // The state goes out every frame (16 ms, as TotK Online sends its stand-in's pose: read for behaviour only), so the
     // receive waits at most 4 ms. Every 33 ms with 10 ms waits it went about 24 times a second with gaps to 80 ms,
-    // and the stand-ins moved and animated in steps (a play session, 2026-11-07).
+    // and the stand-ins moved and animated in steps.
     DWORD tmo = 4;
 #else
     struct timeval tmo = {0, 4000};

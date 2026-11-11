@@ -7,7 +7,7 @@
 // main+0x1916830), each frame's graph job (main+0x181e40) joins the bonded bodies into one set and gives every member
 // that set's group (main+0x1d93978). With the group, a hit on one fan turns on all of them (each fan's behaviour graph
 // reads it), as in the builder's game. A copy made by name has no bond and no group: one hit there turned one copy
-// fan on (the tester's report, 2026-11-08).
+// fan on.
 //
 // Here:
 // - the owner (any game) sends, once a second, the groups its own sent objects form (two or more members), each member

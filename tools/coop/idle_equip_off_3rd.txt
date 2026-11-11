@@ -1,5 +1,5 @@
 # As idle_equip_3rd.txt, but game B closes the inventory with its weapon equipped (the world runs with it a moment),
-# then opens it again and unequips it: whether the stand-in still holds its sword (the tester's idea, 2026-11-07).
+# then opens it again and unequips it: whether the stand-in still holds its sword.
 480 A 4
 700 DOWN 4
 760 DOWN 4
