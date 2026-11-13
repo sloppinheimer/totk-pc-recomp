@@ -150,7 +150,8 @@ no with a reason. A no breaks the gluer's edge and logs why. A pending operation
 own reconcile.
 
 The alternative, held in reserve: the gluer takes the other island first, and a glue onto a thing this game does
-not own is refused natively (the glue-source test main+0x1c070a0 answering 1 ends the glue on its first tick). Then a glue can never exist in one world only, but a held or ridden
+not own is refused natively (the glue-source test main+0x1c070a0 answering 1 ends the glue on its first tick). Then a
+glue can never exist in one world only, but a held or ridden
 target refuses the glue and the player must press attach again. The trials of 4.4 decide: one bond seen in one game
 only, and the design switches to this. (Chosen by the writer of this plan; the tester has not confirmed it.)
 

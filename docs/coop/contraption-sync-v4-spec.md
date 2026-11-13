@@ -6,8 +6,8 @@ disagree, D is corrected first.
 
 The first draft was reviewed by three readers that did not write it (against the code, against the game facts, and
 by walking sixteen play scenarios by hand; R/sync-v4/spec-review/, with triage.md). Every finding was accepted and
-is in this draft. Points that wait on the second round of readings are marked **[R2.n]** (section 16); nothing
-that depends on one is written before its answer is in [contraption-game-facts.md](contraption-game-facts.md).
+is in this draft. The second round of readings the review asked for is in as well (section 16;
+[contraption-game-facts.md](contraption-game-facts.md) section 50), and no point of this file waits on a reading.
 
 Conventions. Addresses are TotK 1.4.3, main+offset. "The world" is the game's memory; "the table" is ours. An
 incarnation is a game's 64-bit id for this session (`coop_ctr_me`). **Every timer in this file is wall-clock time**
@@ -52,8 +52,9 @@ The transport's heartbeat flags are set by the tick through `coop_ctr_hb_set` (t
 PAUSED follows a clock that runs in menus):
 - PAUSED: phase 0 has not run for 0.3 s. This is true by construction whether or not the game runs its calc in
   menus.
-- LOADING: coop_loadwatch.c's load flag, or no resident Player actor. **[R2.1]** gives the flag that is set before
-  the first delete of a teardown.
+- LOADING: the game's own teardown flag, [[main+0x395e008]] +0xe1 bit 1 (the byte coop_loadwatch.c reads): set
+  when the delete-all-actors step starts, before its first delete, and cleared after its last; or no resident
+  Player actor. Whether phase 0 runs in menus, loads and cutscenes was not read; nothing here depends on it.
 
 ## 2. Data
 
@@ -110,12 +111,15 @@ passed through 3.2 at all.
 event it is GONE.
 
 3.2 **Bonds.** For each live entity here in a group: its bodies are taken from the part's body list
-(**[R2.4]**: [comps +0x288] +0x20, count +0x58, array +0x60, stride 0x88) and each body's slot is the key for
-which main+0x44bba4 returns that body. For each body, main+0x27c1c0 lists its edges; an edge is a bond when edge
+([comps +0x288] +0x20, count +0x58, array +0x60, stride 0x88) and each body's slot is read from the body: the
+one-hot bits 1 to 4 of the byte at body +0x1e8 are keys 0 to 3 (written by main+0xab69fc); a body with none of them
+set (keys 4 to 6) is found by asking main+0x44bba4 for those keys. Key 0 is the main body. For each body,
+main+0x27c1c0 lists its edges; an edge is a bond when edge
 +0x10 bit 3 is set (registered) and bit 2 is clear, and edge +0xec or +0xed is set. The other end's actor is looked
 up by pointer (4.5); an end that is no entity is entered by 4.4 ("an end of a real glue edge of an entity").
-`rel` is taken from the bond's own rest frames, main+0x7a4410(edge, outA, outB) (**[R2.5]** gives the formula),
-not from the bodies' present places. Two edges with the same (a, b, sa, sb): the bond is listed once and the newer
+`rel` is the pose the bond holds, read from its own rest frames: main+0x7a4410(edge, outA, outB) gives each end's
+frame in its body's space, and rel = outA * inverse(outB). It is not taken from the bodies' present places. Two edges
+with the same (a, b, sa, sb): the bond is listed once and the newer
 edge is broken (7.3's break).
 
 3.3 **Islands.** Union-find over the bond set. Members in ascending Eid everywhere. All members of an island this
@@ -128,7 +132,10 @@ its own comparison, 6.11). Poses are not in it (3.5).
 3.5 **Layout check.** For an island another game owns whose digest agrees here: each member's main-body pose
 relative to the root against `rel_root`. More than 0.3 m or 15 degrees for 1 s is a layout difference (7.4 rung 2).
 A member whose chain of bonds to the root passes a body slot other than 0 (a part glued to a spring's head or a
-wheel's turning body) is not checked and not driven rigidly (12.1). **[R2.4]**
+wheel's turning body) is not checked and not driven rigidly (12.1). This happens in play: a glue lands on the
+nearest body of the other part, whichever it is, and such a member has no fixed place relative to the root. The
+devices with more than one body are the small wheel, big wheel, spring, stake, construct head, portable pot and
+mirror; their further bodies follow their joints by themselves, so only main bodies are driven.
 
 ## 4. Identity
 
@@ -145,15 +152,20 @@ full regeneration.
 - a placement record is passed: a map actor, 4.3, not minted;
 - the name is not `SpObj_*` and the return address is not the Autobuild part maker's: not an entity (0);
 - return address main+0x1b7f8c8 (a capsule opening into its device): minted when the Player is this game's Link;
-  for another Player actor it is counted and not minted. **[R2.2]** gives the path from the call to the Player;
+  for another Player actor it is counted and not minted. The Player is [(x3 - 0x3e88) +0x18]: x3, the handle, lies
+  inside the Player's attachment component;
 - return address main+0x1d3bb98 (the Autobuild part maker): minted, ENT_PREVIEW; all parts of one maker run are one
   batch (4.6);
 - any other `SpObj_*` create (a dispenser's capsule, a device an AI node makes): minted only under the object
   mirror's present guards, carried over by name from coop_players.c `prop_fn` / `report_props`: nearer this Link
   than any stand-in or unplaced, within 6 m at first sight, no copy pending near, not a preview, at most 20 new at
   once, not within the quiet time after a warp. Counted, with the return address in the log.
-How the request becomes an actor: **[R2.2]** (the pool record behind x3, or a function every new actor passes).
-Until read, nothing of 4.2 is written. Nothing is minted with no session (`coop_ctr_me()` is 0): the actor is
+How the request becomes an actor: the create hook runs the request inside itself and then reads R = [x3], the
+pool record the request wrote there (status at R +0, the actor at R +8 once created), and remembers (R, the
+decision above). Every new actor passes main+0x54cb00(actor) in the actor manager's serial phase when it becomes
+"created", with R at actor +0x1b8: a hook there (one read when +0x1b8 is 0) looks R up, enters the actor and
+forgets R. R is reused as soon as the game has claimed it, so it is never read after that point. The synchronous
+create returns the actor itself. Nothing is minted with no session (`coop_ctr_me()` is 0): the actor is
 entered when the session starts. When this game's incarnation changes, every entity it owned is re-owned under the
 new one at epoch + 1 and stated.
 
@@ -187,7 +199,7 @@ dropped.
 5.0 **One rule for every path.** `apply_owner(e, owner, epoch)` is the only code that changes an entry's owner or
 epoch from a message, and it takes the pair only if it is greater than the entry's by (epoch, then incarnation).
 Every message that carries an owner goes through it: GRANT, REFUSE, ISLAND, POSE, INDEX. Whenever it takes from
-this game an entity whose island this Link holds or rides, the hold is ended (5.5) or the ride goes inert (5.6).
+this game an entity whose island this Link holds or rides, the hold is ended (5.5) or the ride is ended (5.6).
 Every GRANT and every claim uses epoch = 1 + the greatest epoch of every member involved, as the granter knows them.
 
 5.1 **Claim of an unowned or FREE entity** (4.4, 5.8): owner this game, epoch + 1, stated at once. Two games
@@ -222,19 +234,25 @@ waiting: those get no answer and fall to 5.7.
 is dropped; a GRANT for an expired request is taken as ownership with class IDLE). A REFUSE(NOT_OWNER) naming the
 asker itself at a greater epoch is a GRANT. On REFUSE or expiry the island goes back under the drive, and a hold on
 it is ended the game's own way: the message 0x20510006 is queued on the channel of the actor the Ultrahand part
-holds (part +0xf8, not any member) with main+0x2b76c34, addressed as the game's own refusal at main+0x1c0662c
-addresses it (**[R2.6]** settles which word is the receiver). The part then runs its own end (main+0xb9b3a4). Read
+holds (part +0xf8, not any member): main+0x2b76c34(held actor +0x378, {Link +0x380, 0x20510006, 0}, 0). Word 0 is
+the receiver; the sender is the channel's own actor, which is what the part compares with the actor it holds. The part
+then runs its own end (main+0xb9b3a4). Read
 back: if SPR +0x20 bit 16 and the holder handle still say "held by this Link" 10 frames later, the message is sent
 again (the actor message ring can drop one), up to three times, then logged. The SPR side alone is never cleared.
 
 5.6 **Refusing before it starts.**
 - Grab: for a member of an island whose owner's class is HOLD or RIDE (the class from POSE, not older than 2 s),
   the hook on main+0x9fb7fc answers 1 when its kind is 1 and the return address is main+0x1c0c228. No hold starts
-  (the accept never runs). What the part does next, and the feedback message 0x3dc6000N that main+0x1a45ba0 queues:
-  **[R2.6]**; until read, main+0x1a45ba0 is made to do nothing for a refusal this hook caused.
-- Stick: the seat claim main+0x502e60 answers "refused" for this Link on a stick of such an island. **[R2.6]**
-  (every caller takes the refusal cleanly). Until read: the Link sits, the island is not asked, the stick's input
-  is not sent, TAKE(RIDE) is repeated once a second, and a log line says so.
+  (the accept never runs), but the part would stay in its asking state for good (it ignores a refusal while it
+  holds nothing, and has no time-out), so at the next phase 0 the part is ended with the game's own end,
+  main+0xb9b3a4(part, Link, Link +0x378). main+0x1a45ba0 is made to do nothing for a refusal this hook caused: its
+  message 0x3dc6000N fires an AI event on the object.
+- Stick: a hook at the entry of the seat claim main+0x502e60(rider component, stick handle, mode, seat) answers 0
+  when the rider's actor ([x0 +0x18]) is this Link and the handle is a stick of such an island. Every refusal of
+  that function returns before any write, and both callers that start a stick ride take a 0 cleanly.
+- A ride that started and is then refused (5.5), or lost by 5.0: the Link is taken off with the game's own
+  get-off, main+0xc448c8([[Link +0x228] +0x410], 1, 1), which frees the seat and places the rider. What the game
+  does to a rider whose stick is destroyed was not read.
 
 5.7 **Claims without a grant** (owner this game by 5.0's epoch rule, stated at once):
 - the owner left the session (`coop_ctr_peer_event`): an exact cause of 5.2 here claims at once; after 2 s the
@@ -339,10 +357,13 @@ layout differs from it. Not for an island with an open bond operation here (8.2)
   progress; **the part count**: max(the game's group count of each side, our own count over real edges, bonds made
   this pass and open operations) of both sides together is at most 21 (at 22 the game breaks every glue edge of the
   part, which would destroy the build). The two bodies must be within 5 cm and 5 degrees of `rel`; a loose,
-  unheld island of one is placed first, one frame before the call. The matrices passed: **[R2.5]** (the code
-  records parts thrown apart by one choice of frames). The new edge is taken from the bond maker's hook, not
-  searched for. SPR +0x20 bit 18 is set on the SPR of end A. Edge +0xef (the lasting glue look) is **not** set on a
-  copy's bond in the first build: **[R2.3]** (the game removes the oldest of more than 21 such strands, per game);
+  unheld island of one is placed first, one frame before the call. The matrices passed are matA = A's
+  body world matrix now and matB = matA * rel: the bond holds inverse(matA) * matB whatever the bodies' places.
+  (The fly-apart recorded in coop_bonds.c came from its variant that passed frames where matrices belong, which
+  holds a mirrored pose; that variant is not copied.) The bond is rigid, and what the solver does with bodies off
+  the pose was not read, which is why the 5 cm rule stays. The new edge is taken from the bond maker's hook, not
+  searched for. SPR +0x20 bit 18 is set on the SPR of end A. Edge +0xef (the lasting glue look) is set right
+  after the call: the strand is bound a physics step later and reads it then. 7.6 keeps the bond out of the cap;
 - the next pass reads the edges again; nothing is assumed.
 
 7.4 **States and the ladder.** A `Stated` here is: agreeing; out of range (not counted, not a difference);
@@ -364,8 +385,13 @@ second) and `unconverged_ms[peer]` runs. "Out of range" and "waiting for the mak
 
 7.6 **Strain and the glue cap belong to the owner.** The strain check main+0x190f034 is hooked and returns at
 entry for a strand whose edge (strand +0x50) has an end body in `driven_body[]`: a copy's bond never breaks by
-strain here, with no byte written and no first-frame window. When this game becomes the owner the strain is set to
-0 once (strand +0x1d4). **[R2.3]** for the hook's arguments and for the cap.
+strain here, with no byte written and no first-frame window (x0 is the strand; returning at entry is exactly the
+game's own exempt path). When this game becomes the owner, strand +0x1d4, +0x1d8 and +0x1dc are set to 0.
+The cap: when 22 or more strands with the glue look exist in one game, the game breaks the oldest bonds
+(main+0x1915600, through the break message). A hook at the entry of the list add main+0x191642c(manager, strand)
+skips the add for a strand with a driven end, so a copy's bonds are neither counted nor broken by this game's cap;
+the owner's game applies its own, and the break arrives as state. A strand skipped this way stays out of the list
+after a hand-over (a build taken over is exempt from the cap here: a stated limit).
 
 ## 8. A glue across owners (D 3.7)
 
@@ -412,14 +438,26 @@ island still differ. One count in a test session switches the design to take-fir
 set (a regrouping takes a frame or two; until then no recipe), the history writer main+0x1913694 is run as
 `record_pass` does. `rec_member[i]` is rebuilt outside the writer by its order rule (by name, ties by the group's
 member order, less the members it skips) and accepted only when the count equals the record's part count; else the
-island is stated without a recipe. **[R2.8]** (the skip test, the order after a merge or split, bonds past 21).
+island is stated without a recipe. The writer skips a member with no SPR, with SPR +0x26 bit 1, or with the byte at
+SPR +0x2e8 set; it sorts stably on the bytes at actor +0x218, and the name it stores is not always that string, so
+the rebuilt list is checked name by name against the record. The group's member order is not stable across bond
+changes, so the list is rebuilt at every recipe. The writer fails outright for a group with more than 21
+qualifying edges (a build glued in loops): no recipe. It zeroes its own buffer; the caller does not prefill it.
 
 9.2 **The maker at a follower** runs only for an island none of whose members has an actor here. It is
 `make_pass`'s three stages (the build object at ability +0x51f0 filled from the record, the part maker
 main+0x1d3b470 inside `ent_creating`, the claim of each part, the confirm main+0x1d3c0d4 with no cost, the SPR
-marks, green set once the part is in its group). The build object's base matrix is chosen so that the record part
-of the root lands on `root_m` (**[R2.8]** gives the formula). The fields of the build object and of the ability
-that belong to the player's own Autobuild are saved before and put back after (**[R2.8]** gives the list). Its
+marks, green set once the part is in its group). A part's world pose is B * F, B the build object's base matrix (o
++0x120) and F the part's frame in the record,
+so B = root_m * inverse(F of the root's record part) puts the copy where the owner's build is. A make writes no
+save data, no history and no ability field, and charges nothing but the Zonaite call already skipped. It does
+overwrite the player's working design in the build object (o +0x120, the kinds list at +0x4d18 and its counter,
+the list at +0x4f48, +0x3c70 to +0x3c72, the blueprint, the material cache, the part pool): these are saved before
+and put back after by the table of the maker-side-effects reading. Not restorable, and logged once: the player's
+last bond descriptors in o +0x3c88 and the material cache. Each frame of a make an abort test runs (ability
++0x51e8, the object's flags & 7, o +4 and o +8 changed): the player chose a design, and the game is cancelling our
+parts; the make is dropped and waits. The maker accepts a trimmed record (no checksum, no count to match), so a
+part of an island could be made by it; the first build does not use that. Its
 waits stay and are states, not failures (7.4). One batch at a time; islands wait in order of arrival.
 
 ## 10. Hooks and the event ring
@@ -433,7 +471,9 @@ main+0x63baa8 inside itself and posts when it answered 1 (the deferring wrapper 
 this: its real request follows). All deletes this code asks go through one helper that sets a thread flag `ours`.
 Class: **destroy** only positively: reason 0 after an accepted death request of that actor (10.4), or reason 0 from
 the return addresses listed in the delete-reasons reading; reasons 1 and 2 remove an entry that never had an
-actor; **everything else is an unload**, and so is every delete while LOADING. **[R2.1]** (the teardown of a load).
+actor; **everything else is an unload**, and so is every delete while LOADING. A load's teardown is the game's
+delete-all-actors step: each frame it asks main+0x63baa8(actor, 4) for every actor, from return address
+main+0x108c8c8, with the flag of 1.2 set first. Reason 4 is that step's and is an unload.
 10.4 Death request main+0x1953184: posted when accepted, with the kind as stored after the game's rewrite.
 10.5 Creates (4.2). 10.6 Grab accept main+0x1c0b83c: {spr, holder}.
 10.7 Device toggle and switch event (coop_autobuild.c `coop_phase0_hook`: DEVSWITCH_UPDATE, ONOFF_CALC): the hook
@@ -497,8 +537,8 @@ coop_glue.c and coop_bonds.c leave the build with: `coop_glue_hook` and its two 
 `coop_glue_tick`, `coop_glue_take`, `coop_bonds_tick`, `coop_bonds_take` (coop_world.c peer_tick), the test callers
 in coop_autobuild.c, and the four `coop_bonds_*` readers in coop_players.c. coop_bonds.c has another session's
 uncommitted change: that session is asked first. TOTK_COOP_GLUE, _BONDS, _DEVICE_SYNC go.
-cpu.h: main+0xa1bc30, main+0x190f034, main+0x502e60, main+0x1a45ba0 are added to the hook list (one full
-regeneration of the generated C).
+cpu.h: main+0xa1bc30, main+0x54cb00, main+0x190f034, main+0x191642c, main+0x502e60, main+0x1a45ba0 are added to
+the hook list (one full regeneration of the generated C).
 
 ## 15. Pass tests (D 4.4), by piece
 
@@ -518,7 +558,7 @@ regeneration of the generated C).
 ## 16. The readings
 
 First round (2026-11-12, R/sync-v4/, facts section 49): hold-end, edge-removal, direct-bond, create-callers,
-device-origin, delete-reasons, grab-refuse. Second round, asked for by the review:
+device-origin, delete-reasons, grab-refuse. Second round, asked for by the review, all in (facts section 50):
 
 | # | Folder | Decides |
 |---|---|---|

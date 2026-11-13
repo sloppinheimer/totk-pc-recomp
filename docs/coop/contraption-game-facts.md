@@ -739,3 +739,94 @@ Numbered on from the sections above. "Not read" is said where a reading stopped.
   +0x150 bit 4 is set, at 22 parts, and after 1.5 s. The glue request 0x2051000f asks main+0x9fb7fc with kind 8.
 - A stick is mounted through the seat claim main+0x502e60, refused by main+0x592264 or the rider's component 129.
   Whether a Player stand-in has that component: not read.
+
+## 50. The second round of readings for v4 (read 2026-11-12, R/sync-v4/, seven folders; static reading)
+
+Asked for by the review of the specification. Where a point corrects section 49, it says so.
+
+### 50.1 A load's teardown (load-teardown)
+- The teardown is the sequence node SeqExecuteDeleteAllActor (enter main+0x1fd9750, update main+0xea8aec). Each
+  frame it walks the actor list and calls main+0x63baa8(actor, 4) for every actor of state 2 or more that is not
+  in states 7 to 11 and not persistent (+0x440 bit 20); return address main+0x108c8c8. A refused delete is asked
+  again the next frame. Run-time and map actors are treated alike. Reason 4 is this step's (49.5 left it open).
+- Its enter sets [[main+0x3ad7450]] +0xe1 bit 1 (the byte coop_loadwatch.c reads through main+0x395e008); creates
+  are refused while it is set. The step ends when no resource job is left, the delete lists, the going-away list
+  and the creation counters are empty, and every remaining actor is persistent; the next node clears the bit.
+- Not read: which loads run this node (fast travel, save load, shrine, title); whether a return to title frees
+  actors another way; who calls GameDataMgr::calc (its only caller is a vtable slot with no static reference), so
+  whether it runs in menus, loads or cutscenes; any readable "paused in a menu" state.
+
+### 50.2 From a create request to its actor (create-to-actor)
+- main+0x599670 writes only [x3] = R, a 0x30-byte pool record: status in the low 16 bits of R +0 (2 queued, 3
+  created, 4 failed), the Actor pointer at R +8. R has no id and no link back to the request, and is reused at
+  once after it is freed.
+- The actor is made on a request worker; main+0x3d40f0(job, request) returns it and sets actor +0x1b8 = R.
+  main+0x54cb00(actor), in the actor manager's serial phase, sets status 3 and R +8 at the first pass after the
+  actor's init; a later pass of it frees R and zeroes actor +0x1b8. The game's claim (main+0x89fe48 ->
+  main+0x50d6bc) zeroes the caller's handle. Reading R or the handle after the game's claim is unsafe.
+- The capsule-to-device create: its Player is [(x3 - 0x3e88) +0x18].
+- main+0xa1bc30 returns the actor in x0. Its callers read (map create, a fish node, the figure creator, effect and
+  rider actors) make no device or capsule; one caller's name table was not read.
+
+### 50.3 The strand, strain and the cap of 21 (strand-cap)
+- A strand is made for any edge with +0xec or +0xed, hand glue or not, and hangs on an SPR's list at +0x170. It is
+  made when the edge is linked into the graph, after the bond maker has returned (the link from the creator
+  main+0xac8914 to that moment is an inference).
+- The strain check main+0x190f034(strand, actor, dt) has one caller, the strand update main+0x190e044. Returning
+  at its entry is the game's own path for strand +0x1e2; it skips strain, the removal at 1.0 and the strain look.
+- The cap (corrects 49.3, which said only that strands are removed): main+0x1915600 walks the glue manager's list
+  from the oldest and, at 22 or more, marks max(1, count - 21) strands; the strand update then releases each and
+  posts the break message, so **the bond is broken**. The list is filled by main+0x191642c(manager, strand), called
+  only from the strand bind and only for an edge with +0xef. Setters of +0xef found: the glue tick and
+  main+0x46fe60. No code that clears it was found.
+- Not read: the thread and phase of the strand update and of the cap; which end's SPR holds the strand.
+
+### 50.4 Device bodies (device-bodies)
+- More than one body: small wheel (base, wheel on a slider), big wheel (axis, wheel, steering; hinges, the wheel
+  motorised), spring (body and piston), stake, construct head, portable pot, mirror. One body: steering stick,
+  carts, hover stone, sled, wing, balloon, cannon, rocket, fan, light, battery, time bomb. Key 0 is the main body.
+- A glue lands on the nearest touched body of the other part (main+0x1c09388 tries every body), so a part can be
+  glued to a wheel's turning body, a spring's piston or a pot's pan.
+- main+0xab69fc gives each body its key (0 to 6) and sets body +0x1e8 bits 1 to 4 one-hot for keys 0 to 3. That
+  the keys are the same in two games is an inference (they come from the device's static data).
+- No device re-poses a secondary body each frame; they follow their joints.
+
+### 50.5 The frames of a bond (bond-frames; the algebra was checked numerically)
+- main+0x8063ec stores frameA = inverse(matA) * pivot and frameB = inverse(matB) * pivot, each in its body's space.
+  At rest the bond holds inverse(matA) * matB, whatever the bodies' places; the pivot only places the anchor. The
+  glue tick, the Autobuild descriptor route and the direct call agree in this.
+- To hold two bodies as they stand: matA = WA, matB = WB. To hold B at rel from A: matA = WA, matB = WA * rel.
+- coop_bonds.c coop_bonds_bond_at passes frames where matrices belong and holds a mirrored pose; the cause of the
+  fly-apart its comment records is not established.
+- For an existing edge main+0x7a4410(edge, outA, outB) returns the two local rest frames; the held pose is
+  outA * inverse(outB). main+0x4abc1c returns them in world space, where they coincide at rest.
+- The bond is rigid (the soft and breakable flags are 0). What the solver does with bodies off the pose: not read.
+  The glue tick bonds at the bodies' present poses after its soft joint has pulled them together.
+
+### 50.6 Seats, a refused grab, and the hold-end message (seat-and-refusal)
+- The seat claim main+0x502e60(rider component, stick handle, mode, seat) returns bit 0, 0 refused; the rider's
+  actor is [x0 +0x18]; every refusal returns before any write. A stick ride starts from an event node
+  (main+0x22ec6fc) or a Player selector candidate (main+0x590220); both take a 0. main+0x592264 means "already
+  riding" and cannot name a stick (corrects 49.6).
+- A ride is ended by main+0xc448c8(rider = [[actor +0x228] +0x410], 1, 1), as the Player's own controls do.
+- A grab refused before an accept leaves the Ultrahand part in state 4 with no time-out: it ignores 0x20510006
+  while part +0xf8 is unset. It must be ended with part_end main+0xb9b3a4(part, link, link +0x378).
+- 0x3dc6000N (sent once per refused grab) is handled by main+0x1b19874, which writes the kind into the receiver's
+  AI parameters and fires an AI event (corrects 49.1's "changes no state" for the message's effect).
+- The class B hold control main+0x1d5dc7c never ends a hold by itself either.
+- main+0x2b76c34(channel, {word 0, id, flag}): word 0 is the receiver and the channel's actor the sender; the
+  drain delivers the sender in word 0. To end a hold: the held actor's channel with {link +0x380, 0x20510006, 0}.
+  A full ring drops the message silently.
+
+### 50.7 What a batch make touches (maker-side-effects)
+- The part maker, ready test, confirm and finish take only the build object; no ability field and no save data
+  are written; the history is written only by the Ultrahand-hold block. The player's working design in the build
+  object is overwritten (base matrix +0x120, kinds list +0x4d18 and its counter, the list at +0x4f48, +0x3c70 to
+  +0x3c72, the blueprint, the material cache, the pool). Not restorable: the bond descriptors in +0x3c88.
+- Selecting a design releases the build object: create requests are cancelled and made parts deleted.
+- The history writer: skips a member with no SPR, SPR +0x26 bit 1, or SPR byte +0x2e8; stable sort on the bytes at
+  actor +0x218; the stored name is not always that string. Group order is not stable across bond changes. 21 parts
+  and 21 bonds; with more than 21 qualifying edges the writer **fails** (corrects the older "dropped silently").
+  Both body slots (0 to 3) are stored. The writer zeroes its buffer.
+- A record may hold a subset: no checksum, indexes refer to pool order.
+- A part's world pose is B * F (B the base matrix, F the record frame).
