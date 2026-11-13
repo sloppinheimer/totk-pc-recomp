@@ -487,7 +487,8 @@ static int only_standin_contacts(uint64_t victim) {
 int coop_ctn_part(uint64_t a), coop_ctn_follows(uint64_t a), coop_is_copy(uint64_t a);
 int coop_own_sent_objects(uint64_t *out, int max);
 static int synced_device(uint64_t a) {
-    if (coop_ctn_part(a) || coop_ctn_follows(a) || coop_is_copy(a)) return 1;
+    int coop_ent_is(uint64_t a);   // (an entity, owned here or not: loose devices are entities, in no mirror table)
+    if (coop_ent_is(a) || coop_ctn_part(a) || coop_ctn_follows(a) || coop_is_copy(a)) return 1;
     uint64_t own[256];
     int n = coop_own_sent_objects(own, 256);
     for (int i = 0; i < n; i++) if (own[i] == a) return 1;

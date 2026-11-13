@@ -1661,10 +1661,11 @@ static void arrow_copies(Cpu *c, Slot *s) {
         // statement arrives, and the entity sync then takes this copy over (coop_obj_entity). So a copy of something
         // that can be glued is kept a second after its owner stops listing it. Arrows, beams and fused gear go at once.
         if (s->mir[k].state == 3 && coop_ctn_core() && !strstr(s->mir[k].name, "Arrow") && strcmp(s->mir[k].name, "PlayerBeam") &&
+            !pickable(s->mir[k].name) && !strstr(s->mir[k].name, "Capsule") &&   // (a thing its owner picked up goes at once: no second pick-up)
             !(s->mir[k].flags & (COOP_OBJ_FUSED | COOP_OBJ_LOCAL | COOP_OBJ_ONLINK))) {
-            static struct { int owner; uint32_t id; int since; } hold[32];
+            static struct { int owner; uint32_t id; int since; } hold[512];
             int h = -1, fr = 0;
-            for (int q = 0; q < 32; q++) {
+            for (int q = 0; q < 512; q++) {
                 if (hold[q].id == s->mir[k].id && hold[q].owner == s->net_id && taken_tick - hold[q].since < 300) h = q;
                 if (hold[q].since < hold[fr].since) fr = q;
             }

@@ -235,10 +235,10 @@ static int stmt_build(Cpu *c, Island *is, Ent *one, uint8_t *buf, IslandHdr *h) 
     // the recipe: for an owned island of 2 to 21 members with no far end (S 9.1), taken again when the digest changed
     if (is && n >= 2 && !is->has_far) {
         Recipe *r = is->rec >= 0 ? &recipes[is->rec] : NULL;
-        if (!r || r->digest != is->digest) {
+        if (!r || r->digest != is->digest || (!r->n && ent_ms() - r->tried_ms > 1000)) {
             if (!r) for (int q = 0; q < REC_N && !r; q++) if (!recipes[q].used) r = &recipes[q], is->rec = (int16_t)q;
             if (r) {
-                r->used = 1, r->digest = is->digest;
+                r->used = 1, r->digest = is->digest, r->tried_ms = ent_ms();
                 r->n = (uint8_t)ctn_recipe(c, mem, n, r->rec, r->member);
             } else ent_full("recipe");
         }
@@ -994,7 +994,16 @@ void own_send(Cpu *c) {
         Island *is = &isls[i];
         if (!is->used) continue;
         int moving = now - is->moved_ms < 1000;
-        if (!is->class_sends && now - is->pose_ms < (moving ? 33 : 1000)) continue;
+        Grp *view = NULL;
+        uint32_t sig = 0;
+        for (int g = 0; g < GRP_N && !view; g++) if (grps[g].used && grps[g].mine && eid_eq(grps[g].root, is->root)) view = &grps[g];
+        if (view) {   // (switches, time bombs, burning, and a spring's extension to 5 cm)
+            sig = view->sw * 31 + view->on * 131 + view->fb * 7 + view->burn * 13 + view->fp;
+            for (int r = 0; r < view->n && r < ENT_MEMBERS; r++) if (view->fp >> r & 1) sig = sig * 33 + (uint32_t)(int32_t)(view->pf[r][0] * 20) + (uint32_t)view->pf[r][2];
+        }
+        int dev_changed = view && sig != is->dev_sig;
+        if (!is->class_sends && !dev_changed && now - is->pose_ms < (moving ? 33 : 1000)) continue;
+        is->dev_sig = sig;
         Ent *root = &ents[is->m[0]];
         if (!root->actor && !is->frozen) continue;
         PoseMsg s = {0};

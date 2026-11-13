@@ -221,6 +221,7 @@ static void enter_ask(uint64_t actor, uint8_t kind) {
     memset(&enter[f], 0, sizeof enter[f]);
     enter[f].actor = actor, enter[f].gen = ctn_gen_of(actor), enter[f].kind = kind, enter[f].ms = ent_ms();
 }
+void ent_mirror_forget(uint64_t actor) { if (actor) enter_ask(actor, 3); }
 void ent_enter_glued(Cpu *c, uint64_t actor) {
     (void)c;
     char nm[48];
@@ -395,28 +396,30 @@ void ent_ring_events(Cpu *c) {
         default: break;
         }
     }
-    // S 4.6: a preview is cleared for a whole maker run together
+    // S 4.6: a preview is cleared for a whole maker run together: when no part of the run is a hologram any more (SPR
+    // +0x20 bit 51) and no SPR has a bond queued (+0x2b0), or a second after the last hologram bit went. Counted from
+    // the confirm, not from the hologram's making: a design can be aimed for a long time.
     for (int i = 0; i < ENT_N; i++) {
         Ent *e = &ents[i];
         if (!e->used || !(e->flags & ENT_PREVIEW)) continue;
-        int ready = now - e->entered_ms > 1000;
-        for (int k = 0; k < ENT_N && !ready; k++) {
+        int holo = 0, queued_any = 0;
+        for (int k = 0; k < ENT_N; k++) {
             Ent *o = &ents[k];
             if (!o->used || !(o->flags & ENT_PREVIEW) || o->batch != e->batch) continue;
             uint64_t spr = o->actor ? ctn_spr(o->actor) : 0, f20 = 0;
             int32_t queued = 0;
-            if (!spr || !coop_rd(spr + 0x20, &f20, 8) || (f20 >> 51 & 1) || !coop_rd(spr + 0x2b0, &queued, 4) || queued) { ready = -1; break; }
+            if (!spr || !coop_rd(spr + 0x20, &f20, 8) || (f20 >> 51 & 1)) holo = 1;
+            else if (coop_rd(spr + 0x2b0, &queued, 4) && queued) queued_any = 1;
         }
-        if (ready < 0) continue;
+        if (holo) { e->make_ms = 0; continue; }
+        if (!e->make_ms) e->make_ms = now;   // (confirmed: every hologram bit is clear)
+        if (queued_any && now - e->make_ms < 1000) continue;
         uint8_t batch = e->batch;
-        int cleared = 0;
         for (int k = 0; k < ENT_N; k++) if (ents[k].used && (ents[k].flags & ENT_PREVIEW) && ents[k].batch == batch) {
-            uint64_t spr = ents[k].actor ? ctn_spr(ents[k].actor) : 0, f20 = 0;
-            if (spr && coop_rd(spr + 0x20, &f20, 8) && (f20 >> 51 & 1)) continue;   // (still a hologram after 1 s: left a preview)
-            ents[k].flags &= (uint8_t)~ENT_PREVIEW, cleared = 1;
+            ents[k].flags &= (uint8_t)~ENT_PREVIEW, ents[k].make_ms = 0;
             if (ents[k].actor && ctn_part_green(ents[k].actor)) ents[k].flags |= ENT_GREEN;
         }
-        if (cleared) ent_mark_due(e);
+        ent_mark_due(e);
     }
 }
 

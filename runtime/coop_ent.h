@@ -78,7 +78,7 @@ typedef struct {
 // edge: this world's edge; ed: a glue by edge +0xed alone; ea: entity a is the edge's end A (local, not sent).
 typedef struct { Eid a, b; uint8_t sa, sb; float rel[12]; uint64_t edge; uint8_t ed, ea; } Bond;
 
-typedef struct { uint8_t used; uint8_t rec[BP_SIZE], n; Eid member[ENT_MEMBERS]; uint32_t digest; } Recipe;
+typedef struct { uint8_t used; uint8_t rec[BP_SIZE], n; Eid member[ENT_MEMBERS]; uint32_t digest; int64_t tried_ms; } Recipe;
 
 typedef struct {            // an island this game owns (S 3.3)
     uint8_t used;
@@ -87,6 +87,7 @@ typedef struct {            // an island this game owns (S 3.3)
     uint32_t stated_digest; uint8_t owed[ENT_PEERS];
     struct { uint32_t digest; uint8_t state, why; int64_t ms, diff_since, owed_ms; } peer[ENT_PEERS];
     int64_t moved_ms, class_ms, pose_ms; uint8_t class_sends;
+    uint32_t dev_sig;                                       // what the last POSE said of its devices: a change is sent at once
     uint8_t frozen; int64_t offer_ms;
     int16_t rec;                                            // its Recipe, -1 none
     uint8_t due; int64_t read_ms;
@@ -272,4 +273,5 @@ enum { ENT_SET_ENT, ENT_SET_OWNED, ENT_SET_FOLLOWER, ENT_SET_DRIVEN, ENT_SET_DRI
 int ent_set_has(int which, uint64_t key);
 int ent_set_list(int which, uint64_t *out, int max);
 void ent_enter_glued(Cpu *c, uint64_t actor);   // S 4.4: an end of a glue that is no entity yet
+void ent_mirror_forget(uint64_t actor);         // the object mirror frees its rows for an actor, on its own tick
 int coop_ent_ours_delete(void);                 // the thread is inside a delete this code asked

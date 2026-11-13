@@ -141,6 +141,7 @@ void ent_bind(Ent *e, uint64_t actor) {
     if (e->actor == actor) return;
     ent_unbind(e);
     e->actor = actor, e->gen = ctn_gen_of(actor), e->main_body = 0;
+    ent_mirror_forget(actor);   // (a copy just made, a part of the maker's, a minted device: none of the mirror's objects)
     if (!e->name[0]) coop_actor_name(actor, e->name, sizeof e->name);
     if (!e->radius) e->radius = ctn_delete_radius(actor);
     if (e->radius < 5) e->radius = 5;
