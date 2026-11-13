@@ -49,7 +49,7 @@ typedef struct {   // an ACK's payload: the stream's next expected number, which
 #define WIN 64        // messages in flight per stream (and kept out of order per stream)
 #define PENDING 128   // messages waiting for room in the window, per stream
 #define INBOX 256     // reliable messages handed on in order, waiting for the game side
-#define SLOTS 128     // latest-only slots
+#define SLOTS 1024    // latest-only slots (the entity sync keeps one pose per island of each player: coop_ent_own.c)
 #define PAYLOAD (COOP_CTR_MAX - (int)sizeof(CtrHdr))
 
 typedef struct { uint16_t seq; uint8_t type, flags; int len, tries; uint64_t sent_ns; uint8_t d[PAYLOAD]; } OutMsg;
@@ -236,6 +236,23 @@ int coop_ctr_recv_type(int type, CoopCtrMsg *m) {   // the oldest reliable messa
     return got;
 }
 
+// The latest-only slots of one type, one after another: *it starts at 0; 0 when there are no more.
+int coop_ctr_slot_next(int type, int *it, CoopCtrMsg *m, uint64_t *age_ns) {
+    int got = 0;
+    plat_mutex_lock(&lock);
+    for (int i = *it; i < SLOTS && !got; i++) {
+        *it = i + 1;
+        if (!slots[i].id || slots[i].type != type || slots[i].len > COOP_CTR_PAYLOAD) continue;
+        m->from_id = slots[i].id, m->type = (uint8_t)type, m->flags = 0, m->len = slots[i].len;
+        memcpy(m->d, slots[i].d, (size_t)slots[i].len);
+        if (age_ns) *age_ns = plat_now_ns() - slots[i].at_ns;
+        got = 1;
+    }
+    if (!got) *it = SLOTS;
+    plat_mutex_unlock(&lock);
+    if (got) m->from = coop_ctr_incarnation(m->from_id);
+    return got;
+}
 int coop_ctr_latest(int from_id, int type, uint64_t key, void *out, int max, uint64_t *age_ns) {
     int n = 0;
     plat_mutex_lock(&lock);

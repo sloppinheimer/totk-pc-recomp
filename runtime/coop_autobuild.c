@@ -473,7 +473,6 @@ static void glue_try(Cpu *c, int n, int64_t since) {
     }
     if (done || !cfg_get("TOTK_COOP_TEST_ABGLUE") || coop_net_id() == 1 || frame_step_world_us() - since < 4000000) return;
     done = 1;
-    int coop_glue_pair(Cpu *c, uint64_t a, uint64_t b);
     char nm[48];
     uint64_t wing = 0;
     for (int i = 0; i < n && !wing; i++)
@@ -481,9 +480,8 @@ static void glue_try(Cpu *c, int n, int64_t since) {
     for (int i = 0; i < n && wing; i++)
         if (live_device(i, nm, sizeof nm) && !strcmp(nm, "SpObj_WindGenerator_A_01"))
         {
-            extern uint64_t coop_glue_last_entry;
-            int ok = coop_glue_pair(c, atomic_load(&tracked[i]), wing);
-            uint64_t edge = coop_glue_last_entry ? coop_rd_ptr(coop_glue_last_entry + 0x560) : 0;
+            int ok = 0;   // (the glue test's call left the build with coop_glue.c)
+            uint64_t edge = 0;
             rt_log("coop: test: abglue: device %d to the wing: %s, its edge %llx (vtable main+%llx)", i, ok ? "glued" : "not glued",
                    (unsigned long long)edge, (unsigned long long)(coop_rd_ptr(edge) - MOD_MAIN_BASE));
             if (edge) dump("glue edge", edge, 0x120);
@@ -1352,7 +1350,7 @@ static int contraption_on(void) {
 // TOTK_COOP_TEST_REBUILDGOIN=gamedata: the rebuild's confirm (and the history writer, TOTK_COOP_TEST_SERIAL) run from
 // GameDataMgr::calc instead, at actor phase 0 (coop_spawn.c coop_hook)
 void coop_autobuild_seq_calc(Cpu *c) {
-    coop_ctn_phase0(c);
+    coop_ent_phase0(c);
     rebuild_go(c);
     serial_try(c, "GameDataMgr::calc");
 }
@@ -1805,10 +1803,8 @@ static void recbuild_test(Cpu *c, int n) {
     if (st == 1 && all) {
         int w = -1, made = 0;
         for (int k = 0; k < rn; k++) if (rb[k].wing) w = k;
-        int coop_bonds_bond(Cpu *c, uint64_t a, uint64_t b), coop_bonds_bond_at(Cpu *c, uint64_t a, uint64_t b);
-        int local = cfg_get("TOTK_COOP_TEST_RECBUILD_LOCAL") != NULL;   // the frames in each body's space (coop_bonds_bond_at)
         for (int k = 0; w >= 0 && k < rn; k++)
-            if (k != w) made += local ? coop_bonds_bond_at(c, rb[k].copy, rb[w].copy) : coop_bonds_bond(c, rb[k].copy, rb[w].copy);
+            (void)k;   // (the plain-bond test call left the build with coop_bonds.c)
         rt_log("coop: test: recbuild: %.2f s all %d copies made; %d bonds made to the wing copy in one pass", t, rn, made);
         if (cfg_get("TOTK_COOP_TEST_RECBUILD_PREVIEW") || cfg_get("TOTK_COOP_TEST_RECBUILD_AB")) prev_solid_at = t + 0.1;
         st = 2, hold = 2, done_at = t;
@@ -1995,7 +1991,8 @@ static void phase0_tick(Cpu *c, int n) {
 
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
     playerdiff_test(me);
-    coop_ctn_tick(c);
+    coop_ent_mirror_tick();   // the object mirror's answers to the entity sync (this is the tick its tables live on)
+    coop_ent_drive(c);
     if (!ablog_on()) return;
     deck_test(c, me, atomic_load(&tracked_n) < TRACK_N ? atomic_load(&tracked_n) : TRACK_N);
     failspam_test(c, me);

@@ -124,7 +124,17 @@ int coop_request_create(Cpu *c, const char *name, const float pos[3], const floa
 int coop_request_create_autobuilt(Cpu *c, const char *name, const float pos[3], const float rot[9], uint8_t *handle) {
     return request_create(c, name, pos, rot, handle, MOD_MAIN_BASE + AUTOBUILD_TYPE);
 }
+// Every create this code asks runs with coop_ent_creating set, so the entity sync's create hook knows the request is
+// ours and mints no identity for the actor (coop_ent_id.c).
+static int request_create_do(Cpu *c, const char *name, const float pos[3], const float rot[9], uint8_t *handle, uint64_t tag);
 static int request_create(Cpu *c, const char *name, const float pos[3], const float rot[9], uint8_t *handle, uint64_t tag) {
+    void coop_ent_creating(int on);
+    coop_ent_creating(1);
+    int r = request_create_do(c, name, pos, rot, handle, tag);
+    coop_ent_creating(0);
+    return r;
+}
+static int request_create_do(Cpu *c, const char *name, const float pos[3], const float rot[9], uint8_t *handle, uint64_t tag) {
     uint64_t mgr = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + COOP_ACTOR_MGR_SLOT));
     if (!mgr) return 0;
     uint64_t saved_x[31], sp0 = c->sp, sp = (sp0 - 0x200) & ~0xfull;

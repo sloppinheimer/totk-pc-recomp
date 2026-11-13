@@ -256,6 +256,14 @@ static void link_read(void) {
     link_actor_now = coop_player_actor();
     held_actor = 0, held_root = ride_root = -1;
     if (held_hint && coop_held_here(held_hint)) held_actor = held_hint; else held_hint = 0;
+    // (the grab hook's hint is one way to it; four times a second every entity here is asked too, so that a hold is
+    // found whatever the hook saw)
+    static int64_t scan_ms;
+    if (!held_actor && link_actor_now && ent_ms() - scan_ms > 250) {
+        scan_ms = ent_ms();
+        for (int i = 0; i < ENT_N && !held_actor; i++)
+            if (ents[i].used && ents[i].actor && coop_held_here(ents[i].actor)) held_actor = held_hint = ents[i].actor;
+    }
     Ent *h = held_actor ? ent_by_actor(held_actor) : NULL;
     if (h) held_root = (int16_t)uf_find(ent_i(h));
     for (int i = 0; link_actor_now && i < ENT_N && ride_root < 0; i++) {   // (sticks only: the name is tested, not every part)
@@ -548,6 +556,16 @@ static void publish(Cpu *c) {
     for (int w = 0; w < ENT_SET_COUNT; w++) set_commit(w);
     static int64_t veto_ms;
     if (now - veto_ms > 250) veto_ms = now, coop_life_veto_rebuild(c, part_list, np);
+}
+
+// An entity as the riders name it between the games (coop_players.c: the stand-in of a player who stands on it is
+// placed on it): a hash of its Eid, never 0. Read without the lock, on the co-op tick: a look-up that races a change
+// of the table misses for one tick.
+int coop_ent_ride_name(uint64_t actor, uint32_t *id) {
+    Ent *e = ent_on() ? ent_by_actor(actor) : NULL;
+    if (!e) return 0;
+    *id = (uint32_t)eid_hash(e->id) | 1;
+    return 1;
 }
 
 // ---- Deleting an actor ourselves (S 7.2) ------------------------------------------------------------------------------------------

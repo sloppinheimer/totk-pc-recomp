@@ -293,7 +293,7 @@ int coop_life_hook(Cpu *c, uint64_t addr) {
     uint64_t off = addr - MOD_MAIN_BASE;
     // A bond made or broken here: the builds recorded at once (coop_ctn.c). Before the x3 branch, which returns for the
     // break addresses (review 1 findings 68 and 79: breaks never reached it).
-    if (off == BOND_MAKER || off == 0x1cf54d4 || off == 0x2999fe8 || off == 0x1c042bc) {
+    if (off == BOND_MAKER || off == 0x1cf54d4 || off == 0x2999fe8 || off == 0x1c042bc || off == 0x2995024) {
         void coop_ctn_structure_event(void);
         coop_ctn_structure_event();
     }
@@ -311,8 +311,8 @@ int coop_life_hook(Cpu *c, uint64_t addr) {
         inner = 1;
         c->pc = MOD_MAIN_BASE + off;
         rt_dispatch(c);
-        void coop_ctn_glue_made(Cpu *c, uint64_t ba, uint64_t bb, const float wa[12], const float wb[12], uint64_t edge);
-        if (have) coop_ctn_glue_made(c, ba, bb, wa, wb, c->x[0]);
+        void coop_ent_glue_made(uint64_t ba, uint64_t bb, uint64_t edge);   // coop_ent_id.c: posted for a non-zero edge only
+        if (have && c->x[0]) coop_ent_glue_made(ba, bb, c->x[0]);
         return 1;
     }
     if (off == 0x2995024 || off == 0x2995068 || off == 0x2999fe8 || off == 0x18ac48 || off == 0x8aaab0 || off == 0x1c042bc ||
@@ -320,7 +320,12 @@ int coop_life_hook(Cpu *c, uint64_t addr) {
         x3_hook(c, off);
         return 0;
     }
-    if (off == 0x190f034) { x3_strain(c); return 0; }
+    if (off == 0x190f034) {   // the strain check: left to the owner for a copy's bonds (coop_ent_rec.c)
+        int coop_ent_hook(Cpu *c, uint64_t addr);
+        if (coop_ent_hook(c, addr)) return 1;
+        x3_strain(c);
+        return 0;
+    }
     if (off == 0x1c0c9b0) { x3_message(c); return 0; }
     if (off == ITEM_CHANGE) {
         if (!free_confirm) return 0;
@@ -343,6 +348,9 @@ int coop_life_hook(Cpu *c, uint64_t addr) {
     if (off == DELETE_DEFER || off == DELETE_REQUEST) {   // only the fallbacks of the green kill and the lapse
         uint64_t lr = c->x[30] - MOD_MAIN_BASE;
         if ((lr == 0x272178 || lr == 0x2f9264 || lr == 0x2f7528) && g4_refuse(c, "delete", c->x[0], c->x[1])) return 1;
+        // an entity's delete request is run inside the entity sync's hook and posted when the game accepted it
+        int coop_ent_delete_hook(Cpu *c, uint64_t addr);
+        if (off == DELETE_REQUEST && coop_ent_delete_hook(c, addr)) return 1;
     }
     if (!x15_on()) return 0;
     x15_counts();

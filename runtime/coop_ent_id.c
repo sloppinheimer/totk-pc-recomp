@@ -222,7 +222,10 @@ void coop_ent_mirror_tick(void) {
     coop_lock_wait(&ent_lock);
     for (int i = 0; i < ENTER_N; i++) {
         if (!enter[i].actor || enter[i].answered) continue;
-        if (enter[i].kind == 2) enter[i].made_here = (uint8_t)(coop_obj_made_here(enter[i].actor) != 0);
+        if (enter[i].kind == 2) {   // (the mirror takes some ticks to call an object made here: asked for 2 s)
+            enter[i].made_here = (uint8_t)(coop_obj_made_here(enter[i].actor) != 0);
+            if (!enter[i].made_here && ent_ms() - enter[i].ms < 2000) continue;
+        }
         else {
             enter[i].has_pair = (uint8_t)(coop_obj_ident(enter[i].actor, &enter[i].owner, &enter[i].id) != 0);
             enter[i].is_copy = (uint8_t)(coop_is_copy(enter[i].actor) != 0);
@@ -359,10 +362,9 @@ void ent_ring_events(Cpu *c) {
             break;
         }
         case EV_GRAB:
-            if (ev.a2 == coop_player_actor()) {
-                // (the SPR's actor: found among the entities by its SPR; a thing that is no entity is the mirror's)
-                for (int i = 0; i < ENT_N; i++) if (ents[i].used && ents[i].actor && ctn_spr(ents[i].actor) == ev.actor) { ent_held_hint(ents[i].actor); break; }
-            }
+            // (the SPR's actor, found among the entities; whether this Link is the holder is read at once after, by
+            // coop_held_here. A thing that is no entity is the mirror's.)
+            for (int i = 0; i < ENT_N; i++) if (ents[i].used && ents[i].actor && ctn_spr(ents[i].actor) == ev.actor) { ent_held_hint(ents[i].actor); break; }
             break;
         case EV_TOGGLE: case EV_SWITCH: {
             Ent *e = ent_by_actor(ev.actor);

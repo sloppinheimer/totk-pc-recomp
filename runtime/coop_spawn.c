@@ -917,6 +917,14 @@ int coop_hook(Cpu *c, uint64_t addr) {
         return coop_life_veto(c);
     }
     phase_sample(addr);
+    {   // the entity sync (coop_ent_id.c): where the game marks an actor created (hot: first), the synchronous create, the
+        // seat claim, the glue manager's list add and the cap's kill
+        uint64_t off = addr - MOD_MAIN_BASE;
+        if (off == 0x54cb00 || off == 0xa1bc30 || off == 0x502e60 || off == 0x191642c || off == 0x190d924) {
+            int coop_ent_hook(Cpu *c, uint64_t addr);
+            return coop_ent_hook(c, addr);
+        }
+    }
     if (addr == MOD_MAIN_BASE + 0x916860) return beam_hook(c, addr);
     if (addr == MOD_MAIN_BASE + 0x567750 || addr == MOD_MAIN_BASE + 0x25a1f0 || addr == MOD_MAIN_BASE + 0x40e490 ||
         addr == MOD_MAIN_BASE + 0x44be18 || addr == MOD_MAIN_BASE + 0x29ae114 || addr == MOD_MAIN_BASE + 0x29ae7a8 ||
@@ -990,7 +998,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // component call that gives a device its contraption's group, main+0x1d93978.
     if (addr == MOD_MAIN_BASE + 0x6898dc || addr == MOD_MAIN_BASE + 0x1c0b94c || addr == MOD_MAIN_BASE + 0x1d61a6c || addr == MOD_MAIN_BASE + 0x1c0ba8c ||
         addr == MOD_MAIN_BASE + 0x1d93978) { int coop_autobuild_hook(Cpu *c, uint64_t addr); return coop_autobuild_hook(c, addr); }
-    if (addr == MOD_MAIN_BASE + 0x1d66e34 || addr == MOD_MAIN_BASE + 0x1c0bb54) { int coop_glue_hook(Cpu *c, uint64_t addr); return coop_glue_hook(c, addr); }
     // rotating ground (coop_world.c): the Rotate logic and AI nodes' updates and enters, their turn helper, the turn
     // set, and the blackboard byte read the logic node takes its switch from
     if (addr == MOD_MAIN_BASE + 0x1cf0260 || addr == MOD_MAIN_BASE + 0x1cf0160 || addr == MOD_MAIN_BASE + 0x2329170 || addr == MOD_MAIN_BASE + 0x2329078 ||
@@ -1129,7 +1136,11 @@ int coop_hook(Cpu *c, uint64_t addr) {
         coop_actor_created(c->x[0]);
         return 1;
     }
-    if (addr == MOD_MAIN_BASE + 0x599670) return create_trace(c);
+    if (addr == MOD_MAIN_BASE + 0x599670) {   // the create request: the entity sync runs it inside its hook (its inner entry first)
+        int coop_ent_hook(Cpu *c, uint64_t addr);
+        if (coop_ent_hook(c, addr)) return 1;
+        return create_trace(c);
+    }
     // HUD control guide (bottom-right prompts such as "Dive R"): main+0x2192c50 (type) shows one, main+0x4cb540 (type)
     // hides one, on the one CtrlGuide screen. Every Player's calc calls them; a co-op Link's must not change this
     // PC's HUD, so they do nothing inside one (2026-11-04).
@@ -1973,6 +1984,7 @@ void coop_tick(struct Cpu *c) {
         }
     }
     coop_ctr_tick();   // the contraption channel (coop_ctr.c): before the players, so their pass sees this poll's messages
+    { void coop_ent_net(void); coop_ent_net(); }   // the entity sync's net half: heartbeat flags, the pause queue (coop_ent_own.c)
     void coop_loadwatch_tick(void);   // coop_loadwatch.c
     coop_loadwatch_tick();
     coop_players_tick(c);

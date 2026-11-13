@@ -7,6 +7,12 @@
 
 int coop_ctn_core(void);                     // TOTK_COOP_CONTRAPTION=1
 
+// The entity sync's three entry points (coop_ent.c) and the mirror's answers (coop_ent_id.c).
+void coop_ent_phase0(Cpu *c);                // from GameDataMgr::calc, actor phase 0
+void coop_ent_drive(Cpu *c);                 // from the co-op tick: the copies moved, their devices set
+void coop_ent_mirror_tick(void);             // from the co-op tick: what the object mirror knows of an actor
+void coop_ent_net(void);                     // beside the transport's tick: heartbeat flags, the pause queue
+
 // Read from any game thread: the sets coop_ent.c publishes each frame.
 int coop_ent_is(uint64_t a);                 // an entity's actor (or a part of the batch being made)
 int coop_contraption_made(uint64_t a);       // a copy this code made
