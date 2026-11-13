@@ -80,9 +80,11 @@ taken in arrival order, not by type (3.3).
 ## 3. The design
 
 ### 3.1 Entity
-Every grab-able actor (an SPR, minus the names coop_players.c prop_skip leaves out) is one entity with one id for
-life: (minting incarnation, serial). A loose fan and a fan in a build are the same thing. Arrows, beams, the
-paraglider and fused gear stay a small effects list in the object mirror.
+An entity has one id for life: (minting incarnation, serial). A loose fan and a fan in a build are the same thing.
+In the first build the entities are: Zonai devices and capsules, the parts an Autobuild made, and any other actor a
+player grabs with Ultrahand or glues (from that moment, for the rest of the session). Pickable items, weapons,
+materials, arrows, beams, the paraglider and fused gear stay in the object mirror as they are today (decided in the
+specification's review: the mirror is one pipeline, and its pick-up and destroy notices already carry them).
 - A copy this code creates is bound to its id by the create handle.
 - A run-time actor this game made is minted here.
 - A map-placed actor is (0, hash of placement hash and name), only after one log line per game has shown the hashes
@@ -155,8 +157,10 @@ only, and the design switches to this. (Chosen by the writer of this plan; the t
 ### 3.8 Devices, harm, threads, logs
 - The device rules of 2.2, addressed by id. The lone-device subsystem goes.
 - A contact counts only in the game that owns the victim. This replaces "drop every contact from a copy's device".
-- Everything that reads or changes the game's world runs at actor phase 0 (main+0xa72b00). The co-op tick keeps
-  transport and heartbeat.
+- Structure, ownership and reconcile run at actor phase 0 (main+0xa72b00). The co-op tick keeps transport, the
+  heartbeat, the answers to ownership requests while the game is in a menu, and the drive of copies at the cadence
+  it was played at.
+- Every protocol timer is wall-clock time, so it runs in a paused game.
 - Every log line has a wall-clock time and entity ids. The settings in use are printed at start.
 
 ## 4. Order of work
