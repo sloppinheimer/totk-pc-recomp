@@ -277,7 +277,8 @@ static void entered(uint64_t actor, uint32_t gen, int has_pair, int owner, uint3
     ent_bind(e, actor);
     e->flags |= flags, e->mir_known = 1;
     if (has_pair) e->mir_owner = (uint8_t)owner, e->mir_id = id, e->mir_resolved = 1, e->mir_actor = actor;
-    if (!e->owner || (e->owner != me && !e->epoch)) e->owner = me, e->epoch = 1;   // (a row another game stated first keeps its owner)
+    if (!e->owner) e->owner = me, e->epoch = e->epoch + 1;   // (nobody's: claimed, above the epoch it had)
+    else if (e->owner != me && !e->epoch) e->owner = me, e->epoch = 1;   // (a row another game stated first keeps its owner)
     if (e->life == LIFE_FREE) e->life = LIFE_LIVE;
     ent_mark_due(e);
     char b[24];

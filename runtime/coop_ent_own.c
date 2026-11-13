@@ -63,6 +63,7 @@ int ent_apply_owner(Ent *e, uint64_t owner, uint32_t epoch) {
     if (epoch < e->epoch || (epoch == e->epoch && owner <= e->owner)) return 0;
     uint64_t me = coop_ctr_me(), was = e->owner;
     e->owner = owner, e->epoch = epoch;
+    if (was != owner) e->st_digest = 0, e->state = ST_AGREE, e->passes = 0, e->backoff = 0, e->backoff_until = 0;   // (its old owner's statement of it alone no longer holds)
     if (was == me && owner != me) {
         if (ent_this_link_holds(e)) e->end_hold = 1;
         if (ent_this_link_rides(e)) e->end_ride = 1;
@@ -88,7 +89,7 @@ void own_claim(Ent **members, int n, const char *why) {
         if (e->owner != me && became_n < 64) became_mine[became_n++] = (int16_t)ent_i(e);
         e->owner = me, e->epoch = ep;
         if (e->life == LIFE_FREE) e->life = LIFE_LIVE;
-        e->st = -1, e->state = ST_AGREE;
+        e->st = -1, e->state = ST_AGREE, e->st_digest = 0;
     }
     ent_mark_due(members[0]);
     rt_log("coop: ent: %lld claimed %s and %d more at epoch %u: %s", (long long)ent_ms(), ent_eid_str(members[0]->id, b), n - 1, ep, why);
@@ -296,6 +297,10 @@ static void stmt_apply(uint64_t from, int p, const IslandHdr *h, const uint8_t *
     for (int k = 0; k < h->n; k++) {
         Ent *e = ent_new(mr[k].id);
         if (!e) return;
+        if (mr[k].life == LIFE_FREE && !mr[k].owner) {   // a map entity its owner let go: nobody's, at that epoch
+            if (e->owner == from && mr[k].epoch >= e->epoch) e->owner = 0, e->epoch = mr[k].epoch, e->life = LIFE_FREE, e->st = -1, e->st_digest = 0, e->named = 1;
+            continue;
+        }
         ent_apply_owner(e, mr[k].owner, mr[k].epoch);
         if (e->owner != from || mr[k].owner != from) continue;   // (the sender does not own it by this table: dropped for it)
         if (!e->name[0]) memcpy(e->name, mr[k].name, sizeof e->name), e->name[sizeof e->name - 1] = 0;
@@ -360,7 +365,7 @@ static void stmt_apply(uint64_t from, int p, const IslandHdr *h, const uint8_t *
         if (!e || e->owner != from) continue;
         st->m[st->n].id = mr[k].id, st->m[st->n].life = mr[k].life, st->m[st->n].death_kind = mr[k].death_kind, st->m[st->n].green = mr[k].green;
         memcpy(st->m[st->n].rel_root, mr[k].rel_root, sizeof mr[k].rel_root), st->m[st->n].radius = mr[k].radius;
-        st->n++, e->st = (int16_t)si;
+        st->n++, e->st = (int16_t)si, e->st_digest = 0;
     }
     for (int k = 0; k < h->nb; k++) {
         Bond *bd = &st->bond[st->nb++];
@@ -612,6 +617,7 @@ static void offer_all_in(const CoopCtrMsg *m) {   // the sender loads: every ent
 
 // ---- Receiving (S 6): one reliable message at phase 0 --------------------------------------------------------------------------------
 void own_receive(Cpu *c, const CoopCtrMsg *m) {
+    if (!m->from || m->from != coop_ctr_incarnation(m->from_id)) return;   // (queued from a player who sat in that seat before)
     switch (m->type) {
     case ENT_ISLAND: island_in(m); break;
     case ENT_TAKE: take_in(m, 0); break;
@@ -759,6 +765,8 @@ void own_peer_events(void) {
         int p = id - 1;
         if (p < 0 || p >= ENT_PEERS) continue;
         memset(&peers[p], 0, sizeof peers[p]), asm_buf[p].have = 0, asm_buf[p].counter = 0, index_end_due[p] = 0;
+        for (int i = 0; i < STATED_N; i++) if (stated[i].used && (stated[i].from == inc || !ent_peer_here(stated[i].from))) stated_free(&stated[i]);
+        for (int i = 0; i < ENT_N; i++) if (ents[i].used && ents[i].owner == inc && !joined) ents[i].st_digest = 0;
         for (int i = 0; i < ISL_N; i++) {
             if (!isls[i].used) continue;
             isls[i].owed[p] = (uint8_t)(joined != 0), memset(&isls[i].peer[p], 0, sizeof isls[i].peer[p]);
@@ -843,10 +851,28 @@ void own_timers(Cpu *c) {
             own_send_to(e->owner, ENT_REQ, COOP_CTR_RELIABLE, &q, sizeof q), a->sent = now;
         }
     }
-    // an owner that left: a game with an actor of the island claims after 2 s (S 5.7)
+    // an owner that left: a game with an actor of the island claims after 2 s (S 5.7). Not within 3 s of this game's own
+    // incarnation changing (a reconnect: the other players are not routed yet, and all of them would read as gone).
     static uint8_t seen[ENT_N];
+    static uint64_t last_me;
+    static int64_t me_ms;
+    if (me != last_me) last_me = me, me_ms = now, memset(gone_since, 0, sizeof gone_since);
     memset(seen, 0, sizeof seen);
+    // 3. an entity this game owns that is alive by the table and has had no actor here for 3 s (claimed with its island
+    // while its actor was not here, or never made): nobody can show it; stated gone (a map entity: free)
+    static int64_t bare_since[ENT_N];
     for (int i = 0; i < ENT_N; i++) {
+        Ent *e = &ents[i];
+        if (!e->used || e->owner != me || e->life != LIFE_LIVE || e->actor || e->making || (e->flags & ENT_PREVIEW) || (e->isl >= 0 && isls[e->isl].frozen)) { bare_since[i] = 0; continue; }
+        if (!bare_since[i]) bare_since[i] = now;
+        if (now - bare_since[i] < 3000) continue;
+        bare_since[i] = 0;
+        e->life = e->flags & ENT_MAP ? LIFE_FREE : LIFE_GONE, e->dead_ms = now;
+        if (e->flags & ENT_MAP) e->owner = 0;
+        own_owe_ent(e, -1);
+        ent_mark_due(e);
+    }
+    for (int i = 0; i < ENT_N && now - me_ms > 3000; i++) {
         Ent *e = &ents[i];
         if (!e->used || !e->owner || e->owner == me || ent_peer_here(e->owner)) { gone_since[i] = 0; continue; }
         if (!gone_since[i]) gone_since[i] = now;
@@ -946,7 +972,7 @@ void own_send(Cpu *c) {
         }
         for (int i = 0; i < ENT_N && !owed_left; i++) {
             if (!(ent_owed[i] >> p & 1)) continue;
-            if (!ents[i].used || ents[i].owner != me) { ent_owed[i] &= (uint8_t)~(1u << p); continue; }
+            if (!ents[i].used || (ents[i].owner != me && !(ents[i].owner == 0 && ents[i].life == LIFE_FREE))) { ent_owed[i] &= (uint8_t)~(1u << p); continue; }
             if (stmt_send(c, NULL, &ents[i], p)) ent_owed[i] &= (uint8_t)~(1u << p);
             else owed_left = 1;
         }

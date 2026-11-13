@@ -254,7 +254,9 @@ static void rec_one(Cpu *c, Stated *st, int st_i) {
     int in_range = 0;
     if (link && coop_rd(link + COOP_ACTOR_POS, lp, 12)) {
         float dx = lp[0] - st->root_m[3], dy = lp[1] - st->root_m[7], dz = lp[2] - st->root_m[11];
-        in_range = sqrtf(dx * dx + dy * dy + dz * dz) < min_r - 10 - max_rel;
+        float lim = min_r - 10 - max_rel;
+        if (lim < 15) lim = 15;   // (a radius that was not read, or a small one: still made when this Link stands by it)
+        in_range = sqrtf(dx * dx + dy * dy + dz * dz) < lim;
     }
     if (st->state == ST_NOT_SHOWN && now < st->backoff_until) return;
     if (missing && !in_range) { st->state = ST_FAR, st->why = WHY_NONE, st->passes = 0; return; }
