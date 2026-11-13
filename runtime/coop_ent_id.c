@@ -40,16 +40,29 @@ static __thread int creating;
 void coop_ent_creating(int on) { creating = on; }   // set around every create this code asks (coop_game.c, the maker)
 static _Atomic uint32_t stand_in_capsules, pend_full;
 
+// A row is claimed by a compare-exchange to a reserved value, so two threads never take one free row; its decision is
+// stored before its record. Rows older than 10 s are free again (a request that failed never reaches the second hook).
+static int64_t pend_ms[PEND_N];
 static void pend_set(uint64_t r, uint32_t info) {
-    int free = -1;
+    int64_t now = ent_ms();
     for (int i = 0; i < PEND_N; i++) {
         uint64_t have = atomic_load_explicit(&pend[i].r, memory_order_relaxed);
-        if (have == r) { if (info) atomic_store(&pend[i].info, info); else atomic_store(&pend[i].r, 0); return; }
-        if (!have && free < 0) free = i;
+        if (have != r) continue;
+        if (info) atomic_store(&pend[i].info, info), pend_ms[i] = now;
+        else atomic_store(&pend[i].r, 0);
+        return;
     }
     if (!info) return;
-    if (free < 0) { atomic_fetch_add(&pend_full, 1); return; }
-    atomic_store(&pend[free].info, info), atomic_store(&pend[free].r, r);
+    for (int pass = 0; pass < 2; pass++)
+        for (int i = 0; i < PEND_N; i++) {
+            uint64_t have = atomic_load(&pend[i].r);
+            if (have == 1 || (have && (!pass || now - pend_ms[i] < 10000))) continue;   // (pass 1 takes a row left over for 10 s)
+            if (!atomic_compare_exchange_strong(&pend[i].r, &have, 1)) continue;
+            atomic_store(&pend[i].info, info), pend_ms[i] = now;
+            atomic_store(&pend[i].r, r);
+            return;
+        }
+    atomic_fetch_add(&pend_full, 1);
 }
 // main+0x599670, the asynchronous create request: (mgr, &name, arg, handle x3, lane, placement record x5, ...). It is
 // run inside the hook; afterwards [x3] is the pool record R the request made.

@@ -80,14 +80,26 @@ static void hash_put(int16_t *tab, uint64_t h, int i) {
         if (tab[k] <= 0) { tab[k] = (int16_t)(i + 1); return; }
     }
 }
+static int hash_tombs;   // deleted slots since the tables were last rebuilt
 static void hash_del(int16_t *tab, uint64_t h, int i) {
     for (unsigned p = 0; p < HASH_N; p++) {
         unsigned k = (unsigned)((h + p) % HASH_N);
         if (!tab[k]) return;
-        if (tab[k] == i + 1) { tab[k] = -1; return; }
+        if (tab[k] == i + 1) { tab[k] = -1, hash_tombs++; return; }
     }
 }
+static uint64_t actor_hash(uint64_t a);
+static void hash_rebuild(void) {   // (deleted slots lengthen every miss: both tables are filled again from the rows)
+    memset(by_id, 0, sizeof by_id), memset(by_actor, 0, sizeof by_actor);
+    for (int i = 0; i < ENT_N; i++) {
+        if (!ents[i].used) continue;
+        hash_put(by_id, eid_hash(ents[i].id), i);
+        if (ents[i].actor) hash_put(by_actor, actor_hash(ents[i].actor), i);
+    }
+    hash_tombs = 0;
+}
 static uint64_t actor_hash(uint64_t a) { return (a >> 4) * 0x9e3779b97f4a7c15ull >> 20; }
+void ent_hash_tidy(void) { if (hash_tombs > 400) hash_rebuild(); }
 Ent *ent_by_id(Eid id) {
     uint64_t h = eid_hash(id);
     for (unsigned p = 0; p < HASH_N; p++) {
@@ -379,6 +391,7 @@ static void islands_build(Cpu *c) {
                 if (set[k]->epoch > ep) ep = set[k]->epoch;
             } else far = 1;
         }
+        if (!no) continue;
         if (ni >= ISL_N) { ent_full("island"); break; }
         Island *is = &isls[ni];
         int from = was[ent_i(own[0])];
@@ -594,6 +607,7 @@ void coop_ent_phase0(Cpu *c) {
     if (!ent_on()) return;
     coop_lock_wait(&ent_lock);
     atomic_store(&phase0_ms, ent_ms());
+    ent_hash_tidy();
     own_peer_events();
     // 1. the pause queue, then the transport, in arrival order; then the latest-only slots
     {

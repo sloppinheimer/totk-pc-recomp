@@ -838,6 +838,7 @@ static void floats_follow(Cpu *c) {
         // bomb's death and blast by itself. The blast comes with the runner's. Research notes
         // sync-v3/m2/p5/rocket-timebomb, 2.2 and 2.4. (A fuse that is no number is left as it is: finding 56.)
         if (w[i].kind == 3) {
+            if (!c) continue;   // (the fuse node is written at actor phase 0 only, not from the co-op tick)
             uint64_t node = fuse_node(w[i].part);
             float left = f[0] > 2.0f ? f[0] : 2.0f;
             if (!node || f[1] == 0 || f[0] != f[0]) continue;
@@ -1333,6 +1334,7 @@ static struct {
     uint32_t green;
     uint8_t rec[BP_SIZE];
     uint64_t parts[21];
+    uint32_t gens[21];      // each made part's id when it was taken: a part gone since is not written
     uint8_t save_m[48], save_b[3], save_rec[BP_SIZE];
     int saved;
 } mk;
@@ -1435,6 +1437,7 @@ void ctn_make_pass(Cpu *c) {
     uint32_t selected = 0;
     char b[24];
     if (!o) { mk_end(1); return; }
+    if (ent_loading()) { mk.saved = 0; mk_end(0); return; }   // (the world is being torn down: the make is dropped as it is)
     uint64_t list = coop_rd_ptr(o + 0x1b8);
     int32_t ne = 0;
     coop_rd(o + 0x1b0, &ne, 4);
@@ -1465,6 +1468,7 @@ void ctn_make_pass(Cpu *c) {
         for (int i = 0; list && i < ne && i < 21; i++) {
             uint64_t ent = coop_rd_ptr(list + 8 * (uint64_t)i), ref = 0;
             mk.parts[i] = coop_claim(c, (uint8_t *)(uintptr_t)(ent + 0x60), tmp[i], &ref);
+            mk.gens[i] = gen_of(mk.parts[i]);
             atomic_store(&mk_pub[i], mk.parts[i]);
             Ent *e = ent_by_id(mk.member[i]);
             if (e && mk.parts[i] && e->owner == mk.from && !e->actor) ent_bind(e, mk.parts[i]), e->flags |= ENT_COPY;
@@ -1482,6 +1486,7 @@ void ctn_make_pass(Cpu *c) {
         uint32_t costs_were[21] = {0};
         int ncost = 0;
         static uint64_t keyname;
+        for (int i = 0; i < mk.n; i++) if (mk.parts[i] && !alive_as(mk.parts[i], mk.gens[i])) mk.parts[i] = 0;   // (gone since it was taken)
         for (int i = 0; i < mk.n; i++) {
             uint64_t ent = coop_rd_ptr(list + 8 * (uint64_t)i);
             if (!ent || !mk.parts[i]) continue;
@@ -1613,13 +1618,18 @@ void ctn_drive(Cpu *c) {
         coop_lock_wait(&grp_lock);
         int here = g->used == 1 && !g->mine && g->n && wall - g->stamp_ms < 300 && g->hus[2] && now - g->heard_us < 1000000;
         int go = here && !g->asked, agree = g->agree;
+        uint64_t key = g->key64, owner = g->owner;
         plat_mutex_unlock(&grp_lock);
         if (!here) continue;
         if (agree) dev_follow(c, g, now);   // (its devices as where it is owned, also while this player holds it)
         if (!go) continue;
         float err = 0;
         follow_rigid(c, g, now, &err);
-        if (err > 10.0f) g->teleport = 1;   // (done at phase 0)
+        if (err > 10.0f) {   // (done at phase 0; the row may be another island's by now: marked only if it is still this one)
+            coop_lock_wait(&grp_lock);
+            if (g->used == 1 && !g->mine && g->key64 == key && g->owner == owner) g->teleport = 1;
+            plat_mutex_unlock(&grp_lock);
+        }
     }
     floats_follow(NULL);
 }

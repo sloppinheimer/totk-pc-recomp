@@ -850,7 +850,7 @@ void own_timers(Cpu *c) {
         Ent *e = &ents[i];
         if (!e->used || !e->owner || e->owner == me || ent_peer_here(e->owner)) { gone_since[i] = 0; continue; }
         if (!gone_since[i]) gone_since[i] = now;
-        if (!e->actor && now - gone_since[i] > 10000) { ent_drop(e); continue; }   // (nothing of it here, and nobody to state it)
+        if (!e->actor && !e->making && now - gone_since[i] > 10000) { ent_drop(e); continue; }   // (nothing of it here, and nobody to state it)
         if (seen[i] || !e->actor || e->life != LIFE_LIVE || now - gone_since[i] < 2000) continue;
         Ent *set[64], *mem[ENT_MEMBERS];
         int ns = ent_island_members(e, set, 64), n = 0;
@@ -884,7 +884,7 @@ void own_timers(Cpu *c) {
         Ent *e = &ents[i];
         if (!e->used || (e->life != LIFE_DEAD && e->life != LIFE_GONE) || e->actor) continue;
         int64_t since = e->owner == me ? e->dead_ms : e->stated_ms > e->dead_ms ? e->stated_ms : e->dead_ms;
-        if (now - since > 10000 && !ent_owed[i]) ent_drop(e);
+        if (now - since > 10000 && !ent_owed[i] && !e->making) ent_drop(e);
     }
 }
 void own_unload(Cpu *c, Ent *e) {   // an accepted unload of an owned entity: its island is offered for 2 s (S 5.8)
