@@ -722,6 +722,7 @@ static void coop_bonds_came_apart(uint64_t actor, int owner, uint32_t id) { (voi
 static int coop_contraption_owns(int from, uint32_t id) { (void)from, (void)id; return 0; }
 static uint64_t coop_contraption_find(int owner, uint32_t id) { (void)owner, (void)id; return 0; }
 int coop_ent_is(uint64_t a);                             // coop_ctn.c: an entity's actor
+int coop_ctn_core(void);
 int coop_ent_ride_name(uint64_t actor, uint32_t *id);    // coop_ent.c: an entity as the riders name it
 #define COOP_RIDE_ENTITY 0xfd                            // ride_owner of an entity (COOP_RIDE_MOUNT is a horse)
 #define COPY_WARMUP 5   // ticks a copy runs its own update after it is made (arrow_copies)
@@ -1655,7 +1656,21 @@ static void arrow_copies(Cpu *c, Slot *s) {
         // A copy that is a part of a build (coop_ctn.c took it in where it stood) is the build's while it is one: not
         // deleted when its owner stops sending it as a plain object.
         int coop_ctn_part(uint64_t a);
-        if (s->mir[k].state == 3 && coop_ctn_part(s->mir[k].actor)) continue;
+        if (s->mir[k].state == 3 && (coop_ctn_part(s->mir[k].actor) || coop_ent_is(s->mir[k].actor))) continue;
+        // A thing that became an entity in its owner's game (it was glued) stops being listed a moment before its
+        // statement arrives, and the entity sync then takes this copy over (coop_obj_entity). So a copy of something
+        // that can be glued is kept a second after its owner stops listing it. Arrows, beams and fused gear go at once.
+        if (s->mir[k].state == 3 && coop_ctn_core() && !strstr(s->mir[k].name, "Arrow") && strcmp(s->mir[k].name, "PlayerBeam") &&
+            !(s->mir[k].flags & (COOP_OBJ_FUSED | COOP_OBJ_LOCAL | COOP_OBJ_ONLINK))) {
+            static struct { int owner; uint32_t id; int since; } hold[32];
+            int h = -1, fr = 0;
+            for (int q = 0; q < 32; q++) {
+                if (hold[q].id == s->mir[k].id && hold[q].owner == s->net_id && taken_tick - hold[q].since < 300) h = q;
+                if (hold[q].since < hold[fr].since) fr = q;
+            }
+            if (h < 0) h = fr, hold[h].owner = s->net_id, hold[h].id = s->mir[k].id, hold[h].since = taken_tick;
+            if (taken_tick - hold[h].since < 30) continue;
+        }
         // A shot arrow's fused material that goes in its owner's game went off where the arrow hit (a bomb flower's
         // blast; the tester's list: all arrow effects): its copy here is set off the same way, its life taken and its
         // own update let run, instead of being deleted. (A nocked one goes when the bow is put away: deleted.)
@@ -2849,7 +2864,7 @@ static void force_to(Cpu *c, uint64_t a, const float pos[3], const float q[4]) {
 static void props_hold(Cpu *c);
 static int part_or_followed(uint64_t a) {
     int coop_ctn_core(void), coop_ctn_part(uint64_t a), coop_ctn_follows(uint64_t a);
-    return coop_ctn_core() && (coop_ctn_part(a) || coop_ctn_follows(a));
+    return coop_ctn_core() && (coop_ent_is(a) || coop_ctn_part(a) || coop_ctn_follows(a));
 }
 static int my_report(uint64_t a) {   // this game sends a as moved
     for (int e = 0; e < PROPS_N; e++) if (props[e].actor == a) return props[e].touched && !props[e].made;

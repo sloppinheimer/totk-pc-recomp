@@ -1148,6 +1148,7 @@ void coop_ctn_structure_event(void) { coop_ent_structure_event(); }
 #define ST64(a, v) (*(uint64_t *)(uintptr_t)(a) = (uint64_t)(v))
 #endif
 int ctn_alive(uint64_t a) { return alive(a); }
+void ctn_follow_reset(struct FollowState *fs) { if (fs) memset(fs, 0, sizeof *fs); }
 uint32_t ctn_gen_of(uint64_t a) { return gen_of(a); }
 int ctn_alive_as(uint64_t a, uint32_t gen) { return alive_as(a, gen); }
 uint64_t ctn_main_body(uint64_t a) { return main_body_of(a); }
@@ -1248,9 +1249,12 @@ void ctn_place(Cpu *c, uint64_t actor, const float m[12]) {   // one teleport of
     sync_writing = 0;
 }
 void ctn_teleport(Cpu *c, Grp *g) {   // an island of another owner more than 10 m off: put at the owner's newest pose
+    if (g->mine || g->asked || !g->hus[2]) return;
     for (int k = 0; k < g->n && k < 21; k++) {
         float m[12];
-        m34_mul(m, g->hm[2], g->rel_root[k]);
+        const float *r = g->rel_root[k];
+        if (r[0] * r[0] + r[1] * r[1] + r[2] * r[2] < 0.5f) continue;   // (its place in the island was never read)
+        m34_mul(m, g->hm[2], r);
         if (alive_as(g->parts[k], g->gen[k])) ctn_place(c, g->parts[k], m);
     }
 }
@@ -1371,11 +1375,12 @@ static void mk_end(int failed) {
 }
 int ctn_make_start(Cpu *c, int st_i) {
     uint64_t o = mk_object(NULL);
+    if (mk.st || !o || st_i < 0 || st_i >= STATED_N || !stated[st_i].used) return 0;
     Stated *st = &stated[st_i];
     const uint8_t *r = st->rec;
     int n = r[9], root_i = -1;
     char b[24];
-    if (mk.st || !o || st_i < 0 || n < 2 || n > 21 || n != st->rec_n || memcmp(r, "CmbAct", 6)) return 0;
+    if (n < 2 || n > 21 || n != st->rec_n || memcmp(r, "CmbAct", 6)) return 0;
     for (int i = 0; i < n; i++) if (eid_eq(st->rec_member[i], st->root)) root_i = i;
     if (root_i < 0) return 0;
     float f[12], inv[12], base[12];
@@ -1461,7 +1466,11 @@ void ctn_make_pass(Cpu *c) {
             mk.parts[i] = coop_claim(c, (uint8_t *)(uintptr_t)(ent + 0x60), tmp[i], &ref);
             atomic_store(&mk_pub[i], mk.parts[i]);
             Ent *e = ent_by_id(mk.member[i]);
-            if (e && mk.parts[i] && e->owner == mk.from) ent_bind(e, mk.parts[i]), e->flags |= ENT_COPY;
+            if (e && mk.parts[i] && e->owner == mk.from && !e->actor) ent_bind(e, mk.parts[i]), e->flags |= ENT_COPY;
+            else if (mk.parts[i]) {   // (its entity went or changed hands while it was made: the part is no one's, deleted)
+                part_delete(c, mk.parts[i]);
+                atomic_store(&mk_pub[i], 0), mk.parts[i] = 0;
+            }
         }
         mk.n = ne < 21 ? ne : 21, mk.st = 2;
         return;
@@ -1560,6 +1569,18 @@ void ctn_toggle_put(Cpu *c, uint64_t actor, int want) {
     plat_mutex_unlock(&grp_lock);
 }
 void ctn_event_put(uint64_t actor, uint32_t gen, uint8_t bits) {   // a switch event another player's attack put on its copy
+    if (bits & 5) {   // (set on: that player pays, as for a toggle)
+        coop_lock_wait(&grp_lock);
+        for (int i = 0; i < GRP_N; i++) {
+            Grp *g = &grps[i];
+            int in = 0;
+            if (g->used != 1 || !g->mine) continue;
+            for (int r = 0; r < g->n; r++) in |= g->parts[r] == actor;
+            if (in) { g->payer = ctn_payer_hint ? ctn_payer_hint : coop_ctr_me(), g->payer_us = frame_step_world_us(); break; }
+        }
+        plat_mutex_unlock(&grp_lock);
+    }
+    ctn_payer_hint = 0;
     plat_mutex_lock(&ev_lock);
     if (ev_put_n < EVQ) ev_put[ev_put_n].actor = actor, ev_put[ev_put_n].bits = bits, ev_put[ev_put_n].gen = gen, ev_put_n++;
     else queue_full("switch events to put");
@@ -1589,14 +1610,15 @@ void ctn_drive(Cpu *c) {
     for (int i = 0; i < GRP_N; i++) {
         Grp *g = &grps[i];
         coop_lock_wait(&grp_lock);
-        int go = g->used == 1 && !g->mine && !g->asked && g->n && wall - g->stamp_ms < 300 && g->hus[2] && now - g->heard_us < 1000000;
-        int agree = g->agree;
+        int here = g->used == 1 && !g->mine && g->n && wall - g->stamp_ms < 300 && g->hus[2] && now - g->heard_us < 1000000;
+        int go = here && !g->asked, agree = g->agree;
         plat_mutex_unlock(&grp_lock);
+        if (!here) continue;
+        if (agree) dev_follow(c, g, now);   // (its devices as where it is owned, also while this player holds it)
         if (!go) continue;
         float err = 0;
         follow_rigid(c, g, now, &err);
         if (err > 10.0f) g->teleport = 1;   // (done at phase 0)
-        if (agree) dev_follow(c, g, now);
     }
     floats_follow(NULL);
 }

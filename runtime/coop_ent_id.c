@@ -222,6 +222,7 @@ void coop_ent_mirror_tick(void) {
     coop_lock_wait(&ent_lock);
     for (int i = 0; i < ENTER_N; i++) {
         if (!enter[i].actor || enter[i].answered) continue;
+        if (enter[i].kind == 3) { coop_obj_entity(enter[i].actor), enter[i].answered = 1; continue; }   // (an actor minted at its create: the mirror forgets it)
         if (enter[i].kind == 2) {   // (the mirror takes some ticks to call an object made here: asked for 2 s)
             enter[i].made_here = (uint8_t)(coop_obj_made_here(enter[i].actor) != 0);
             if (!enter[i].made_here && ent_ms() - enter[i].ms < 2000) continue;
@@ -299,9 +300,11 @@ void ent_ring_events(Cpu *c) {
         if (!enter[i].actor) continue;
         if (!enter[i].answered) { if (now - enter[i].ms > 5000) enter[i].actor = 0; continue; }
         if (enter[i].kind == 1) entered(enter[i].actor, enter[i].gen, enter[i].has_pair, enter[i].owner, enter[i].id, enter[i].is_copy);
+        else if (enter[i].kind == 3) { }
         else if (enter[i].made_here && me && ctn_alive_as(enter[i].actor, enter[i].gen) && !ent_by_actor(enter[i].actor)) {
             Ent *e = ent_new((Eid){me, ent_mint_serial()});
-            if (e) ent_bind(e, enter[i].actor), e->owner = me, e->epoch = 1, e->mir_known = 1;
+            if (e) ent_bind(e, enter[i].actor), e->owner = me, e->epoch = 1, e->mir_known = 1, enter[i].kind = 3, enter[i].answered = 0;
+            if (e) continue;   // (kept one more tick: the mirror frees its row for it)
         }
         enter[i].actor = 0;
     }
@@ -315,6 +318,7 @@ void ent_ring_events(Cpu *c) {
             ent_bind(e, ev.actor);
             e->owner = me, e->epoch = 1, e->mir_known = 1;
             if (ev.decision == DEC_MINT_PREVIEW) e->flags |= ENT_PREVIEW, e->batch = ev.batch;
+            enter_ask(ev.actor, 3);   // (the mirror may have taken it as an object in the frame before: it forgets it)
             if (ctn_part_green(ev.actor)) e->flags |= ENT_GREEN;
             rt_log("coop: ent: %lld %s (%s) made here%s", (long long)now, ent_eid_str(e->id, b), e->name, ev.decision == DEC_MINT_PREVIEW ? " by an Autobuild (a preview until it is confirmed)" : "");
             break;
@@ -388,13 +392,14 @@ void ent_ring_events(Cpu *c) {
         }
         if (ready < 0) continue;
         uint8_t batch = e->batch;
+        int cleared = 0;
         for (int k = 0; k < ENT_N; k++) if (ents[k].used && (ents[k].flags & ENT_PREVIEW) && ents[k].batch == batch) {
             uint64_t spr = ents[k].actor ? ctn_spr(ents[k].actor) : 0, f20 = 0;
             if (spr && coop_rd(spr + 0x20, &f20, 8) && (f20 >> 51 & 1)) continue;   // (still a hologram after 1 s: left a preview)
-            ents[k].flags &= (uint8_t)~ENT_PREVIEW;
+            ents[k].flags &= (uint8_t)~ENT_PREVIEW, cleared = 1;
             if (ents[k].actor && ctn_part_green(ents[k].actor)) ents[k].flags |= ENT_GREEN;
         }
-        ent_mark_due(e);
+        if (cleared) ent_mark_due(e);
     }
 }
 
@@ -410,6 +415,7 @@ void ent_creates(Cpu *c) {
             uint64_t ref = 0, a = coop_claim(c, e->handle, e->link, &ref);
             e->making = 0;
             if (a) ent_bind(e, a), e->flags |= ENT_COPY, ent_mark_due(e);
+            else e->death_ms = now;   // (the claim gave no actor: not asked again for 5 s)
         } else if (st == 4 || now - e->make_ms > 10000) {
             char b[24];
             rt_log("coop: ent: %lld the copy of %s (%s) was not made (%s): tried again after a wait", (long long)now, ent_eid_str(e->id, b), e->name, st == 4 ? "the create failed" : "no answer in 10 s");

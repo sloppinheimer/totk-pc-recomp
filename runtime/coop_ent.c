@@ -67,6 +67,7 @@ uint32_t ent_fnv(uint32_t h, const void *p, int n) {
     return h;
 }
 
+static int16_t uf[ENT_N];   // the islands: union-find over the bonds (islands_build)
 // ---- The table and its two lookups (S 4.5) --------------------------------------------------------------------------------
 #define HASH_N 2048
 static int16_t by_id[HASH_N], by_actor[HASH_N];   // Ent index + 1, 0 empty, -1 a deleted slot
@@ -101,7 +102,7 @@ Ent *ent_by_actor(uint64_t actor) {
     for (unsigned p = 0; actor && p < HASH_N; p++) {
         int v = by_actor[(h + p) % HASH_N];
         if (!v) return NULL;
-        if (v > 0 && ents[v - 1].used && ents[v - 1].actor == actor) return ctn_gen_of(actor) == ents[v - 1].gen ? &ents[v - 1] : NULL;
+        if (v > 0 && ents[v - 1].used && ents[v - 1].actor == actor && ctn_gen_of(actor) == ents[v - 1].gen) return &ents[v - 1];
     }
     return NULL;
 }
@@ -113,6 +114,7 @@ Ent *ent_new(Eid id) {
         e = &ents[i];
         memset(e, 0, sizeof *e);
         e->used = 1, e->id = id, e->isl = e->st = -1, e->scale[0] = e->scale[1] = e->scale[2] = 1, e->entered_ms = ent_ms();
+        uf[i] = (int16_t)i;   // (alone until the bonds are read)
         hash_put(by_id, eid_hash(id), i);
         return e;
     }
@@ -140,31 +142,22 @@ void ent_drop(Ent *e) {
 
 // ---- The event ring (S 10): hooks append from any thread, phase 0 reads ------------------------------------------------------
 static Ev ring[EV_N];
-static _Atomic uint32_t ring_w;
-static uint32_t ring_r;
+static uint32_t ring_r, ring_w;   // (under ring_lock: held for a copy, never across a call)
+static PlatMutex ring_lock = PLAT_MUTEX_INIT;
 static _Atomic uint32_t ring_lost;
 void ent_post(const Ev *ev) {
-    uint32_t w = atomic_fetch_add(&ring_w, 1);
-    Ev *s = &ring[w % EV_N];
-    if (atomic_exchange(&s->seq, 0)) atomic_fetch_add(&ring_lost, 1);   // (not yet read: the ring is full, the oldest is lost)
-    memcpy((uint8_t *)s + sizeof s->seq, (const uint8_t *)ev + sizeof ev->seq, sizeof *ev - sizeof ev->seq);
-    atomic_store(&s->seq, w + 1);
+    plat_mutex_lock(&ring_lock);
+    if (ring_w - ring_r >= EV_N) atomic_fetch_add(&ring_lost, 1);   // (full: this event is lost, and the world is read again)
+    else ring[ring_w++ % EV_N] = *ev;
+    plat_mutex_unlock(&ring_lock);
 }
 uint32_t ent_ring_lost(void) { return atomic_load(&ring_lost); }
 int ent_ring_take(Ev *out) {
-    Ev *s = &ring[ring_r % EV_N];
-    uint32_t seq = atomic_load(&s->seq);
-    if (!seq) {
-        // (empty: nothing new, or a writer is still copying; when the writers are a whole ring ahead, what lay between
-        // was overwritten and is skipped)
-        if (atomic_load(&ring_w) - ring_r > EV_N) ring_r = atomic_load(&ring_w) - EV_N;
-        return 0;
-    }
-    if (seq != ring_r + 1) { ring_r = seq - 1; }   // (a newer event took the slot: the reader jumps to it)
-    memcpy(out, s, sizeof *out);
-    atomic_store(&s->seq, 0);
-    ring_r++;
-    return 1;
+    int got = 0;
+    plat_mutex_lock(&ring_lock);
+    if (ring_r != ring_w) *out = ring[ring_r++ % EV_N], got = 1;
+    plat_mutex_unlock(&ring_lock);
+    return got;
 }
 
 // ---- Paused, loading, peers (S 1.2) -------------------------------------------------------------------------------------------
@@ -218,7 +211,6 @@ static int ent_ptr_cmp(const void *x, const void *y) {
 }
 
 // ---- Islands (S 3.3): the connected sets under the bonds read from the world --------------------------------------------------
-static int16_t uf[ENT_N];
 static int uf_find(int i) { while (uf[i] != i) i = uf[i] = uf[uf[i]]; return i; }
 int ent_island_members(const Ent *e, Ent **out, int max) {
     int r = uf_find(ent_i(e)), n = 0;
@@ -300,7 +292,9 @@ static void world_caches(void) {
             bonds_dirty = 1;
             continue;
         }
-        if (!e->main_body) e->main_body = ctn_main_body(e->actor);
+        static uint32_t pass;   // (the cached body is read again once in 32 frames: a part can get another)
+        if (!e->main_body || ((pass + (uint32_t)i) & 31) == 0) e->main_body = ctn_main_body(e->actor);
+        if (i == ENT_N - 1) pass++;
         float m[12];
         if (e->main_body && coop_rd(e->main_body + 0x98, m, sizeof m)) {
             float d = fabsf(m[3] - e->m[3]) + fabsf(m[7] - e->m[7]) + fabsf(m[11] - e->m[11]);
@@ -334,7 +328,8 @@ static void bonds_read(Cpu *c) {
             memset(b, 0, sizeof *b);
             b->a = e->id, b->b = o->id, b->sa = ed[k].key, b->sb = ed[k].okey, b->edge = ed[k].edge, b->ed = ed[k].ed, b->ea = ed[k].end_a;
             // held = outA * inverse(outB): end B's body in end A's body frame. rel is b's body in a's body frame.
-            if (!ctn_edge_held(c, ed[k].edge, held)) continue;
+            // (a pose that cannot be read leaves the bond in the set, with no rotation and no offset: the bond exists)
+            if (!ctn_edge_held(c, ed[k].edge, held)) memset(held, 0, sizeof held), held[0] = held[5] = held[10] = 1;
             if (ed[k].end_a) memcpy(b->rel, held, sizeof held);
             else ctn_m34_inv(b->rel, held);
             n++;
@@ -469,6 +464,9 @@ static void publish(Cpu *c) {
     static uint64_t part_list[ENT_N];
     int np = 0;
     static uint8_t seen[ENT_N];
+    static int64_t bodies_ms;
+    int bodies_now = now - bodies_ms > 250;
+    if (bodies_now) bodies_ms = now;
     memset(seen, 0, sizeof seen);
     coop_lock_wait(&grp_lock);
     for (int i = 0; i < GRP_N; i++) if (grps[i].used) grps[i].used = 2;   // 2: last frame's, to be matched or freed
@@ -483,6 +481,7 @@ static void publish(Cpu *c) {
         int ns = ent_island_members(e, set, 64), nm = 0;
         for (int k = 0; k < ns; k++)
             if (set[k]->owner == e->owner && set[k]->actor && set[k]->life == LIFE_LIVE && nm < ENT_MEMBERS) mem[nm++] = set[k], seen[ent_i(set[k])] = 1;
+        if (!nm) continue;
         int mine = e->owner == me, asked = 0, wanted = 0, riding = 0;
         for (int k = 0; k < nm; k++) asked |= mem[k]->asked, wanted |= mem[k]->bond_wanted;
         asked |= !mine && (rec_op_open_for(e) || ent_this_link_holds(e) || ent_this_link_rides(e));
@@ -492,8 +491,9 @@ static void publish(Cpu *c) {
         Grp *g = grp_for(key, e->owner);
         if (!g) { ent_full("group view"); continue; }
         if (g->used != 2) {   // a new row: no samples yet, no drive state
-            struct FollowState *fs = g->fs;
+            struct FollowState *fs = g->fs;   // (the drive state stays with the row for good: the co-op tick may hold it)
             memset(g, 0, sizeof *g);
+            ctn_follow_reset(fs);
             g->fs = fs, g->key64 = key, g->owner = e->owner;
         }
         g->used = 1, g->mine = (uint8_t)mine, g->asked = (uint8_t)(asked || wanted), g->root = mem[0]->id, g->n = nm, g->stamp_ms = now;
@@ -505,17 +505,19 @@ static void publish(Cpu *c) {
         for (int k = 0; k < nm; k++) {
             g->parts[k] = mem[k]->actor, g->gen[k] = mem[k]->gen, g->id[k] = mem[k]->id;
             if (have_inv) ctn_m34_mul(g->rel_root[k], inv, mem[k]->m);
+            else memset(g->rel_root[k], 0, sizeof g->rel_root[k]);
             if (nm >= 2) part_list[np++] = mem[k]->actor, set_add(ENT_SET_PART, mem[k]->actor);
             if (!mine) {
                 set_add(ENT_SET_FOLLOWER, mem[k]->actor);
-                uint64_t body[8];
-                uint8_t key8[8];
-                int nbod = ctn_bodies(c, mem[k]->actor, body, key8, 8);
-                for (int b = 0; b < nbod; b++) set_add(ENT_SET_FOLLOWER_BODY, body[b]);
+                if (bodies_now) {   // (seven guest calls a part: four times a second, the set kept between)
+                    uint64_t body[8];
+                    uint8_t key8[8];
+                    int nbod = ctn_bodies(c, mem[k]->actor, body, key8, 8);
+                    for (int b = 0; b < nbod; b++) set_add(ENT_SET_FOLLOWER_BODY, body[b]);
+                }
                 if (!g->asked) {
                     set_add(ENT_SET_DRIVEN, mem[k]->actor), set_add(ENT_SET_DRIVEN_BODY, mem[k]->main_body);
-                    if (strstr(mem[k]->name, "Cannon") || strstr(mem[k]->name, "Beam") || strstr(mem[k]->name, "Emitter") || strstr(mem[k]->name, "Shooter"))
-                        set_add(ENT_SET_SHOOTER, mem[k]->actor);
+                    if (coop_rd_ptr(coop_rd_ptr(mem[k]->actor + 0x228) + 0x448)) set_add(ENT_SET_SHOOTER, mem[k]->actor);   // (it has a Shooter component)
                 }
             }
         }
@@ -529,31 +531,32 @@ static void publish(Cpu *c) {
             uint64_t grp = ctn_part_group(mem[0]->actor);
             if (grp && nm >= 2) set_add(ENT_SET_FOLLOW_GROUP, grp);
         }
-        // members behind a body other than the main one (S 3.5): a bond on the way to the root at a key other than 0
+        // members behind a body other than the main one (S 3.5): rigid with the root are those a chain of bonds
+        // between main bodies reaches from it; the others move on a joint and are not written
         if (nm >= 2) {
             static Bond ib[ENT_BONDS];
             int nib = ent_island_bonds(mem, nm, ib, ENT_BONDS);
-            uint32_t loose = 0;
+            uint32_t rigid = 1;
             for (int pass = 0; pass < nm; pass++)
                 for (int q = 0; q < nib; q++) {
                     int ia = -1, ibx = -1;
+                    if (ib[q].sa || ib[q].sb) continue;
                     for (int k = 0; k < nm; k++) { if (eid_eq(mem[k]->id, ib[q].a)) ia = k; if (eid_eq(mem[k]->id, ib[q].b)) ibx = k; }
                     if (ia < 0 || ibx < 0) continue;
-                    // (a and b are joined rigidly only when both ends are main bodies; else the side away from the root
-                    // moves on a joint)
-                    if (ib[q].sa == 0 && ib[q].sb == 0) { if ((loose >> ia & 1) != (loose >> ibx & 1)) loose |= 1u << ia | 1u << ibx; continue; }
-                    int far = ia == 0 ? ibx : ibx == 0 ? ia : (loose >> ia & 1) ? ibx : ia;
-                    if (far) loose |= 1u << far;
+                    if ((rigid >> ia & 1) || (rigid >> ibx & 1)) rigid |= 1u << ia | 1u << ibx;
                 }
-            g->no_write = loose & ~1u;
+            g->no_write = ~rigid & ((1u << nm) - 1);
         }
         if (mine) ctn_owner_state(c, g);
         if (g->payer && g->payer != me) for (int k = 0; k < nm; k++) set_add(ENT_SET_NOCHARGE, mem[k]->actor);
         else if (!mine && !g->payer) for (int k = 0; k < nm; k++) set_add(ENT_SET_NOCHARGE, mem[k]->actor);
     }
-    for (int i = 0; i < GRP_N; i++) if (grps[i].used == 2) { free(grps[i].fs); memset(&grps[i], 0, sizeof grps[i]); }
+    for (int i = 0; i < GRP_N; i++) if (grps[i].used == 2) { struct FollowState *fs = grps[i].fs; memset(&grps[i], 0, sizeof grps[i]); grps[i].fs = fs; }
     plat_mutex_unlock(&grp_lock);
-    for (int w = 0; w < ENT_SET_COUNT; w++) set_commit(w);
+    for (int w = 0; w < ENT_SET_COUNT; w++) {
+        if (w == ENT_SET_FOLLOWER_BODY && !bodies_now) { memset(sets[w].w, 0, sizeof sets[w].w); continue; }   // (last pass's set stands)
+        set_commit(w);
+    }
     static int64_t veto_ms;
     if (now - veto_ms > 250) veto_ms = now, coop_life_veto_rebuild(c, part_list, np);
 }
@@ -573,7 +576,8 @@ static __thread int ours_delete;
 int coop_ent_ours_delete(void) { return ours_delete; }
 void ent_delete_actor(Cpu *c, Ent *e) {
     if (!e->actor) return;
-    coop_obj_entity(e->actor);   // (the mirror tells nobody: its rows for the actor go first)
+    // (the object mirror holds no row for an entity's actor: its rows were freed, on its own tick, when the actor
+    // became one; so the mirror tells nobody of this delete)
     ours_delete = 1;
     ctn_part_delete(c, e->actor);
     ours_delete = 0;

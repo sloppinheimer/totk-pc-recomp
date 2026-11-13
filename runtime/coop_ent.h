@@ -264,6 +264,7 @@ void ctn_event_put(uint64_t actor, uint32_t gen, uint8_t bits);
 void ctn_toggle_put(Cpu *c, uint64_t actor, int want);
 void ctn_teleport(Cpu *c, Grp *g);         // one SetTransform of a foreign island to its newest pose (S 12.1)
 void ctn_place(Cpu *c, uint64_t actor, const float m[12]);   // one SetTransform of a main body, exempt from G1
+void ctn_follow_reset(struct FollowState *fs);              // a group view's drive state, for a row that is another island's now
 
 // ---- The published sets (S 11): rebuilt by phase 0 each frame, read lock-free from any thread ---------------------------------
 enum { ENT_SET_ENT, ENT_SET_OWNED, ENT_SET_FOLLOWER, ENT_SET_DRIVEN, ENT_SET_DRIVEN_BODY, ENT_SET_FOLLOWER_BODY, ENT_SET_COPY,

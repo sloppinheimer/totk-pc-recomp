@@ -924,6 +924,10 @@ int coop_hook(Cpu *c, uint64_t addr) {
             int coop_ent_hook(Cpu *c, uint64_t addr);
             return coop_ent_hook(c, addr);
         }
+        if (off == 0x1c0b83c) {   // an Ultrahand takes hold (x0 the SPR): noted, the function runs as it is
+            void coop_ent_grab_seen(uint64_t spr, uint64_t holder);
+            coop_ent_grab_seen(c->x[0], 0);
+        }
     }
     if (addr == MOD_MAIN_BASE + 0x916860) return beam_hook(c, addr);
     if (addr == MOD_MAIN_BASE + 0x567750 || addr == MOD_MAIN_BASE + 0x25a1f0 || addr == MOD_MAIN_BASE + 0x40e490 ||

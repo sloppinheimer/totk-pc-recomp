@@ -631,6 +631,7 @@ void own_receive(Cpu *c, const CoopCtrMsg *m) {
 }
 
 // ---- The latest-only slots (S 1.1 step 1, 6.1, 6.11, 6.12) -----------------------------------------------------------------------------
+static int64_t pose_age_us;   // how long the POSE being taken has been in its slot
 static void pose_in(const CoopCtrMsg *m) {
     PoseMsg s;
     int64_t now = ent_ms();
@@ -670,7 +671,7 @@ static void pose_in(const CoopCtrMsg *m) {
         if (here) { own_claim(mem, n, "offered by its owner"); return; }
     }
     // the drive's samples and the device state, into the group view
-    int64_t wnow = frame_step_world_us(), off = wnow - s.us;
+    int64_t wnow = frame_step_world_us(), off = wnow - pose_age_us - s.us;   // (the offset at the message's arrival)
     coop_lock_wait(&grp_lock);
     for (int i = 0; i < GRP_N; i++) {
         Grp *g = &grps[i];
@@ -685,7 +686,7 @@ static void pose_in(const CoopCtrMsg *m) {
         if (mine_digest == s.digest && s.n == g->n) {
             g->sw = s.sw, g->on = s.on, g->fw = s.fw, g->fk = s.fk, g->fb = s.fb, g->fp = s.fp, g->burn = s.burn, g->payer = s.payer;
             memcpy(g->pf, s.pf, sizeof(float) * 4 * (size_t)(s.n > ENT_MEMBERS ? ENT_MEMBERS : s.n));
-        }
+        } else g->sw = g->on = g->fw = g->fk = g->fb = g->fp = g->burn = 0;   // (the members do not line up: no device state is used)
         break;
     }
     plat_mutex_unlock(&grp_lock);
@@ -743,7 +744,7 @@ void own_slots(void) {
     static CoopCtrMsg m;
     uint64_t age = 0;
     int it = 0;
-    while (coop_ctr_slot_next(ENT_POSE, &it, &m, &age)) if (age < 2000000000ull) pose_in(&m);
+    while (coop_ctr_slot_next(ENT_POSE, &it, &m, &age)) if (age < 2000000000ull) pose_age_us = (int64_t)(age / 1000), pose_in(&m);
     it = 0;
     while (coop_ctr_slot_next(ENT_APPLIED, &it, &m, &age)) if (age < 3000000000ull) applied_in(&m);
     it = 0;
