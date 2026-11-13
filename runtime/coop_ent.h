@@ -191,7 +191,8 @@ void own_receive(Cpu *c, const CoopCtrMsg *m);                     // one reliab
 void own_slots(void);                                              // POSE, APPLIED, INDEX (phase 0 step 1)
 void own_timers(Cpu *c);                                           // step 6
 void own_causes(Cpu *c);                                           // step 7: TAKE for grabs and rides
-void own_send(void);                                               // step 8: statements owed, POSE, APPLIED, INDEX, NEED
+void own_send(Cpu *c);                                             // step 8: statements owed, POSE, APPLIED, INDEX, NEED
+void own_grant(uint64_t asker, uint32_t id, uint64_t new_owner, Ent **mem, int n, uint32_t epoch, uint8_t kind);
 void own_net(void);                                                // the net tick: pause queue, TAKE answers, repeats
 int own_pq_take(CoopCtrMsg *m);                                    // phase 0 reads the pause queue first
 void own_peer_events(void);

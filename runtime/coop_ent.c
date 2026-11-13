@@ -586,7 +586,7 @@ void coop_ent_phase0(Cpu *c) {
     islands_build(c);                                     // (the class needs this Link's island: built again with it)
     own_timers(c);                                        // 6
     own_causes(c), rec_ops(c);                            // 7
-    own_send();                                           // 8
+    own_send(c);                                          // 8
     if (!ent_loading()) rec_pass(c);                      // 9
     ctn_phase0_kept(c);
     publish(c);                                           // 10
