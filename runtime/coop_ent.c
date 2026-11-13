@@ -321,7 +321,7 @@ static void bonds_read(Cpu *c) {
             Bond *b = &nb[n];
             float held[12];
             memset(b, 0, sizeof *b);
-            b->a = e->id, b->b = o->id, b->sa = ed[k].key, b->sb = ed[k].okey, b->edge = ed[k].edge, b->ed = ed[k].ed;
+            b->a = e->id, b->b = o->id, b->sa = ed[k].key, b->sb = ed[k].okey, b->edge = ed[k].edge, b->ed = ed[k].ed, b->ea = ed[k].end_a;
             // held = outA * inverse(outB): end B's body in end A's body frame. rel is b's body in a's body frame.
             if (!ctn_edge_held(c, ed[k].edge, held)) continue;
             if (ed[k].end_a) memcpy(b->rel, held, sizeof held);

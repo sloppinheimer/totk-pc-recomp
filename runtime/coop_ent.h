@@ -58,6 +58,8 @@ typedef struct {
     uint8_t handle[0x40], link[0x40]; uint8_t making; int64_t make_ms;   // our own create of a copy (S 4.1)
     uint8_t mir_owner; uint32_t mir_id;  // the object mirror's name for it at entry (S 4.4), 0: none
     uint8_t mir_asked, mir_known;        // the mirror was asked / has answered
+    uint64_t mir_actor; uint8_t mir_resolved, mir_copy;   // a pair received: the actor the mirror has for it (0 none)
+    int64_t pass_ms, unload_ms, death_ms;   // an island of one: its last reconcile pass; an owned unload; a death replayed
     uint8_t batch;                       // the maker run it came from (PREVIEW, S 4.6)
     uint8_t end_hold, end_ride, death_due;   // world changes noted for phase 0
     int16_t isl, st;                     // owned: its Island; foreign in a statement of two or more: its Stated; else -1
@@ -73,7 +75,8 @@ typedef struct {
 } Ent;
 
 // a < b by (inc, serial). sa, sb: body keys. rel = inverse(Wa) * Wb: b's body in the frame of a's body (S 3.2).
-typedef struct { Eid a, b; uint8_t sa, sb; float rel[12]; uint64_t edge; uint8_t ed; } Bond;
+// edge: this world's edge; ed: a glue by edge +0xed alone; ea: entity a is the edge's end A (local, not sent).
+typedef struct { Eid a, b; uint8_t sa, sb; float rel[12]; uint64_t edge; uint8_t ed, ea; } Bond;
 
 typedef struct { uint8_t used; uint8_t rec[BP_SIZE], n; Eid member[ENT_MEMBERS]; uint32_t digest; } Recipe;
 
@@ -100,6 +103,8 @@ typedef struct {            // a statement of two or more members, or of one mem
     uint8_t rec[BP_SIZE], rec_n; Eid rec_member[ENT_MEMBERS];
     int64_t ms; uint8_t state, why, passes, rung2_done; int64_t backoff_until, backoff, diff_ms, layout_ms;
     uint32_t my_digest;
+    uint8_t bond_step; int64_t bond_ms, pass_ms;   // a bond being made over several frames (S 7.3 steps 1 to 5)
+    Bond bond_now;                                 // the stated bond that make is for
 } Stated;
 
 enum { RQ_FREE, RQ_OPEN, RQ_GRANTED, RQ_REFUSED, RQ_EXPIRED };
@@ -237,6 +242,8 @@ uint64_t ctn_body_by_key(Cpu *c, uint64_t actor, uint8_t key);
 typedef struct { uint64_t edge, other; uint8_t key, okey, end_a, ed; } CtnEdge;          // end_a: `actor` is the edge's end A
 int ctn_part_edges(Cpu *c, uint64_t actor, CtnEdge *out, int max);
 int ctn_edge_held(Cpu *c, uint64_t edge, float held[12]);                                 // outA * inverse(outB)
+uint64_t ctn_body_actor(uint64_t body);                                                   // the actor a rigid body is of
+int ctn_group_count(uint64_t actor);                                                      // the game's count of its group (1: none)
 float ctn_delete_radius(uint64_t a);
 int ctn_part_delete(Cpu *c, uint64_t a);
 void ctn_m34_mul(float out[12], const float a[12], const float b[12]);
