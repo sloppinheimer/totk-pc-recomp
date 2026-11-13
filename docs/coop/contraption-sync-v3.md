@@ -2857,3 +2857,180 @@ falls back to the place key as coop_obj_ident does (not built while the games ru
   main+0x1d62f44 releases a glue entry while either body has it. A hook on the upkeep clears bit 26 on a copy's body
   before the game's test, and logs the copy's body bits and request word for the first glues. Not explained by the
   code: why the bit was set on a copy teleported only about once a second (the log line answers it).
+
+## 48. Review 3: the whole system, and the redesign of its bookkeeping (2026-11-12; a plan, nothing here is written or run)
+
+Ordered by the tester after run 8: desync, parts that do not fuse, ownership that does not move, "enough patching".
+Eleven readers (R/sync-v3/review3/): six maps (core.md, mirror.md, hooks.md, history.md, facts.md, logs.md), three
+designs written independently from three stances (design_keep.md "K", design_authority.md "A", design_native.md "N"),
+two critiques that walk ten play scenarios through each design (critique_correctness.md, critique_feasibility.md).
+Everything below is from reading code, notes and logs. Logs of run 8: build/review3/run8_p1.log, run8_p2.log.
+
+### 48.1 Run 8 (the session behind the complaint)
+About 70 s of contraption play. No error, refused, full or timeout line; every clean counter 0; the two games'
+"tables:" lines equal at every sample. In that time one contraption had three build ids (e39a8cf5, 19cabb1e,
+d0035ba6) and the second glue was lost:
+- After a hand-over, or when a version could not be applied in place, the game that gave the build up "let go" of the
+  parts it had not made from a record. They stayed glued in its world, its recorder took them for a new build, minted
+  a new id and sent it. The other game applied that older shape in place ("1 broken") and broke the newer glue. Twice.
+- The build record and the object mirror are two channels with no order between them: a 3-part version came before
+  the copy of its third part, waited 3 s, gave up and remade.
+- The shape hash depends on the order of equal-named parts, which each game lists in its own order: the same build
+  hashed 120fd0e4 in one game and 814a6721 in the other, so every runner change made a version for nothing.
+- The health lines count our tables, not the world, so they stay clean through all of it.
+
+No Autobuild and no device switch happened in run 8; those were not exercised. The logs have no wall-clock time.
+
+### 48.2 Why it is not converging (the structural causes)
+From history.md: 288 rows of problems, notes and review findings. Follower physics was 45% of the run problems of v1
+and v2 and is 9% of v3's play notes; the measured physics pieces held (rigid-field drive, G4, the stand-in veto, the
+copy made by the game's own Autobuild). Of play notes 15 to 26, 11 are identity, ownership or the boundary between
+the two systems. For every class the fixes handled an instance and the symptom came back with a new cause (glue onto
+the other player's object: bit 24, then a test, then bit 26; an Autobuild that never arrives: three causes).
+1. **Two systems own the same actors.** The object mirror (owner, number, placed each tick) and the core (runner,
+   build id, rigid drive). A glue between two games' things must move actors across that boundary in both games at
+   once; the guards are one-sided skip lists. Four ownership mechanisms in all (build, loose object, lone device,
+   enemy), each with its own hand-over.
+2. **No lifelong identity.** A build is "the group the local recorder sees"; its id is voted by shared parts at each
+   split and merge; a taken loose object gets a new number; messages address parts by index inside a version and are
+   dropped when the versions differ.
+3. **No answer and no check.** A version is delivered but nothing says it was made. TAKE cannot be refused. An edit
+   request lives 2 s and has no reply, so a glue can exist in one game only. The self-heal then remakes from the old
+   record and removes the player's glue.
+4. **Ownership by guess.** Touch is polled, intent is read from time windows, there are three self-take rules and a
+   tie-break. A placed object once moved by the lower-numbered player stays that player's (props_receive). Two holders
+   of one loose object hand it back and forth every tick. Hand-over notices are single unreliable datagrams.
+5. **Nothing repairs a difference.** There is no comparison of the two worlds, so any lost step stays lost until a
+   special case notices it. coop_ctn.c is about one third mechanism and two thirds fallbacks, time thresholds (about
+   43) and per-kind side channels.
+
+Also read from code, not seen in a run: a merge leaks one of the 24 registry slots in both games; a RELINQUISH with no
+taker leaves followers asking every 3 s for ever; a STATE of another version still feeds the drive (heard_us).
+
+### 48.3 The verdict
+The three designers and both critics agree. **Redesign from scratch: identity, ownership, how structure is carried,
+and how a difference is repaired. Keep: the copy maker, the rigid-field drive, the gates, the device rules by kind,
+the transport.** A design that replaces the copy by a non-simulated (keyframed) one was ranked last as a whole: no
+keyframed bonded build has ever been run on purpose, the accidental ones fell apart, and it removes pushing between
+two players' things. It stays as a later experiment (48.9), because it alone would end the gate-per-device work.
+
+### 48.4 The design (hybrid "H" of the two critiques; where they differ the choice is in 48.5)
+**Entity.** Every grab-able actor (an SPR, minus prop_skip's names) is one entity with one id for life: (minting
+incarnation, serial). A loose fan and a fan in a build are the same thing. Arrows, beams, paraglider and fused gear
+stay a small effects list. A copy we create is bound to its id by the create handle. A run-time actor this game made
+is minted here. A map-placed actor is (0, hash of placement hash and name), only after one log line per game shows
+the hashes equal for planks, rocks and map devices; until then map objects keep today's key. An Autobuild's parts
+are announced when the preview bit is clear and no bond is queued, so the build is announced whole.
+
+**Island and owner.** An island is the set of entities connected by glue; it has no id of its own. Every entity
+carries (owner, epoch); all of an island share them; a pair replaces another only if greater (epoch, then
+incarnation). No build id, version number, shape hash or part index in any message. A loose object is an island of
+one; a lone device is an island of one, so the lone-device subsystem goes.
+
+**Moving ownership.** One reliable stream per sender, taken in arrival order. TAKE on the exact causes (grab accept
+by this Link, the stick's rising edge, a glue), repeated until answered. The owner always answers: GRANT (to all,
+epoch + 1, with device bits and payer) or REFUSE with a reason (held, ridden, stale, "not the owner, it is X"). A
+grant is given only to a game whose copy of the island equals the owner's world (digest in the TAKE). While the owner
+holds or rides an island, the other game refuses the grab natively before it starts (main+0x9fb7fc answering 1 from
+the grab handler: read, G-4 of critique_feasibility.md). The asker simulates its copy from the grab frame for at most
+1.5 s; a REFUSE or silence puts it back under the drive. Owner and epoch are in every statement, so a lost GRANT is
+corrected by state. Claims without a grant: the owner left, or is paused or loading for 1 s. Unload at the owner
+(delete request not ours, reason 3, 4 or 6): the island is offered; no taker in 2 s: stated gone.
+
+**Structure is state, read from the owner's world.** On a structure hook (bond maker, edge removal, death) and once
+a second the owner lists the real glue edges of its bodies (part_edges) and states the island: entities (id, name,
+scale, green, owner, epoch, life) and bonds (idA, slotA, idB, slotB, relative pose). For an island of two or more the
+history writer's record rides along with an index-to-id map, as a recipe for creating a new copy whole, never as the
+truth. Deaths, toggles and events are addressed by id.
+
+**Convergence: one mechanism.** Each game computes a digest of an island from its own world (not its tables) once a
+second and sends it in the heartbeat. A follower whose digest differs asks for the statement (NEED) and reconciles;
+an owner that sees a differing digest for 1 s states again. reconcile(island) is the only way structure is applied:
+create what is missing (whole, with the game's part maker, when two or more bonded parts are missing), delete a
+duplicate we made, replay a death, break a real edge the statement lacks (main+0x1cf54d4), make a stated bond that
+has no edge with the game's direct bond call main+0x1c05a98 when the bodies are within 5 cm and 5 degrees of the
+stated pose (read, G-3: it needs no build object, so it does not stall while the player has a design selected, as
+bond_queue does). The result is read back on the next pass, never assumed. The ladder when it still differs after
+three passes: delete this game's copy of the island and make it whole from the record; if that fails the island is
+"not shown here", retried with back-off, with the reason sent. A follower's failure never changes the owner's world.
+"Seconds not converged" per island and peer is the health line.
+
+**The copy.** As today: a real dynamic copy behind the gates, moved by follow_rigid from the owner's poses. Islands
+of one use the same drive (no per-tick placing, no periodic teleport; the bit-26 upkeep hook stays as a guard).
+Poses of a part's further bodies (wheel, spring head) travel in the pose sample, which retires those side channels
+kind by kind.
+
+**Devices and harm.** The device kit as it is, by id. A contact counts only in the game that owns the victim
+(replaces "drop every contact from a followed device").
+
+**Threads and logs.** Everything that reads or changes the game's world runs at actor phase 0; the tick keeps
+transport and heartbeat. Wall-clock time and ids on every log line; settings printed at start.
+
+### 48.5 The one point the critiques disagree on: a glue across owners
+- Take first (correctness critique): at the glue the gluer takes the target island; the bond maker refuses a bond
+  unless this game owns both ends (read, G-2: a refused bond ends cleanly, the player presses attach again). A glue
+  can never exist in one world only. Cost: a held or ridden target refuses the glue, and the player must press again
+  after a refusal.
+- Glue first (feasibility critique): the gluer's game makes the glue natively, holds it as a pending operation and
+  sends BOND_REQ{op, ids, slots, relative pose} to the target's owner, which makes the bond with the direct call and
+  answers ACK (and gives the merged island to the gluer unless its Link holds or rides) or NAK with a reason; a NAK
+  breaks the gluer's edge. It is the flow of the one cross-owner glue that worked in run 8.
+
+**Chosen, for the tester to confirm: glue first, with the pending operation.** It has a run behind it, never has to
+end a player's hold (ending an established hold is still unread), and the half-made state is named, bounded and
+counted. If step 3's trials (48.7) show a bond in one game only even once, switch to take first; both use the same
+messages below the glue.
+
+### 48.6 Game facts read in this review, and facts still unread
+Read (critique_feasibility.md section 1): the bond maker main+0x1916830 has two direct callers (the glue tick and
+the direct call), so a hook there sees every bond; a bond maker that answers 0 sends the glue down the game's own
+abort exit with no retry; the direct call main+0x1c05a98 needs no build object, descriptor pool or SPR flag and
+leaves a glue edge (+0xec; it lacks +0xef, +0xf1 and the look points, meanings unread); a grab is refused by
+main+0x9fb7fc answering 1.
+
+Unread, each with its fallback: ending an established hold (fallback: withdraw the held part's drive exemption);
+placement hash equal in both games for non-enemies (fallback: today's key); delete reason values in a run; whether a
+refused edge removal is clean (fallback: allow it and make the bond again); slots of parts with several bodies; the
+create callers that are a player's (fallback: today's gate, with a counter). **Seen once only: a bond made in place
+in a game that did not glue.** If that fails often, every repaired glue becomes a visible remake of the copy; the
+design stays correct, and the keyframed experiments (48.9) move forward.
+
+### 48.7 Order of work
+Each step ends in one two-game session with the run 8 script: three fans, glue two, hand over, glue the third, hand
+over, glue onto the other's build, pull apart. Each run needs the tester's yes.
+1. **See it; no behaviour change.** Time, settings and member ids in the log. A shadow entity table beside the
+   present system: ids, the bond set from real edges, the digest in both games, exchanged in the heartbeat. Counters:
+   seconds the digests differ; a build minted from members of a known build; a bond broken by an apply; a retire that
+   deleted nothing; a TAKE unanswered for 1 s. Log lines that settle readings: placement hashes of moved map objects,
+   body bits 24 and 26 of each copy, reason and caller of every entity delete. **Passes when the counters fire where
+   48.1 says run 8 failed. If they do not, the diagnosis is wrong and nothing more is built on it.**
+2. **Stop the fork, in the present files.** Arrival-order receive; a taken loose object keeps its number, and the
+   notice is reliable with an epoch; the old owner does not delete an actor its new owner lists as a part;
+   record_pass never mints a build from members of a build another game runs; in_place asks again instead of giving
+   up while a part is still listed by its owner; the shape hash over sorted ids; the self-heal only against the
+   version the runner's STATE names; heard_us after the version test. Passes: one build id from first glue to
+   pulling apart, the second glue stays, step 1's counters at 0.
+3. **An answer for every request.** TAKE with GRANT or REFUSE for builds and loose objects alike (removes the
+   lower-id rule and the back-and-forth); the native grab refusal; BOND_REQ with ACK or NAK by id, made at the owner
+   with the direct call. Passes, ten trials each: a glue onto the other's loose object, onto an idle build, onto a
+   build its owner holds, with the owner in a menu; both grabbing one fan, one build. Never a bond in one game only.
+4. **The single model.** Statements and reconcile replace versions; islands of one under the drive; one thread.
+   Deleted when played, not before: record_pass versions, in_place's ladder, edits_pass, orphans, made / adopt /
+   original, the time-window self-heal, the lone subsystem; in coop_players.c the entity half of the mirror
+   (obj_take_over's new number, the lower-id rule, taken[], place_copy and force_to for entities); coop_glue.c and
+   coop_bonds.c. With a switch that drops every fifth reliable message and one that breaks a follower's edge: equal
+   worlds within 3 s, counted.
+5. Autobuild announced whole; lifetime (offer, gone, join); fast travel away and back.
+6. Devices by id, the harm rule, further bodies from the pose sample.
+
+### 48.8 What this does not fix
+A copy is still a second live simulation behind an incomplete gate list (about 45 live hooks). A new multi-part copy
+is still made with the receiving player's Autobuild object. Stake and hover state across a hand-over, a stake or an
+Autobuild pull-in across owners, the rider's weight and push, status effects. Three players are covered by the rules
+and never run. The to-test lists of 44.5, 45.3 and 46.3 stay open and are re-run after step 4.
+
+### 48.9 The later experiment: a copy the game does not simulate
+One game, no network: (E1) a bonded build with every body keyframed and moved by per-body velocity stays one group;
+(E2) a Link is carried by it; (E3) plain create, keyframe, direct bond, switch to dynamic gives a sound group. If
+all pass, the copy becomes keyframed with per-body poses, most gates go, and nothing in identity, ownership or
+convergence changes. Run after step 4, or earlier if the in-place bond of 48.6 fails often.
