@@ -64,7 +64,7 @@ typedef struct {
     uint8_t end_hold, end_ride, death_due;   // world changes noted for phase 0
     int16_t isl, st;                     // owned: its Island; foreign in a statement of two or more: its Stated; else -1
     // a foreign island of one keeps here what a Stated keeps for a build:
-    float root_m[12]; int64_t pose_ms;
+    float root_m[12]; int64_t pose_ms, pose_us;   // pose_us: the owner's clock of the last POSE taken (a slot is read every frame)
     uint8_t state, why, passes; int64_t backoff_until, backoff; uint32_t digest, st_digest;
     uint8_t cls, offer; int64_t cls_ms;  // the owner's class and OFFER flag from POSE
     uint8_t named;                       // an ISLAND, GRANT or POSE named it since the last NEED(0, 0) to its owner

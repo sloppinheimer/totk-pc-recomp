@@ -147,12 +147,15 @@ void own_grab(Cpu *c, Ent *e) {   // this Link's Ultrahand took hold of e
     uint64_t me = coop_ctr_me();
     char b[24];
     (void)c;
-    if (!me || e->owner == me || e->life != LIFE_LIVE) return;
-    if (!e->owner) {   // a FREE map entity: claimed (S 5.1)
-        Ent *set[64];
-        own_claim(set, ent_island_members(e, set, 64), "grabbed, and nobody owned it");
+    if (!me || e->owner == me) return;
+    if (!e->owner) {   // a FREE map entity: claimed (S 5.1), with the members of its island nobody owns
+        Ent *set[64], *mem[ENT_MEMBERS];
+        int ns = ent_island_members(e, set, 64), n = 0;
+        for (int k = 0; k < ns; k++) if (!set[k]->owner && n < ENT_MEMBERS) mem[n++] = set[k];
+        own_claim(mem, n, "grabbed, and nobody owned it");
         return;
     }
+    if (e->life != LIFE_LIVE) return;
     // Its owner holds or rides it (the class from POSE, under 2 s old, or frozen while that owner is paused): the
     // grab is ended at once, with no TAKE (S 5.5).
     Stated *st = e->st >= 0 ? &stated[e->st] : NULL;
@@ -300,6 +303,7 @@ static void stmt_apply(uint64_t from, int p, const IslandHdr *h, const uint8_t *
         if (mr[k].green) e->flags |= ENT_GREEN;
         if (mr[k].mir_id && !e->mir_id) e->mir_owner = mr[k].mir_owner, e->mir_id = mr[k].mir_id;
         e->mir_known = 1, e->named = 1, e->stated_ms = now;
+        if (mr[k].life == LIFE_LIVE && e->life != LIFE_LIVE) e->life = LIFE_LIVE, e->death_due = 0, e->death_ms = 0;   // (claimed again, or made again there)
         if (mr[k].life != LIFE_LIVE && e->life == LIFE_LIVE) {
             e->life = mr[k].life, e->death_kind = mr[k].death_kind, e->dead_ms = now, e->death_due = e->actor != 0;
             if (mr[k].life == LIFE_FREE) e->owner = 0;
@@ -317,10 +321,13 @@ static void stmt_apply(uint64_t from, int p, const IslandHdr *h, const uint8_t *
     }
     if (h->n == 1 && !h->nb) {   // an island of one: kept in the entity's row
         Ent *e = mem[0];
+        int same1 = e->st < 0 && e->st_digest == h->digest;
         e->st = -1, e->st_digest = h->digest;
         if (!e->pose_ms || now - e->pose_ms > 2000) memcpy(e->root_m, h->root_m, sizeof e->root_m), e->pose_ms = now;
-        if (e->state == ST_AGREE || e->state == ST_NOT_SHOWN) e->state = ST_DIFFER;
-        e->passes = 0, e->backoff = 0, e->backoff_until = 0;
+        if (!same1) {   // (the same statement again keeps its reconcile state)
+            if (e->state == ST_AGREE || e->state == ST_NOT_SHOWN) e->state = ST_DIFFER;
+            e->passes = 0, e->backoff = 0, e->backoff_until = 0;
+        }
         return;
     }
     Stated *st = NULL, *oldest_far = NULL;
@@ -334,6 +341,9 @@ static void stmt_apply(uint64_t from, int p, const IslandHdr *h, const uint8_t *
         stated_free(oldest_far), st = oldest_far;
     }
     if (!st) { ent_full("statement"); return; }
+    Stated keep_st;
+    int same = st->used && st->digest == h->digest;
+    if (same) memcpy(&keep_st, st, offsetof(Stated, rec));   // (the same structure stated again: its reconcile state stays)
     uint8_t cls = st->used ? st->cls : 0, offer = st->used ? st->offer : 0;
     int64_t cls_ms = st->used ? st->cls_ms : 0, pose_ms = st->used ? st->pose_ms : 0;
     float keep_m[12];
@@ -359,6 +369,11 @@ static void stmt_apply(uint64_t from, int p, const IslandHdr *h, const uint8_t *
     }
     for (int k = 0; k < h->nf; k++) st->far[st->nf].id = fr[k].id, st->far[st->nf].owner = fr[k].owner, st->far[st->nf].epoch = fr[k].epoch, st->nf++;
     if (h->rec_n && h->rec_n <= ENT_MEMBERS) st->rec_n = h->rec_n, memcpy(st->rec, rec, BP_SIZE), memcpy(st->rec_member, rec + BP_SIZE, sizeof(Eid) * h->rec_n);
+    if (same) {
+        st->state = keep_st.state, st->why = keep_st.why, st->passes = keep_st.passes, st->rung2_done = keep_st.rung2_done;
+        st->backoff = keep_st.backoff, st->backoff_until = keep_st.backoff_until, st->layout_ms = keep_st.layout_ms, st->pass_ms = keep_st.pass_ms;
+        st->my_digest = keep_st.my_digest, st->bond_step = keep_st.bond_step, st->bond_ms = keep_st.bond_ms, st->bond_now = keep_st.bond_now;
+    }
 }
 static void island_in(const CoopCtrMsg *m) {
     IslandHdr h;
@@ -368,7 +383,7 @@ static void island_in(const CoopCtrMsg *m) {
     int pl = m->len - (int)sizeof h, at = h.piece * PIECE_MAX;
     if (h.total > STMT_MAX || h.pieces > 32 || h.piece >= h.pieces || at + pl > STMT_MAX) return;
     if (h.counter <= peers[p].taken_counter && !(h.counter == asm_buf[p].counter && asm_buf[p].have)) return;   // (not above the last taken)
-    if (asm_buf[p].counter != h.counter) asm_buf[p].counter = h.counter, asm_buf[p].root = h.root, asm_buf[p].have = 0;
+    if (asm_buf[p].counter != h.counter || h.piece == 0) asm_buf[p].counter = h.counter, asm_buf[p].root = h.root, asm_buf[p].have = 0;
     memcpy(asm_buf[p].buf + at, m->d + sizeof h, (size_t)pl), asm_buf[p].have |= 1u << h.piece;
     if (asm_buf[p].have != (h.pieces >= 32 ? ~0u : (1u << h.pieces) - 1)) return;
     asm_buf[p].have = 0;
@@ -445,6 +460,7 @@ static void take_in(const CoopCtrMsg *m, int paused) {
            is->epoch + 1, paused ? " (answered while paused)" : "");
     own_grant(m->from, t.id, m->from, mem, is->n, is->epoch + 1, ANS_TAKE);
 }
+static int64_t grant_from_ms[ENT_PEERS];   // when a GRANT last came from each peer
 static void grant_in(const CoopCtrMsg *m) {
     GrantMsg g;
     uint64_t me = coop_ctr_me();
@@ -459,9 +475,11 @@ static void grant_in(const CoopCtrMsg *m) {
         e->named = 1;
         took += ent_apply_owner(e, g.owner, g.epoch);
     }
+    if (m->from_id >= 1 && m->from_id <= ENT_PEERS) grant_from_ms[m->from_id - 1] = ent_ms();
     if (g.asker == me) {
         Req *r = req_find(g.id);
-        if (r && r->state == RQ_OPEN) req_close(r, RQ_GRANTED);
+        Ent *e = r ? ent_by_id(r->member) : NULL;
+        if (r && r->state == RQ_OPEN && (took || (e && e->owner == me))) req_close(r, RQ_GRANTED);
     }
     if (g.owner == me && took)
         rt_log("coop: ent: %lld this game owns %s and %d more now (epoch %u, granted by %04x)", (long long)ent_ms(), ent_eid_str(g.m[0], b), g.n - 1, g.epoch,
@@ -619,7 +637,8 @@ static void pose_in(const CoopCtrMsg *m) {
     if (m->len < POSE_LEN(0)) return;
     memset(&s, 0, sizeof s), memcpy(&s, m->d, (size_t)(m->len < (int)sizeof s ? m->len : (int)sizeof s));
     Ent *e = ent_by_id(s.root);
-    if (!e) {   // a root this game has no statement of: NEED after 0.5 s, once a second (S 6.7)
+    if (!m->from) return;
+    if (!e || (e->st < 0 && !e->st_digest && e->owner != coop_ctr_me())) {   // a root this game has no statement of: NEED after 0.5 s, once a second (S 6.7)
         int f = -1;
         for (int i = 0; i < 32; i++) {
             if (eid_eq(need_root[i].root, s.root) && need_root[i].from == m->from) { f = i; break; }
@@ -631,21 +650,24 @@ static void pose_in(const CoopCtrMsg *m) {
             NeedMsg q = {s.root, 0};
             own_send_to(m->from, ENT_NEED, COOP_CTR_RELIABLE, &q, sizeof q), need_root[f].asked = now;
         }
-        return;
+        if (!e) return;
     }
     ent_apply_owner(e, m->from, s.epoch);
     if (e->owner != m->from) return;   // (not its owner after that: dropped)
     e->named = 1;
     Stated *st = e->st >= 0 ? &stated[e->st] : NULL;
     uint8_t offer = (s.flags & POSE_OFFER) != 0;
-    if (st) memcpy(st->root_m, s.m, sizeof s.m), st->pose_ms = now, st->cls = s.cls, st->cls_ms = now, st->offer = offer;
-    else memcpy(e->root_m, s.m, sizeof s.m), e->pose_ms = now, e->cls = s.cls, e->cls_ms = now, e->offer = offer;
-    if (offer && e->actor) {   // offered, and this game has it: claimed (S 5.8)
+    int fresh = s.us != e->pose_us;   // (the slot is read every frame: its pose and class are new only when its clock moved)
+    e->pose_us = s.us;
+    if (fresh) {
+        if (st) memcpy(st->root_m, s.m, sizeof s.m), st->pose_ms = now, st->cls = s.cls, st->cls_ms = now, st->offer = offer;
+        else memcpy(e->root_m, s.m, sizeof s.m), e->pose_ms = now, e->cls = s.cls, e->cls_ms = now, e->offer = offer;
+    }
+    if (offer) {   // offered: claimed by a game that has an actor of it (S 5.8)
         Ent *set[64], *mem[ENT_MEMBERS];
-        int ns = ent_island_members(e, set, 64), n = 0;
-        for (int k = 0; k < ns; k++) if (set[k]->owner == m->from && set[k]->actor && n < ENT_MEMBERS) mem[n++] = set[k];
-        own_claim(mem, n, "offered by its owner");
-        return;
+        int ns = ent_island_members(e, set, 64), n = 0, here = 0;
+        for (int k = 0; k < ns; k++) if (set[k]->owner == m->from && n < ENT_MEMBERS) mem[n++] = set[k], here |= set[k]->actor != 0;
+        if (here) { own_claim(mem, n, "offered by its owner"); return; }
     }
     // the drive's samples and the device state, into the group view
     int64_t wnow = frame_step_world_us(), off = wnow - s.us;
@@ -706,6 +728,7 @@ static void index_in(const CoopCtrMsg *m, uint64_t age_ns) {
     if (now - seen_us[p] < 1900) return;   // (each INDEX once: they come every 2 s)
     seen_us[p] = now;
     if (peers[p].taken_counter < x.counter) return;   // (its statements up to that counter are not all here yet)
+    if (now - grant_from_ms[p] < 1000) return;         // (ownership is moving between the two games right now)
     uint32_t count, hash = index_hash(m->from, &count);
     if (count == x.count && hash == x.hash) { peers[p].index_miss = 0; return; }
     if (++peers[p].index_miss < 2 || now - peers[p].need_ms < 10000) return;
@@ -748,12 +771,15 @@ void own_timers(Cpu *c) {
     int64_t now = ent_ms();
     uint64_t me = coop_ctr_me();
     // world changes noted by a message or by the net tick
+    int end_h = 0, end_r = 0;
     for (int i = 0; i < ENT_N; i++) {
         Ent *e = &ents[i];
         if (!e->used) continue;
-        if (e->end_hold) { e->end_hold = 0; if (ent_this_link_holds(e) || ent_held_actor() == e->actor) own_end_hold(c, e); }
-        if (e->end_ride) { e->end_ride = 0; if (ent_this_link_rides(e)) own_end_ride(c); }
+        if (e->end_hold) { e->end_hold = 0; end_h |= ent_this_link_holds(e) || (e->actor && ent_held_actor() == e->actor); }
+        if (e->end_ride) { e->end_ride = 0; end_r |= ent_this_link_rides(e); }
     }
+    if (end_h) own_end_hold(c, NULL);
+    if (end_r) own_end_ride(c);
     if (hold_end.actor) {   // read back: still held 10 frames later, sent again, three times at most
         if (ent_held_actor() != hold_end.actor) hold_end.actor = 0;
         else if (now - hold_end.sent > 170) {
@@ -823,10 +849,11 @@ void own_timers(Cpu *c) {
         Ent *e = &ents[i];
         if (!e->used || !e->owner || e->owner == me || ent_peer_here(e->owner)) { gone_since[i] = 0; continue; }
         if (!gone_since[i]) gone_since[i] = now;
+        if (!e->actor && now - gone_since[i] > 10000) { ent_drop(e); continue; }   // (nothing of it here, and nobody to state it)
         if (seen[i] || !e->actor || e->life != LIFE_LIVE || now - gone_since[i] < 2000) continue;
         Ent *set[64], *mem[ENT_MEMBERS];
         int ns = ent_island_members(e, set, 64), n = 0;
-        for (int k = 0; k < ns; k++) if (set[k]->owner == e->owner && set[k]->actor && n < ENT_MEMBERS) mem[n++] = set[k], seen[ent_i(set[k])] = 1;
+        for (int k = 0; k < ns; k++) if (set[k]->owner == e->owner && n < ENT_MEMBERS) mem[n++] = set[k], seen[ent_i(set[k])] = 1;
         own_claim(mem, n, "its owner left the session");
     }
     // frozen islands (S 5.8): after 2 s with no claim, each member whose actor went is stated gone
@@ -880,8 +907,8 @@ void own_causes(Cpu *c) {
         for (int k = 0; k < n; k++) set[k]->asked = 1;
     }
     if (held != last_held) {
-        last_held = held;
         Ent *e = held ? ent_by_actor(held) : NULL;
+        if (e || !held) last_held = held;   // (a thing held that is no entity yet is asked again next frame)
         if (e) own_grab(c, e);
     }
     for (int i = 0; i < ENT_N; i++) {   // a stick this Link rides whose island is another game's
@@ -901,6 +928,11 @@ void own_send(Cpu *c) {
     int64_t now = ent_ms();
     uint64_t me = coop_ctr_me();
     if (!me) return;
+    {   // (a statement owed to a seat nobody sits in is owed to no one: else a dead entity's row is never dropped)
+        uint8_t present = 0;
+        for (int p = 0; p < ENT_PEERS; p++) { uint64_t inc = coop_ctr_incarnation(p + 1); if (inc && inc != me) present |= (uint8_t)(1u << p); }
+        for (int i = 0; i < ENT_N; i++) ent_owed[i] &= present;
+    }
     for (int p = 0; p < ENT_PEERS; p++) {
         uint64_t inc = coop_ctr_incarnation(p + 1);
         if (!inc || inc == me) continue;
@@ -990,9 +1022,10 @@ void own_net(void) {
     int paused = ent_paused(), loading = ent_loading();
     if (!coop_ctr_me()) return;
     coop_lock_wait(&ent_lock);
-    if (loading && !was_loading) {   // every entity of this game is offered at once (S 5.8)
+    static int64_t offer_all_ms;
+    if (loading && (!was_loading || now - offer_all_ms > 500)) {   // every entity of this game is offered at once (S 5.8), and again while it loads
         uint8_t all = 1;
-        send_all(ENT_OFFER_ALL, COOP_CTR_RELIABLE, &all, 1);
+        send_all(ENT_OFFER_ALL, COOP_CTR_RELIABLE, &all, 1), offer_all_ms = now;
     }
     was_loading = loading;
     if (paused || loading) {
@@ -1004,6 +1037,7 @@ void own_net(void) {
             else if (m->type == ENT_REFUSE) refuse_in(m), m->type = 0;
             else if (m->type == ENT_TAKE && paused && !loading) take_in(m, 1), m->type = 0;
         }
+        while (pq && pq_r != pq_w && !pq[pq_r % PQ_N].type) pq_r++;   // (handled here already: their places are free again)
         if (pq && pq_w - pq_r >= PQ_N && !said++) rt_log("coop: ent: the pause queue is full (%d messages): the transport waits", PQ_N);
     }
     for (int i = 0; i < ANS_N; i++) {   // the repeat of a GRANT (S 5.3 rule 6)
