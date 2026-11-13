@@ -86,6 +86,12 @@ int rec_break(Cpu *c, const Bond *b) {
     Ent *a = ent_by_id(b->ea ? b->a : b->b);
     if (!a || !a->actor || !b->edge) return 0;
     for (int i = 0; i < 16; i++) if (breaking[i].edge == b->edge && ent_ms() - breaking[i].ms < 170) return 1;   // (asked, not yet read back)
+    {   // (the bond list is up to 250 ms old and the game reuses edges: the edge must still be one of the part's)
+        CtnEdge ed[32];
+        int ne = ctn_part_edges(c, a->actor, ed, 32), there = 0;
+        for (int k = 0; k < ne && !there; k++) there = ed[k].edge == b->edge;
+        if (!there) { ent_mark_due(a); return 0; }
+    }
     coop_guest_call(c, MOD_MAIN_BASE + 0x1cf54d4, a->actor + 0x378, b->edge, 0, 1);
     int f = 0;
     for (int i = 0; i < 16; i++) { if (breaking[i].edge == b->edge) { f = i; break; } if (ent_ms() - breaking[i].ms > 2000) f = i; }
@@ -119,6 +125,20 @@ int rec_make(Cpu *c, Ent *a, uint8_t sa, Ent *b, uint8_t sb, const float rel[12]
     ctn_m34_mul(now_rel, inv, wb);
     *why = WHY_BOND_POSE;
     if (m34_dist(now_rel, rel) > 0.05f || m34_angle_deg(now_rel, rel) > 5) return 0;
+    {   // (the new edge joins the lists a physics step later: the call is not made twice for one pair in a second, and
+        // not at all when the part has the edge)
+        static struct { Eid a, b; uint8_t sa, sb; int64_t ms; } called[8];
+        static int called_i;
+        CtnEdge ed0[32];
+        int n0 = ctn_part_edges(c, a->actor, ed0, 32);
+        for (int k = 0; k < n0; k++) if (ed0[k].other == b->actor && ed0[k].key == sa && ed0[k].okey == sb) { *why = WHY_NONE; return 1; }
+        for (int k = 0; k < 8; k++)
+            if (eid_eq(called[k].a, a->id) && eid_eq(called[k].b, b->id) && called[k].sa == sa && called[k].sb == sb && ent_ms() - called[k].ms < 1000) {
+                *why = WHY_BOND_NOT_READY;
+                return 0;
+            }
+        called[called_i % 8].a = a->id, called[called_i % 8].b = b->id, called[called_i % 8].sa = sa, called[called_i % 8].sb = sb, called[called_i++ % 8].ms = ent_ms();
+    }
     // main+0x1c05a98(SPR of a, a's body key, b's body, matA, matB): the bond holds inverse(matA) * matB, so the two
     // world matrices as read now hold the bodies as they stand (research notes sync-v4/bond-frames).
     ctn_call5(c, MOD_MAIN_BASE + 0x1c05a98, ctn_spr(a->actor), sa, bb, (uint64_t)(uintptr_t)wa, (uint64_t)(uintptr_t)wb);
@@ -133,7 +153,7 @@ int rec_make(Cpu *c, Ent *a, uint8_t sa, Ent *b, uint8_t sb, const float rel[12]
     uint64_t spr = ctn_spr(a->actor);
     if (spr) __atomic_fetch_or((uint64_t *)(uintptr_t)(spr + 0x20), 1ull << 18, __ATOMIC_SEQ_CST);
     ent_mark_due(a);
-    *why = found ? WHY_NONE : WHY_BOND_NOT_READY;
+    *why = WHY_NONE;
     {   // (per attempt, for the first test session: made, and the two bodies' relative speed now)
         float va[3] = {0}, vb[3] = {0};
         char x[24], y[24];
@@ -141,7 +161,7 @@ int rec_make(Cpu *c, Ent *a, uint8_t sa, Ent *b, uint8_t sb, const float rel[12]
         rt_log("coop: ent: %lld bond made here between %s and %s (keys %u %u): edge %s, relative speed %.2f m/s", (long long)ent_ms(), ent_eid_str(a->id, x),
                ent_eid_str(b->id, y), sa, sb, found ? "listed" : "not listed yet", sqrtf((va[0] - vb[0]) * (va[0] - vb[0]) + (va[1] - vb[1]) * (va[1] - vb[1]) + (va[2] - vb[2]) * (va[2] - vb[2])));
     }
-    return found;
+    return found ? 1 : 2;   // 2: called, the edge not listed yet
 }
 // Step 2: the smaller fragment placed as one rigid set so that the bond's two bodies stand at rel. 1 placed (or in
 // place already); 0 when neither side may be placed.
@@ -202,7 +222,7 @@ static void rec_one(Cpu *c, Stated *st, int st_i) {
         }
     }
     if (!n) return;
-    if (rec_op_open_for(m[0])) return;   // (an operation of this game is open on it: S 8.2)
+    for (int k = 0; k < n; k++) if (rec_op_open_for(m[k])) return;   // (an operation of this game is open on it: S 8.2)
     // this game's digest of it: the members that are here, and the bonds of this world with an end among them
     {
         Eid id[ENT_MEMBERS];
@@ -240,7 +260,9 @@ static void rec_one(Cpu *c, Stated *st, int st_i) {
         // a create waits when the newest pose is old, a POSE has been seen for the root, and the owner is not paused
         int stale = now - st->pose_ms > 2000 && st->cls_ms && !ent_peer_paused(st->from);
         if (stale) { st->state = ST_DIFFER; return; }
-        if (missing == live && st->rec_n && live >= 2) {   // nothing of it is here: made whole by the maker (S 9.2)
+        int paired = 0;   // (a member the mirror may have an actor for is bound, not made: one by one below)
+        for (int k = 0; k < n; k++) paired |= m[k]->mir_id != 0;
+        if (missing == live && st->rec_n && live >= 2 && !paired) {   // nothing of it is here: made whole by the maker (S 9.2)
             float reach = max_rel + 1.5f;
             if (ctn_make_busy() || ctn_make_waits(st->root_m, reach)) { st->state = ST_WAIT_MAKER; return; }
             if (ctn_make_start(c, st_i)) { st->state = ST_MAKING, st->pass_ms = now; return; }
@@ -270,7 +292,6 @@ static void rec_one(Cpu *c, Stated *st, int st_i) {
         return;
     }
     if (making) { st->state = ST_MAKING; return; }
-    if (st->state == ST_MAKING || st->state == ST_WAIT_MAKER) st->passes = 0;
     // bonds: break what the statement lacks, make what has no edge
     {
         static Bond mine[ENT_BONDS];
@@ -311,19 +332,16 @@ static void rec_one(Cpu *c, Stated *st, int st_i) {
             for (int k = 0; k < na; k++) fa[k]->bond_wanted = 0;
             for (int k = 0; k < nb; k++) fb[k]->bond_wanted = 0;
             st->bond_step = 0;
+        } else if (now - st->bond_ms > 5000) {   // (5 s for all of it: placing, the preconditions, the read-back)
+            st->bond_step = 0, st->why = why, st->passes++, acted = 1;
         } else if (st->bond_step == 1) {   // steps 1 and 2: both fragments out of the drive, the smaller placed
-            for (int k = 0; k < na; k++) fa[k]->bond_wanted = 1;
-            for (int k = 0; k < nb; k++) fb[k]->bond_wanted = 1;
             if (place_for_bond(c, ea, st->bond_now.sa, eb, st->bond_now.sb, st->bond_now.rel)) st->bond_step = 2;
             acted = 1;
-        } else if (rec_make(c, ea, st->bond_now.sa, eb, st->bond_now.sb, st->bond_now.rel, &why)) {   // steps 3 to 5, a frame later
-            st->bond_step = 3, acted = 1;   // (read back by the next pass: the bond is then among this world's)
-        } else if (now - st->bond_ms > 5000) {
-            for (int k = 0; k < na; k++) fa[k]->bond_wanted = 0;
-            for (int k = 0; k < nb; k++) fb[k]->bond_wanted = 0;
-            st->bond_step = 0, st->why = why, st->passes++, acted = 1;
-            if (why == WHY_FULL22) { backoff(st, why); return; }
-        } else if (why == WHY_BOND_POSE && st->bond_step == 2) st->bond_step = 1;   // (placed again)
+        } else if (st->bond_step == 2) {   // steps 3 to 5, a frame later
+            if (rec_make(c, ea, st->bond_now.sa, eb, st->bond_now.sb, st->bond_now.rel, &why)) st->bond_step = 3, acted = 1;
+            else if (why == WHY_FULL22) { st->bond_step = 0; backoff(st, why); return; }
+            else if (why == WHY_BOND_POSE) st->bond_step = 1;   // (placed again)
+        }   // (step 3: called; the bond is among this world's once the edges are read again, which ends the make)
     }
     // the verdict of this pass
     if (st->my_digest == st->digest) {
@@ -345,12 +363,17 @@ static void rec_one(Cpu *c, Stated *st, int st_i) {
         if (off < 0) { st->state = ST_AGREE, st->why = WHY_NONE, st->passes = 0, st->layout_ms = 0, st->backoff = 0; return; }
         if (!st->layout_ms) st->layout_ms = now;
         if (now - st->layout_ms < 1000) { st->state = ST_AGREE; return; }
-        if (!st->rung2_done) {   // rung 2: the bonds of the member that is off are broken; the make then places it
+        if (!st->rung2_done) {   // rung 2: the stated bonds of the member that is off are broken; the make then places it
             Ent *e = ent_by_id(st->m[off].id);
-            for (int i = 0; e && i < bond_n; i++) if (eid_eq(bonds[i].a, e->id) || eid_eq(bonds[i].b, e->id)) rec_break(c, &bonds[i]);
-            st->rung2_done = 1, st->state = ST_DIFFER;
+            for (int i = 0; e && i < bond_n; i++) {
+                Ent *x = ent_by_id(bonds[i].a), *y = ent_by_id(bonds[i].b);
+                if (!x || !y || x->owner != st->from || y->owner != st->from) continue;   // (only bonds inside the sender's island)
+                if (eid_eq(bonds[i].a, e->id) || eid_eq(bonds[i].b, e->id)) rec_break(c, &bonds[i]);
+            }
+            st->rung2_done = 1, st->state = ST_DIFFER, st->layout_ms = now;
             return;
         }
+        if (now - st->layout_ms > 3000) acted = 1, st->layout_ms = now;   // (still off 3 s after rung 2: a failed pass)
     }
     st->state = ST_DIFFER;
     if (!acted) return;   // (a pass counts when it acted and the read-back, next pass, still differs)
@@ -383,10 +406,25 @@ static void rec_single(Cpu *c, Ent *e) {
     e->state = tmp.state, e->why = tmp.why, e->passes = tmp.passes, e->backoff = tmp.backoff, e->backoff_until = tmp.backoff_until, e->digest = tmp.my_digest;
 }
 
+// Which entities are out of the drive because a bond is being made on their fragment: derived each frame from the
+// makes under way and the requests in service, so nothing can leave one behind.
+static void bond_wanted_derive(void) {
+    for (int i = 0; i < ENT_N; i++) ents[i].bond_wanted = 0;
+    for (int i = 0; i < STATED_N + SERVE_N; i++) {
+        Ent *e2[2] = {NULL, NULL}, *set[64];
+        if (i < STATED_N) { if (stated[i].used && stated[i].bond_step) e2[0] = ent_by_id(stated[i].bond_now.a), e2[1] = ent_by_id(stated[i].bond_now.b); }
+        else if (serves[i - STATED_N].used) e2[0] = ent_by_id(serves[i - STATED_N].x);
+        for (int s = 0; s < 2; s++) {
+            int n = e2[s] ? ent_island_members(e2[s], set, 64) : 0;
+            for (int k = 0; k < n; k++) set[k]->bond_wanted = 1;
+        }
+    }
+}
 void rec_pass(Cpu *c) {
     int64_t now = ent_ms();
     uint64_t me = coop_ctr_me();
     if (!me) return;
+    bond_wanted_derive();
     for (int i = 0; i < 16; i++) {   // breaks read back: asked again for 10 frames, then logged
         if (!breaking[i].edge || now - breaking[i].ms < 170) continue;
         const Bond *b = NULL;
@@ -469,6 +507,7 @@ void rec_edge_found(Cpu *c, const Bond *b) {
     if (!ea || !eb || !ea->mir_known || !eb->mir_known || op_for(b->a, b->b) || served(b->a, b->b)) return;
     int a_mine = ea->owner == me, b_mine = eb->owner == me, a_asked = !a_mine && own_req_open_for(ea), b_asked = !b_mine && own_req_open_for(eb);
     if ((a_mine && b_mine) || (!a_mine && !b_mine && !a_asked && !b_asked)) return;
+    if (!a_mine && !b_mine && ea->owner == eb->owner) return;   // (inside one island of another owner: its own bond, asked or not)
     Op *o = NULL;
     for (int i = 0; i < OP_N && !o; i++) if (ops[i].state == OP_FREE) o = &ops[i];
     if (!o) { ent_full("operation"); return; }
@@ -513,7 +552,6 @@ static void serve_finish(Cpu *c, Serve *s) {
     rt_log("coop: ent: %lld operation %u of %04x: bond with %s in place; the merged island (%d members) is %s", (long long)ent_ms(), s->op, (unsigned)(s->from & 0xffff),
            ent_eid_str(s->t, b), n, keep ? "this game's (it holds or rides it)" : "granted to the gluing game");
     own_grant(keep ? me : s->from, 0, keep ? me : s->from, mem, n, ep + 1, ANS_BOND);
-    if (keep) for (int k = 0; k < n; k++) { mem[k]->owner = me; if (mem[k]->epoch < ep + 1) mem[k]->epoch = ep + 1; }
     bond_answer(s->from, s->op, 1, 0, 0, 0);
     s->used = 0;
 }
@@ -560,7 +598,7 @@ static void serve_step(Cpu *c, Serve *s) {   // rules 4 and 5, over as many fram
     int nx = ent_island_members(x, fx, 64);
     for (int k = 0; k < nx; k++) fx[k]->bond_wanted = 1;
     if (!place_for_bond(c, a, sa, b, sb, rel)) { if (now - s->since > 3000) bond_answer(s->from, s->op, 0, NAK_POSE, 0, 0), s->used = 0; return; }
-    if (rec_make(c, a, sa, b, sb, rel, &why)) { s->made = 1; for (int k = 0; k < nx; k++) fx[k]->bond_wanted = 0; return; }
+    if (rec_make(c, a, sa, b, sb, rel, &why)) { s->made = 1; return; }   // (called: the edge is among this world's next pass)
     if (why == WHY_FULL22) { bond_answer(s->from, s->op, 0, NAK_FULL, 0, 0), s->used = 0; return; }
     if (now - s->since > 3000) {
         for (int k = 0; k < nx; k++) fx[k]->bond_wanted = 0;

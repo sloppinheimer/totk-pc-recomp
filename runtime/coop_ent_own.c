@@ -412,7 +412,7 @@ static void refuse(uint64_t from, uint32_t id, uint8_t reason, uint64_t owner, u
 // owner is heard at that epoch or 5 s have passed (S 5.3 rule 6).
 void own_grant(uint64_t asker, uint32_t id, uint64_t new_owner, Ent **mem, int n, uint32_t epoch, uint8_t kind) {
     Ans *a = ans_new(asker, id, kind);
-    a->type = ENT_GRANT, a->asker = asker, a->owner = new_owner, a->epoch = epoch, a->n = (uint8_t)(n > ENT_MEMBERS ? ENT_MEMBERS : n);
+    a->type = ENT_GRANT, a->asker = asker, a->owner = new_owner, a->epoch = epoch, a->n = (uint8_t)(n > 2 * ENT_MEMBERS ? 2 * ENT_MEMBERS : n);
     for (int k = 0; k < a->n; k++) a->m[k] = mem[k]->id;
     Grp *g = NULL;
     coop_lock_wait(&grp_lock);

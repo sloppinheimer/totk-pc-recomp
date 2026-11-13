@@ -123,7 +123,7 @@ typedef struct { uint8_t used; uint32_t id; Eid e; uint8_t kind; uint32_t value;
 enum { ANS_TAKE = 1, ANS_BOND, ANS_REQ };
 typedef struct {            // the owner's memory of an answer, stored as fields and built again when sent
     uint8_t used; uint64_t from; uint32_t id; uint8_t kind, type, reason, send, n; int64_t ms, until, sent;
-    uint64_t owner, asker; uint32_t epoch; Eid m[ENT_MEMBERS]; uint32_t sw, on; uint64_t payer;
+    uint64_t owner, asker; uint32_t epoch; Eid m[2 * ENT_MEMBERS]; uint32_t sw, on; uint64_t payer;
 } Ans;
 
 typedef struct { uint32_t sent_counter, taken_counter; uint8_t index_miss; int64_t need_ms; uint32_t need_number; } Peer;
