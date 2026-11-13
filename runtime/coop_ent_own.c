@@ -503,6 +503,8 @@ static void req_in(Cpu *c, const CoopCtrMsg *m) {
     Ent *e = ent_by_id(q.e);
     a = ans_new(m->from, q.id, ANS_REQ), a->type = ENT_REQ_ANS, a->reason = REQ_REFUSED;
     if (e && e->owner == coop_ctr_me() && e->actor) {
+        extern uint64_t ctn_payer_hint;   // (the asker pays for what it switches on)
+        ctn_payer_hint = m->from;
         if (q.kind == REQ_TOGGLE) ctn_toggle_put(c, e->actor, (int)q.value);
         else ctn_event_put(e->actor, e->gen, (uint8_t)q.value);
         a->reason = REQ_DONE;
