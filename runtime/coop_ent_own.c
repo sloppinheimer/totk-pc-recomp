@@ -520,12 +520,12 @@ static void req_ans_in(const CoopCtrMsg *m) {
 void own_death(Ent *e, uint8_t kind) {
     DeathMsg d = {e->id, kind};
     send_all(ENT_DEATH, COOP_CTR_RELIABLE, &d, sizeof d);
-    own_owe_ent(e, -1);
 }
+// A DEATH is "replay this death on your copy": the copy plays the blast or the burning out as the owner's does. The
+// entity's life changes by the owner's statement, once the game there has accepted the delete.
 static void death_apply(Ent *e, uint8_t kind) {
-    if (e->life != LIFE_LIVE) return;
-    e->life = LIFE_DEAD, e->death_kind = kind, e->dead_ms = ent_ms(), e->death_due = e->actor != 0;
-    ent_mark_due(e);
+    if (e->life != LIFE_LIVE || !e->actor) return;
+    e->death_kind = kind, e->death_due = 1, e->death_ms = ent_ms();
 }
 static void death_in(const CoopCtrMsg *m) {
     DeathMsg d;

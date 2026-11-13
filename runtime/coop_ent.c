@@ -146,19 +146,21 @@ static _Atomic uint32_t ring_lost;
 void ent_post(const Ev *ev) {
     uint32_t w = atomic_fetch_add(&ring_w, 1);
     Ev *s = &ring[w % EV_N];
-    if (atomic_load(&s->seq)) { atomic_fetch_add(&ring_lost, 1); return; }   // (not yet read: the ring is full)
-    uint32_t keep = 0;
+    if (atomic_exchange(&s->seq, 0)) atomic_fetch_add(&ring_lost, 1);   // (not yet read: the ring is full, the oldest is lost)
     memcpy((uint8_t *)s + sizeof s->seq, (const uint8_t *)ev + sizeof ev->seq, sizeof *ev - sizeof ev->seq);
-    (void)keep;
     atomic_store(&s->seq, w + 1);
 }
-static int ring_take(Ev *out) {
+uint32_t ent_ring_lost(void) { return atomic_load(&ring_lost); }
+int ent_ring_take(Ev *out) {
     Ev *s = &ring[ring_r % EV_N];
-    if (atomic_load(&s->seq) != ring_r + 1) {
-        // (a slot skipped by a writer that found it unread cannot happen behind the reader; a hole here is a writer
-        // still copying: taken next frame)
+    uint32_t seq = atomic_load(&s->seq);
+    if (!seq) {
+        // (empty: nothing new, or a writer is still copying; when the writers are a whole ring ahead, what lay between
+        // was overwritten and is skipped)
+        if (atomic_load(&ring_w) - ring_r > EV_N) ring_r = atomic_load(&ring_w) - EV_N;
         return 0;
     }
+    if (seq != ring_r + 1) { ring_r = seq - 1; }   // (a newer event took the slot: the reader jumps to it)
     memcpy(out, s, sizeof *out);
     atomic_store(&s->seq, 0);
     ring_r++;
@@ -247,6 +249,7 @@ uint32_t ent_digest_of(Ent **members, int n) {
 static uint64_t link_actor_now, held_actor, held_hint;   // held_hint: the last actor a grab accept named (the ring)
 static int16_t held_root = -1, ride_root = -1;           // uf roots of the island held / ridden, -1 none
 uint64_t ent_held_actor(void) { return held_actor; }
+void ent_held_hint(uint64_t actor) { held_hint = actor; }
 int ent_this_link_holds(const Ent *e) { return held_root >= 0 && uf_find(ent_i(e)) == held_root; }
 int ent_this_link_rides(const Ent *e) { return ride_root >= 0 && uf_find(ent_i(e)) == ride_root; }
 static void link_read(void) {

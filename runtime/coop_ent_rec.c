@@ -216,10 +216,10 @@ static void rec_one(Cpu *c, Stated *st, int st_i) {
     for (int k = 0; k < n; k++) {
         Ent *e = m[k];
         if (!e->actor || e->life == LIFE_LIVE) continue;
-        if (e->life == LIFE_DEAD && e->death_kind != 0xff && e->death_due == 1) {
-            ctn_death_put(e->actor, e->gen, e->death_kind), e->death_due = 2, e->death_ms = now, acted = 1;   // replayed with its kind, G4 lifted
+        if (e->life == LIFE_DEAD && e->death_kind != 0xff && !e->death_ms) {
+            ctn_death_put(e->actor, e->gen, e->death_kind), e->death_ms = now, acted = 1;   // replayed with its kind, G4 lifted
         } else if (e->life == LIFE_DEAD && (e->death_kind == 0xff || now - e->death_ms > 1000)) {
-            ent_delete_actor(c, e), e->death_due = 0, acted = 1;
+            ent_delete_actor(c, e), e->death_due = 0, acted = 1;   // (the replay did not take it, or a plain delete)
         } else if (e->life == LIFE_GONE) {
             if (e->flags & ENT_COPY) ent_delete_actor(c, e), acted = 1;
             else { Ent *one[1] = {e}; e->life = LIFE_LIVE; own_claim(one, 1, "its owner states it gone, and it is this game's actor"); }
@@ -250,6 +250,7 @@ static void rec_one(Cpu *c, Stated *st, int st_i) {
         for (int k = 0; k < st->n; k++) {   // each missing member by a plain create, or the actor the mirror has for it
             Ent *e = ent_by_id(st->m[k].id);
             if (!e || e->owner != st->from || e->actor || e->making || e->life != LIFE_LIVE) continue;
+            if (e->death_ms && now - e->death_ms < 5000) continue;   // (its death was just replayed here, or its create just failed)
             if (e->mir_id && !e->mir_resolved) { if (now - e->entered_ms < 1500) continue; }   // (the mirror is asked: the tick answers)
             if (e->mir_id && e->mir_resolved && e->mir_actor && ctn_alive(e->mir_actor)) {
                 ent_bind(e, e->mir_actor);
@@ -393,6 +394,12 @@ void rec_pass(Cpu *c) {
         if (!b) { breaking[i].edge = 0; continue; }
         if (breaking[i].tries >= 10) { rt_log("coop: ent: a glue edge this game had to break is still there after ten break messages"); breaking[i].edge = 0; continue; }
         rec_break(c, b);
+    }
+    for (int i = 0; i < ENT_N; i++) {   // a DEATH from an owner: replayed on the copy at once (S 6.10)
+        Ent *e = &ents[i];
+        if (!e->used || e->death_due != 1 || e->owner == me) continue;
+        e->death_due = 0;
+        if (e->actor && e->life == LIFE_LIVE && e->death_kind != 0xff) ctn_death_put(e->actor, e->gen, e->death_kind);
     }
     for (int i = 0; i < STATED_N; i++) {
         Stated *st = &stated[i];
