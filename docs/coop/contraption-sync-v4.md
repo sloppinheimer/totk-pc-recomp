@@ -1,6 +1,6 @@
 # Contraption sync v4: the current design
 
-Status, 2026-11-12: a plan. Sections 3 and 4 are not written or run. Section 2 describes code that exists and has
+Status, 2026-11-12: a plan. Nothing of sections 3 and 4 is written or run. Section 2 describes code that exists and has
 been played. This file is the design to work from; it is kept short on purpose.
 
 - History, runs, reviews and play-test notes: [contraption-sync-v3.md](contraption-sync-v3.md) (an archive; code
@@ -149,7 +149,7 @@ own reconcile.
 
 The alternative, held in reserve: the gluer takes the other island first, and the bond maker (main+0x1916830)
 refuses a bond unless this game owns both ends. Then a glue can never exist in one world only, but a held or ridden
-target refuses the glue and the player must press attach again. Step 3's trials decide: one bond seen in one game
+target refuses the glue and the player must press attach again. The trials of 4.4 decide: one bond seen in one game
 only, and the design switches to this. (Chosen by the writer of this plan; the tester has not confirmed it.)
 
 ### 3.8 Devices, harm, threads, logs
@@ -161,35 +161,62 @@ only, and the design switches to this. (Chosen by the writer of this plan; the t
 
 ## 4. Order of work
 
-Each step ends in one two-game session with the same script: spawn three fans, glue two, hand over, glue the third,
-hand over, glue onto the other player's build, pull apart.
+Decided with the tester on 2026-11-12: the cleanest route, done right or not at all. The new bookkeeping is written
+whole and replaces the old in one change. There is no run of the new tables beside the old system, no repair of the
+old bookkeeping, no setting that switches between the two, and no rule for giving up. This is the rule of work of
+2.4: read, write everything, then test.
 
-1. **See it; no behaviour change.** Time, settings and member ids in the log. A shadow entity table beside the
-   present system: ids, the bond set from real edges, the digest in both games, exchanged in the heartbeat. Counters:
-   seconds the digests differ; a build minted from members of a known build; a bond broken by an apply; a retire that
-   deleted nothing; a TAKE unanswered for 1 s. Log lines that settle readings: the placement hash of each moved map
-   object, body bits 24 and 26 of each copy, the reason and caller of every entity delete.
-   *Passes when the counters fire where run 8 failed (v3 section 48.1). If they do not, the diagnosis is wrong and
-   nothing more is built on it.*
-2. **Stop the fork, in the present files.** Arrival-order receive. A taken loose object keeps its number, and the
-   notice is reliable with an epoch. The old owner does not delete an actor its new owner lists as a part.
-   record_pass never mints a build from members of a build another game runs. in_place asks again instead of giving
-   up while a part is still listed by its owner. The shape hash is taken over sorted ids. The self-heal applies only
-   the version the runner's STATE names. heard_us is stamped after the version test.
-   *Passes: one build id from the first glue to the pulling apart, the second glue stays, step 1's counters at 0.*
-3. **An answer for every request.** TAKE with GRANT or REFUSE for builds and loose objects alike; the native grab
-   refusal; the bond request of 3.7.
-   *Passes, ten trials each: a glue onto the other player's loose object, onto an idle build, onto a build its owner
-   holds, with the owner in a menu; both players grabbing one fan, and one build. Never a bond in one game only.*
-4. **The single model.** Statements and reconcile replace versions; islands of one under the drive; one thread.
-   Deleted when their replacement has been played, not before: in coop_ctn.c the versions and their number rules,
-   in_place's give-up ladder, edits_pass, orphans, the made / adopt / original flags, the self-heal by time windows,
-   the lone-device subsystem; in coop_players.c the entity half of the mirror (obj_take_over's new number, the
-   lower-id rule in props_receive, taken[], place_copy and force_to for entities); coop_glue.c and coop_bonds.c.
-   *Passes with a switch that drops every fifth reliable message and one that breaks a follower's edge: equal worlds
-   within 3 s, counted.*
-5. **Autobuild and lifetime.** An Autobuild announced whole; offer, gone and join; fast travel away and back.
-6. **Devices.** By id; the harm rule; further bodies from the pose sample.
+### 4.1 Read (beside 4.2; nothing is written against an unread fact)
+The unread facts of section 5, each by a reader, each answer written into contraption-game-facts.md:
+- how an established Ultrahand hold is ended from the SPR side, and what the Ultrahand part then does;
+- what a refused edge removal leaves behind on later frames (the strain check);
+- which body slot a bond names on parts with several bodies (wheel, spring, stick);
+- which callers of the create request are a player's (capsule, pouch, Autobuild, dispenser);
+- the delete request's reason values and their callers;
+- what edge +0xef and +0xf1 and the look points do, which the direct bond call does not set.
+
+Two facts cannot be read and are settled by the first test session's log, with the fallback of section 5 written in
+from the start: whether the placement hash is equal in both games for objects that are not enemies, and how often a
+bond made in place holds in a game that did not do the gluing.
+
+### 4.2 Write the new bookkeeping, in a new file
+runtime/coop_ent.c, written to section 3 and containing none of coop_ctn.c's registry logic:
+1. The entity table: ids (3.1), the bond set read from real glue edges, islands as connected sets, the digest of an
+   island taken from the world.
+2. Owner and epoch per entity; TAKE, GRANT, REFUSE, the claims and the unload offer (3.3); the native grab refusal.
+3. The statement and the pose sample (3.4, 3.6), sent in arrival-order reliable messages and latest-only slots.
+4. reconcile and its ladder (3.5); the digest in the heartbeat; the "seconds not converged" line.
+5. The bond request across owners (3.7).
+6. Devices, deaths, toggles and events by id; the harm rule (3.8).
+7. An Autobuild announced whole; join (a statement of everything owned, on request).
+8. Two test settings that stay in the code: drop every fifth reliable message; break one edge of a copy.
+
+Before any of it is written, each item gets a specification in this file's companion,
+[contraption-sync-v4-spec.md](contraption-sync-v4-spec.md): the data structures, the message layouts, the function
+of the game or of our code each step calls, the thread it runs on, and its pass test.
+
+### 4.3 Wire it to what is kept, and remove what it replaces, in the same change
+- Kept and called from the new file: the copy maker (make_pass's recipe), follow_rigid, coop_g1 and the gate lists,
+  the device follow code by kind, the stand-in veto, the glue guards, coop_ctr.c. Where these live in coop_ctn.c
+  beside registry code they are moved, not copied.
+- Removed from the build (they stay in git): in coop_ctn.c the registry, versions and their number rules,
+  record_pass, in_place, edits_pass, orphans, the made / adopt / original flags, the self-heal, the lone-device
+  subsystem, TAKE / GRANT / RELINQUISH / PULL as they are; in coop_players.c the entity half of the object mirror
+  (props for grab-able actors, obj_take_over, the lower-id rule in props_receive, taken[], place_copy and force_to
+  for entities; the effects list stays); coop_glue.c and coop_bonds.c and their hook registrations.
+
+### 4.4 Test, when all of 4.2 and 4.3 is in
+Each run needs the tester's yes. The script: spawn three fans, glue two, hand over, glue the third, hand over, glue
+onto the other player's build, pull apart. Then:
+- ten trials each: a glue onto the other player's loose object, onto an idle build, onto a build its owner holds,
+  with the owner in a menu; both players grabbing one fan, and one build. Never a bond in one game only (3.7);
+- with each of the two test settings on: equal worlds within 3 s, counted by the "seconds not converged" line;
+- an Autobuild near and 30 m away by each player; walking away and back; a fast travel away and back; a late join;
+- fans, a wheeled build with a stick driven by each player in turn, a spring, a time bomb;
+- the open tests of section 6.
+
+A failure in a test is answered by reading and by a change to the design in this file, not by a special case in
+the code.
 
 ## 5. Game facts this rests on
 
@@ -224,7 +251,7 @@ glue shows as a remake of the copy. The design stays correct; section 7 then mov
   push; status effects.
 - Three players are covered by the rules and have never been run.
 
-Open tests carried over from v3, to run after step 4:
+Open tests carried over from v3, run in 4.4:
 - A glue of one player's object onto the other's loose object, onto a build, and onto a build its owner holds.
 - Three fans spawned with the other player's stand-in beside them: all three in both games.
 - A menu opened in one game while the other player is near its build or loose device: the other game runs it after
@@ -243,4 +270,4 @@ In one game, with no network: (E1) a bonded build with every body keyframed and 
 group; (E2) a Link is carried by it; (E3) plain create, keyframe, direct bond, then a switch to dynamic gives a sound
 group. No keyframed bonded build has been run on purpose, and the accidental ones fell apart, so this is not on the
 main path. If all three pass, the copy becomes keyframed with per-body poses, most gates of 2.2 go, and nothing in
-sections 3.1 to 3.5 changes. Run after step 4, or earlier if the in-place bond of section 5 fails often.
+sections 3.1 to 3.5 changes. Run after 4.4, or earlier if the in-place bond of section 5 fails often.
