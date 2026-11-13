@@ -290,7 +290,7 @@ static void world_caches(void) {
             // step; with none it is an unload. A copy's going is local (S 5.8).
             uint64_t was = e->actor;
             ent_unbind(e);
-            if (e->owner == coop_ctr_me() && e->life == LIFE_LIVE && !e->death_due) {
+            if (e->owner == coop_ctr_me() && e->life == LIFE_LIVE && !e->death_due && !(e->unload_ms && now - e->unload_ms < 3000)) {   // (an unload seen: offered first, S 5.8)
                 char b[24];
                 rt_log("coop: ent: %s (%s) went here with no delete seen (actor %llx): an unload", ent_eid_str(e->id, b), e->name, (unsigned long long)was);
                 e->life = e->flags & ENT_MAP ? LIFE_FREE : LIFE_GONE, e->dead_ms = now;
