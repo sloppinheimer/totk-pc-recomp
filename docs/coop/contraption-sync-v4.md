@@ -147,8 +147,8 @@ direct call and answers yes, giving the merged island to the gluer unless its ow
 no with a reason. A no breaks the gluer's edge and logs why. A pending operation protects the gluer's edge from its
 own reconcile.
 
-The alternative, held in reserve: the gluer takes the other island first, and the bond maker (main+0x1916830)
-refuses a bond unless this game owns both ends. Then a glue can never exist in one world only, but a held or ridden
+The alternative, held in reserve: the gluer takes the other island first, and a glue onto a thing this game does
+not own is refused natively (the glue-source test main+0x1c070a0 answering 1 ends the glue on its first tick). Then a glue can never exist in one world only, but a held or ridden
 target refuses the glue and the player must press attach again. The trials of 4.4 decide: one bond seen in one game
 only, and the design switches to this. (Chosen by the writer of this plan; the tester has not confirmed it.)
 
@@ -228,19 +228,25 @@ Read in review 3 (R/sync-v3/review3/critique_feasibility.md section 1):
   (edge +0xec set; +0xef, +0xf1 and the look points are not set, and what they mean is not read).
 - A grab is refused by main+0x9fb7fc answering 1.
 
-Not read, each with its fallback:
+Read on 2026-11-12 for this design (contraption-game-facts.md section 49; static reading, nothing run):
+- A hold is ended from outside by the game's own refusal message to the Link; Ultrahand never ends one by itself.
+- Every removal of a glue edge passes the graph's removeEdge main+0x2995024. The strain check can be switched off
+  per bond, and nothing else depends on it.
+- A bond made by the direct call equals a hand glue but for its look (one byte), pulls its bodies into place, and
+  checks neither the 22-part limit nor a missing body.
+- A map actor is known at its create by its placement record; a device from a capsule and an Autobuild part by the
+  return address of their create. A second create function exists beside the one hooked.
+- The delete request's reason tells a destroy (0) from an unload (3, 5, 6, 7, 10). A run-time part that unloads is
+  never made again by the game.
 
-| Fact | Fallback if it cannot be relied on |
-|---|---|
-| How an established Ultrahand hold is ended | The held part's exemption from G1 is withdrawn, so the drive wins |
-| The placement hash is equal in both games for objects that are not enemies | Map objects keep the present key |
-| The values of the delete reason, in a run | The present time window |
-| A refused edge removal is clean | It is allowed, and reconcile makes the bond again |
-| The body slots of parts with several bodies | A wrong body is found by the digest and the island is remade |
-| Which create callers are a player's | The present nearness gate, with a counter |
+Still unread, each with its rule in the specification's section 14: a dispenser's create and drops (the present
+nearness rule, counted); the teardown of a load or fast travel (every delete while loading is an unload); whether a
+new copy is ready for a bond on its first frames (a wait of one frame and a read-back); the aim highlight.
 
-**Seen once only:** a bond made in place in a game that did not do the gluing. If that fails often, every repaired
-glue shows as a remake of the copy. The design stays correct; section 7 then moves forward.
+**Settled only by a test session:** whether the placement hash is equal in both games for objects that are not
+enemies (until then map objects keep the present key), and how often a bond made in place holds in a game that did
+not do the gluing (it had been seen once before these readings). If it fails often, every repaired glue shows as a
+remake of the copy. The design stays correct; section 7 then moves forward.
 
 ## 6. What this does not fix
 

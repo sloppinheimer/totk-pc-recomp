@@ -2,9 +2,9 @@
 
 Status, 2026-11-12: written before any code. It turns [contraption-sync-v4.md](contraption-sync-v4.md) (the design,
 called D below) into data structures, messages and procedures for one new file, runtime/coop_ent.c. Where this file
-and D disagree, D is wrong and is corrected first. Section 14 lists what waits on the readings of D 4.1; nothing
-that depends on one of them is written before its answer is in
-[contraption-game-facts.md](contraption-game-facts.md).
+and D disagree, D is wrong and is corrected first. The readings of D 4.1 are in (2026-11-12,
+[contraption-game-facts.md](contraption-game-facts.md) section 49); section 14 says what each decided and what is
+still unread.
 
 Conventions. Addresses are TotK 1.4.3, main+offset. "The world" is the game's memory; "the table" is ours. An
 incarnation is a game's 64-bit id for this session (coop_ctr_me). Times are the world clock in microseconds
@@ -100,12 +100,23 @@ the batch maker the entry of each record part is `rec_member[i]`, by the maker's
 part, in record order).
 
 4.2 **An actor this game's player or world made at run time.** Entered and minted (inc = this game, serial = next)
-at the create hook (coop_spawn.c create_trace, main+0x599670) when the create is a player's. Which creates are a
-player's: reading R/sync-v4/create-callers (section 14). Owner = this game, epoch 1.
+at the create hooks, by these rules in order (facts 49.4). The hooks are main+0x599670 (coop_spawn.c create_trace)
+and the synchronous create main+0xa1bc30, which the first does not see.
+- our own create (a thread flag set around every create this code asks): bound by 4.1, never minted;
+- a placement record is passed (x5 not 0): a map actor or its successor, 4.3, never minted;
+- return address main+0x1b7f8c8 (a capsule opening into its device, a Player attachment method) and the Player is
+  this game's Link (`coop_player_actor`): minted. The same call for another Player actor (a stand-in) is not
+  minted, and is counted: whether a stand-in can open a capsule is not read;
+- return address main+0x1d3bb98 (the Autobuild part maker) outside our own batch: minted, ENT_PREVIEW;
+- any other run-time create of an actor that passes the entity filter (shots, drops, a dispenser's capsules, what
+  an AI node makes): minted only when first seen within 6 m of this game's Link, as the object mirror does today,
+  with a counter and the return address in the log. Dispensers and drops are not read.
+Owner = this game, epoch 1. The actor is taken when the handle's status is 3 (`coop_handle_status`).
 An Autobuild's parts carry ENT_PREVIEW while SPR +0x20 bit 51 is set; a PREVIEW entity is in no statement.
 The flag is cleared when bit 51 is clear and the SPR's queued bond count (+0x2b0) is 0.
 
-4.3 **A map-placed actor.** Eid = (0, key) with key = FNV-1a 32 of (placement hash, name), flag ENT_MAP. It is
+4.3 **A map-placed actor.** Its placement record is P = [actor +0x370], the hash at P +0x88 (all ones for a run-time
+create), copied from the map file. Eid = (0, key) with key = FNV-1a 32 of (placement hash, name), flag ENT_MAP. It is
 entered only at an exact cause in this game (4.4) or when a statement names it. Until the first test session has
 logged equal hashes in both games for the classes of 14.6, the key is `coop_actor_world_key(actor)` as today.
 A map entity is never deleted by reconcile and never created; a game that does not have its actor waits for its own
@@ -145,13 +156,19 @@ RIDE. The heartbeat's PAUSED flag is set by coop_ctr.c as today.
 
 5.5 **At the asker.** GRANT: owner and epoch set; the island stays out of the drive. REFUSE, or 1.5 s with no answer
 from a live, unpaused owner: the island goes back under the drive and the gates close. If this Link still holds it,
-the hold is ended (reading R/sync-v4/hold-end, section 14); until that is read the fallback is that `coop_g1` no
-longer exempts a held part of that island, so the drive wins.
+the hold is ended the game's own way (facts 49.1): the message {receiver = Link +0x380, id 0x20510006} is queued on
+the held actor's channel with main+0x2b76c34(actor +0x378, msg, 0), as the SPR does itself at main+0x1c0662c. The
+Ultrahand part then runs its own end (main+0xb9b3a4): it sends the let-go, the SPR clears the holder and bit 16,
+the hand and beam effects stop. The SPR side alone is never cleared (the part would keep a ghost hold), and the
+part ends a hold by itself on nothing we could rely on (no distance test, no holder test).
 
 5.6 **Before the grab.** For an island whose last statement says class HOLD or RIDE, the hook on main+0x9fb7fc
-answers 1 when called from the grab handler (return address inside main+0x1c0bf20), so the game refuses the grab
-itself. Which other callers main+0x9fb7fc has, and what the refusal's side call main+0x1a45ba0 does: reading
-R/sync-v4/grab-refuse.
+answers 1 when its second argument (the kind) is 1 and the return address is main+0x1c0c228 (the grab handler's
+call; the function has ten callers, the grab is the only one of kind 1: facts 49.6). The game then refuses the
+grab itself: it sends 0x20510006 and the part ends. The refusal's side call main+0x1a45ba0 only queues a feedback
+message and is left alone. Not read: what colours the aim highlight, so a held thing may look grab-able until tried.
+A stick another player rides: the seat claim main+0x502e60 can be refused at main+0x592264; whether a stand-in can
+hold a seat is not read, so a RIDE take is refused by 5.3 and the mount is ended by a REFUSE as a hold is.
 
 5.7 **Claims without a grant** (owner := this game, epoch + 1, stated at once), only when this game's copy of the
 island agrees with the last statement's digest:
@@ -229,9 +246,18 @@ it, a reason code when it is not shown here.
 7.3 **Bonds**, after every stated member is here:
 - a real edge between two members that the statement lacks: broken with the game's break message main+0x1cf54d4;
 - a stated bond with no real edge: made with the direct bond call main+0x1c05a98(spr of A, sa, body of B slot sb,
-  matA, matB), only when the two bodies are within 5 cm and 5 degrees of `rel` now. An island of one that is loose
-  and not held is first moved into place (one SetTransform through the drive's exemption) and bonded next frame.
-  What must be written on the edge afterwards to equal a hand glue, and which thread: reading R/sync-v4/direct-bond.
+  matA, matB) with matA = A's body world matrix now and matB = matA * rel (facts 49.3). Before the call: both
+  bodies are not null (the call does not check), the physics objects of both actors exist (a copy made this frame
+  waits one frame), and the two groups together have fewer than 22 parts (the call does not check, and the SPR
+  update would break the bond). The bodies need not be in place: the bond pulls them. An island of one that is
+  loose and not held is still placed first (one SetTransform through the drive's exemption), so nothing is thrown.
+  After the call the new edge is found by `part_edges` and edge +0xef is set to 1 (the lasting glue look; +0xf1 and
+  +0xcc..+0xe0 are left alone: the strand writes them), and SPR +0x20 bit 18 is set on both parts.
+- **Strain is the owner's to judge.** On every bond between two members of an island this game does not own, the
+  strand's byte +0x1e2 is kept at 1 (the first test of the strain check main+0x190f034; facts 49.2): a copy's bond
+  never breaks by strain here, and a re-made bond whose bodies are a little off does not break again at once. It is
+  set back to 0 when this game becomes the owner. The strand of an edge: the SPR's list at +0x170, strand +0x50 =
+  the edge.
 - nothing is assumed: the next pass reads the edges again.
 
 7.4 **The ladder.** `passes` counts consecutive reconcile passes that end with a difference.
@@ -260,8 +286,8 @@ through the ring: the two bodies, their world matrices before the call, the edge
 - T unknown, DEAD or GONE; or the merged island would exceed 21 parts; or it is not the owner (with who is):
   BOND_NAK(reason);
 - X has no actor here yet (its copy is being made): the request waits, at most 3 s, then NAK(NOT_HERE);
-- the bodies are not within 5 cm and 5 degrees of `rel`: X's island, when loose here, is moved into place first;
-  when it cannot be (X's island is bonded to something else out of place): NAK(POSE);
+- X's island, when loose here, is moved into place first (7.3); when its bodies are more than 0.5 m from `rel` and
+  cannot be moved (it is bonded to something else out of place): NAK(POSE);
 - otherwise the bond is made with the direct call; then, unless this game's class for T's island is HOLD or RIDE,
   the merged island is granted to the asker (GRANT, epoch + 1); else the asker's island X is taken into this game's
   ownership (GRANT the other way). BOND_ACK(op), and the merged island's statement.
@@ -293,12 +319,18 @@ not while this Link stands where the copy goes.
 
 A ring of 256 fixed-size events, written by hooks on any thread (a lock-free index), read by phase 0.
 10.1 Bond made by a hand glue: {bodies, matrices, edge} (the wrap at LR main+0x1d677a8).
-10.2 Structure changed: the bond maker, the edge removal main+0x2999fe8, removeScotch main+0x1c042bc, the break
-message main+0x1cf54d4: {body or actor}. It only marks the entity's island to be read this frame (3.2).
+10.2 Structure changed: the bond maker (two direct callers, so it sees every bond) and the graph's removeEdge
+main+0x2995024, which every removal passes (the wiggle and strain path main+0x2999fe8 does not see a body's
+teardown or a part's death: facts 49.2). It only marks the entity's island to be read this frame (3.2). A missed
+event costs at most the 0.25 s of 3: the truth is the edge list, never the events.
 10.3 Delete request main+0x63baa8 / 0x63b6b0 on an entity's actor: {actor, reason, return address, ours}. `ours` is
-a thread flag set around every delete this code asks. Class "unload" or "destroy" from the reason: reading
-R/sync-v4/delete-reasons. Death request main+0x1953184: {actor, kind}.
-10.4 Create request main+0x599670: {handle, name, return address} for 4.2.
+a thread flag set around every delete this code asks. Class by reason (facts 49.5): 0, 8, 9 destroy (every death
+ends in a delete with reason 0; 8 and 9 are an inference); 3, 5, 6, 7, 10 unload; 4 (a scene's mass reset) is
+treated as unload; 1 and 2 are a failed or cancelled create and remove an entry that never had an actor. The
+engine's kill mark is not used (it is set for unloads too). Death request main+0x1953184: {actor, kind}. Not found
+by the reading: what removes actors on a load screen or a fast travel. While this game's heartbeat says LOADING,
+every delete of an owned entity is an unload.
+10.4 Create requests main+0x599670 and main+0xa1bc30: {handle or actor, name, return address, x5} for 4.2.
 10.5 Grab accept main+0x1c0b83c: {spr, holder}. The stick's rising edge is read in phase 0 (`stick_rider`).
 10.6 Device toggle and event, as coop_life.c does today, keyed by actor; phase 0 turns the actor into an Eid.
 
@@ -343,20 +375,23 @@ queued; TOTK_COOP_ENT_BREAK=1 breaks one edge of a copy island every 10 s.
 - coop_glue.c, coop_bonds.c and their hook registrations; TOTK_COOP_GLUE, TOTK_COOP_BONDS, TOTK_COOP_DEVICE_SYNC.
 - runtime/coop_bonds.c has another session's uncommitted change: it is removed only after that session is asked.
 
-## 14. Waiting on the readings (D 4.1)
+## 14. The readings (D 4.1), and what is still unread
 
-| # | Reading (R/sync-v4/) | What it decides here |
+Each is in R/sync-v4/ and summed up in contraption-game-facts.md section 49. Static reading only; nothing was run.
+
+| Reading | Decided here | Still unread |
 |---|---|---|
-| 14.1 | hold-end | 5.5: how a hold is ended on REFUSE; whether the held body is moved only through G1's nine writers |
-| 14.2 | edge-removal | 3.2 and 10.2: whether one hook sees every removal; 7.3: whether an immediate re-bond is safe; whether a copy's strain check is skipped |
-| 14.3 | direct-bond | 7.3 and 8.3: the bytes to write after the direct call; the body slot rule; the thread |
-| 14.4 | create-callers | 4.2: the rule for "a player's create"; 4.3: the placement hash field |
-| 14.5 | delete-reasons | 10.3: unload or destroy by reason; paths that pass no hook |
-| 14.6 | grab-refuse | 5.6: the return-address test; a native refusal of a glue target and of a stick |
+| hold-end | 5.5: a hold is ended by the game's own refusal message | what moves the held body each frame |
+| edge-removal | 10.2: removeEdge is the one function; 7.3: strain off on a copy's bonds, a re-made bond is safe | what releases a strand after a strain removal |
+| direct-bond | 7.3: the guards before the call, edge +0xef and SPR bit 18 after it; the bond pulls the bodies in | whether a new copy is ready for a bond on its first frames; the call against the physics step |
+| create-callers, device-origin | 4.2: the rules by placement record and return address; the second create function | a dispenser's create; drops; whether a stand-in opens capsules; who sets the devices' created-by-player flag |
+| delete-reasons | 10.3: the class of each reason | the teardown of a load or fast travel; reason 4 on a run-time part |
+| grab-refuse | 5.6: kind 1 at one return address; the side call is harmless | the aim highlight; a stand-in on a seat |
 
-Settled by the first test session's log, with the fallback written in: map keys by placement hash (4.3; logged for
+Each unread point has its rule written above (a counter, a wait of one frame, a read-back, or the safe class), so
+none of them stops the writing. Settled by the first test session's log: map keys by placement hash (4.3; logged for
 planks, rocks, crates, map devices, stacked identical objects); how often the in-place bond of 7.3 holds (counted
-per attempt: made, read back next pass, still there after 5 s).
+per attempt: made, read back next pass, still there after 5 s); the counters of 4.2.
 
 ## 15. Pass tests (D 4.4), by piece
 

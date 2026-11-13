@@ -5,7 +5,8 @@ main+offset). These sections were moved as they were from [contraption-sync-v3.m
 and keep the section numbers of that file, because code comments and the other sections cite them. They describe
 the game; where a section also says what our code does with a fact (the P6 and P7 designs at the end of 41, for
 one), that part describes the v3 code and is replaced where [contraption-sync-v4.md](contraption-sync-v4.md) says so.
-R is the research folder outside this repository. Facts read later are in v3 sections 44.1, 45.1, 47.4 and 48.6.
+R is the research folder outside this repository. Facts read between sections 41 and 49 are in v3 sections 44.1,
+45.1, 47.4 and 48.6.
 
 ## 32. What the structure reading established (read 2026-11-09, R/sync-v3/m2/p4/, six folders, all read in full)
 Static reading only; nothing here has been run. Each line names the folder that holds the code and addresses.
@@ -652,3 +653,89 @@ Static reading only.
    over frames if the ring would overflow.
 6. Three players: the two-game assumptions to remove are the take-over on RELINQUISH (41.1) and the toggle and
    event messages sent to all.
+
+## 49. The readings for v4 (read 2026-11-12, R/sync-v4/, seven folders; static reading, nothing run)
+
+Numbered on from the sections above. "Not read" is said where a reading stopped.
+
+### 49.1 Ending an Ultrahand hold (hold-end)
+- The part's hold control (main+0x1d58e80, from part_update main+0x1d58b78) never ends a hold: no distance test, no
+  test of the SPR's holder or bit 16. A hold ends only through part_end main+0xb9b3a4.
+- part_end runs on message 0x20510006 whose first word equals the held actor's id (+0x380), on a failed accept
+  (main+0x85f7d8: target state 7 to 11, or actor +0x28 bit 17), and when a glue request's actor is dead.
+- To end a hold from outside: queue {receiver = Link +0x380, id 0x20510006} with main+0x2b76c34(target +0x378, msg,
+  0). The SPR does this itself at main+0x1c0662c, 0x466860 and 0xa99030. The send is queued under a mutex. part_end
+  then sends 0x20510005, and the SPR runs main+0x1c0b8a8 (holder and bit 16 cleared, body woken).
+- Clearing only the SPR side leaves the part in its hold state for good.
+- main+0x1a45ba0 (called on a refusal) queues a feedback message 0x3dc6000N and changes no state.
+- Not read: what moves the held body each frame. The part calls none of the nine body writers and makes no
+  constraint; SPR-side writers are main+0x1c07728, 0x1c0812c, 0x1c07f70 from the physics routine at main+0x46fe70.
+
+### 49.2 How a glue edge is removed, and the strain check (edge-removal)
+- Every removal passes the graph's removeEdge main+0x2995024 (it takes the graph edge, bond edge +0xc0). Its
+  callers: main+0x299454c (unregister) and main+0x18a1a4. main+0x2999fe8 sees only the wiggle message and strain.
+- Paths: the break message main+0x1cf54d4 (wiggle, a part's death, an SPR reset, AI nodes); strain; a strand that
+  fails its validity test; a body's teardown (main+0x18ac48, past 0x2999fe8); the bond manager's bulk teardown;
+  two physics-side paths (body bit 41, a force check main+0x299dff0). A group rebuild and an Autobuild pull-in
+  remove nothing.
+- The strain check main+0x190f034 measures how far the two rest frames have moved apart (distance and angle), not a
+  force. Tolerance 0.3 * k (0.5 * k for simple or tight bonds), k from the bond's strength, 0.02 when the two SPRs
+  differ in main+0x1b0f00c. Strain rises at max(1, c * over * m) a second, falls at 10 a second, and at 1.0 the
+  edge is removed. Its first line returns when strand +0x1e2 is set; nothing else reads the strain fields but the
+  look. So a bond with +0x1e2 = 1 never breaks by strain and breaks by every other path.
+- After a removal the bond edge has +0x10 bit 2 set, its ends cleared, and both sets are rebuilt (a lone part gets
+  SPR +0x28 = 0). A new bond between the same bodies is independent of the old.
+- Listing: main+0x27c1c0(body, list) per body; per SPR the lists at +0x158 (entries), +0x170 (strands, strand +0x50
+  the edge), +0x188 (temporary joints, not bonds). Edge ends at +0x100 and +0x108.
+
+### 49.3 The direct bond call (direct-bond)
+- Edge +0xef, +0xf1 and +0xcc..+0xe0 are read only by the strand (the per-edge look and strain object). +0xef puts
+  the strand in the glue manager's list and gives the lasting glue look; +0xf1 is a look branch. The strand's own
+  geometry pass writes +0xcc..+0xe0. Breaking, strain, groups, the history writer (+0xec or +0xed) and the save do
+  not read them. So a bond from main+0x1c05a98 differs from a hand glue in its look only.
+- main+0x1915600 removes the oldest strands when more than 21 with +0xef exist in the whole game.
+- SPR +0x20 bit 18 is a one-shot "structure changed" mark taken by the SPR update main+0x271190.
+- The glue tick refuses when the two groups have 22 or more parts; the direct call does not, and the SPR update
+  then breaks the bonds. The direct call does not check a null body slot.
+- matA and matB are world matrices at the wanted pose; the bodies need not be there, the bond pulls them.
+- A hand glue names bodies by global id, not slot. Slots: main+0x44bba4 (key 0 = [set +0x150], else a byte map at
+  set +0x108); the history writer reads body +0x1e8 bits 1 to 4 as slots 0 to 3.
+- Both callers of the bond maker run in actor-update jobs; a pool mutex is held around the maker.
+- Not read: when the objects the call needs come to exist on a new actor; the call against the physics step.
+
+### 49.4 Who creates an actor (create-callers, device-origin)
+- The create request main+0x599670: x1 name, x2 argument (position +0, rotation +0xc, scale +0x30, a parameter
+  list at +0x58, up to three parent actors at +0x68 to +0x78), x3 handle, x5 a placement record. There is no field
+  that says why. Handle status 2 queued, 3 created, 4 failed.
+- x5 is not 0 only for a map actor or its successor. On the actor the record is P = [actor +0x370], hash at P +0x88
+  (all ones for a run-time create), copied from the map file.
+- main+0xa1bc30 is a synchronous create that returns the actor at once and does not pass 0x599670 (the map create
+  with a request byte set, and a few others; three callers through a vtable are not read).
+- An inventory device is a capsule actor SpObj_<Device>_Capsule_A_01; the capsule becomes its device in a Player
+  attachment method main+0x1b7f2d8, which calls 0x599670 with return address main+0x1b7f8c8, no parents, x5 = 0,
+  the position of the capsule. The Autobuild part maker's create returns to main+0x1d3bb98; a Shooter's to
+  main+0x1d1dbd8.
+- Zonai devices have a blackboard bool ZonauGear_IsCreatedByPlayer (hash 0xa0b06281), read at main+0xa14a0c and
+  0x1c4d810. No code or data that writes it was found.
+- Not read: how the capsule itself is made from the pouch; a dispenser's create; drops; which job sets status 3.
+
+### 49.5 The delete request's reasons (delete-reasons)
+- main+0x63baa8(actor, reason): 0 a destroy (every death procedure, the lapse and green-kill fallbacks, the
+  Autobuild hologram); 1 and 2 a failed or cancelled create; 3 the far delete; 4 a mass reset by scene nodes
+  (whether a run-time part can get it: not read); 5 far, by a flag or an AI node; 6 a map unit's unload; 7 and 10
+  unloads (from the earlier notes); 8 and 9 a holder deleting what it holds (inference: destroy).
+- The engine's kill mark (P +0x98 bit 7) is set for 5, 6 and 8 too, so it does not tell a destroy from an unload.
+- Every death ends in a delete with reason 0.
+- The far unload is tested per actor every frame against DisplayRadius + DeleteRadiusOffset, to observer slots
+  whose writer is not read. No exemption for a held, ridden or glued actor. A global ([[main+0x395e008]] +0xd0 not
+  0) switches the far unload off for every actor. A run-time part that unloads is not made again by any code read.
+- Not found: what removes actors on a load screen or a fast travel.
+
+### 49.6 Refusing a grab, a glue, a mount (grab-refuse)
+- main+0x9fb7fc(spr, kind, out) has ten callers; the grab handler's call (return address main+0x1c0c228) is the
+  only one of kind 1. Answering 1 there makes the game send 0x20510006, and the part ends.
+- Aiming (0x20510002) sets flags only and never asks main+0x9fb7fc. What colours the highlight: not found.
+- The glue tick main+0x1d67060 ends a glue when main+0x1c070a0 (SPR(A) +0x24 & 0x2380) answers 1, when SPR(B)
+  +0x150 bit 4 is set, at 22 parts, and after 1.5 s. The glue request 0x2051000f asks main+0x9fb7fc with kind 8.
+- A stick is mounted through the seat claim main+0x502e60, refused by main+0x592264 or the rider's component 129.
+  Whether a Player stand-in has that component: not read.
