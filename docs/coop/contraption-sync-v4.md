@@ -81,7 +81,8 @@ taken in arrival order, not by type (3.3).
 
 ### 3.1 Entity
 An entity has one id for life: (minting incarnation, serial). A loose fan and a fan in a build are the same thing.
-In the first build the entities are: Zonai devices and capsules, the parts an Autobuild made, and any other actor a
+In the first build the entities are: Zonai devices (not their capsules), the parts an Autobuild made, and any other
+actor a
 player grabs with Ultrahand or glues (from that moment, for the rest of the session). Pickable items, weapons,
 materials, arrows, beams, the paraglider and fused gear stay in the object mirror as they are today (decided in the
 specification's review: the mirror is one pipeline, and its pick-up and destroy notices already carry them).
@@ -106,8 +107,9 @@ One reliable stream per sender, taken in arrival order.
   (held, ridden, stale, "not the owner, it is X").
 - A grant is given only to a game whose copy of the island equals the owner's world (the asker's digest is in the
   TAKE).
-- While the owner holds or rides an island, the other game refuses the grab natively before it starts
-  (main+0x9fb7fc answering 1 from the grab handler).
+- While the owner holds an island, a grab of it by the other player is accepted and ended at once the game's own
+  way (the refusal message that makes the Ultrahand part let go). In the first build it is not refused before it
+  starts: that left the part in a state whose exit is not read. A stick the owner rides is refused at the seat.
 - From the grab frame the asker simulates its copy for at most 1.5 s. A REFUSE or silence puts it back under the
   drive.
 - Owner and epoch are in every statement (3.4), so a lost GRANT is corrected by state.
