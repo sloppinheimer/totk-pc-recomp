@@ -1,6 +1,8 @@
 # Contraption sync v4: the specification
 
-Status, 2026-11-13: fourth draft, written before any code. It turns [contraption-sync-v4.md](contraption-sync-v4.md)
+Status, 2026-11-13: implemented and built, not run. Section 18 says where the code differs from the text of
+sections 0 to 17 (the fourth draft, written before the code); section 19 is the first session's tests. It turns
+[contraption-sync-v4.md](contraption-sync-v4.md)
 (the design, D below) into data, messages and procedures for one new file, runtime/coop_ent.c. Where this file and D
 disagree, D is corrected first.
 
@@ -776,3 +778,142 @@ pile of identical objects); body keys of both ends of every bond in both games; 
 still there after 5 s, relative speed after the call; wanted against made root pose of every batch; whether a
 stand-in's capsule create is ever seen; how many frames a create takes from request to `pend[]` hit; ring and
 table high-water marks; the seat hook's refusals and what the event node did after one.
+
+## 18. As built (2026-11-13): where the code differs from the sections above
+
+The specification was implemented in full, built clean, and reviewed against this file by four Sonnet readers
+(R/sync-v4/code-review/: core.md, own.md, rec.md, kept.md; every finding fixed). Nothing has been run. Where the code
+had to differ from the text above, the code is what stands, and this section says how.
+
+**Files** (section 14 named one). runtime/coop_ent.c: the table, reading the world, islands, the published sets,
+the group views, the frame's pass. coop_ent_own.c: ownership and every message. coop_ent_rec.c: reconcile, bonds,
+the glue across owners, the strain and cap hooks. coop_ent_id.c: identity, the create / delete / death / glue / grab
+/ seat hooks, the ring's events, the mirror asked. coop_ent.h and coop_ent_msg.h: the data of section 2 and the
+messages of section 6. coop_ctn.c keeps the kept code (the drive, the devices, springs, burning, deaths replayed,
+the recipe and the maker, the edge reading, G1) and works from group views; its registry, versions, authority,
+lone devices and messages are gone. coop_glue.c and coop_bonds.c stay in the tree and are not built
+(tools/build_game.py).
+
+**Data and threads.**
+- The Snap of section 2 is the group view (`Grp`, `grps[]`, under `grp_lock`): one row per connected set of one
+  owner here, rebuilt each frame; the kept code reads it where it read a v3 registry entry. Its drive state is
+  allocated once per row and never freed.
+- The event ring is a queue under a small lock (not lock-free). An overflow drops the new event, is counted, and
+  the world is read again.
+- Bonds are read again for every grouped entity on a structure event or every 250 ms, not per island (section 3's
+  "due"). The set of follower bodies (7.6) is rebuilt four times a second.
+- A part's bodies and their keys are found by asking main+0x44bba4 for keys 0 to 6 (not the body list, not body
+  +0x1e8): the call the v3 code used.
+- The held pose of an edge (3.2) is taken from main+0x7a4410 and checked against where the two bodies stand: a
+  result more than 0.5 m off, or no number, is replaced by the bodies' present relation, and both cases are counted.
+- The transport has 1024 slots, scanned linearly (6.1 said 2048, hashed).
+
+**Identity.**
+- An actor becomes an entity by 4.4 only after the mirror has answered on the co-op tick, so there is no
+  "entered, not yet stated" state. A map actor's pair is COOP_OBJ_KEYED | key, and the other game finds its actor
+  through the mirror's resolver with that pair.
+- A device or Autobuild part minted at its create is handed to the mirror one tick later (`coop_obj_entity`), so
+  the mirror forgets a row it may have made for it in the frame before.
+- 4.2 rule 6 (another creator's device): `coop_obj_made_here` is the mirror's own "made" row, asked for up to 2 s.
+- An actor made before a session exists is not entered later. 4.2's re-owning under a new incarnation is not
+  written.
+- The mirror keeps a copy of something that can be glued for one second after its owner stops listing it (the
+  owner stops a moment before its statement arrives). A destroyed crate's copy therefore lingers up to a second.
+- The pick-up refusal of 4.4's last bullet has no code of its own: G4 refuses every delete of a follower's actor
+  from the three callers it knows; a pick-up's caller is not one of them [test].
+
+**Ownership.**
+- The held actor is found by the grab hook's note (main+0x1c0b83c, x0 taken as the SPR) and by a scan of the
+  entities four times a second, whichever comes first.
+- The payer carried in a GRANT is not applied by the new owner: whoever switches a device on next pays.
+- A DEATH message means "replay this death on your copy". An entity's life changes only by its owner's statement,
+  once the game there accepted the delete. A create of an entity is held 5 s after a death was replayed on it or a
+  create of it failed. The death is posted at the request's entry, not on acceptance (10.4): the copy is asked the
+  same death and its game decides as the owner's did.
+- An entity whose owner left and that has no actor here is forgotten after 10 s.
+
+**Reconcile and bonds.**
+- The make's precondition "main+0x29a5a08 returns each body" is not tested (the registry it takes was not at hand);
+  the graph node (main+0xa2d39c) and bit 24 are. The new edge is found by listing the part's edges right after the
+  direct call, not from the bond maker's hook. The call is made once per pair in a second.
+- Strain fields are not set to 0 when a game becomes owner (7.6, last bullet): the strand of an edge is not found
+  without a walk that was not read, and the reading calls the effect cosmetic.
+- Rung 2 breaks only the bonds inside the sender's island; "a map member is placed by one SetTransform" is not
+  written. With a member missing, a pass creates and does not yet break.
+- The INDEX hash is a sum of per-entity hashes (order-free), not a hash in ascending order.
+- "Two actors for one Eid" (7.2) cannot arise in the table (one actor per row) and has no code.
+
+**The maker.**
+- Saved and put back: the build object's base matrix, its record and the three bytes at +0x3c70. The kinds list
+  and the part pool are left as the make leaves them (as in v3). The abort test reads the selected design
+  (ability +0x51e8) only.
+- No recipe is taken for a group with a member the game's writer skips; such an island is made part by part.
+- A part the maker made whose entity went or changed hands meanwhile is deleted.
+
+**Riders.** An entity is named between the games by a hash of its Eid with owner byte 0xfd (12.2 said the
+serial and the minter's relay id).
+
+**Not built, as section 0 says:** the native refusal of a grab, the maker fed part of a record.
+
+**Not written, though sections above ask for it:** the test settings TOTK_COOP_ENT_BREAK and TOTK_COOP_ENT_DELAY
+(13; TOTK_COOP_ENT_DROP is); the settings printed at the start of the log (12.3); the release of a pending create's
+handle when its entity's row is dropped; the removal of a `Stated` on a full table is as 6.2 says, the other
+tables refuse and count.
+
+## 19. The first session's tests
+
+Two games on one PC. Each run needs the tester's yes. Read both logs after each block: every `coop: ent:` line
+carries wall-clock milliseconds and Eids; the status line `coop: ent: <ms> owned ... | unconverged ...` is the
+health of the session.
+
+**Block A: does it start, and does identity hold (the gate for everything else).**
+1. Both games reach the world with no crash; the status line appears in both logs.
+2. P1 takes three fans from the pouch. Both logs: three "made here" lines at P1 with three Eids, three copies at
+   P2 within a second, and the same three Eids in P2's log. The old "three fans, two seen" note.
+3. P1 pushes a fan around. At P2: it follows, rests within 0.10 m, no teleport, no chatter on a slope.
+4. Log lines that settle readings: "held poses of bonds read so far: N from the bond's rest frames, M from where
+   the bodies stand" (if M is not 0, the rest-frame call's output layout is not as assumed); any "synchronous
+   create" line; the stand-in capsule counter.
+
+**Block B: ownership.**
+5. P2 grabs P1's loose fan: a TAKE and a GRANT line, epoch 2, the fan follows P2's hand in both games. Back and
+   forth twenty times: one Eid throughout, epoch 21.
+6. Both grab one fan at once: one keeps it; the other's hand lets go (the "grab ... refused here" or
+   "TAKE ... refused" line). What the player sees when a hold is ended this way is not known yet.
+7. P1 holds a fan and P2 tries to grab it: P2's grab starts and drops at once.
+8. P1 in a menu for ten seconds; P2 grabs P1's fan: granted "(answered while paused)". P1 holding a fan, then in a
+   menu: P2 cannot take it.
+
+**Block C: glue (the complaint this design is for).**
+9. P1 glues two of its fans: at P2 the pair is one build within 2 s (a "being made here" line, or two bound
+   copies and a "bond made here" line with its relative speed).
+10. P2 grabs the pair, glues P1's third fan onto it: an "operation" line in P2's log, "bond ... in place" in P1's,
+    one owner afterwards in both. Ten times. The counter to watch: any "a bond in one game only" line.
+11. P2 glues its own fan onto a build P1 holds: the bond is made and P1 keeps the build (P2's hand lets go).
+12. Both press attach on the same two parts at once.
+13. P2 pulls a part off P1's idle build: two islands in both games within a second.
+14. A log (felled tree) or a dropped weapon: grabbed by each player in turn (the old mirror's path), then glued by
+    one player onto a fan: "is an entity now" in the gluer's log, one log in both games throughout, no twin.
+
+**Block D: builds in motion.**
+15. P1 builds a car (wheels, stick) and drives it; P2 watches, then stands on it, then rides while P1 drives.
+16. P1 gets off; P2 takes the stick: TAKE (ride), GRANT. P2 tries the stick while P1 is on it: refused at the seat.
+17. P1 drives 300 m with P2 following 100 m behind: P2's copy unloads and is made again where the car is.
+18. Fans on a build switched by each player; a spring; a time bomb; a part of wood set alight.
+19. P2 Autobuilds near P1 and 30 m away; P1 pulls a part off.
+
+**Block E: lifetime.**
+20. P1 walks 200 m from a build P2 stands by: "unloads here ... offered", P2 "claimed ... offered by its owner".
+    P1 comes back: the copy is made with no wait.
+21. P1 fast travels with a dozen loose devices near P2: P2 claims them; none is destroyed; no "ring overflowed".
+22. A build is destroyed part by part at its owner (a time bomb): the same parts go at the other game.
+
+**Block F: the two test settings**, once A to E pass: TOTK_COOP_ENT_DROP=5 through blocks B and C (no island
+without an owner for more than 6 s; "unconverged" under 3 s), and TOTK_COOP_ENT_BREAK=1 (not written: the setting
+has no code yet; a bond broken by hand at a follower with a hit is the stand-in).
+
+**What a failure means.** A crash at start: the new hooks (the create wrap, main+0x54cb00, the delete wrap) are
+the first suspects, each can be switched off by taking its address out of cpu.h. No "made here" line for a fan:
+the create chain (4.2). Copies that never appear: the statement or the plain create (7.2); the status line's "far",
+"wait", "differ", "not shown" counts say which. A glue that does not hold in the other game: the "bond made here"
+line and its "edge listed / not listed yet" say whether the direct call took.

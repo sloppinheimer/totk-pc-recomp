@@ -1,7 +1,7 @@
 # Contraption sync v4: the current design
 
-Status, 2026-11-12: a plan. Nothing of sections 3 and 4 is written or run. Section 2 describes code that exists and has
-been played. This file is the design to work from; it is kept short on purpose.
+Status, 2026-11-13: sections 3 and 4.1 to 4.3 are implemented (runtime/coop_ent*.c, coop_ctn.c) and built; nothing
+has been run. The specification's section 18 says where the code differs, section 19 lists the first tests.
 
 - History, runs, reviews and play-test notes: [contraption-sync-v3.md](contraption-sync-v3.md) (an archive; code
   comments cite its section numbers). Its section 48 is the review that led to this design.
