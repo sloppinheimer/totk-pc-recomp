@@ -82,10 +82,10 @@ taken in arrival order, not by type (3.3).
 ### 3.1 Entity
 An entity has one id for life: (minting incarnation, serial). A loose fan and a fan in a build are the same thing.
 In the first build the entities are: Zonai devices (not their capsules), the parts an Autobuild made, and any other
-actor a
-player grabs with Ultrahand or glues (from that moment, for the rest of the session). Pickable items, weapons,
-materials, arrows, beams, the paraglider and fused gear stay in the object mirror as they are today (decided in the
-specification's review: the mirror is one pipeline, and its pick-up and destroy notices already carry them).
+actor a player glues (from that moment, for the rest of the session). Capsules, pickable items, weapons, materials,
+logs, rocks, arrows, beams, the paraglider and fused gear stay in the object mirror as they are today, with its own
+grab hand-over, until one is glued (decided in the specification's reviews: the mirror is one pipeline, it has been
+played, and this keeps the hand-over between the two systems to the moment of a glue).
 - A copy this code creates is bound to its id by the create handle.
 - A run-time actor this game made is minted here.
 - A map-placed actor is (0, hash of placement hash and name), only after one log line per game has shown the hashes
@@ -113,9 +113,10 @@ One reliable stream per sender, taken in arrival order.
 - From the grab frame the asker simulates its copy for at most 1.5 s. A REFUSE or silence puts it back under the
   drive.
 - Owner and epoch are in every statement (3.4), so a lost GRANT is corrected by state.
-- A claim without a grant: the owner left the session, or has been paused or loading for 1 s.
-- Unload at the owner (a delete request this code did not make, reason 3, 4 or 6): the island is offered; with no
-  taker in 2 s its entities are stated gone.
+- A claim without a grant: the owner left the session; the owner is loading, or paused and silent for 1 s to a
+  request (never a thing the paused player holds or rides); or the island is offered.
+- Unload at the owner (an accepted delete that is not positively a destroy): the island is offered; a game that
+  has it claims it; with no claim in 2 s the unloaded entity is stated gone. A load offers everything at once.
 
 ### 3.4 Structure is state, read from the owner's world
 On a structure hook (bond maker, edge removal, death) and once a second, the owner lists the real glue edges of its
@@ -208,9 +209,9 @@ of the game or of our code each step calls, the thread it runs on, and its pass 
   beside registry code they are moved, not copied.
 - Removed from the build (they stay in git): in coop_ctn.c the registry, versions and their number rules,
   record_pass, in_place, edits_pass, orphans, the made / adopt / original flags, the self-heal, the lone-device
-  subsystem, TAKE / GRANT / RELINQUISH / PULL as they are; in coop_players.c the entity half of the object mirror
-  (props for grab-able actors, obj_take_over, the lower-id rule in props_receive, taken[], place_copy and force_to
-  for entities; the effects list stays); coop_glue.c and coop_bonds.c and their hook registrations.
+  subsystem, TAKE / GRANT / RELINQUISH / PULL as they are; coop_glue.c and coop_bonds.c and their hook registrations.
+  coop_players.c keeps all its code: the mirror skips entities and hands an object over when it is glued
+  (specification 4.4 and 11).
 
 ### 4.4 Test, when all of 4.2 and 4.3 is in
 Each run needs the tester's yes. The script: spawn three fans, glue two, hand over, glue the third, hand over, glue

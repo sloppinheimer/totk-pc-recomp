@@ -1,15 +1,17 @@
 # Contraption sync v4: the specification
 
-Status, 2026-11-13: third draft, written before any code. It turns [contraption-sync-v4.md](contraption-sync-v4.md)
+Status, 2026-11-13: fourth draft, written before any code. It turns [contraption-sync-v4.md](contraption-sync-v4.md)
 (the design, D below) into data, messages and procedures for one new file, runtime/coop_ent.c. Where this file and D
 disagree, D is corrected first.
 
 History: the first draft was reviewed by three readers that did not write it (against the code, against the game
 facts, by walking play scenarios by hand; R/sync-v4/spec-review/), two rounds of game-code readings followed
 ([contraption-game-facts.md](contraption-game-facts.md) sections 49 and 50, cited as F), and the second draft was
-reviewed the same way (R/sync-v4/spec-review2/, with triage.md there). Every finding of both reviews is in this
-draft. The second review found the ownership rules of section 5 sound under every interleaving it tried, and no
-finding that needs a new reading of the game.
+reviewed the same way (R/sync-v4/spec-review2/, with triage.md there). A third, narrower review walked the third
+draft by hand and checked it against itself (R/sync-v4/spec-review3/). Every finding of the three reviews is in this
+draft, and so are the cuts the third review proposed: where two mechanisms did one job, one is gone. The reviews
+found the ownership rules of section 5 sound under every interleaving tried, and no finding that needs a new
+reading of the game.
 
 Conventions. Addresses are TotK 1.4.3, main+offset. "The world" is the game's memory; "the table" is ours. An
 incarnation is a game's 64-bit id for this session (`coop_ctr_me`). **Every timer is wall-clock time**; only POSE.us
@@ -21,16 +23,23 @@ stand-ins are Player actors too.
 ## 0. Scope of the first build
 
 An **entity** is one of: a Zonai device (actor name `SpObj_*`, not a capsule), a part an Autobuild made, or any other
-actor that an exact cause entered (4.4: grabbed with Ultrahand by this Link, or an end of a glue). The set is frozen
+actor that is an end of a glue (4.4). The set is frozen
 at entry: an entity stays one for the session.
 
 Not entities, left to the object mirror in coop_players.c as today: capsules (`SpObj_*_Capsule_*`: pickable items,
 with the mirror's pick-up notice), items, weapons, shields, materials and fused gear, arrows, beams, the paraglider.
-One of those that a player grabs with Ultrahand or glues leaves the mirror and becomes an entity by 4.4's hand-over.
+One of those that a player glues leaves the mirror and becomes an entity by 4.4's hand-over. A bare Ultrahand grab
+of one stays the mirror's business, with the mirror's own grab hand-over (`obj_take_over`, `obj_handover_apply`,
+`take_q`), which is kept as it is: it has been played, and it keeps the hand-over of 4.4 to the moment of a glue.
 
 Two things of the earlier drafts are **not** in the first build, by decision: a grab of a thing its owner holds is
 not refused before it starts (it is accepted and ended at once by 5.5, whose every step is read; the native refusal
-left the Ultrahand part in a state whose exit is not read); and the maker is not given part of a record.
+left the Ultrahand part in a state whose exit is not read); and the maker is not given part of a record. Cut after the
+third review, each because another rule already does
+its job: a message that states a belief about ownership (owner and epoch travel in every POSE, statement and
+GRANT, and a stale asker is corrected by its REFUSE); the paused game's answers to bond and toggle requests (the
+asker claims after 1 s, 5.7); taking an offered island by request and digest (it is claimed, 5.8); the three-step
+ladder when a player leaves; a check of a bond between two owners (two owners last one round trip).
 
 ## 1. Threads
 
@@ -38,7 +47,7 @@ left the Ultrahand part in a state whose exit is not read); and the maker is not
   walks of the world's structures, all guest calls but the drive's, all changes of the world, and the table.
 - **The net tick** (`coop_ent_net`, called from coop_spawn.c `coop_tick` beside `coop_ctr_tick`; about 30 a second,
   also in menus, loads and with no Player): the heartbeat flags (1.2), the pause queue (1.3), repeats that only
-  send, and the answers of 5.4.
+  send (GRANT, OFFER_ALL), and the answer to a TAKE (5.4). It takes `ent_lock` for the queue and the answer.
 - **The drive tick** (`coop_ent_drive`, called where `coop_ctn_tick` is called today, so with today's gates: a
   resident Player, a world role, a running world clock): `follow_rigid`, `dev_follow`, `floats_follow`, from the
   snapshot (12.1). Its guest calls are the one exception to "guest calls at phase 0".
@@ -50,7 +59,8 @@ coop_spawn.c `coop_lock_wait` (the holder can give up its core inside a guest ca
 
 ### 1.1 The order inside phase 0
 1. the pause queue, then `coop_ctr_recv` until empty, in arrival order (6): table changes at once, world changes
-   noted on the entry;
+   noted on the entry; then the latest-only slots of POSE, APPLIED and INDEX (the transport's listing call): POSE
+   through `apply_owner`, the newest pose, the class and the OFFER flag; APPLIED into `Island.peer[]`; INDEX by 6.11;
 2. the event ring (10);
 3. the caches: this Link, the actor its Ultrahand holds, the stick it rides; each entity's liveness and main-body
    matrix (one read each; `main_body` cached per entity against `gen`);
@@ -59,7 +69,7 @@ coop_spawn.c `coop_lock_wait` (the holder can give up its core inside a guest ca
 6. timers whose end changes the world or a request (5.2 expiry, 5.7, 5.8, 8.4, 7.4 back-off): never on a pass in
    which a message for that request or operation was read in step 1;
 7. this game's own causes: TAKE, bond operations (5.2, 8);
-8. statements owed (6.2);
+8. statements owed (6.2); then POSE, APPLIED, INDEX and NEED (a paused game sends none of these);
 9. reconcile (7), then the kept phase-0 functions (12.1);
 10. the published sets and the drive's snapshot (11).
 
@@ -75,15 +85,16 @@ runs in menus):
 The transport has one inbox of 256 for all types with no way to look without taking, and it stalls every reliable
 stream when full. So while PAUSED or LOADING the net tick takes every message out of `coop_ctr_recv` into `pq`
 (1024 entries of {from, type, len, payload}, order kept), and from it, in order:
-- applies GRANT, REFUSE and BELIEF to the table through `apply_owner` and the request states only (no world change;
-  a hold or ride to end is noted on the entry for phase 0);
-- answers TAKE, BOND_REQ and REQ by 5.4 (not while LOADING);
+- applies GRANT and REFUSE to the table through `apply_owner` and the request states only (no world change; a hold
+  or ride to end is noted on the entry for phase 0);
+- answers TAKE by 5.4 (not while LOADING);
 - leaves every other message in `pq` for phase 0, which reads `pq` first. They block nothing.
 When `pq` is full the tick stops taking (the transport stalls, as it would have), and logs once.
 
 ## 2. Data
 
-Sizes: ENT_N 768, ISL_N 256, BOND_N 1024, STATED_N 128, REQ_N 16, OP_N 16, ANS_N 64, PEND_N 64, EV_N 1024. Every
+Sizes: ENT_N 768, ISL_N 768, BOND_N 1024, STATED_N 128, REQ_N 64, OP_N 16, SERVE_N 8, ASK_N 16, ANS_N 64, PEND_N 64,
+SNAP_N 256, EV_N 1024. Per-peer arrays are indexed by relay id - 1. Every
 array of members is 21 wide (the game's group limit; a glue is refused at 22). A full table: the action that needed
 the slot is not done, a counter rises, one log line per 10 s names the table. Nothing is evicted silently, except
 as 4.7 and 6.2 say.
@@ -106,7 +117,11 @@ typedef struct {
     uint8_t mir_owner; uint32_t mir_id;  // the object mirror's name for it at entry (4.4), 0: none
     uint8_t end_hold, end_ride, death_due;   // world changes noted by the tick or by step 1, done at phase 0
     int16_t isl;                         // owned: index of its Island; foreign in a build: index of its Stated; else -1
-    float root_m[12]; int64_t pose_ms;   // a foreign island of one: the newest pose and when (6.1)
+        // a foreign island of one keeps here what a Stated keeps for a build:
+    float root_m[12]; int64_t pose_ms;   // the newest pose and when (6.1)
+    uint8_t state, why, passes; int64_t backoff_until, backoff; uint32_t digest;   // 7.4
+    uint8_t cls, offer; int64_t cls_ms;  // the owner's class and OFFER flag from POSE
+    uint8_t named;                       // an ISLAND, GRANT or POSE named it since the last NEED(0, 0) to its owner
     int64_t stated_ms, dead_ms;
 } Ent;
 
@@ -116,21 +131,23 @@ typedef struct { Eid a, b; uint8_t sa, sb; float rel[12]; uint64_t edge; } Bond;
 
 typedef struct {            // an island this game owns (rebuilt by 3.3, matched to last frame's by its members)
     Eid root; uint16_t n; int16_t m[21];          // Ent indexes ascending by Eid
-    uint32_t digest, epoch; uint8_t cls, more_edges, has_far;   // has_far: a bond to a foreign entity
+    uint32_t digest, epoch; uint8_t cls, has_far;   // has_far: a bond to a foreign entity
     uint32_t stated_digest; uint8_t owed[8];      // peers (by relay id) owed a statement
     struct { uint32_t digest; uint8_t state, why; int64_t ms, diff_since; } peer[8];   // their APPLIED
     int64_t moved_ms, class_ms; uint8_t class_sends;
-    uint8_t frozen; int64_t offer_ms; uint32_t frozen_digest; Eid frozen_m[21]; uint8_t frozen_n;   // 5.8
+    uint8_t frozen; int64_t offer_ms;              // 5.8
     uint8_t rec[BP_SIZE], rec_n; Eid rec_member[21]; uint32_t rec_digest;   // the recipe (9.1) and what it is of
 } Island;
 
-typedef struct {            // a statement of two or more members, as last received, per (sender, root)
-    uint64_t from; Eid root; uint32_t counter, digest; uint16_t n, nb, nf; uint8_t more_edges;
+typedef struct {            // a statement of two or more members, or of one member with a bond, as last received,
+                            // per (sender, root)
+    uint64_t from; Eid root; uint32_t counter, digest; uint16_t n, nb, nf;
+    uint8_t cls, offer; int64_t cls_ms;   // the owner's class and OFFER flag from POSE
     struct { Eid id; uint8_t life, death_kind, green; float rel_root[12], radius; } m[21];
     Bond bond[48];
     struct { Eid id; uint64_t owner; uint32_t epoch; } far[21];   // far ends of bonds: not members
     float root_m[12]; int64_t pose_ms;  // newest root pose: from the statement, then from every POSE (6.1)
-    uint8_t rec[BP_SIZE], rec_n; Eid rec_member[21];
+    uint8_t rec[BP_SIZE], rec_n; Eid rec_member[21];   // a make copies these when it starts
     int64_t ms; uint8_t state, why, passes, rung2_done; int64_t backoff_until, backoff;   // 7.4
 } Stated;
 enum { ST_AGREE, ST_FAR, ST_WAIT_MAKER, ST_MAKING, ST_DIFFER, ST_NOT_SHOWN };
@@ -143,14 +160,31 @@ typedef struct {            // a TAKE this game sent (5.2). id: a counter of thi
 enum { RQ_OPEN, RQ_GRANTED, RQ_REFUSED, RQ_EXPIRED };
 
 typedef struct {            // a bond operation this game opened (8). op: a counter of this game, never 0
-    uint32_t op; uint8_t state, x_asked; Eid x, t; uint8_t sx, st; float rel[12];
+    uint32_t op; uint8_t state; Eid x, t; uint8_t sx, st; float rel[12];
     uint64_t edge, to; int64_t opened, sent; uint8_t forwards, break_tries;
 } Op;
+enum { OP_WAIT_GRANT_X, OP_SENT, OP_BREAKING };   // WAIT_GRANT_X: X is held under an open request, nothing sent yet
 
-typedef struct { uint64_t from; uint32_t id; uint8_t kind, type; int64_t ms; uint8_t ans[64]; } Ans;
-// the owner's memory of an answer it gave: kind TAKE (10 s), BOND (30 s), REQ (10 s). ANS_N, oldest overwritten.
+typedef struct {            // a BOND_REQ this game is serving as T's owner (8.3 rules 4 and 5). SERVE_N
+    uint64_t from; uint32_t op; Eid x, t; uint8_t sx, st; uint32_t epoch_x; float rel[12]; int64_t since;
+} Serve;
+
+typedef struct { uint32_t id; Eid e; uint8_t kind; uint32_t value; int64_t opened, sent; } Ask;   // a REQ sent (6.9)
+
+typedef struct {            // the owner's memory of an answer, stored as fields and built again when sent
+    uint64_t from; uint32_t id; uint8_t kind, type, reason, send, n; int64_t ms, until;
+    uint64_t owner; uint32_t epoch; Eid m[21];
+} Ans;
+// kind TAKE (10 s), BOND (30 s: its GRANT, n may be 0, and its ACK or NAK), REQ (10 s). send with `until`: the
+// GRANT repeat of 5.3. ANS_N, oldest overwritten.
+
+typedef struct {            // per peer (relay id - 1)
+    uint32_t sent_counter, taken_counter;   // statements sent to it; the highest counter taken from it
+    uint8_t index_miss; int64_t need_ms; uint32_t need_number;   // 6.11
+} Peer;
 
 typedef struct { _Atomic uint64_t r; uint8_t decision; uint8_t batch; } Pend;   // 4.2: pool record -> decision
+enum { DEC_OURS = 1, DEC_MINT, DEC_MINT_PREVIEW, DEC_ASK_MIRROR };   // MAP and NONE keep no row
 
 typedef struct {            // the ring event (10): seq written last, so the reader sees whole events only
     _Atomic uint32_t seq; uint8_t kind; uint32_t gen, reason; uint64_t actor, a2, lr; float m[2][12]; uint8_t flag;
@@ -158,6 +192,7 @@ typedef struct {            // the ring event (10): seq written last, so the rea
 
 typedef struct {            // one row of the drive's snapshot per foreign island here (12.1)
     Eid root; uint64_t owner; uint8_t n, agree; uint64_t actor[21]; uint32_t gen[21]; uint32_t no_write;   // bit r
+    float rel_root[21][12]; uint8_t teleport;   // teleport: set by the drive tick, done and cleared by phase 0
     int64_t stamp_ms;
 } Snap;
 ```
@@ -181,8 +216,7 @@ main+0x27c1c0 lists a body's edges. An edge is a bond when edge +0x10 bit 3 is s
 The held pose comes from the bond's own rest frames: main+0x7a4410(edge, outA, outB) gives each end's frame in its
 body's space, and held = outA * inverse(outB) is end B's body in end A's body frame. With entity `a` (the smaller
 Eid) at end A: rel = held, sa and sb the two keys. With `a` at end B: rel = inverse(held), and the keys swapped.
-Two edges for one (a, b, sa, sb): listed once; the surplus edge is broken (7.3's break) when this game owns both
-ends, and reported in APPLIED otherwise.
+Two edges for one (a, b, sa, sb): listed once, and the surplus is logged.
 
 3.3 **Islands.** Union-find over the bond set, over all entities here. An **owned island** is the owned members of
 a connected set, with `has_far` when a bond leads to a foreign entity. All owned members of a set carry one epoch:
@@ -200,8 +234,7 @@ against `rel_root`; more than 0.3 m or 15 degrees for 1 s is a layout difference
 of bonds to the root passes a body key other than 0 (a part glued to a spring's piston or a wheel's turning body;
 a glue lands on the nearest body of the other part, F 50.4) is neither checked nor driven rigidly (12.1). The
 devices with more than one body: small wheel, big wheel, spring, stake, construct head, portable pot, mirror; their
-further bodies follow their joints, so only main bodies are driven. A bond whose two ends have different owners is
-checked against its own `rel` by the game of the lower incarnation.
+further bodies follow their joints, so only main bodies are driven. 
 
 3.6 **Class**, from this Link's side, once a frame: the island of the actor this Link's Ultrahand holds (the entity
 whose SPR +0x20 bit 16 is set with the holder this Link; found once, not per member) is HOLD; the island of the
@@ -220,8 +253,9 @@ manager down before).
 4.2 **A run-time actor the game makes here.** The create hook on main+0x599670 runs the request inside itself
 (the wrap coop_life.c uses for the bond maker: a thread-local `inner`, tested first in the hook, then
 `rt_dispatch`; arguments copied before). If the request answered 0 or x3 is 0, nothing more. Else R = [x3], the
-pool record, and the hook stores (R, decision) in `pend[]` (atomic; a row for the same R is overwritten, so a
-reused R never carries an old decision), for **every** create, decided in this order:
+pool record, and the hook decides in the order below. It stores (R, decision)
+in `pend[]` (atomic) for OURS, MINT, MINT_PREVIEW and ASK_MIRROR, and for MAP and NONE it clears any row for that
+R, so a reused R never carries an old decision:
 1. `ent_creating` is set: OURS (bound by 4.1; if inside a maker run, the batch number);
 2. x5 (the placement record) is not 0: MAP;
 3. the return address is main+0x1d3bb98 (the Autobuild part maker) and the name is `SpObj_*` or any part name:
@@ -253,20 +287,30 @@ after the first test session shows equal placement hashes in both games [test], 
 A statement that names a map key this game has no actor for is resolved by the mirror's resolver, as an
 ask-and-answer pair: phase 0 lists the missing keys, the tick resolves all of them in one scan a second
 (`coop_obj_find`'s scan and cache) and answers. Two actors for one key are logged. A map entity is never created
-and never deleted by this code. A FREE map entity with no actor here for 5 minutes shrinks to (key, epoch) in a side
-table of 2048, so its epoch never restarts.
+and never deleted by this code. A FREE map entity keeps its row, so its epoch never restarts.
 
-4.4 **Exact causes that enter an actor that is no entity**: this Link's Ultrahand accepted a grab of it (the hook
-on main+0x1c0b83c, holder this Link); it is an end of a real glue edge of an entity (3.2) or of a glue made here
-(10.1). The entering game mints it (4.3 for a map actor, else inc = this game), owner this game, epoch 1, and
-**hands it over from the mirror**: if `coop_obj_ident(actor)` knows it (the relay id of its mirror owner and its
-number, or the keyed flag and key), that pair goes into `mir_owner` / `mir_id` and travels in the entity's member
-row (6.2), and the tick-side call `coop_obj_entity(actor)` frees every mirror row for the actor (`props[]`,
-`mir[]`, `key_found[]`, `dwatch[]`) with no notice and no delete, and un-freezes a frozen copy. A receiver of a row
-with a mirror pair binds the actor `coop_obj_find` gives for that pair instead of creating one (ENT_COPY when it is
-the mirror's copy there, an original otherwise), calls `coop_obj_entity` for it, and creates a copy only when the
-pair resolves to nothing within 1 s. The mirror's pick-up and destroy notices for a pair that has become an entity
-are dropped at their receiver.
+4.4 **An actor that is no entity is entered when it is an end of a glue**: an end of a real glue edge of an entity
+(3.2), or of a glue made here (10.1). Nothing is entered by a grab, a scan, a distance or a time.
+- **The mirror is asked first.** Phase 0 asks the object mirror through one ask-and-answer pair (the tick answers a
+  tick later, as for `coop_obj_made_here`): `coop_obj_ident` for an actor being entered (the relay id of its mirror
+  owner and its number, or the keyed flag and key), `coop_obj_find` for a pair received. **An entity being entered
+  is not stated, and no operation is opened for it, until the mirror has answered.**
+- **Its Eid.** A map actor: 4.3. An actor the mirror knows by (owner, number): Eid = (that owner's incarnation,
+  0x80000000 | number), in every game, so two games that enter one thing at the same moment mint one entity; both
+  claim it at epoch 1 and 5.0 picks one (the loser's hold is ended). Any other actor: inc = this game, the next
+  serial. Serials a game mints itself stay below 0x80000000.
+- **Leaving the mirror.** The pair goes into `mir_owner` / `mir_id` and travels in the member row (6.2). The
+  tick-side call `coop_obj_entity(actor)` frees every mirror row of the actor (`props[]`, `mir[]`, `key_found[]`,
+  `dwatch[]`) with no notice and no delete, un-freezes a frozen copy, and notes the pair in `taken[]` (with today's
+  cap), so the mirror neither deletes a copy its sender stopped listing nor makes it again while its old owner
+  still lists it.
+- **At a receiver** a member row with a mirror pair binds the actor the mirror gives for that pair (ENT_COPY when it
+  is the mirror's copy there, an original otherwise) and calls `coop_obj_entity` for it; a copy is created only
+  when the pair resolves to nothing within 1 s. The mirror's pick-up and destroy notices for a pair that has become
+  an entity are dropped at their receiver.
+- **An entity that can be picked up** (a weapon, shield or material that was glued and pulled off again): at a
+  follower the pick-up is refused, as G4 refuses every delete of a follower's actor; at its owner, any delete with
+  reason 0 is a destroy (10.3). The pick-up's own delete is not read [test].
 
 4.5 **Lookup.** By Eid and by actor pointer (checked against `gen`): two open-address hashes of 2048.
 
@@ -276,14 +320,14 @@ SPR +0x20 bit 51 is clear on all, every SPR's queued bond count (+0x2b0) is 0, a
 sends nothing. An existing entity that the Autobuild pulls in keeps its statement.
 
 4.7 **Removal.** A DEAD or GONE run-time entity is stated for 10 s by its owner, then dropped there; a follower
-drops it 10 s after the last statement of it. A LIVE or FREE entry with epoch above 0 is never dropped (4.3's side
-table for FREE map entities).
+drops it 10 s after the last statement of it. A LIVE or FREE entry with epoch above 0 is never dropped.
 
 ## 5. Ownership
 
 5.0 **One rule.** `apply_owner(e, owner, epoch)` is the only code that changes an entry's owner or epoch from a
 message; it takes the pair only if greater than the entry's by (epoch, then incarnation). GRANT, REFUSE, ISLAND
-rows (members and far ends), POSE, BELIEF all go through it. When it takes from this game an entity whose island
+rows (members and far ends) and POSE all go through it; a GRANT is taken through it whatever the state of the
+request it names. When it takes from this game an entity whose island
 this Link holds or rides, `end_hold` or `end_ride` is noted and done at phase 0 (5.5, 5.6). After it, a `Stated`
 none of whose members its sender owns any more is freed. Every GRANT and claim uses 1 + the greatest epoch of
 every member involved, as the granter knows them.
@@ -301,22 +345,19 @@ request (8), and its islands stay asked while the operation is open.
 
 5.3 **The owner's answer**, in arrival order. It first looks (asker, id) up in `ans[]` and gives a remembered
 answer again without applying anything.
-1. `epoch_seen` is above this game's epoch for the entity: the TAKE is kept for one pass (a GRANT to this game is
-   on its way), then answered by the rules below;
-2. not the owner: REFUSE(NOT_OWNER, the owner and epoch it knows);
-3. `epoch_seen` below the entity's epoch: REFUSE(STALE), and the statement is owed to the asker;
-4. this game's class for the island is HOLD or RIDE: REFUSE(HELD or RIDDEN);
-5. the island is frozen (5.8): the frozen digest is used in rule 6;
-6. the asker's digest differs from this game's, or "layout agrees" is clear: REFUSE(STALE), statement owed;
-7. GRANT to all (6.4); `apply_owner` here. The giver repeats the GRANT every 0.5 s (from the net tick) until it has
-   a POSE or ISLAND from the new owner at that epoch or higher, at most 5 s; then 6.11 settles it.
+1. not the owner: REFUSE(NOT_OWNER, the owner and epoch it knows);
+2. `epoch_seen` below the entity's epoch: REFUSE(STALE), and the statement is owed to the asker;
+3. this game's class for the island is HOLD or RIDE: REFUSE(HELD or RIDDEN);
+4. the island is frozen (5.8): no answer (it is claimed, not taken);
+5. the asker's digest differs from this game's, or "layout agrees" is clear: REFUSE(STALE), statement owed;
+6. GRANT to all (6.4); `apply_owner` here. The giver repeats the GRANT every 0.5 s (an `Ans` with `send`; the net
+   tick sends it too) until it has a POSE or ISLAND from the new owner at that epoch or higher, at most 5 s.
 
-5.4 **While PAUSED** the net tick answers from the pause queue (1.3), under `ent_lock`, from what phase 0 last
-stored per owned `Island` (digest, class, members, epoch): a TAKE by the whole of 5.3; a BOND_REQ or REQ by rules
-2 and 4 only (they carry no digest of the target), as a take: GRANT of the target's island to the asker, then
-BOND_ACK, or REQ_ANS(YOURS). With class HOLD or RIDE: BOND_NAK(HELD), REQ_ANS(REFUSED). No bond or toggle is made
-here; the asker's world becomes the truth and this game applies it by reconcile when it resumes. Not while LOADING,
-and not for a frozen island: those get no answer and fall to 5.7.
+5.4 **While PAUSED** the net tick answers a TAKE from the pause queue (1.3), under `ent_lock`, by the whole of 5.3,
+from what phase 0 last stored per owned `Island` (digest, class, members, epoch). The stored class protects a
+thing in the paused player's hand. An entity this game came to own while PAUSED has no stored island: no answer.
+Not while LOADING. A bond request or a toggle request to a paused owner is not answered at all: its asker claims
+after 1 s (5.7).
 
 5.5 **At the asker.** A GRANT or REFUSE is taken only by an OPEN request (a REFUSE for a granted or expired one is
 dropped; a GRANT for an expired one is taken as ownership, class IDLE, through 5.0). REFUSE(NOT_OWNER, who): who is
@@ -336,26 +377,31 @@ node's preamble, which is logged and [test]. A ride that started and is refused 
 with main+0xc448c8([[Link +0x228] +0x410], 1, 1). What the game does to a rider whose stick is destroyed is not
 read.
 
-5.7 **Claims without a grant** (stated at once):
-- the owner left the session: an exact cause of 5.2 here claims at once; after 2 s the lowest incarnation whose
-  digest agrees with the last statement; after 5 s the lowest incarnation with any actor of the island, and its
-  world is the truth (APPLIED goes to all, so each game knows the others' digests);
-- the owner's heartbeat says LOADING, or PAUSED with no answer to a TAKE, BOND_REQ or REQ for 1 s: the asker
-  claims; for a BOND_REQ the claim is of the target's island and the operation closes as an ACK.
+5.7 **Claims without a grant** (owner this game, epoch by 5.0, stated at once). The claimer's world becomes the
+truth; two claimers are settled by 5.0, and the loser's copy is reconciled.
+- the owner left the session: a game with an actor of the island claims, at once on an exact cause of 5.2 or a
+  glue, else after 2 s;
+- the owner's heartbeat says LOADING, or PAUSED with no answer for 1 s to a TAKE, a BOND_REQ or a REQ of this
+  game: this game claims the island asked for. For a BOND_REQ the operation closes as an ACK; for a REQ the asker
+  applies its own value as the owner. **Not** an island whose owner's last class was HOLD or RIDE: a class does not
+  age (6.1) while its owner's heartbeat says PAUSED;
+- an offered island (5.8).
 
 5.8 **Unload at the owner.** An accepted delete classed "unload" (10.3) on an owned entity: its `Island` is frozen
-as it was (members, digest), POSE carries POSE_OFFER, and nothing else is stated for it for 2 s. Every game that has
-an actor of an offered island sends TAKE(OFFER) once, with its digest. The owner grants the first that agrees; at
-1.5 s with no agreeing taker, the lowest incarnation that asked, and that game's world is the truth. With no asker:
-**that member** is stated GONE (a map entity: FREE); members still alive stay owned and are stated as the island
-they now are. While LOADING here nothing is offered per island: one OFFER_ALL goes out (6.6) and every owned entity
-that is deleted is stated GONE, or taken by a game that has it. A follower's own unload of a copy is local: actor
-0, the `Stated` is ST_FAR.
+(nothing but POSE with POSE_OFFER is sent for it) for 2 s. Every game that has an actor of an offered island claims
+it. With no claim in 2 s: **that member** is stated GONE (a map entity: FREE); members still alive stay owned and
+are stated as the island they now are. While LOADING here nothing is frozen per island: the net tick sends one
+OFFER_ALL when it sets LOADING, each other game claims every entity of that sender it has an actor for, and what
+nobody claimed is stated GONE as its delete is accepted. A follower's own unload of a copy is local: actor 0, and
+the statement is ST_FAR.
 
 ## 6. Messages
 
 All through runtime/coop_ctr.c; new types 40 to 59. The v3 types (1, 3, 10 to 35) go with their code; an unknown
-type is dropped. Control messages are reliable and in arrival order. ISLAND pieces and INDEX_END travel on the bulk
+type is dropped. Control messages are reliable and in arrival order. Every reliable message is sent per peer (a send
+to all reports
+success when any one peer took it), and what one peer's queue refused is owed to that peer, a DEATH and an OFFER
+too. ISLAND pieces and INDEX_END travel on the bulk
 stream; nothing relies on order between the two streams. A reliable message is not kept by us when the transport's
 queue is full (192 per peer and stream): what was to be said is marked owed (`Island.owed[]`, an open `Req` or `Op`
 with `sent` 0, an `Ans` with its send flag) and said when a send succeeds. Every unreliable message starts with an
@@ -364,7 +410,7 @@ with `sent` 0, an `Ans` with its send flag) and said when a send succeeds. Every
 ```c
 typedef struct { uint64_t key; Eid root; uint32_t epoch, digest; int64_t us; uint64_t payer; float m[12];
                  uint8_t cls, n, flags, pad; uint32_t sw, on, fw, fk, fb, fp, burn; float pf[][4]; } PoseMsg;   // 40
-typedef struct { uint32_t counter; Eid root; uint16_t n, nb, nf; uint32_t digest; uint8_t more_edges, rec_n;
+typedef struct { uint32_t counter; Eid root; uint16_t n, nb, nf; uint32_t digest; uint8_t rec_n;
                  float root_m[12]; uint32_t total; uint16_t piece, pieces; } IslandHdr;                         // 41
 typedef struct { Eid id; uint64_t owner; uint32_t epoch; uint8_t life, death_kind, green, mir_owner;
                  uint32_t mir_id; char name[48]; float scale[3], radius, rel_root[12]; } IslandMember;
@@ -374,7 +420,7 @@ typedef struct { uint32_t id; Eid member; uint32_t epoch_seen, digest; uint8_t r
 typedef struct { uint64_t asker; uint32_t id; uint64_t owner; uint32_t epoch; uint32_t sw, on; uint64_t payer;
                  uint8_t n; Eid m[21]; } GrantMsg;                                                              // 43
 typedef struct { uint32_t id; uint8_t reason; uint64_t owner; uint32_t epoch; } RefuseMsg;                      // 44
-typedef struct { uint8_t all; uint8_t n; struct { Eid root; uint32_t epoch, digest; } o[32]; } OfferMsg;        // 45
+typedef struct { uint8_t all; } OfferMsg;                                  // 45: OFFER_ALL (per island: POSE's flag)
 typedef struct { Eid id; uint32_t number; } NeedMsg;                       // 46; id (0, 0): everything, with a number
 typedef struct { uint32_t op; Eid x, t; uint8_t sx, st; uint32_t epoch_x; float rel[12]; } BondReq;             // 47
 typedef struct { uint32_t op; uint8_t reason; uint64_t who; uint32_t epoch; } BondAns;                // 48 ACK, 49 NAK
@@ -382,9 +428,9 @@ typedef struct { uint32_t id; Eid e; uint8_t kind; uint32_t value; } ReqMsg;    
 typedef struct { Eid e; uint8_t kind; } DeathMsg;                                                               // 51
 typedef struct { uint64_t key; uint32_t counter, count, hash; } IndexMsg;                 // 52; key: a constant
 typedef struct { uint64_t key; Eid root; uint32_t digest; uint8_t state, why; } AppliedMsg;   // 53; key: hash of root
-typedef struct { uint32_t id; uint8_t ans; } ReqAns;                       // 54; DONE, REFUSED, YOURS
+typedef struct { uint32_t id; uint8_t ans; } ReqAns;                       // 54; DONE, REFUSED
 typedef struct { uint32_t number, count, hash; } IndexEnd;                 // 55, bulk stream
-typedef struct { uint8_t n; struct { Eid id; uint64_t owner; uint32_t epoch; } b[16]; } BeliefMsg;   // 56, reliable
+
 ```
 
 6.1 **POSE** (unreliable, latest per (sender, root); 30 a second while a member moves, 1 a second at rest; `pf` for
@@ -397,9 +443,13 @@ class older than 2 s counts as IDLE. The transport's latest-only table grows fro
 over its keys, and gains a call that lists the slots of one type (for 6.7). An evicted slot comes again within a
 second.
 
-6.2 **ISLAND** (bulk, in pieces of the payload size; `counter` is the sender's statement counter and joins the
-pieces; a piece of a newer counter for the same root discards an unfinished older one; one reassembly buffer per
-(sender, root), 16 at once). **A game states the members it owns**: n member rows, `rel_root` from the root (the
+6.2 **ISLAND** (bulk, in pieces of the payload size; `counter` is the sender's statement counter and joins the pieces;
+every piece carries the header; the body is the member rows, the bonds, the far rows, the recipe,
+`rec_member`; a piece of a newer counter for the same root discards an unfinished older one, and a piece whose
+counter is not above the last taken for that root is dropped; one reassembly buffer per sender). The counter is
+per peer: the number of statements sent to that peer. An island with more than 48 bonds is stated with its first
+48 in ascending order, has no recipe, and its digest covers those 48: logged, a stated limit. **A game states the
+members it owns**: n member rows, `rel_root` from the root (the
 smallest owned member), the recipe when it has one. Bonds: every bond with an end among those members. Far ends:
 one row per foreign entity at the end of such a bond, with the (owner, epoch) the sender knows; a far row is not a
 member. An island of one is an ISLAND with n = 1. Owed to a peer on: a change of digest, of a member's owner,
@@ -407,38 +457,42 @@ epoch or life; NEED; a join; 7.5.
 At a receiver: member and far rows go through `apply_owner`; an ISLAND removes every `Stated` from the same sender
 that shares a member with it and has a lower counter; an ISLAND whose sender does not own the member (after 5.0) is
 dropped for that member. A full `Stated` table frees the ST_FAR one with the oldest `ms` (logged; NEED brings it
-back).
+back). **A foreign member that no current statement names is not reconciled, and its edges are not touched.**
 
-6.3 TAKE, 6.4 GRANT (to all; for 8.3 rule 7: asker = the new owner, id 0, taken without a request), 6.5 REFUSE (to
+6.3 TAKE (reason GRAB or RIDE), 6.4 GRANT (to all; for 8.3 rule 6: asker = the new owner, id 0), 6.5 REFUSE (to
 the asker): section 5.
-6.6 **OFFER** (reliable, to all): up to 32 roots a message; `all` set: every entity of the sender (a load, 5.8).
+6.6 **OFFER_ALL** (reliable, to all, from the net tick): every entity of the sender is offered (a load, 5.8). An
+island's own offer is the flag in its POSE.
 6.7 **NEED** (to a game): for a root, when a POSE slot names a root this game has no statement of for 0.5 s, at
 most once a second per root; for everything, by 6.11.
 6.8 BOND_REQ, BOND_ACK, BOND_NAK: section 8.
 6.9 **REQ** (to the owner; again every 0.5 s for 3 s) and **REQ_ANS**: TOGGLE (value: the wanted state, read in
-the hook) and EVENT (set on). YOURS (5.4): the asker is now the owner and applies its own value.
+the hook) and EVENT (set on). An `Ask` row holds each until answered.
 6.10 **DEATH** (to all, from the owner; from another game it is dropped): kind 0xff is a plain delete. For an Eid
 a receiver does not know it is kept 2 s. The next ISLAND carries the life too.
-6.11 **Ownership's own comparison.** INDEX (unreliable, every 2 s): the sender's statement counter, and count and
-FNV-1a over (Eid, epoch), ascending, of every LIVE, not PREVIEW entity it owns. A receiver compares only when it
-has taken that sender's statements up to that counter and no GRANT naming that sender is under 1 s old. A mismatch
-on two INDEX in a row: (a) BELIEF, reliable, for the entities the receiver holds for that sender (16 a round); the
-sender takes each through `apply_owner`, and answers a BELIEF that loses with its own pair; (b) NEED(0, 0) with a
-number, at most once in 10 s per sender. The answer is every island of the sender owed again, then INDEX_END with
-that number **on the bulk stream after the last ISLAND**, {count, hash} taken when the answer was queued. On
-INDEX_END the receiver hashes the entities of that sender that an ISLAND, GRANT or POSE has named since it sent
-the NEED; only if that hash equals INDEX_END's does it mark GONE the entities it still holds for that sender that
-were not named. Otherwise nothing is marked and the next INDEX decides.
+6.11 **What a follower still holds that its owner no longer has.** INDEX (unreliable, per peer, every 2 s, not
+while a statement is owed to that peer): the number of statements sent to that peer, and count and FNV-1a over
+(Eid, epoch), ascending, of every LIVE, not PREVIEW entity the sender owns. A receiver compares only when it has
+taken that sender's statements up to that counter and no GRANT naming that sender is under 1 s old. A mismatch on
+two INDEX in a row: NEED(0, 0) with a number, at most once in 10 s per sender, and `named` is cleared on every
+entity held for that sender. The answer is every island of the sender owed again, then INDEX_END with that number
+**on the bulk stream after the last ISLAND**, {count, hash} taken when the answer was queued. On INDEX_END the
+receiver hashes the entities of that sender that are `named`; only if that equals INDEX_END's hash does it mark
+GONE the entities it still holds for that sender that are not `named`. Otherwise nothing is marked and the next
+INDEX decides.
 6.12 **APPLIED** (unreliable, to all, once a second per foreign island here): this game's digest of it, state, why.
 
 ## 7. Reconcile (phase 0, step 9)
 
 7.1 **When.** For each `Stated`: on receipt, and once a second while this game's digest or layout differs. Not for
-an island with an open operation of this game (8.2).
+an island with an open operation of this game (8.2). While LOADING here neither reconcile nor the maker runs, no
+pass is counted, and the handles of entries in the making are released.
 
 7.2 **Entities.** In range: this Link within (the smallest member radius, less 10 m, less the greatest `rel_root`
-distance) of the newest root pose; all members are made or none; a half-unloaded island is ST_FAR. A create waits
-when the newest pose is older than 2 s and a POSE has been seen for that root this session. For each member the
+distance) of the newest root pose; all members are made or none; a half-unloaded island is ST_FAR. In range, every
+missing member is created; out of range nothing is, and an island with some actors left is ST_FAR.
+A create waits when the newest pose is older than 2 s, a POSE has been seen for that root this session, and the
+owner's heartbeat is not PAUSED. For each member the
 sender owns:
 - LIVE, no actor here, not `making`: a mirror pair first (4.4). Else, if **no** member of the island has an actor
   here and it has a recipe: the maker (9.2). Else a plain create of the member at newest root pose * rel_root;
@@ -461,7 +515,9 @@ of the actor (`coop_obj_entity`), so the mirror tells nobody.
   1. both fragments leave the drive (as asked) until the read-back;
   2. the smaller fragment (fewer parts; not held, not ridden, with no member this game owns) is placed as one rigid
      set, one SetTransform per member's main body from the other side's body pose and the `rel` chain, exempt from
-     G1 as the drive's writes are, and not if any of its bodies has a glue entry in progress;
+     G1 as the drive's writes are, and not if any of its bodies has a glue entry in progress. If the smaller
+     fragment may not be placed, the other is, if it may; else the make waits. No make runs on a fragment whose
+     island has an open request of this game;
   3. next frame, the preconditions, tested each frame for up to 5 s (then WHY_BOND_NOT_READY or WHY_BOND_POSE): the
      readiness test of the direct-bond reading on both actors (comps, physics set, bond manager, component +0x288,
      the body for each key not null); body +0x68 bit 24 clear on both (else the edge joins no graph node, is never
@@ -515,8 +571,10 @@ game owns, asked or not (11):
 world matrices before the call, the edge. Phase 0 resolves the two entities (4.4 enters one that is none), with X
 the end this game owns or holds under an open request and T the other.
 - both owned here: nothing more (3.2 sees the edge);
-- T foreign: an `Op` opens at once and BOND_REQ goes to T's owner, `rel` = inverse(Wx) * Wt. If X is only asked,
-  the operation waits for the GRANT of X (`x_asked`) and becomes a break if that request is refused or expires;
+- X owned, T foreign: an `Op` opens at once and BOND_REQ goes to T's owner, `rel` = inverse(Wx) * Wt;
+- one end held under an open request, the other owned or foreign: X is the asked end; the `Op` waits
+  (OP_WAIT_GRANT_X) and sends nothing. When the GRANT of X comes it is sent if T is foreign, or closed if this
+  game then owns both; if the request is refused or expires, the edge is broken;
 - neither end is this game's (a stand-in's glue cannot happen: only this game's Ultrahand glues here): logged.
 The same opens, at once, for any real edge 3.2 finds between an owned entity and a foreign one with no operation
 (an Autobuild pull-in, a stake).
@@ -524,7 +582,10 @@ The same opens, at once, for any real edge 3.2 finds between an owned entity and
 8.2 While an operation is open here: reconcile does not run on the islands of X or T; the edge is not broken (7.3);
 both islands stay asked; this game states X's island as its own with T as a far end; 7.5 does not run for them.
 
-8.3 T's owner, in arrival order (the net tick while PAUSED, 5.4), first by `ans[]` (kept 30 s):
+8.3 T's owner, in arrival order, first by `ans[]` (kept 30 s). A request in service is a `Serve` row, and from the
+make of rule 5 until rule 6 has run the pair counts as having an operation (8.1 opens none for it).
+0. this game owns X as well, or the asker does not own X by this game's table and no grant of X to it is under way:
+   ACK, nothing else;
 1. not T's owner: NAK(NOT_OWNER, who, epoch);
 2. T unknown, DEAD or GONE: NAK(GONE);
 3. the part count of 7.3 would pass 21: NAK(FULL);
@@ -533,15 +594,17 @@ both islands stay asked; this game states X's island as its own with T as a far 
    the same pair): the bond is made by 7.3's make, X's fragment being the one placed if it is loose here; if it
    cannot be within 3 s: NAK(POSE);
 6. always after 5, in the same pass: one owner. If this game's class for T's island is IDLE, the merged island is
-   granted to the asker; if HOLD or RIDE, X's island is taken (GRANT to all naming this game, epoch by 5.0 with
-   `epoch_x`; at the asker 5.0 ends its hold). Then BOND_ACK. The game that owns the island afterwards states it.
+   granted to the asker; if HOLD or RIDE, X's island is taken (the new owner is this game; at the asker 5.0 ends
+   its hold). Either way the GRANT names **every member of both islands**, X's as this game knows them, at 1 + the
+   greatest epoch of all of them and `epoch_x`. Then BOND_ACK. The game that owns the island afterwards states it.
 Two operations for one pair that cross: each side grants by rule 6 and 5.0 picks the owner; the surviving owner's
 `rel` is the truth and the other side's rung 2 applies it.
 
 8.4 The asker: ACK closes the operation. NAK(NOT_OWNER, who): who is this game: an ACK; else the request is sent
-to who, twice at most, then it is a NAK. NAK(HELD) from a paused owner: kept open and asked again once a second.
-Any other NAK: the edge is broken (7.3's break with its read-back); the reason is logged in words. The operation
-also closes as an ACK the moment this game owns both ends, and as a claim by 5.7. No answer: sent again every 1 s;
+to who, twice at most, then it is a NAK. Any other NAK: the edge is broken (7.3's break with its read-back); the
+reason is logged in words. The operation
+also closes as an ACK the moment this game owns both ends, when this game no longer owns X, and by a claim (5.7). No
+answer: sent again every 1 s;
 after 10 s (tested in phase 0 step 6 only) it closes as a NAK.
 
 8.5 Counter "a bond in one game only": a closed operation after which, 5 s later, the two games' digests of that
@@ -625,7 +688,8 @@ played at, from `Snap` rows. A row is used only when its stamp is under 0.3 s ol
 samples, the clock offset and `FollowState` are the tick's own, keyed by (owner, root) and reset when either
 changes; the tick reads POSE for them (the part of today's `receive` that is kept). The rest band stays 0.10 m and
 4 degrees, except that an island with a bond wanted (7.3 step 1) is out of the drive. No sample for 1 s: nothing
-written. An error above 10 m: one SetTransform of the island (at phase 0), then the drive. All per-part masks are
+written. An error above 10 m: the drive tick sets `teleport` in the row and phase 0 does one SetTransform of the island
+from `rel_root`; then the drive. All per-part masks are
 by ascending Eid and used only under an agreeing digest. `springs_phase0`, `burning_phase0`, `dev_flush`,
 `deaths_put`, `events_put`, `rider_weight` stay at phase 0.
 
@@ -640,9 +704,9 @@ K | not shown K | unconverged <peer> <root> <s> ... | full <table> ...`. One lin
 change, statement, reconcile action, operation and answer, refusal, and counter.
 
 ## 13. Test settings (they stay in the code)
-TOTK_COOP_ENT_DROP=5 drops every fifth reliable message (whole messages, before they are queued);
+TOTK_COOP_ENT_DROP=5 drops every fifth reliable message before it is queued (a whole statement, never a piece);
 TOTK_COOP_ENT_BREAK=1 breaks one edge of a copy island every 10 s; TOTK_COOP_ENT_DELAY=2000 holds one reliable
-message in ten back for that many ms.
+message in ten, and its stream behind it, back for that many ms.
 
 ## 14. What leaves the build, and what is re-pointed
 
@@ -659,9 +723,10 @@ coop_contraption_follower, coop_ctn_part, coop_ctn_sender_entry, coop_contraptio
 coop_g1_counts, coop_held_here, coop_ctn_structure_event, coop_ctn_death_seen, coop_ctn_note_onoff,
 coop_ctn_event_seen, coop_ctn_gauge_seen, coop_ctn_toggle_asked, coop_ctn_note_fuse,
 coop_ctn_emitter_of_followed, coop_ctn_runs_part, coop_ctn_parts_all.
-coop_players.c: `obj_take_over`, `obj_handover_apply`, `take_q` and the OBJS header word 2 go; `coop_obj_ident` /
-`coop_obj_find` lose their contraption branch; new exports `coop_obj_entity`, `coop_obj_made_here`, the map-key
-ask and answer.
+coop_players.c: `obj_take_over`, `obj_handover_apply`, `take_q` and the OBJS header word 2 stay, for what is not
+an entity; `coop_obj_ident` / `coop_obj_find` lose their contraption branch; new exports `coop_obj_entity`,
+`coop_obj_made_here`, and the ask-and-answer pairs (the mirror's name of an actor, the actor of a pair, the actors
+of map keys).
 coop_glue.c and coop_bonds.c leave the build with: `coop_glue_hook` and its two hooked addresses, `coop_glue_tick`,
 `coop_glue_take`, `coop_bonds_tick`, `coop_bonds_take` (coop_world.c peer_tick), the test callers in
 coop_autobuild.c, the four `coop_bonds_*` readers in coop_players.c. coop_bonds.c has another session's uncommitted
@@ -676,9 +741,9 @@ slots and the slot listing.
 | Piece | Passes when |
 |---|---|
 | Identity | Three fans from the pouch: three Eids, equal in both logs, unchanged through two hand-overs and a glue |
-| Mirror hand-over | A log and a dropped weapon, grabbed by each player in turn and glued: one of each in both games throughout |
+| Mirror hand-over | A log and a dropped weapon, grabbed by each player in turn, then glued by each, then both gluing one log at once: one of each in both games throughout |
 | Ownership | Twenty grabs back and forth of one fan: one Eid, epoch 21; both grabbing: one REFUSE(HELD), one hand lets go |
-| Lost messages | ENT_DROP=5 and ENT_DELAY=2000 through the whole script: no island without an owner for 5 s, no NEED(0,0) more than once in 10 s, "unconverged" under 3 s |
+| Lost messages | ENT_DROP=5 and ENT_DELAY=2000 through the whole script: no island without an owner for 6 s, no NEED(0,0) more than once in 10 s, "unconverged" under 3 s |
 | Split and merge | A build pulled in two, each half then held by a different player: two islands in both games within 1 s |
 | Glue across owners | Ten trials of each case of D 4.4, both players attaching at once, and the owner in a menu: 8.5 stays 0, one owner afterwards |
 | Copy making | A 3-part build seen by the other game within 2 s of its last glue; an 8-part Autobuild likewise |
@@ -687,7 +752,8 @@ slots and the slot listing.
 | Drive | A loose fan pushed by its owner: under 0.10 m at rest in the other game, no teleport line, no chatter on a slope |
 | Lifetime | Walk 200 m away and back: OFFER, GRANT, the copy made again on return with no back-off wait |
 | Menu | The owner in a menu for 10 s: the other player grabs, glues and toggles, each within 1.5 s |
-| Load | A fast travel with 50 owned loose devices near the other player: taken or gone within 3 s, none destroyed, no ring overflow |
+| Load | A fast travel with 50 owned loose devices near the other player: claimed by it or gone within 3 s, none destroyed, no ring overflow, and copies near the arrival made with no back-off |
+| A paused owner | One player in a menu while the other walks up to its build: the copy is made; a build in the paused player's hand cannot be claimed |
 
 ## 16. What is not read, and its rule
 
