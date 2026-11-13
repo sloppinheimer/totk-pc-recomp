@@ -1223,8 +1223,9 @@ int ctn_edge_held(Cpu *c, uint64_t edge, float held[12]) {
     if (!ba || !bb || !coop_rd(ba + 0x98, wa, sizeof wa) || !coop_rd(bb + 0x98, wb, sizeof wb) || !m34_inv(inv, wa)) return 0;
     m34_mul(world, inv, wb);
     memset(oa, 0, sizeof oa), memset(ob, 0, sizeof ob);
-    coop_guest_call(c, MOD_MAIN_BASE + 0x7a4410, edge, (uint64_t)(uintptr_t)oa, (uint64_t)(uintptr_t)ob, 0);
-    int good = m34_inv(inv, ob);
+    int have = coop_rd_ptr(edge + 0x38) != 0;   // (the function loads through edge +0x38 with no test of its own)
+    if (have) coop_guest_call(c, MOD_MAIN_BASE + 0x7a4410, edge, (uint64_t)(uintptr_t)oa, (uint64_t)(uintptr_t)ob, 0);
+    int good = have && m34_inv(inv, ob);
     if (good) m34_mul(held, oa, inv);
     for (int i = 0; good && i < 12; i++) good = held[i] == held[i];
     if (good) {

@@ -100,6 +100,10 @@ int rec_break(Cpu *c, const Bond *b) {
     ent_mark_due(a);
     return 1;
 }
+static __thread int bond_cap_on;
+static __thread uint64_t bond_cap_edge;
+int coop_ent_bond_capture(void) { return bond_cap_on; }             // the bond maker's hook asks (coop_life.c)
+void coop_ent_bond_captured(uint64_t edge) { bond_cap_edge = edge; }
 // Steps 3 to 5 of the make: the preconditions, the direct bond call, the glue look. 1 made; 0 with *why set.
 int rec_make(Cpu *c, Ent *a, uint8_t sa, Ent *b, uint8_t sb, const float rel[12], uint8_t *why) {
     uint64_t ba = 0, bb = 0;
@@ -110,13 +114,13 @@ int rec_make(Cpu *c, Ent *a, uint8_t sa, Ent *b, uint8_t sb, const float rel[12]
     for (int side = 0; side < 2; side++) {
         // The readiness test of the direct bond (research notes sync-v4/direct-bond, section 4): the component chain,
         // the physics set and its bond manager, the component at +0x288, and a graph node for the body (body +0x68
-        // bit 24 clear: an edge on a body with no node joins nothing and is never listed).
+        // bit 24 clear: an edge on a body with no node joins nothing and is never listed). The game's own node
+        // look-up main+0xa2d39c is not called: it writes its answer through x8.
         uint64_t actor = side ? b->actor : a->actor, body = side ? bb : ba;
         uint64_t comps = coop_rd_ptr(actor + 0x228), c50 = comps ? coop_rd_ptr(comps + 0x50) : 0, phys = c50 ? coop_rd_ptr(c50 + 0x20) : 0;
         uint64_t d8 = phys ? coop_rd_ptr(phys + 0xd8) : 0, f68 = 0;
         if (!comps || !phys || !d8 || !coop_rd_ptr(d8 + 0x18) || !coop_rd_ptr(comps + 0x288) || !coop_rd_ptr(phys + 0x150)) return 0;
-        if (!coop_rd(body + 0x68, &f68, 8) || (f68 >> 24 & 1)) return 0;
-        if ((int32_t)coop_guest_call(c, MOD_MAIN_BASE + 0xa2d39c, body, 0, 0, 0) == -1) return 0;
+        if (!coop_rd(body + 0x68, &f68, 8) || (f68 >> 24 & 1)) return 0;   // (bit 24: the body has no graph node)
     }
     // At 22 parts the game breaks every glue edge of the part: the count is the greater of the game's group counts and
     // this table's, both sides together.
@@ -141,15 +145,14 @@ int rec_make(Cpu *c, Ent *a, uint8_t sa, Ent *b, uint8_t sb, const float rel[12]
     }
     // main+0x1c05a98(SPR of a, a's body key, b's body, matA, matB): the bond holds inverse(matA) * matB, so the two
     // world matrices as read now hold the bodies as they stand (research notes sync-v4/bond-frames).
+    // The edge is taken where the game makes it: the bond maker's hook (coop_life.c) hands back what the maker returned
+    // while this thread has the capture on. The edge joins the lists a physics step later, so it is not looked for.
+    bond_cap_on = 1, bond_cap_edge = 0;
     ctn_call5(c, MOD_MAIN_BASE + 0x1c05a98, ctn_spr(a->actor), sa, bb, (uint64_t)(uintptr_t)wa, (uint64_t)(uintptr_t)wb);
-    // the new edge, and its glue look (edge +0xef: the strand is bound a physics step later and reads it then)
-    CtnEdge ed[32];
-    int ne = ctn_part_edges(c, a->actor, ed, 32), found = 0;
-    for (int k = 0; k < ne && !found; k++)
-        if (ed[k].other == b->actor && ed[k].key == sa && ed[k].okey == sb) {
-            __atomic_store_n((uint8_t *)(uintptr_t)(ed[k].edge + 0xef), (uint8_t)1, __ATOMIC_SEQ_CST);
-            found = 1;
-        }
+    bond_cap_on = 0;
+    int found = bond_cap_edge != 0;
+    // its glue look (edge +0xef: the strand is bound a physics step later and reads it then)
+    if (found) __atomic_store_n((uint8_t *)(uintptr_t)(bond_cap_edge + 0xef), (uint8_t)1, __ATOMIC_SEQ_CST);
     uint64_t spr = ctn_spr(a->actor);
     if (spr) __atomic_fetch_or((uint64_t *)(uintptr_t)(spr + 0x20), 1ull << 18, __ATOMIC_SEQ_CST);
     ent_mark_due(a);
@@ -159,7 +162,7 @@ int rec_make(Cpu *c, Ent *a, uint8_t sa, Ent *b, uint8_t sb, const float rel[12]
         char x[24], y[24];
         coop_rd(ba + 0xf8, va, sizeof va), coop_rd(bb + 0xf8, vb, sizeof vb);
         rt_log("coop: ent: %lld bond made here between %s and %s (keys %u %u): edge %s, relative speed %.2f m/s", (long long)ent_ms(), ent_eid_str(a->id, x),
-               ent_eid_str(b->id, y), sa, sb, found ? "listed" : "not listed yet", sqrtf((va[0] - vb[0]) * (va[0] - vb[0]) + (va[1] - vb[1]) * (va[1] - vb[1]) + (va[2] - vb[2]) * (va[2] - vb[2])));
+               ent_eid_str(b->id, y), sa, sb, found ? "made" : "not made (the maker gave none)", sqrtf((va[0] - vb[0]) * (va[0] - vb[0]) + (va[1] - vb[1]) * (va[1] - vb[1]) + (va[2] - vb[2]) * (va[2] - vb[2])));
     }
     return found ? 1 : 2;   // 2: called, the edge not listed yet
 }

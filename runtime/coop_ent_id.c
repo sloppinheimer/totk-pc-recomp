@@ -347,9 +347,12 @@ void ent_ring_events(Cpu *c) {
             if (e->owner != me || e->life != LIFE_LIVE) break;        // a copy's going is local (S 5.8)
             int dead = died_kind(ev.actor, &kind);
             uint64_t lr = ev.lr;
-            int destroy = ev.reason == 0 && (dead || lr == 0x2fb9b0 || lr == 0x1b4b8f4 || lr == 0x1b4be78 || lr == 0x1b4bf24 || lr == 0x1b4c17c || lr == 0x1b4c2fc);
-            if (ev.reason == 2) destroy = 1, kind = 0xff;
-            if (ev.reason == 0 && strncmp(e->name, "SpObj_", 6) && !(e->flags & ENT_GREEN)) destroy = 1;   // a thing that can be picked up (S 4.4)
+            // Reason 0 is the game's "delete this actor": every death procedure (straight, through the deferring wrapper
+            // or its later runner), the lapse and green-kill fallbacks, a pick-up. The unloads have their own reasons
+            // (3, 4, 5, 6, 7, 10). So reason 0 is a destroy, but for a refused creation (from main+0x54db94).
+            (void)dead;
+            int destroy = ev.reason == 0 || ev.reason == 2;
+            if (ev.reason == 2) kind = 0xff;
             if (ev.reason == 0 && lr == 0x54db94) break;              // a refused creation
             if (ev.flag & 2) destroy = 0;                             // the teardown of a load: an unload
             if (destroy) {

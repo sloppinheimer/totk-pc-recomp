@@ -302,6 +302,19 @@ int coop_life_hook(Cpu *c, uint64_t addr) {
     // its edge (x0, 0: none) and the two bodies' relation at that moment (world matrices at body +0x98) go to the core,
     // which sends it to the game that runs the build if one end is a part of a build another game runs (plan 6.7).
     // Research notes sync-v3/run5/attach, section 7.
+    {   // a bond the entity sync asks with the direct call: the edge the maker returns is handed to it (coop_ent_rec.c)
+        int coop_ent_bond_capture(void);
+        void coop_ent_bond_captured(uint64_t edge);
+        static __thread int cap_inner;
+        if (off == BOND_MAKER && cap_inner) cap_inner = 0;
+        else if (off == BOND_MAKER && coop_ent_bond_capture()) {
+            cap_inner = 1;
+            c->pc = MOD_MAIN_BASE + off;
+            rt_dispatch(c);
+            coop_ent_bond_captured(c->x[0]);
+            return 1;
+        }
+    }
     if (off == BOND_MAKER && c->x[30] - MOD_MAIN_BASE == 0x1d677a8) {
         static __thread int inner;
         if (inner) { inner = 0; return 0; }
@@ -335,7 +348,21 @@ int coop_life_hook(Cpu *c, uint64_t addr) {
         return 1;   // (the confirm ignores the result)
     }
     if (off == DEATH_REQUEST && g4_refuse(c, "death", c->x[0], c->x[1])) return 1;
-    if (off == DEATH_REQUEST) { void coop_ctn_death_seen(uint64_t actor, uint32_t kind); coop_ctn_death_seen(c->x[0], (uint32_t)c->x[1]); }
+    if (off == DEATH_REQUEST) {   // a death of an entity this game owns: run here, and told to the others when the game accepted it
+        void coop_ctn_death_seen(uint64_t actor, uint32_t kind);
+        int coop_ctn_runs_part(uint64_t a);
+        static __thread int death_inner;
+        if (death_inner) death_inner = 0;
+        else if (coop_ctn_runs_part(c->x[0])) {
+            uint64_t a = c->x[0];
+            uint32_t kind = (uint32_t)c->x[1];
+            death_inner = 1;
+            c->pc = MOD_MAIN_BASE + off;
+            rt_dispatch(c);
+            if (c->x[0] & 1) coop_ctn_death_seen(a, kind);
+            return 1;
+        }
+    }
     if (off == DEATH_COMPONENT) {
         // x0 is the death component. The game's function takes the actor from component +0x18 (research notes
         // sync-v3/m2/p5/rocket-timebomb, section 3); this read +0x8 before, which that reading does not support.
