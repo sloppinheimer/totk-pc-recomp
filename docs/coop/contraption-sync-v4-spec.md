@@ -781,8 +781,11 @@ table high-water marks; the seat hook's refusals and what the event node did aft
 
 ## 18. As built (2026-11-13): where the code differs from the sections above
 
-The specification was implemented in full, built clean, and reviewed against this file by four Sonnet readers
-(R/sync-v4/code-review/: core.md, own.md, rec.md, kept.md; every finding fixed). Nothing has been run. Where the code
+The specification was implemented in full, built clean, reviewed against this file by four Sonnet readers
+(R/sync-v4/code-review/: core.md, own.md, rec.md, kept.md) and then by four Opus 5.5 readers set against the code
+as adversaries (R/sync-v4/code-review2/: threads.md, protocol.md, game.md, regress.md; one of them with the game's
+code open in Ghidra). Every finding of both rounds is fixed, but for those named "left" below. Nothing has been run.
+Where the code
 had to differ from the text above, the code is what stands, and this section says how.
 
 **Files** (section 14 named one). runtime/coop_ent.c: the table, reading the world, islands, the published sets,
@@ -819,6 +822,12 @@ lone devices and messages are gone. coop_glue.c and coop_bonds.c stay in the tre
   written.
 - The mirror keeps a copy of something that can be glued for one second after its owner stops listing it (the
   owner stops a moment before its statement arrives). A destroyed crate's copy therefore lingers up to a second.
+  Things that can be picked up (items, weapons) and capsules are not held: they go at once, as before.
+- Every actor bound to an entity (a copy made here, a part of the maker's, a minted device) is handed to the mirror
+  on its next tick, which frees any row it has for it. A stand-in's swing is no hit on any entity (coop_life.c
+  `synced_device`): the swinging player's own game asks the owner.
+- 4.6 as built: a preview is cleared for the whole maker run when no part of it is a hologram any more and no SPR has
+  a bond queued, or one second after the last hologram bit went.
 - The pick-up refusal of 4.4's last bullet has no code of its own: G4 refuses every delete of a follower's actor
   from the three callers it knows; a pick-up's caller is not one of them [test].
 
@@ -828,14 +837,28 @@ lone devices and messages are gone. coop_glue.c and coop_bonds.c stay in the tre
 - The payer carried in a GRANT is not applied by the new owner: whoever switches a device on next pays.
 - A DEATH message means "replay this death on your copy". An entity's life changes only by its owner's statement,
   once the game there accepted the delete. A create of an entity is held 5 s after a death was replayed on it or a
-  create of it failed. The death is posted at the request's entry, not on acceptance (10.4): the copy is asked the
-  same death and its game decides as the owner's did.
-- An entity whose owner left and that has no actor here is forgotten after 10 s.
+  create of it failed. The death request of an owned entity is run inside its hook and told when the game accepted it
+  (10.4), with the
+kind as asked, not as the game rewrites it. The death component's path (the inlined lapse) is still told at entry.
+- An entity whose owner left and that has no actor here is forgotten after 10 s. An entity this game owns that has
+  had no actor here for 3 s is stated gone (a map entity: free).
+- 10.3's class of a delete, as built: reason 0 or 2 is a destroy, but for reason 0 from main+0x54db94 (a refused
+  creation) and for any delete while the load flag is set; every other reason is an unload. The return addresses
+  10.3 lists were checked in Ghidra and mostly cannot occur (the deferred runner's calls return to main+0x2fc560
+  and 0x2fd080; a death through the deferring wrapper arrives from main+0x63b6f4 or 0x63b830), so the class does
+  not go by return address.
+- An owned actor that went with no delete seen is offered like any unload (5.8), not stated gone at once.
+- After this game's own incarnation changed (a reconnect) it claims nothing for 3 s. A message or a statement from
+  a player who is no longer in its seat is dropped.
+- A row whose owner changes loses the statement it had alone from its old owner.
+- A change of a device (a switch, a time bomb, burning, a spring's extension) sends the island's POSE at once.
 
 **Reconcile and bonds.**
 - The make's precondition "main+0x29a5a08 returns each body" is not tested (the registry it takes was not at hand);
-  the graph node (main+0xa2d39c) and bit 24 are. The new edge is found by listing the part's edges right after the
-  direct call, not from the bond maker's hook. The call is made once per pair in a second.
+  the graph node (main+0xa2d39c) and bit 24 are. The game's own node look-up main+0xa2d39c is not called either: it
+  writes its
+answer through x8. The new edge is taken from the bond maker's hook while the direct call runs (the edge joins the
+lists only a physics step later), and its glue look byte is set then. The call is made once per pair in a second.
 - Strain fields are not set to 0 when a game becomes owner (7.6, last bullet): the strand of an edge is not found
   without a walk that was not read, and the reading calls the effect cosmetic.
 - Rung 2 breaks only the bonds inside the sender's island; "a map member is placed by one SetTransform" is not
@@ -852,6 +875,13 @@ lone devices and messages are gone. coop_glue.c and coop_bonds.c stay in the tre
 
 **Riders.** An entity is named between the games by a hash of its Eid with owner byte 0xfd (12.2 said the
 serial and the minter's relay id).
+
+**Left after the adversarial review** (each rare or small, none changed): a just-made bond across owners can be
+broken once and made again when the bond request overtakes the other game's newer statement; the on/off state of a
+device that is no entity (made before the session, or by a creator the mirror did not take as this game's) is no
+longer sent; for up to 3 s while a member of an island unloads, a follower may apply device bits to the wrong
+members; moving a fragment into place moves main bodies only, so a wheel's or a spring's other body is pulled
+along by its joint; the pad-poll thread waits on the table's lock for the length of a phase-0 pass.
 
 **Not built, as section 0 says:** the native refusal of a grab, the maker fed part of a record.
 
