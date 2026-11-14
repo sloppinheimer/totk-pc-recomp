@@ -947,3 +947,34 @@ the first suspects, each can be switched off by taking its address out of cpu.h.
 the create chain (4.2). Copies that never appear: the statement or the plain create (7.2); the status line's "far",
 "wait", "differ", "not shown" counts say which. A glue that does not hold in the other game: the "bond made here"
 line and its "edge listed / not listed yet" say whether the direct call took.
+
+## 20. Play-test notes, session 1 of the entity sync (2026-11-14; logs build/v143/logs/totk.log = player 1, build/v143play/logs/totk.log = player 2)
+
+Recorded as told and as the logs show; nothing here is acted on until the tester says so.
+
+**What worked.**
+- Both games started and ran with the new hooks; the status line every 10 s; no crash; "ring lost 0".
+- Three fans from P1's pouch: three entities (07aa.1 to 07aa.3), three copies at P2. The old "three fans, two seen"
+  did not happen.
+- P1 glued two fans: P1 "owned 3 (2 islands), bonds 1", P2 "copies 3, bonds 1", unconverged none: the glue reached
+  the other game.
+- P2 grabbed P1's loose fan: TAKE at 58224600, GRANT at 58224609, owned at P2 at 58224615 (15 ms), epoch 2.
+- The held pose of every bond was read from the bond's rest frames (2881 reads, 0 fallbacks): the output layout of
+  main+0x7a4410 is as assumed (section 17).
+
+**Note 1: a stand-in pushes a loose copy.** P1 walks into its own fan: nothing moves at P1 (as in the game), but at
+P2 the stand-in of P1 shoves P2's copy of the fan. Cause read in the code: the stand-in veto lists members of
+islands of two or more only (section 11, `part`); a loose copy was pinned every tick by the old mirror and is a free
+body under the drive now, corrected only beyond the rest band. The same must hold the other way (P2's stand-in at
+P1 against P1's own fan, which is the real one).
+
+**Note 2: a copy that tipped over stays at a wrong angle.** At P2 the copy first pulled itself back to P1's pose
+each time, then stuck at an odd angle and stopped trying. Not read in the log yet; the drive rests when the owner's
+part is still and has no rule for a copy that stays outside the band at rest.
+
+**Note 3: a copy held in the air by its owner bounces.** While P1 carries its fan with Ultrahand, P2's copy is
+jittery and then bounces in place, falling and being pulled back up. P2's log, "coop: follow" of copy 6869345b:
+the error swings between -0.37 m and +0.30 m in height within a second, with the copy's own velocity at -12.5 m/s
+(falling). The drive's rest rule ("the owner's part is still and the copy is in the band: nothing is written, the
+bodies may sleep") was made for a build resting on the ground; a part its owner holds still in the air satisfies it,
+so nothing is written, the copy falls out of the band, and the drive catches it again.
