@@ -988,3 +988,39 @@ so nothing is written, the copy falls out of the band, and the drive catches it 
   rides it.
 - Note 2: `follow_rigid` counts how long the owner's root has rested with the copy out of the rest band; after 2 s
   it logs "put in place" and the island is placed once at phase 0, by the path of the 10 m teleport.
+
+### Session 2 (2026-11-14, with the fixes of notes 1 to 3)
+
+As told: mostly fine and clearly better; movement is still quite jittery but the copy reaches a matching place
+fairly consistently; fusing "went haywire" (not the point under test yet). Nothing here is acted on until the tester
+says so.
+
+**What the logs show.**
+- Note 1 fixed as far as the log goes: at P2 the veto holds 16 records of 3 parts and refused 58550 pairs; at P1
+  3206. Not yet confirmed by the tester in words.
+- Note 2 fixed: four "put in place" lines at P2, among them a copy lying at 0.93 m and 103.9 degrees for 2 s and one
+  at 24.2 degrees. Two of the four were small (0.03 m and 4.4 degrees; 0.018 m and 5.3 degrees): the rule fires
+  for anything outside the entry band of 4 degrees, also inside the leave band of 8.
+- Note 3: no line shows a held copy falling as in session 1 (no root velocity near -12 m/s with a still owner).
+
+**Note 4: movement of a carried copy is jittery.** "coop: follow" at P2, one line each 0.5 s: while the owner moves
+its object the copy is 0.03 to 0.40 m off, the larger values where the owner's speed changes fast (owner 12.6 m/s on
+one axis, copy 6.0 m/s; owner 14.3, copy 17.6). Sample age 4 to 54 ms. One line each 0.5 s does not show the
+jitter itself; its cause is not read yet.
+
+**Note 5: a copy at rest turns slowly out of place under the drive.** P2, copy 6911ca3a, owner still: the angle
+error grows 4.5, 6.4, 10.4, 14.2, 17.6, 20.4, 23.2 degrees over 3 s with the copy moving at about 0.2 m/s, until the
+2 s rule puts it back. The drive is writing in that time and does not hold the angle. Not read further.
+
+**Note 6: a glue across owners.** In order, both logs:
+- P2 took 9b58.1 (granted in 17 ms) and glued it to P1's 9b58.2: operation 1 made the bond at P1 (relative speed
+  2.20 m/s), the merged island was granted to P2, "the bond is in both games". This flow worked.
+- P1 took 9b58.1 back (granted as an island of one, so the glue was gone by then) and glued it to 9b58.2, now P2's:
+  P1's TAKE of 9b58.2 was refused "this copy is not as the owner's", then operation 1 was refused "the parts could
+  not be brought into place there" and P1's glue was broken by the rule. 3 s later P1's TAKE 3 of 9b58.2 was
+  granted.
+- P2 then logs "bond made here between 9b58.1 and 9b58.2" with no operation, 7 s after; both games end at bonds 0.
+- About then P2's copy 0e4d6e95 is 6.6 m and 165 degrees off at 34 m/s, and comes back over 2 s.
+
+**Seen in passing, not looked into:** both logs repeat "coop: reads: N failed at exe+..." for about 12 addresses
+every 10 s. Whether session 1 had them is not known (its logs are overwritten).
