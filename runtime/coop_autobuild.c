@@ -1993,6 +1993,7 @@ void coop_autobuild_tick(Cpu *c, uint64_t me) {
     playerdiff_test(me);
     coop_ent_mirror_tick();   // the object mirror's answers to the entity sync (this is the tick its tables live on)
     coop_ent_drive(c);
+    { void coop_ent_bench_tick(Cpu *c, uint64_t me); coop_ent_bench_tick(c, me); }   // TOTK_COOP_BENCH (coop_ent_bench.c)
     if (!ablog_on()) return;
     deck_test(c, me, atomic_load(&tracked_n) < TRACK_N ? atomic_load(&tracked_n) : TRACK_N);
     failspam_test(c, me);

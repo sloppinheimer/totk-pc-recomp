@@ -11,8 +11,13 @@
 # folders), so what a session saves is gone at the next start and every test begins from the same three saves. The rest
 # of a play copy (mods, play time) is kept. The saves a copy held at the first such start are moved to
 # build\prof-play-N-saves-kept, once, and never touched again.
+# -Bench fans: both games load the third save by themselves (tools\coop\idle_3rd.txt, played beside the gamepad, which
+# works from the first frame), each Link is put on flat ground and three fans are made in front of them
+# (TOTK_COOP_BENCH, runtime\coop_ent_bench.c). -Bench fans,drive: game 1 then moves a fan by itself (no gamepad
+# needed). -Seconds N: the session is ended after N seconds. With -Bench, the contraption report
+# (tools\coop\ent_report.py) is printed at the end and kept in build\ent_report.txt.
 param([string]$Name1 = "Player 1", [string]$Name2 = "Player 2", [string]$Size = "1904x1071", [switch]$Fresh, [switch]$TwoPads,
-      [switch]$ShareWorld, [switch]$FrozenSaves)
+      [switch]$ShareWorld, [switch]$FrozenSaves, [string]$Bench = "", [int]$Seconds = 0)
 # One gamepad (the first) moves both games; Minus with the right stick click, or F9, switches to only the game in
 # focus and back (input.c, pad_focus_gate). -TwoPads: game 1 reads the first gamepad, game 2 the second, as before.
 $ErrorActionPreference = 'Stop'
@@ -64,7 +69,8 @@ foreach ($g in @(@{dir = $a; n = 1; name = $Name1; pad = '0'}, @{dir = $b; n = 2
     $env:TOTK_COOP_RELAY = '127.0.0.1'; $env:TOTK_COOP_NAME = $g.name
     $env:TOTK_MOUSE_SENS = '0'          # no mouse camera, no cursor capture: the mouse moves between the windows
     $env:TOTK_COOP_HIDE_CONSOLE = '1'
-    Remove-Item Env:TOTK_INPUT_SCRIPT, Env:TOTK_INPUT -ErrorAction SilentlyContinue
+    Remove-Item Env:TOTK_INPUT_SCRIPT, Env:TOTK_INPUT, Env:TOTK_COOP_BENCH -ErrorAction SilentlyContinue
+    if ($Bench) { $env:TOTK_INPUT_SCRIPT = Join-Path $root 'tools\coop\idle_3rd.txt'; $env:TOTK_COOP_BENCH = $Bench }
     if ($ShareWorld) { $env:TOTK_COOP_SHARE_WORLD = '1' } else { Remove-Item Env:TOTK_COOP_SHARE_WORLD -ErrorAction SilentlyContinue }
     $games += Start-NoConsole (Join-Path $g.dir 'totk.exe') '' $g.dir
     Start-Sleep 3
@@ -83,7 +89,8 @@ for ($i = 0; $i -lt $games.Count; $i++) {
 }
 if ($TwoPads) { "Session running: game 1 = first gamepad, game 2 = second gamepad. Load your save in both windows." }
 else { "Session running: one gamepad moves both games. Minus + right stick click (or F9): only the game in focus, and back." }
-while (-not ($games | Where-Object { $_.HasExited })) { Start-Sleep 1 }
+$until = if ($Seconds -gt 0) { (Get-Date).AddSeconds($Seconds) } else { [DateTime]::MaxValue }
+while (-not ($games | Where-Object { $_.HasExited }) -and (Get-Date) -lt $until) { Start-Sleep 1 }
 $games | Where-Object { -not $_.HasExited } | Stop-Process -Force
 Stop-Process -Id $relay.Id -Force -ErrorAction SilentlyContinue
 "Session ended."
@@ -93,3 +100,8 @@ $report = Join-Path $root 'build/audit_report.txt'
 & (Join-Path $root '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'sync_audit.py') (Join-Path $a 'logs/audit.jsonl') (Join-Path $b 'logs/audit.jsonl') |
     Tee-Object -FilePath $report
 "(kept in $report)"
+if ($Bench) {
+    $ent = Join-Path $root 'build/ent_report.txt'
+    & (Join-Path $root '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'ent_report.py') $a $b | Tee-Object -FilePath $ent
+    "(kept in $ent)"
+}

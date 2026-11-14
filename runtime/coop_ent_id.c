@@ -118,6 +118,12 @@ int coop_ent_created_hook(Cpu *c, uint64_t addr) {
     }
     return 1;
 }
+// The test bench (coop_ent_bench.c): a device it made and claimed gets an identity as one this player put out.
+void coop_ent_test_mint(uint64_t actor) {
+    Ev ev = {0};
+    ev.kind = EV_CREATED, ev.actor = actor, ev.gen = ctn_gen_of(actor), ev.decision = DEC_MINT;
+    ent_post(&ev);
+}
 // main+0xa1bc30, the synchronous create (placement record in x3): none of its callers read makes a device; a device
 // name through it is logged.
 int coop_ent_create_sync_hook(Cpu *c) {

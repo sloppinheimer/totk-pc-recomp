@@ -5389,6 +5389,8 @@ static void audit_tick(Cpu *c, uint64_t me, const CoopObj *sent, int n_sent, con
     fputs("],\"enemies\":", f);
     void coop_audit_enemies(FILE *f, uint64_t me);   // coop_world.c
     coop_audit_enemies(f, me);
+    void coop_ent_audit(FILE *f);   // coop_ent_bench.c: the entities and the devices that are none
+    coop_ent_audit(f);
     fputs("}\n", f);
     fflush(f);
 }
