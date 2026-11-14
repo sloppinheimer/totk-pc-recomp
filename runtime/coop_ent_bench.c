@@ -11,7 +11,7 @@
 //    identity as a device its player put out.
 //    scenario "drive" (the game that made the fans, 8 s after the last is made): fan 0 is moved by velocities written
 //    to its main body, with no controller: 12 s along a figure of eight 1.5 m above its place while it turns about y,
-//    12 s left alone (it falls and rests), a turn about x for 0.3 s that tips it, 12 s left alone. Every step logs
+//    12 s left alone (it falls and rests), a throw with a turn about x for 0.5 s that tips it, 12 s left alone. Every step logs
 //    where the fan is against where it was sent, and a last line says whether the action happened as meant, so a
 //    scenario that did not land is not read as a result.
 // The scenario moves the owner's object; what the other game shows of it is the thing under test.
@@ -160,8 +160,8 @@ void coop_ent_bench_tick(Cpu *c, uint64_t me) {
     } else if (t < 24) {
         if (now - said >= 2) said = now, rt_log("coop: bench: %.1f s: rest: fan at %.2f %.2f %.2f", now, pos[0], pos[1], pos[2]);
         up0[0] = m[1], up0[1] = m[5], up0[2] = m[9];   // its y axis in the world, as it rests
-    } else if (t < 24.3) {
-        float v[3] = {0, t < 24.05 ? 2.0f : 0, 0}, w[3] = {4, 0, 0};
+    } else if (t < 24.5) {   // thrown up 5 m/s for 0.1 s, turning 6 rad/s about x for 0.5 s (4 rad/s for 0.3 s on the ground only slid it)
+        float v[3] = {0, t < 24.1 ? 5.0f : t < 24.3 ? 2.0f : 0, 0}, w[3] = {6, 0, 0};
         set_vel(c, body, v, w);
     } else if (t < 36) {
         if (now - said >= 2) said = now, rt_log("coop: bench: %.1f s: rest after the tip: fan at %.2f %.2f %.2f", now, pos[0], pos[1], pos[2]);

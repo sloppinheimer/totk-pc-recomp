@@ -102,6 +102,8 @@ $report = Join-Path $root 'build/audit_report.txt'
 "(kept in $report)"
 if ($Bench) {
     $ent = Join-Path $root 'build/ent_report.txt'
-    & (Join-Path $root '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'ent_report.py') $a $b | Tee-Object -FilePath $ent
+    $lines = & (Join-Path $root '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'ent_report.py') $a $b
+    $lines | Set-Content -Encoding utf8 $ent   # (Tee-Object writes UTF-16 in Windows PowerShell)
+    $lines
     "(kept in $ent)"
 }
