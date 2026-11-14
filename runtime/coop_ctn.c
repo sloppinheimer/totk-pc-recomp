@@ -453,6 +453,21 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
         fs->v_written[j][0] = vj[0], fs->v_written[j][1] = vj[1], fs->v_written[j][2] = vj[2];
     }
     fs->have_written = 1;
+    // TOTK_COOP_FOLLOW_TRACE=1: one line for every frame the drive writes, to read a jitter from. "sample" is the
+    // owner's clock of the newest pose (a new value: a pose arrived this frame); "vb" is the root body's velocity
+    // as read before this frame's write, so against the last line's V it shows what the physics step made of it.
+    static int trace = -1;
+    if (trace < 0) { const char *t = cfg_get("TOTK_COOP_FOLLOW_TRACE"); trace = t && *t == '1'; }
+    if (trace) {
+        float vb[3] = {0};
+        coop_rd(rb + 0xf8, vb, sizeof vb);
+        rt_log("coop: ftrace: %lld %08x cls %d rests %d dt %.4f sample %lld age %.4f | e %.3f %.3f %.3f (%.3f m) rot %.2f %.2f %.2f (%.2f deg) | "
+               "vr %.2f %.2f %.2f ar %.1f %.1f %.1f wr %.2f %.2f %.2f | v* %.2f %.2f %.2f cv %.2f %.2f %.2f comp %.2f %.2f %.2f I %.2f %.2f %.2f | "
+               "V %.2f %.2f %.2f W %.2f %.2f %.2f | vb %.2f %.2f %.2f",
+               (long long)now, key, cls, runner_rests, dt, (long long)hus[2], age, e_p[0], e_p[1], e_p[2], ep, e_r[0] * deg, e_r[1] * deg, e_r[2] * deg, er * deg,
+               v_r[0], v_r[1], v_r[2], a_r[0], a_r[1], a_r[2], w_r[0], w_r[1], w_r[2], v_star[0], v_star[1], v_star[2], cv[0], cv[1], cv[2],
+               fs->comp[0], fs->comp[1], fs->comp[2], fs->integ[0], fs->integ[1], fs->integ[2], V[0], V[1], V[2], W[0], W[1], W[2], vb[0], vb[1], vb[2]);
+    }
     static int64_t said;
     if (now - said > 500000) {
         said = now;
