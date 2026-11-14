@@ -249,6 +249,9 @@ evidence), guess.
 - A guest shows the weather at the host's Link, wherever the guest is (players far apart see the host's sky).
 
 ## Enemies (2026-11-04)
+- The static decode of the whole enemy system (2026-11-14) is in [enemy-system.md](enemy-system.md). It corrects two
+  points below: [[actor+0x228]+0x378] is the perception emitter and the receiver is +0x380, and the "awareness
+  words" at [[actor+0x228]+0x158] are the BSA component's brain verb (+0x58), not perception state.
 - Every live actor passes the per-actor calc main+0x41bb20 each frame (x0 = actor): the live set.
 - Placed enemies are created at the same spot in every game on a save (two Chuchus at 68.7/22.9, 1498, 1471, the
   same to 0.1 m in two games). No per-enemy value equal across games and different between enemies was found in
