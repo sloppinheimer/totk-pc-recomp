@@ -1113,3 +1113,36 @@ used `join`); nothing is judged by eye.
   Recorded; nothing reads them as a build.
 - A ZL press to bring the camera behind a Link locked onto the other player's stand-in in one run of three: the bench
   aims by moving the Link, with no ZL.
+
+**More found and fixed with the suite (2026-11-14).**
+- The drive ran only in the moments after each pose of a resting owner (a limit of 1 s without a pose, and a pose a
+  second at rest): a new copy 0.4 m off hung there until the 2 s rule. The limit is 2.5 s.
+- An Autobuild was stated before it was confirmed. Read from the audit's SPR words in a run: the parts of the run are
+  there from the Autobuild screen on with SPR +0x20 = 0x2; the hologram bit (51) comes when the design is picked
+  (0xc014000000002); the confirm leaves 0x80000000000202 and sets SPR +0x150 bit 0 on a part made from zonaite. A
+  preview was taken as confirmed when no part showed bit 51, which held before the hologram too: the other game got
+  four loose plain parts 5 s before the confirm, then the build. A part is now a preview until it has itself shown the
+  bit and lost it (the screen's own actors of the same run show it at once and go); a run that shows none in 30 s is
+  taken as a build and said. Section 4.6 is to be read with this.
+- The mark of a zonaite part is read 0.4 s after the hologram bits go, and a part that reads green only after it was
+  stated is stated again and said.
+- The reconcile took the copy maker's island while it was being made: the parts just bound had no bonds yet, it made
+  one, the confirm made the same again, the repeat was taken off and the island deleted and made anew. The maker's
+  island is left alone while it is made and for 0.7 s after (`ctn_make_is`).
+- A build to be made where this game's Link stands waited for the Link to leave, with no end: it is made that far
+  above its place and the drive brings it down. An island that waits for the maker says why every 5 s.
+- A take while the owner sits in its inventory is granted at once (the hand-over-paused scenario); the owner's copy
+  follows about 3 s after the menu closes. `ent_paused()` is 0 in the inventory (actor phase 0 goes on): the audit's
+  "menu" is the players' tick's pause.
+
+**Seen by eye** (480x270 pictures of both games at the scenario's moments, TOTK_SHOTS, deleted after): drive (the
+fan in the air in both, flat in the same place at the end), hand (the held fan in the air before player 1 in both),
+glue-both (two fans joined after player 2's glue, three in a row at the end, in both), autobuild (nothing at player 2
+while player 1 aims; the plane with green fans after the confirm). glue, glue-cross, hand-over and paused are parts
+of those flows and pass by the report; their own pictures were not looked at.
+
+**Open.**
+- Devices that come with a save are in one game only (note 7): the rule is the tester's to choose.
+- The capsule's create path, a break of a glue, a ride, devices switched on, a player who leaves: no scenario yet.
+- The Autobuild copy's smoothness line (the build falls 4 m after the confirm): 1.4 to 1.7 m/s a frame at the 90th
+  percentile over about 50 frames; not looked into.

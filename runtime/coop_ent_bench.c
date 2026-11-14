@@ -18,6 +18,8 @@
 //    put 2.5 m from that fan, and from world second <s> the middle of its picture is brought onto the fan
 //    (bench_aim_tick), for an input script that takes the fan with Ultrahand as a player does (tools/coop/hand_*.txt:
 //    L, a tilt down, then A; <s> is after the tilt and before the A).
+//    option "on=@<s>": at that second game 1 switches on the devices of everything it owns (the path a remote
+//    player's hit takes at the owner, ctn_toggle_put): a build that moves by its own devices.
 //    option "nofans": the Links are placed and no fan is made (a script that makes its own parts, as an Autobuild).
 //    option "join1=@<s>" / "join2=@<s>": from that second what that Link holds is brought next to the nearest part of
 //    another island (bench_join_tick), for a script whose next A attaches it.
@@ -40,6 +42,7 @@
 
 int ctn_alive(uint64_t a);
 void coop_ent_test_mint(uint64_t actor);   // coop_ent_id.c
+void coop_lock_wait(PlatMutex *m);
 
 // ---- The audit ---------------------------------------------------------------------------------------------------------
 typedef struct { FILE *f; int n; } LooseScan;
@@ -71,6 +74,17 @@ void coop_ent_audit(FILE *f) {
         fprintf(f, "%s{\"id\":\"%s\",\"owner\":\"%04x\",\"mine\":%d,\"life\":%d,\"flags\":%d,\"state\":%d,\"cls\":%d,\"actor\":%d,\"name\":\"%s\"", first ? "" : ",",
                 ent_eid_str(e.id, b), (unsigned)(e.owner & 0xffff), e.owner == me, e.life, e.flags, e.state, cls, have, nm);
         first = 0;
+        {   // its device as its island's row has it: with a switch, and on (at the owner computed, at a follower from POSE)
+            int sw = 0, on = 0;
+            coop_lock_wait(&grp_lock);
+            for (int g = 0; g < GRP_N; g++) {
+                if (grps[g].used != 1) continue;
+                for (int r = 0; r < grps[g].n && r < ENT_MEMBERS; r++)
+                    if (grps[g].id[r].inc == e.id.inc && grps[g].id[r].serial == e.id.serial) sw = grps[g].sw >> r & 1, on = grps[g].on >> r & 1;
+            }
+            plat_mutex_unlock(&grp_lock);
+            fprintf(f, ",\"sw\":%d,\"on\":%d", sw, on);
+        }
         if (have) {   // the SPR's flag words, as they are (what marks a part made from zonaite is read from them)
             uint64_t spr = ctn_spr(e.actor), f20 = 0;
             uint32_t f150 = 0;
@@ -141,6 +155,7 @@ static void bench_join_tick(Cpu *c, uint64_t me, int id, double now) {
     if (now - said > 0.5) said = now, rt_log("coop: bench: %.2f s: join: the held part is %.2f m from its neighbour: this Link moved by %.2f %.2f", now, best, dx, dz);
 }
 static int bench_scene, bench_drive, bench_nofans;
+static double bench_on_at;
 static int bench_aim[2] = {-1, -1};   // per player (id 1, id 2): the fan its Link is put in front of, -1 none
 static double bench_aim_at[2];        // and the world second from which the middle of its picture is brought onto that fan
 
@@ -189,6 +204,7 @@ static void bench_read(void) {
     bench_scene = !strncmp(e, "fans", 4);
     bench_drive = bench_scene && strstr(e, ",drive") != NULL;
     bench_nofans = bench_scene && strstr(e, ",nofans") != NULL;
+    { const char *o = bench_scene ? strstr(e, ",on=@") : NULL; if (o) bench_on_at = atof(o + 5); }
     for (int k = 0; bench_scene && k < 2; k++) {
         char key[16];
         snprintf(key, sizeof key, ",aim%d=", k + 1);
@@ -259,6 +275,18 @@ void coop_ent_bench_tick(Cpu *c, uint64_t me) {
     static uint64_t fan[FANS];
     static int stage[FANS], minted[FANS], ready;
     static double ready_at;
+    {   // on=@<s>: at that second the devices of everything this game owns are switched on, as a hit on one does
+        static int done_on;
+        if (bench_on_at > 0 && now > bench_on_at && !done_on) {
+            int n = 0;
+            done_on = 1;
+            for (int i = 0; i < ENT_N; i++) {
+                Ent e = ents[i];
+                if (e.used && e.owner == coop_ctr_me() && e.actor && e.life == LIFE_LIVE && ctn_alive_as(e.actor, e.gen)) ctn_toggle_put(c, e.actor, 1), n++;
+            }
+            rt_log("coop: bench: %.1f s: the devices of %d entities of this game are switched on", now, n);
+        }
+    }
     if (!ready && bench_nofans && now > 17) ready = 1, ready_at = now, rt_log("coop: bench: %.1f s: scene ready: no fans asked for", now);
     if (!ready && now > 17) {
         int all = 1;

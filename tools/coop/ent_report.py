@@ -16,6 +16,7 @@ that is no entity. The lines of the two games are paired by time. Printed, each 
             the 90th percentile, 0.25 m and 10 degrees at most
   moving    while the owner's object moves (over 0.2 m/s): the copy within 0.30 m at the 90th percentile
   bonds     the two games have the same glue bonds (a difference of up to 3 lines in a row is a glue in the making)
+  devices   the same devices are switched on in both games
   hand      what a Link holds with Ultrahand, and that the other game has that entity as held by its owner
   speed     from the drive's trace: the velocity an owner sends with a pose against the one its last two poses give;
             the median ratio between 0.7 and 1.4 (a body moved without its stored velocity would send none)
@@ -145,6 +146,7 @@ def main():
     timeline = defaultdict(list)
     paused_until, paused_n = -1.0, 0
     bond_diff, bond_max = [], 0
+    on_diff, on_max = [], 0
     pairs, bi = 0, 0
     prev = None
     t0 = min(A[0]['t'], B[0]['t'])
@@ -180,6 +182,10 @@ def main():
         if ba != bb:
             bond_diff.append((t, f'{len(ba)} bonds in {dirs[0]}, {len(bb)} in {dirs[1]}'))
         bond_max = max(bond_max, len(ba), len(bb))
+        on_a, on_b = ({k for k, e in s.items() if e.get('on')} for s in (ea, eb))
+        on_max = max(on_max, min(len(on_a), len(on_b)))
+        if on_a != on_b:
+            on_diff.append((t, f'{len(on_a)} devices on in {dirs[0]}, {len(on_b)} in {dirs[1]}'))
         for eid in ea.keys() | eb.keys():
             first_seen.setdefault(eid, t)
             if t - first_seen[eid] < 3:
@@ -232,6 +238,13 @@ def main():
     results.append(('bonds', None if not bond_max and not bond_diff else longest <= 3,
                     f'at most {bond_max} bonds; ' + ('the same in both games' if not bond_diff else f'different in {len(bond_diff)} lines, {longest} in a row at most'
                                                      + (f' ({first_long[1]} at {first_long[0] - t0:.0f} s)' if first_long else ''))))
+    # devices switched on: the same ones in both games (a difference of up to 2 lines in a row is a switch on its way)
+    run = longest_on = 0
+    for i, h in enumerate(on_diff):
+        run = run + 1 if i and on_diff[i - 1][0] > h[0] - 1.6 else 1
+        longest_on = max(longest_on, run)
+    results.append(('devices', None if not on_max and not on_diff else longest_on <= 2,
+                    f'at most {on_max} on in both games at once; ' + ('the same ones on in both' if not on_diff else f'different in {len(on_diff)} lines, {longest_on} in a row at most ({on_diff[0][1]} at {on_diff[0][0] - t0:.0f} s)')))
     for k in (0, 1):
         if hand_s[k]:
             results.append(('hand', hand_told[k] >= hand_s[k] - 2, f'the Link of {dirs[k]} held an entity with Ultrahand in {hand_s[k]} lines; the other game had it as held in {hand_told[k]}'))
@@ -245,6 +258,8 @@ def main():
             if want in ('hand1', 'hand2'):
                 k = int(want[4]) - 1
                 results.append(('expected', hand_s[k] >= 2, f'player {k + 1} takes an entity with Ultrahand: ' + (f'held for {hand_s[k]} lines' if hand_s[k] else 'it never held one (the scripted grab did not land)')))
+            elif want == 'onseen':
+                results.append(('expected', on_max >= 1, f'a device is on in both games at some time: at most {on_max} at once'))
             elif want.startswith('ents='):
                 na, nb2 = len(live(A[-1])), len(live(B[-1]))
                 results.append(('expected', na == nb2 == int(want[5:]), f'{want[5:]} entities at the end: {na} and {nb2}'))

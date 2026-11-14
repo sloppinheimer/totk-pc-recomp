@@ -76,6 +76,7 @@ typedef struct FollowState {
     int64_t off_since;      // since when the runner has rested with the copy out of the rest band (this game's clock), 0: not so
     int rest_leaves;        // how often the copy has left its rest while the runner went on resting
     int no_rest;            // 1: it left three times: held by the field until the runner moves
+    int placed;             // how often it was put in place in this rest of the runner
     int64_t last_us;
 } FollowState;
 
@@ -436,23 +437,31 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
     // there (a copy tipped over lies on its contacts at another angle), or it rests inside the wider leave band (a copy
     // lay 5.8 degrees off for a whole bench run). It is put in place once; the caller marks it for phase 0. The third
     // time in one rest of the runner it is held by the field instead, as a copy that keeps leaving its rest is.
-    int place = 0;
-    if (!runner_rests || in_band) fs->off_since = 0;
+    // Once it has been put in place in this rest of the runner, a copy that comes to lie a few degrees off again is
+    // left so, up to the leave band: its own resting place on the ground is not the runner's to the degree (a fan on
+    // its edge lay 5 degrees off after every placement, and was put back every 2 s without end).
+    int out_of_place = fs->placed ? ep > 0.25f || er * deg > 8 : !in_band;
+    if (!runner_rests) fs->placed = 0;
+    if (!runner_rests || !out_of_place) fs->off_since = 0;
     else if (!fs->off_since) fs->off_since = now;
     else if (now - fs->off_since > 2000000) {
-        fs->off_since = 0, place = 1;
+        fs->off_since = 0, fs->placed++;
         rt_log("coop: follow: copy %08x out of place for 2 s at rest (%.3f m, %.1f deg): put in place", key, ep, er * deg);
-        if (++fs->rest_leaves >= 3 && !fs->no_rest) {
-            fs->no_rest = 1, fs->rest = 0;
-            rt_log("coop: follow: copy %08x put in place three times: held by the drive until its owner's object moves", key);
-        }
+        // (what the field had built up against the contact that held the copy is dropped: left in, it threw the
+        // copy 0.4 m the moment the placement freed it)
+        memset(fs->integ, 0, sizeof fs->integ), memset(fs->comp, 0, sizeof fs->comp), fs->have_written = 0;
+        if (!fs->no_rest) fs->rest = 1;
+        return 2;
     }
-    if (fs->rest) { fs->have_written = 0; for (int i = 0; i < 3; i++) fs->integ[i] *= (float)(1 - dt); return place ? 2 : 0; }
+    if (fs->rest) { fs->have_written = 0; for (int i = 0; i < 3; i++) fs->integ[i] *= (float)(1 - dt); return 0; }
     // the field: V, W with bounded corrections (gains fall with speed)
     float kp = vn <= 5 ? 5 : vn >= 15 ? 2.5f : 5 - 2.5f * (vn - 5) / 10, kr = wn <= 2 ? 5 : wn >= 6 ? 3 : 5 - 2 * (wn - 2) / 4;
     float cv[3], cw[3];
     for (int i = 0; i < 3; i++) {
-        fs->integ[i] = clampf(fs->integ[i] + 3.0f * e_p[i] * (float)dt, -1.0f, 1.0f);
+        // (no build-up while the runner rests: a copy held by a contact a few centimetres off took a growing push,
+        // 1.5 m/s after 2 s, that moved nothing)
+        if (runner_rests) fs->integ[i] *= 0.9f;
+        else fs->integ[i] = clampf(fs->integ[i] + 3.0f * e_p[i] * (float)dt, -1.0f, 1.0f);
         cv[i] = kp * e_p[i] + fs->integ[i], cw[i] = kr * e_r[i];
     }
     clamp_vec(cv, 3.0f), clamp_vec(cw, 2.5f);
@@ -505,7 +514,7 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
                now / 1e6, key, ep, e_p[0], e_p[1], e_p[2], er * deg, age, v_star[0], v_star[1], v_star[2], V[0], V[1], V[2], fs->gc,
                fs->integ[0], fs->integ[1], fs->integ[2], root[7], vb[0], vb[1], vb[2], (unsigned long long)flags, (unsigned long long)in_world, (unsigned long long)req, p_star[1]);
     }
-    return place ? 2 : 1;
+    return 1;
 }
 
 // ---- Gates read from game threads: the sets coop_ent.c publishes each frame (specification section 11) ----------------
