@@ -340,7 +340,7 @@ void ent_ring_events(Cpu *c) {
             if (!e) break;
             ent_bind(e, ev.actor);
             e->owner = me, e->epoch = 1, e->mir_known = 1;
-            if (ev.decision == DEC_MINT_PREVIEW) e->flags |= ENT_PREVIEW, e->batch = ev.batch;
+            if (ev.decision == DEC_MINT_PREVIEW) e->flags |= ENT_PREVIEW, e->batch = ev.batch, e->holo_seen = 0, e->preview_ms = now;
             enter_ask(ev.actor, 3);   // (the mirror may have taken it as an object in the frame before: it forgets it)
             if (ctn_part_green(ev.actor)) e->flags |= ENT_GREEN;
             rt_log("coop: ent: %lld %s (%s) made here%s", (long long)now, ent_eid_str(e->id, b), e->name, ev.decision == DEC_MINT_PREVIEW ? " by an Autobuild (a preview until it is confirmed)" : "");
@@ -410,23 +410,48 @@ void ent_ring_events(Cpu *c) {
     for (int i = 0; i < ENT_N; i++) {
         Ent *e = &ents[i];
         if (!e->used || !(e->flags & ENT_PREVIEW)) continue;
-        int holo = 0, queued_any = 0;
+        int holo = 0, queued_any = 0, seen = 1;
         for (int k = 0; k < ENT_N; k++) {
             Ent *o = &ents[k];
             if (!o->used || !(o->flags & ENT_PREVIEW) || o->batch != e->batch) continue;
             uint64_t spr = o->actor ? ctn_spr(o->actor) : 0, f20 = 0;
             int32_t queued = 0;
-            if (!spr || !coop_rd(spr + 0x20, &f20, 8) || (f20 >> 51 & 1)) holo = 1;
+            if (!spr || !coop_rd(spr + 0x20, &f20, 8)) holo = 1;
+            else if (f20 >> 51 & 1) holo = 1, o->holo_seen = 1;
             else if (coop_rd(spr + 0x2b0, &queued, 4) && queued) queued_any = 1;
+            seen &= o->holo_seen;   // (each part by itself: the screen's own actors of the same run show the bit at once and go)
         }
         if (holo) { e->make_ms = 0; continue; }
+        // The parts of an Autobuild are there a second or two before the hologram bit is on them (the Autobuild screen
+        // is still open: SPR +0x20 read 0x2 then, 0xc014000000002 once the design was picked, a bench run). A run
+        // whose hologram has not been seen yet is not confirmed by the bit being clear: it waits for the bit, 30 s at
+        // most (a maker run that never shows one is taken as it is then, and said).
+        if (!seen) {
+            if (now - e->preview_ms < 30000) continue;
+            rt_log("coop: ent: %lld a part maker's run showed no hologram for 30 s: its parts are taken as a build", (long long)now);
+            for (int k = 0; k < ENT_N; k++) if (ents[k].used && (ents[k].flags & ENT_PREVIEW) && ents[k].batch == e->batch) ents[k].holo_seen = 1;
+        }
         if (!e->make_ms) e->make_ms = now;   // (confirmed: every hologram bit is clear)
         if (queued_any && now - e->make_ms < 1000) continue;
+        // The mark of a part made from zonaite (SPR +0x150 bit 0) is not yet there in the frame the hologram bits go:
+        // read then, a Fanplane of four green parts was stated as plain and the other game drew plain parts (a bench
+        // run). 0.4 s more, and a part that turns green later still is taken below.
+        if (now - e->make_ms < 400) continue;
         uint8_t batch = e->batch;
+        int parts = 0, green = 0;
         for (int k = 0; k < ENT_N; k++) if (ents[k].used && (ents[k].flags & ENT_PREVIEW) && ents[k].batch == batch) {
-            ents[k].flags &= (uint8_t)~ENT_PREVIEW, ents[k].make_ms = 0;
-            if (ents[k].actor && ctn_part_green(ents[k].actor)) ents[k].flags |= ENT_GREEN;
+            ents[k].flags &= (uint8_t)~ENT_PREVIEW, ents[k].make_ms = 0, parts++;
+            if (ents[k].actor && ctn_part_green(ents[k].actor)) ents[k].flags |= ENT_GREEN, green++;
         }
+        rt_log("coop: ent: %lld an Autobuild of this game is confirmed: %d parts, %d made from zonaite", (long long)now, parts, green);
+        ent_mark_due(e);
+    }
+    for (int i = 0; i < ENT_N; i++) {   // (a part that reads green only after it was stated: said, and stated again)
+        Ent *e = &ents[i];
+        if (!e->used || e->owner != me || !e->actor || e->life != LIFE_LIVE || (e->flags & (ENT_PREVIEW | ENT_GREEN)) || !ctn_part_green(e->actor)) continue;
+        e->flags |= ENT_GREEN;
+        rt_log("coop: ent: %lld %s reads as made from zonaite only now, after it was stated: stated again", (long long)now, ent_eid_str(e->id, b));
+        own_owe_ent(e, -1);
         ent_mark_due(e);
     }
 }

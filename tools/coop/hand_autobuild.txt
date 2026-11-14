@@ -1,0 +1,14 @@
+# For the bench (TOTK_COOP_BENCH=fans,nofans; runtime/coop_ent_bench.c): the 100% save (third in the Continue list);
+# the bench puts this Link on flat ground at 15 s. At 20 s the ability wheel (hold L) with the right stick down-right
+# (Autobuild); let go at 23 s: the Autobuild screen. A at 26 s picks its first schematic (the Fanplane: a wing with
+# three fans) and A at 30 s builds it: the parts are the game's own Autobuild's, as a player's (tools/coop/
+# autobuild_3rd.txt without its sword). Four entities and three bonds are expected in both games.
+480 A 4
+700 DOWN 4
+760 DOWN 4
+820 A 4
+980 A 4
+@20000 L 3000
+@21000 RSTICK 23000 -23000 2500
+@26000 A 150
+@30000 A 150

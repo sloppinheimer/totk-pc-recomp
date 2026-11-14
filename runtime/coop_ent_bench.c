@@ -18,6 +18,7 @@
 //    put 2.5 m from that fan, and from world second <s> the middle of its picture is brought onto the fan
 //    (bench_aim_tick), for an input script that takes the fan with Ultrahand as a player does (tools/coop/hand_*.txt:
 //    L, a tilt down, then A; <s> is after the tilt and before the A).
+//    option "nofans": the Links are placed and no fan is made (a script that makes its own parts, as an Autobuild).
 //    option "join1=@<s>" / "join2=@<s>": from that second what that Link holds is brought next to the nearest part of
 //    another island (bench_join_tick), for a script whose next A attaches it.
 // The scenario moves the owner's object; what the other game shows of it is the thing under test. "drive" writes
@@ -70,6 +71,12 @@ void coop_ent_audit(FILE *f) {
         fprintf(f, "%s{\"id\":\"%s\",\"owner\":\"%04x\",\"mine\":%d,\"life\":%d,\"flags\":%d,\"state\":%d,\"cls\":%d,\"actor\":%d,\"name\":\"%s\"", first ? "" : ",",
                 ent_eid_str(e.id, b), (unsigned)(e.owner & 0xffff), e.owner == me, e.life, e.flags, e.state, cls, have, nm);
         first = 0;
+        if (have) {   // the SPR's flag words, as they are (what marks a part made from zonaite is read from them)
+            uint64_t spr = ctn_spr(e.actor), f20 = 0;
+            uint32_t f150 = 0;
+            if (spr) coop_rd(spr + 0x20, &f20, 8), coop_rd(spr + 0x150, &f150, 4);
+            fprintf(f, ",\"spr20\":\"%llx\",\"spr150\":\"%x\"", (unsigned long long)f20, f150);
+        }
         if (have) fprintf(f, ",\"p\":[%.3f,%.3f,%.3f],\"r\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f]", m[3], m[7], m[11], m[0], m[1], m[2], m[4], m[5], m[6],
                           m[8], m[9], m[10]);
         fputc('}', f);
@@ -89,6 +96,9 @@ void coop_ent_audit(FILE *f) {
     Ent *he = held ? ent_by_actor(held) : NULL;
     char hb[24] = "";
     fprintf(f, ",\"hand\":\"%s\"", he ? ent_eid_str(he->id, hb) : held ? "?" : "");
+    // (a game in a menu moves nothing, though its actor phase 0 may go on: the report judges no place then)
+    int coop_runs_for_ms(void);   // coop_players.c: -1 while this game sits in a menu or a load
+    fprintf(f, ",\"paused\":%d,\"loading\":%d,\"menu\":%d", ent_paused(), ent_loading(), coop_runs_for_ms() < 0);
 }
 
 // ---- The scene and the scenario ------------------------------------------------------------------------------------------
@@ -130,7 +140,7 @@ static void bench_join_tick(Cpu *c, uint64_t me, int id, double now) {
     coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
     if (now - said > 0.5) said = now, rt_log("coop: bench: %.2f s: join: the held part is %.2f m from its neighbour: this Link moved by %.2f %.2f", now, best, dx, dz);
 }
-static int bench_scene, bench_drive;
+static int bench_scene, bench_drive, bench_nofans;
 static int bench_aim[2] = {-1, -1};   // per player (id 1, id 2): the fan its Link is put in front of, -1 none
 static double bench_aim_at[2];        // and the world second from which the middle of its picture is brought onto that fan
 
@@ -178,6 +188,7 @@ static void bench_read(void) {
     if (!e || !*e) return;
     bench_scene = !strncmp(e, "fans", 4);
     bench_drive = bench_scene && strstr(e, ",drive") != NULL;
+    bench_nofans = bench_scene && strstr(e, ",nofans") != NULL;
     for (int k = 0; bench_scene && k < 2; k++) {
         char key[16];
         snprintf(key, sizeof key, ",aim%d=", k + 1);
@@ -248,6 +259,7 @@ void coop_ent_bench_tick(Cpu *c, uint64_t me) {
     static uint64_t fan[FANS];
     static int stage[FANS], minted[FANS], ready;
     static double ready_at;
+    if (!ready && bench_nofans && now > 17) ready = 1, ready_at = now, rt_log("coop: bench: %.1f s: scene ready: no fans asked for", now);
     if (!ready && now > 17) {
         int all = 1;
         for (int k = 0; k < FANS; k++) {

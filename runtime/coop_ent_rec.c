@@ -258,6 +258,7 @@ static void rec_one(Cpu *c, Stated *st, int st_i) {
         if (lim < 15) lim = 15;   // (a radius that was not read, or a small one: still made when this Link stands by it)
         in_range = sqrtf(dx * dx + dy * dy + dz * dz) < lim;
     }
+    { int ctn_make_is(Eid root); if (ctn_make_is(st->root)) { st->state = ST_MAKING, st->pass_ms = now; return; } }   // (the maker has it: coop_ctn.c)
     if (st->state == ST_NOT_SHOWN && now < st->backoff_until) return;
     if (missing && !in_range) { st->state = ST_FAR, st->why = WHY_NONE, st->passes = 0; return; }
     if (st->state == ST_FAR) st->passes = 0, st->backoff = 0, st->rung2_done = 0;   // (came into range)
@@ -269,7 +270,16 @@ static void rec_one(Cpu *c, Stated *st, int st_i) {
         for (int k = 0; k < n; k++) paired |= m[k]->mir_id != 0;
         if (missing == live && st->rec_n && live >= 2 && !paired) {   // nothing of it is here: made whole by the maker (S 9.2)
             float reach = max_rel + 1.5f;
-            if (ctn_make_busy() || ctn_make_waits(st->root_m, reach)) { st->state = ST_WAIT_MAKER; return; }
+            if (ctn_make_busy() || ctn_make_waits(st->root_m, reach)) {
+                extern const char *ctn_make_wait_why;
+                static int64_t said;   // (an island that waits for the maker is not shown: why, every 5 s)
+                if (st->state == ST_WAIT_MAKER && now - said > 5000) {
+                    char wb[24];
+                    said = now, rt_log("coop: ent: %lld the island %s waits for the copy maker: %s", (long long)now, ent_eid_str(st->root, wb), ctn_make_busy() ? "it is making another" : ctn_make_wait_why);
+                }
+                st->state = ST_WAIT_MAKER;
+                return;
+            }
             if (ctn_make_start(c, st_i)) { st->state = ST_MAKING, st->pass_ms = now; return; }
             backoff(st, WHY_MAKER_FAILED);
             return;

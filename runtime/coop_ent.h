@@ -61,6 +61,7 @@ typedef struct {
     uint64_t mir_actor; uint8_t mir_resolved, mir_copy;   // a pair received: the actor the mirror has for it (0 none)
     int64_t pass_ms, unload_ms, death_ms;   // an island of one: its last reconcile pass; an owned unload; a death replayed
     uint8_t batch;                       // the maker run it came from (PREVIEW, S 4.6)
+    uint8_t holo_seen; int64_t preview_ms;   // PREVIEW: a part of its run has shown the hologram bit; when it was minted
     uint8_t end_hold, end_ride, death_due;   // world changes noted for phase 0
     int16_t isl, st;                     // owned: its Island; foreign in a statement of two or more: its Stated; else -1
     // a foreign island of one keeps here what a Stated keeps for a build:

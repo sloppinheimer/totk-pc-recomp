@@ -139,9 +139,11 @@ def main():
     rest_d, rest_a, move_d = [], [], []
     worst_rest, worst_move = (0, ''), (0, '')
     loose = [0, 0]
+    loose_run, loose_len = [0, 0], [0, 0]
     loose_names = [set(), set()]
     hand_s, hand_told = [0, 0], [0, 0]
     timeline = defaultdict(list)
+    paused_until, paused_n = -1.0, 0
     bond_diff, bond_max = [], 0
     pairs, bi = 0, 0
     prev = None
@@ -154,10 +156,20 @@ def main():
             continue
         pairs += 1
         t = a['t']
+        # A game that is paused or loading (the audit says so), or whose world clock stands, moves nothing: places are not judged then, nor for 3 s after
+        if a.get('menu') or b.get('menu') or a.get('paused') or b.get('paused') or a.get('loading') or b.get('loading') or (prev and (a['world'] - prev[0]['world'] < 0.5 or b['world'] - prev[1]['world'] < 0.5)):
+            if t > paused_until:
+                paused_n += 1
+            paused_until = t + 3
+        frozen = t <= paused_until
         ea, eb = live(a), live(b)
-        for k, s in enumerate((a, b)):
-            loose[k] = max(loose[k], len(s.get('loose', [])))
-            loose_names[k] |= {x['name'] for x in s.get('loose', [])}
+        for k, s in enumerate((a, b)):   # (a loose device in three lines in a row: one line can be a copy in the making)
+            n = len(s.get('loose', []))
+            loose_run[k] = min(loose_run[k], n) if loose_run[k] and n else n
+            loose_len[k] = loose_len[k] + 1 if n else 0
+            if loose_len[k] >= 3:
+                loose[k] = max(loose[k], loose_run[k])
+                loose_names[k] |= {x['name'] for x in s.get('loose', [])}
         for k, s in enumerate((a, b)):   # Ultrahand: what each Link holds, and whether the other game was told (class 1)
             h = s.get('hand', '')
             if h:
@@ -189,7 +201,9 @@ def main():
             timeline[eid].append(f"{t - t0:6.1f} s  owner {'1' if x['mine'] else '2'} class {own['cls']}  owner speed {v:5.2f} m/s  apart {d:.3f} m {ang:5.1f} deg")
             was_still = last_pair.get(eid, (9, 0))[0] < 0.05
             last_pair[eid] = (v, t)
-            if v < 0.05 and was_still:
+            if frozen:
+                timeline[eid][-1] += '  (a game is paused: not judged)'
+            elif v < 0.05 and was_still:
                 rest_d.append(d), rest_a.append(ang)
                 if d / 0.25 + ang / 10 > worst_rest[0]:
                     worst_rest = (d / 0.25 + ang / 10, f"{x['name']} {eid} at {t - t0:.0f} s: {d:.2f} m, {ang:.1f} degrees")
@@ -231,6 +245,9 @@ def main():
             if want in ('hand1', 'hand2'):
                 k = int(want[4]) - 1
                 results.append(('expected', hand_s[k] >= 2, f'player {k + 1} takes an entity with Ultrahand: ' + (f'held for {hand_s[k]} lines' if hand_s[k] else 'it never held one (the scripted grab did not land)')))
+            elif want.startswith('ents='):
+                na, nb2 = len(live(A[-1])), len(live(B[-1]))
+                results.append(('expected', na == nb2 == int(want[5:]), f'{want[5:]} entities at the end: {na} and {nb2}'))
             elif want.startswith('bonds='):
                 last = min(len(A[-1].get('bonds', [])), len(B[-1].get('bonds', [])))
                 results.append(('expected', last == int(want[6:]), f'{want[6:]} bonds at the end: {len(A[-1].get("bonds", []))} and {len(B[-1].get("bonds", []))}'))
@@ -267,6 +284,8 @@ def main():
         results.append(('speed', None, f'{len(speed)} poses of a moving owner with a sent velocity: too few to say'))
     placed = sum(len(grep(log, 'put in place')) for log in logs)
     heldc = sum(len(grep(log, 'left its rest three times')) for log in logs)
+    if paused_n:
+        results.append(('paused', None, f'a game\'s world clock stood {paused_n} time(s): places were not judged then, nor for 3 s after'))
     results.append(('settle', None, f'{placed} copies put in place, {heldc} held by the drive at rest'))
     print(f'{pairs} paired lines over {A[-1]["t"] - t0:.0f} s')
     failed = 0

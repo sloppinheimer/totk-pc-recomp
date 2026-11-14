@@ -1068,3 +1068,48 @@ leaning on one of them would do it.
   two poses: where a body keeps its angular velocity has not been read.
 - Note 5: a copy that leaves its rest three times while its owner's root rests is held by the field (as a held one
   is) until that root moves; the 2 s count of note 2 runs only while the copy is outside the entry band.
+
+## 21. The test bench (2026-11-14)
+
+Unattended sessions of two games on one PC, measured, in place of play-test notes read from logs.
+
+**Parts.**
+- The audit (runtime/coop_ent_bench.c `coop_ent_audit`, in logs/audit.jsonl once a second): every entity (id, owner,
+  life, flags, the owner's class, whether it has an actor, the place and rotation of its main body), every Zonai
+  device that is no entity ("loose"), the bonds, what this Link's Ultrahand holds.
+- The report (tools/coop/ent_report.py): pairs the two games' lines by time and prints PASS or FAIL for: the scene
+  and the scenario's own actions, the entities being in both games, loose devices, one owner each, the bonds, holds
+  told to the other game, the copy against its owner at rest and moving, the sent velocity against the poses, the
+  smoothness of the written velocity. `--expect=hand1,hand2,bonds=N` fails a run whose scripted action did not
+  happen; `--timeline` prints every entity's lines.
+- The scene (TOTK_COOP_BENCH): both Links on flat ground, three fans made by game 1 and given identities as devices
+  its player put out (`coop_ent_test_mint`: the capsule's own create path is not run). `aim<id>=<fan>@<s>` brings the
+  middle of that game's picture onto a fan (the Link is moved sideways until the camera's line of sight meets it);
+  `join<id>=@<s>` brings what a Link holds next to the nearest part of another island. `drive` moves a fan by written
+  velocities.
+- The scripts (tools/coop/hand_*.txt): the buttons a player presses: L, a camera tilt, A to grab, the sticks, A to
+  attach, B to let go. The grab, the hold, the hand-over, the glue and the release are the game's own.
+- The suite (tools/coop/ent_suite.ps1): drive, hand, hand-over, glue, glue-cross, glue-both; reports in build/suite.
+- The launcher: -FrozenSaves (the three saves of the real profile at every start), -Bench, -Script1/2, -Shots,
+  -Expect, -Seconds; the menu pointer is off for a scripted load.
+
+**What the bench is not.** The fans are not made by opening a capsule; devices that come with a save and Autobuild
+are not covered; `aim` and `join` move a Link by jumps (the smoothness and velocity lines are not judged in a run that
+used `join`); nothing is judged by eye.
+
+**Found and fixed with it.**
+- A scripted load failed in whichever game had the mouse pointer: a menu's pointer starts in the middle of the
+  picture, on the save list's third row, and the script's two DOWNs ended on an empty row. TOTK_MENU_CURSOR=0.
+- A resting copy 5.8 degrees off its owner stayed so for a whole run (inside the leave band of 8 degrees, so the drive
+  rested). The 2 s rule of note 2 now counts a resting copy too; the third placement in one rest of the owner turns to
+  a hold by the field.
+- A copy carried past a resting copy knocked it 61 degrees over in the follower's game alone (the owner's fan never
+  moved). Two copies this game drives no longer collide with each other (coop_life.c, the list `d` of the veto).
+- The velocity an owner sends is that of its poses also while Ultrahand holds the object (ratio 1.00 over 150 poses):
+  note 4's fix holds for a real hold. While held, the written velocity changes by 0.3 m/s a frame at the 90th
+  percentile (3.0 before).
+- Right after a glue the game's part maker makes two actors for a moment in each game (the picture of the new build
+  for the Autobuild history, by what is seen): they are minted as previews, never sent, and gone within a second.
+  Recorded; nothing reads them as a build.
+- A ZL press to bring the camera behind a Link locked onto the other player's stand-in in one run of three: the bench
+  aims by moving the Link, with no ZL.

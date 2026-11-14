@@ -1395,17 +1395,24 @@ static uint64_t mk_object(uint64_t *ab_out) {
     if (ab_out) *ab_out = ab;
     return o;
 }
+const char *ctn_make_wait_why = "";   // why the last ctn_make_waits said to wait (for the log of an island that waits long)
+static float ctn_make_lift;           // how far above its place the next make is to be (set by ctn_make_waits)
 int ctn_make_waits(const float root_m[12], float reach) {
     uint64_t ab, o = mk_object(&ab), me = coop_player_actor();
     uint32_t selected = 0;
     float lp[3];
-    if (!o) return 1;
+    ctn_make_wait_why = "";
+    if (!o) { ctn_make_wait_why = "this player has no Autobuild build object"; return 1; }
     coop_rd(ab + 0x51e8, &selected, 4);
-    if (selected & 0xff) return 1;   // (this game's player has an Autobuild design selected: the build object is theirs)
-    for (int i = 0; i < ENT_N; i++) if (ents[i].used && (ents[i].flags & ENT_PREVIEW)) return 1;   // (their own Autobuild is under way)
-    if (me && coop_rd(me + COOP_ACTOR_POS, lp, 12)) {   // (parts made inside the Link are pushed apart before they bond)
+    if (selected & 0xff) { ctn_make_wait_why = "this player has an Autobuild design selected"; return 1; }   // (the build object is theirs)
+    for (int i = 0; i < ENT_N; i++) if (ents[i].used && (ents[i].flags & ENT_PREVIEW)) { ctn_make_wait_why = "a part maker's run of this game is not confirmed yet"; return 1; }   // (their own Autobuild is under way)
+    // Parts made inside the Link are pushed apart before they bond. The make does not wait for the Link to go (a build
+    // that came to rest by this player stayed unseen for as long as they stood there, a bench run): it is made that
+    // far above its place, and the drive brings it down.
+    ctn_make_lift = 0;
+    if (me && coop_rd(me + COOP_ACTOR_POS, lp, 12)) {
         float dx = lp[0] - root_m[3], dy = lp[1] - root_m[7], dz = lp[2] - root_m[11];
-        if (sqrtf(dx * dx + dy * dy + dz * dz) < reach) return 1;
+        if (sqrtf(dx * dx + dy * dy + dz * dz) < reach) ctn_make_lift = reach + 1.0f;
     }
     return 0;
 }
@@ -1417,7 +1424,17 @@ static void mk_restore(uint64_t o) {
     if (cai) memcpy((void *)(uintptr_t)cai, mk.save_rec, BP_SIZE);
     mk.saved = 0;
 }
+static Eid mk_done_root;
+static int64_t mk_done_ms;
+// The maker is making this island, or ended a run for it under 0.7 s ago: the reconcile leaves it alone then. (It took
+// the parts just bound, with their bonds not confirmed yet, for an island with bonds missing and made one itself; the
+// confirm then made the same bond again, the repeat was taken off, and the island was deleted and made anew.)
+int ctn_make_is(Eid root) {
+    if (mk.st && eid_eq(mk.root, root)) return 1;
+    return eid_eq(mk_done_root, root) && ent_ms() - mk_done_ms < 700;
+}
 static void mk_end(int failed) {
+    mk_done_root = mk.root, mk_done_ms = ent_ms();
     for (int i = 0; i < 21; i++) atomic_store(&mk_pub[i], 0);
     if (failed && mk.st_i >= 0 && mk.st_i < STATED_N && stated[mk.st_i].used && eid_eq(stated[mk.st_i].root, mk.root)) {
         Stated *st = &stated[mk.st_i];
@@ -1440,7 +1457,11 @@ int ctn_make_start(Cpu *c, int st_i) {
     float f[12], inv[12], base[12];
     memcpy(f, r + 0xc + root_i * 0x118, sizeof f);
     if (!m34_inv(inv, f)) return 0;
-    m34_mul(base, st->root_m, inv);
+    float at[12];
+    memcpy(at, st->root_m, sizeof at), at[7] += ctn_make_lift;
+    m34_mul(base, at, inv);
+    if (ctn_make_lift > 0) rt_log("coop: ent: this Link stands where %s is to be made: it is made %.1f m above", ent_eid_str(st->root, b), ctn_make_lift);
+    ctn_make_lift = 0;
     memset(&mk, 0, sizeof mk);
     mk.st = 1, mk.st_i = st_i, mk.t = frame_step_world_us(), mk.from = st->from, mk.root = st->root;
     memcpy(mk.rec, r, BP_SIZE), memcpy(mk.member, st->rec_member, sizeof(Eid) * (size_t)n);
@@ -1667,7 +1688,9 @@ void ctn_drive(Cpu *c) {
     for (int i = 0; i < GRP_N; i++) {
         Grp *g = &grps[i];
         coop_lock_wait(&grp_lock);
-        int here = g->used == 1 && !g->mine && g->n && wall - g->stamp_ms < 300 && g->hus[2] && now - g->heard_us < 1000000;
+        // (2.5 s without a pose: a resting owner sends one a second, and with a limit of 1 s the drive ran only in the
+        // moments after each: a new copy made 0.4 m off its owner's resting object hung there until the 2 s rule)
+        int here = g->used == 1 && !g->mine && g->n && wall - g->stamp_ms < 300 && g->hus[2] && now - g->heard_us < 2500000;
         int go = here && !g->asked, agree = g->agree;
         uint64_t key = g->key64, owner = g->owner;
         plat_mutex_unlock(&grp_lock);

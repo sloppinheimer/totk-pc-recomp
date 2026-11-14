@@ -11,6 +11,8 @@
 #   glue        player 1 glues a fan to another
 #   glue-cross  player 2 takes a fan of player 1's and glues it to another of player 1's: a glue across owners
 #   glue-both   glue-cross, then player 1 glues the third fan onto that pair: a second glue by the other player
+#   paused      hand-over while the owner has its inventory open: the take is asked of a paused game
+#   autobuild   player 1 builds the first Autobuild schematic (a wing with three fans): previews, the confirm, a build of four
 param([string]$Only = "", [string]$Shots = "")
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -24,7 +26,9 @@ $all = @(
     @{ name = 'hand-over';  bench = 'fans,aim2=0@22.7';                                   seconds = 88;  expect = 'hand2';               s2 = 'tools\coop\hand_a.txt' },
     @{ name = 'glue';       bench = 'fans,aim1=0@22.7,join1=@25';                         seconds = 75;  expect = 'hand1,bonds=1';       s1 = 'tools\coop\hand_glue.txt' },
     @{ name = 'glue-cross'; bench = 'fans,aim2=0@22.7,join2=@25';                         seconds = 75;  expect = 'hand2,bonds=1';       s2 = 'tools\coop\hand_glue.txt' },
-    @{ name = 'glue-both';  bench = 'fans,aim1=2@36.7,aim2=0@22.7,join2=@25,join1=@39.5'; seconds = 88;  expect = 'hand1,hand2,bonds=2'; s1 = 'tools\coop\hand_glue_late.txt'; s2 = 'tools\coop\hand_glue.txt' }
+    @{ name = 'glue-both';  bench = 'fans,aim1=2@36.7,aim2=0@22.7,join2=@25,join1=@39.5'; seconds = 88;  expect = 'hand1,hand2,bonds=2'; s1 = 'tools\coop\hand_glue_late.txt'; s2 = 'tools\coop\hand_glue.txt' },
+    @{ name = 'paused';     bench = 'fans,aim2=0@22.7';                                   seconds = 88;  expect = 'hand2';               s1 = 'tools\coop\hand_pause.txt'; s2 = 'tools\coop\hand_a.txt' },
+    @{ name = 'autobuild';  bench = 'fans,nofans';                                        seconds = 75;  expect = 'ents=4,bonds=3';      s1 = 'tools\coop\hand_autobuild.txt' }
 )
 $want = if ($Only) { $Only -split ',' } else { $all | ForEach-Object { $_.name } }
 $summary = @()
