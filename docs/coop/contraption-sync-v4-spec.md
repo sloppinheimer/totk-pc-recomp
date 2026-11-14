@@ -1024,3 +1024,37 @@ error grows 4.5, 6.4, 10.4, 14.2, 17.6, 20.4, 23.2 degrees over 3 s with the cop
 
 **Seen in passing, not looked into:** both logs repeat "coop: reads: N failed at exe+..." for about 12 addresses
 every 10 s. Whether session 1 had them is not known (its logs are overwritten).
+
+### Session 3 (2026-11-14, with TOTK_COOP_FOLLOW_TRACE=1)
+
+As told: "something has gone horribly wrong with spawning" (a screenshot: six fans on P1's screen, three on P2's);
+P1 carried a fan about and then left it at rest. Nothing here is acted on until the tester says so. The trace is
+read with build/ftrace.py, build/ftgap.py and build/ftrest2.py (untracked).
+
+**Note 7: devices that come with a save are in one game only.** Both logs, at world time 9 to 11 s: "new
+SpObj_WindGenerator_A_01 here ... not taken as made here: 1 new at once, world time 9.2 s (20 s at least)", four
+times at P1 and twice at P2. These fans were in each game's own save (left out in an earlier session); they were
+created before the entity sync could see a create of this session, so no entity was minted for them, and the object
+mirror declines them by its start-up rule. P2 destroyed one of its two ("player 2 destroyed ... not here" at P1) and
+put out two new ones, which became entities b4a8.1 and b4a8.2 and reached P1. So P1 shows 4 + 2 and P2 1 + 2, as in
+the screenshot. The entity table itself agrees in both games (2 entities, unconverged none). The specification has no
+rule for a device that is in the world when the session starts.
+
+**Note 4, read: the jitter of a carried copy.** P2, copy 22cd8ac4, 1818 trace lines while its owner held it and moved:
+- Poses arrive 33 ms apart (median; p90 50 ms). The owner's velocity and acceleration are taken from the difference
+  of the last two and three poses. The acceleration's median is 29 m/s2 and its 90th percentile 58 m/s2, which is
+  the clamp: the term is noise.
+- The velocity written changes by 0.3 m/s (median) from frame to frame between poses and by 3.0 m/s (median; 13.4
+  at the 90th percentile) on a frame a new pose arrives. That step at each pose is the jitter.
+- The error meanwhile: 0.15 m median, 0.41 m at the 90th percentile.
+- The drive runs twice a frame at the same clock value (5950 of 12462 gaps between lines are under 2 ms): once
+  before and once after the physics step, as the velocities read show. The second write is replaced by the next
+  frame's first before a step uses it, its frame time is taken as 1/60 s, and the step observer compares a velocity
+  with a write no step ran on. Why the co-op tick comes twice a frame is not read.
+
+**Note 5, read: a copy at rest rocks.** P2, the same copy, owner idle and still: 405 times in 110 s the drive brings
+the copy to about 0.07 m and 4.2 degrees, rests, the copy falls back to about 0.155 m and 8.8 degrees within 150 ms,
+and the drive starts again: a cycle of 0.27 s. The copy does not stay where the owner's object rests. Each rest
+clears the 2 s count, so the rule of note 2 never fired (0 "put in place" lines in this session). Why the copy
+cannot rest there is not read; P1's four fans from its save are missing at P2 (note 7), and an owner's object
+leaning on one of them would do it.
