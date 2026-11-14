@@ -56,7 +56,10 @@ foreach ($s in $all | Where-Object { $want -contains $_.name }) {
             Select-Object -Last 2 | ForEach-Object { "  TROUBLE $g`: " + $_.Line }
     }
     ($rep + $trouble) | Set-Content -Encoding utf8 (Join-Path $out "$($s.name).txt")
-    foreach ($g in 'v143', 'v143play') { Copy-Item -Force (Join-Path $root "build\$g\logs\totk.log") (Join-Path $out "$($s.name)-$g.log") }
+    foreach ($g in 'v143', 'v143play') {   # (both games' logs and audits kept, so a report can be made again)
+        Copy-Item -Force (Join-Path $root "build\$g\logs\totk.log") (Join-Path $out "$($s.name)-$g.log")
+        Copy-Item -Force (Join-Path $root "build\$g\logs\audit.jsonl") (Join-Path $out "$($s.name)-$g.audit.jsonl") -ErrorAction SilentlyContinue
+    }
     # A pass is the report's own last word, "all measured lines pass", with no FAIL line and no trouble in a log: a
     # report that is missing, empty or cut short is a failed run (code review 3: only FAIL lines were looked for).
     $fails = @($rep | Where-Object { $_ -match '^\s+FAIL' })

@@ -12,8 +12,8 @@ that is no entity. The lines of the two games are paired by time. Printed, each 
   count     every live entity is in both games with an actor (not counted in an entity's first 3 s)
   loose     no Zonai device in either world that the sync does not know
   owner     each entity is owned by exactly one of the two games
-  rest      while the owner's object is still (under 0.05 m/s for two lines): the copy within 0.10 m and 5 degrees at
-            the 90th percentile, 0.25 m and 10 degrees at most
+  rest      while the owner's object is still (under 0.05 m/s for two lines): the copy within 0.10 m at the 90th
+            percentile, 0.25 m and 8 degrees at most (the drive's leave band: what it lets a resting copy be off by)
   moving    while the owner's object moves (over 0.2 m/s): the copy within 0.30 m at the 90th percentile
   bonds     the two games have the same glue bonds (a difference of up to 3 lines in a row is a glue in the making)
   devices   the same devices are switched on in both games
@@ -21,7 +21,8 @@ that is no entity. The lines of the two games are paired by time. Printed, each 
   speed     from the drive's trace: the velocity an owner sends with a pose against the one its last two poses give;
             the median ratio between 0.7 and 1.4 (a body moved without its stored velocity would send none)
   smooth    from the drive's trace (TOTK_COOP_FOLLOW_TRACE=1), while the owner's object moves: the velocity written to
-            the copy changes by at most 1.0 m/s from one frame to the next at the 90th percentile
+            the copy changes from one frame to the next by at most 1.0 m/s more than the owner's own did, at the 90th
+            percentile
   settle    how often the drive put a copy in place or held one that kept leaving its rest (told, not judged)
 
 The limits are this script's own, chosen from the first sessions' numbers; they are what "the same" means here until
@@ -101,14 +102,17 @@ def trace_read(log):
             vr, v = [float(x) for x in m.group(5).split()], [float(x) for x in m.group(6).split()]
             p = prev.get(key)
             if p and now - p[0] < 40000 and norm(vr) > 0.3:
-                steps[key].append(dist(v, p[1]))
+                # what the drive adds: the change of the written velocity beyond the change of the owner's own in
+                # that frame (an object that lands or is thrown changes its velocity at once, and its copy must)
+                step = max(0.0, dist(v, p[1]) - dist(vr, p[3]))
+                steps[key].append(step)
                 if cls:
-                    held[key].append(dist(v, p[1]))
+                    held[key].append(step)
             if m.group(7) and m.group(8) == '1' and p and sample != p[2]:
                 vd = [float(x) for x in m.group(7).split()]
                 if norm(vd) > 0.5:
                     speed.append((norm(vr) / norm(vd), dist(vr, vd), cls))
-            prev[key] = (now, v, sample)
+            prev[key] = (now, v, sample, vr)
     return steps, held, speed
 
 
@@ -290,7 +294,9 @@ def main():
             else:
                 results.append(('expected', False, f'"{want}" is no expectation this script knows'))
     if rest_d:
-        ok = pct(rest_d, .9) <= 0.10 and pct(rest_a, .9) <= 5 and max(rest_d) <= 0.25 and max(rest_a) <= 10
+        # (the angle's limit is the drive's own leave band: a copy put in place once is left to rest up to 8 degrees
+        # off, section 21; the place stays at 0.10 m for nine lines in ten)
+        ok = pct(rest_d, .9) <= 0.10 and max(rest_d) <= 0.25 and max(rest_a) <= 8
         results.append(('rest', ok, f'{len(rest_d)} lines: {pct(rest_d, .5):.3f} m median, {pct(rest_d, .9):.3f} at 90%, {max(rest_d):.3f} at most; '
                         f'{pct(rest_a, .5):.1f} degrees median, {pct(rest_a, .9):.1f} at 90%, {max(rest_a):.1f} at most; worst: {worst_rest[1]}'))
     else:
