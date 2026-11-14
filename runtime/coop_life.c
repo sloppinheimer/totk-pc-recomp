@@ -673,9 +673,13 @@ int coop_life_v3(Cpu *c, uint64_t off) {
 // TOTK_COOP_I16=0: off.
 #define VETO_S 384
 #define VETO_P 2560
-static struct { uint64_t s[VETO_S], p[VETO_P], sbits[4], pbits[16]; int ns, np; } veto_buf[2];
+// d: the record holders of the copies this game drives (followers not asked for). Two of them never collide here:
+// where each is, is its owner's world's result, contacts included; a contact between two copies here only pushes
+// one off its owner's pose (a copy carried past a resting one knocked it 61 degrees over in the other game alone).
+static struct { uint64_t s[VETO_S], p[VETO_P], d[VETO_P], sbits[4], pbits[16], dbits[16]; int ns, np, nd; } veto_buf[2];
 static _Atomic int veto_cur = -1;
 static _Atomic uint32_t veto_count, veto_seen;   // pairs refused; pairs with a stand-in body at all
+static _Atomic uint32_t veto_copies;             // pairs of two driven copies refused
 static unsigned veto_hash(uint64_t h) { return (unsigned)((h >> 4) ^ (h >> 13)); }
 static int veto_has(const uint64_t *l, int n, uint64_t v) {
     for (int i = 0; i < n; i++) if (l[i] == v) return 1;
@@ -764,7 +768,7 @@ static int actor_holders(Cpu *c, uint64_t a, uint64_t *out, int n, int max) {
         }
     return n;
 }
-void coop_life_veto_rebuild(Cpu *c, const uint64_t *parts, int nparts) {
+void coop_life_veto_rebuild(Cpu *c, const uint64_t *parts, int nparts, const uint64_t *driven, int ndriven) {
     static int on = -1;
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_I16"); on = !(e && *e == '0'); }
     if (!on) return;
@@ -776,7 +780,11 @@ void coop_life_veto_rebuild(Cpu *c, const uint64_t *parts, int nparts) {
     uint64_t coop_eq_row_ref(uint64_t actor, int row);
     uint64_t sa[8];
     int nsa = coop_players_all(sa, 8), w = atomic_load(&veto_cur) == 0 ? 1 : 0, gear = 0;
-    int ns = 0, np = 0;
+    int ns = 0, np = 0, nd = 0;
+    for (int i = 0; i < ndriven; i++) nd = actor_holders(c, driven[i], veto_buf[w].d, nd, VETO_P);
+    memset(veto_buf[w].dbits, 0, sizeof veto_buf[w].dbits);
+    for (int i = 0; i < nd; i++) { unsigned h = veto_hash(veto_buf[w].d[i]) & 1023; veto_buf[w].dbits[h >> 6] |= 1ull << (h & 63); }
+    veto_buf[w].nd = ndriven >= 2 ? nd : 0;
     for (int i = 0; i < nsa; i++) {
         ns = actor_holders(c, sa[i], veto_buf[w].s, ns, VETO_S);
         for (int row = 0; row < 24; row++) {   // the gear actors it holds (EquipmentUser rows, as coop_players.c reads them)
@@ -788,19 +796,31 @@ void coop_life_veto_rebuild(Cpu *c, const uint64_t *parts, int nparts) {
     memset(veto_buf[w].sbits, 0, sizeof veto_buf[w].sbits), memset(veto_buf[w].pbits, 0, sizeof veto_buf[w].pbits);
     for (int i = 0; i < ns; i++) { unsigned h = veto_hash(veto_buf[w].s[i]) & 255; veto_buf[w].sbits[h >> 6] |= 1ull << (h & 63); }
     for (int i = 0; i < np; i++) { unsigned h = veto_hash(veto_buf[w].p[i]) & 1023; veto_buf[w].pbits[h >> 6] |= 1ull << (h & 63); }
-    veto_buf[w].ns = ns, veto_buf[w].np = np;
-    atomic_store(&veto_cur, ns && np ? w : -1);
+    veto_buf[w].ns = ns && np ? ns : 0, veto_buf[w].np = np;
+    atomic_store(&veto_cur, (ns && np) || veto_buf[w].nd ? w : -1);
     static int64_t said;
     if (now - said > 10000000 && ns && np) {
         said = now;
         rt_log("coop: i16: %d bodies' records of %d stand-ins and %d gear actors kept off %d records of %d contraption parts; %u pairs refused so far, "
-               "%u stand-in pairs looked at", ns, nsa, gear, np, nparts, atomic_load(&veto_count), atomic_load(&veto_seen));
+               "%u stand-in pairs looked at; %d records of %d driven copies kept off each other, %u pairs refused", ns, nsa, gear, np, nparts,
+               atomic_load(&veto_count), atomic_load(&veto_seen), nd, ndriven, atomic_load(&veto_copies));
     }
 }
 int coop_life_veto(Cpu *c) {   // main+0x40a240's entry: 1 when the pair is refused (x0 = 0, the caller reads no collision)
     int cur = atomic_load_explicit(&veto_cur, memory_order_acquire);
     if (cur < 0) return 0;
     const uint64_t ha = c->x[1] - 8, hb = c->x[2] - 8;
+    if (veto_buf[cur].nd) {   // two copies this game drives
+        const uint64_t *db = veto_buf[cur].dbits;
+        unsigned da = veto_hash(ha) & 1023, dq = veto_hash(hb) & 1023;
+        if (((db[da >> 6] >> (da & 63)) & 1) && ((db[dq >> 6] >> (dq & 63)) & 1) && veto_has(veto_buf[cur].d, veto_buf[cur].nd, ha) &&
+            veto_has(veto_buf[cur].d, veto_buf[cur].nd, hb)) {
+            atomic_fetch_add_explicit(&veto_copies, 1, memory_order_relaxed);
+            c->x[0] = 0;
+            return 1;
+        }
+    }
+    if (!veto_buf[cur].ns) return 0;
     const uint64_t *sb = veto_buf[cur].sbits;
     unsigned qa = veto_hash(ha) & 255, qb = veto_hash(hb) & 255;
     int ma = (sb[qa >> 6] >> (qa & 63)) & 1, mb = (sb[qb >> 6] >> (qb & 63)) & 1;
