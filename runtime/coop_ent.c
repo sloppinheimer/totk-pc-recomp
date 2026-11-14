@@ -510,7 +510,7 @@ static void publish(Cpu *c) {
             g->fs = fs, g->key64 = key, g->owner = e->owner;
         }
         g->used = 1, g->mine = (uint8_t)mine, g->asked = (uint8_t)(asked || wanted), g->root = mem[0]->id, g->n = nm, g->stamp_ms = now;
-        g->no_write = 0, g->agree = 0;
+        g->no_write = 0, g->agree = 0, g->cls = CLS_IDLE;
         float inv[12];
         int have_inv = ctn_m34_inv(inv, mem[0]->m);
         Stated *st = !mine && mem[0]->st >= 0 ? &stated[mem[0]->st] : NULL;
@@ -519,7 +519,11 @@ static void publish(Cpu *c) {
             g->parts[k] = mem[k]->actor, g->gen[k] = mem[k]->gen, g->id[k] = mem[k]->id;
             if (have_inv) ctn_m34_mul(g->rel_root[k], inv, mem[k]->m);
             else memset(g->rel_root[k], 0, sizeof g->rel_root[k]);
-            if (nm >= 2) part_list[np++] = mem[k]->actor, set_add(ENT_SET_PART, mem[k]->actor);
+            // The stand-in veto takes every entity, loose ones too: a loose copy is a free body under the drive, and
+            // a stand-in walking into it pushed it where the player's own game moved nothing; an owned loose object
+            // is the real one and another player's stand-in must not move it either.
+            part_list[np++] = mem[k]->actor;
+            if (nm >= 2) set_add(ENT_SET_PART, mem[k]->actor);
             if (!mine) {
                 set_add(ENT_SET_FOLLOWER, mem[k]->actor);
                 if (bodies_now) {   // (seven guest calls a part: four times a second, the set kept between)
@@ -539,6 +543,7 @@ static void publish(Cpu *c) {
             int64_t cls_ms = st ? st->cls_ms : mem[0]->cls_ms;
             // A class does not age while its owner's heartbeat says PAUSED (S 5.7); else it is IDLE after 2 s.
             if (cls != CLS_IDLE && now - cls_ms > 2000 && !ent_peer_paused(e->owner)) cls = CLS_IDLE;
+            g->cls = cls;
             if (cls != CLS_IDLE)
                 for (int k = 0; k < nm; k++) if (strstr(mem[k]->name, "Stick")) set_add(ENT_SET_REFUSE_STICK, mem[k]->actor);
             uint64_t grp = ctn_part_group(mem[0]->actor);

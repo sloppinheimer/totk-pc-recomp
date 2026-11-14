@@ -673,7 +673,8 @@ frame, read lock-free:
 | `follower_body` | every body of every follower | the strain, list-add and kill hooks (7.6) |
 | `copy` | ENT_COPY actors | `coop_contraption_made`, `coop_is_copy` (the glue guards) |
 | `nocharge` | actors whose payer is not this game | `coop_ctn_no_charge` |
-| `part` | members of islands of two or more | `coop_ctn_part`, the stand-in veto (stand-ins go on touching loose things) |
+| `part` | members of islands of two or more | `coop_ctn_part` |
+| (the veto list) | every live entity with an actor, loose ones too, owned or not | the stand-in veto: a stand-in touches no entity (section 20, note 1) |
 | `refuse_stick` | sticks of islands whose owner's class is HOLD or RIDE (POSE under 2 s old) | the seat hook (5.6) |
 | `shooter` | driven entities that have a Shooter | `coop_ctn_emitter_of_followed` |
 | `follow_group` | the group (SPR +0x28) of each foreign island | `coop_ctn_sender_entry`: a hit is the fast path; on a miss the group's members are tested against `driven` (a regroup gives a new group record for a frame) |
@@ -689,7 +690,9 @@ played at, from `Snap` rows. A row is used only when its stamp is under 0.3 s ol
 `alive_as(actor, gen)` holds for each member written; `no_write` members (3.5) are not written. The three root
 samples, the clock offset and `FollowState` are the tick's own, keyed by (owner, root) and reset when either
 changes; the tick reads POSE for them (the part of today's `receive` that is kept). The rest band stays 0.10 m and
-4 degrees, except that an island with a bond wanted (7.3 step 1) is out of the drive. No sample for 1 s: nothing
+4 degrees, except that an island with a bond wanted (7.3 step 1) is out of the drive. An island whose owner's class
+is HOLD or RIDE (the row's `cls`, IDLE once the class has aged) never rests. The owner's root at rest and the copy
+out of the band for 2 s: the drive tick sets `teleport` as below (section 20, notes 2 and 3). No sample for 1 s: nothing
 written. An error above 10 m: the drive tick sets `teleport` in the row and phase 0 does one SetTransform of the island
 from `rel_root`; then the drive. All per-part masks are
 by ascending Eid and used only under an agreeing digest. `springs_phase0`, `burning_phase0`, `dev_flush`,
@@ -978,3 +981,10 @@ the error swings between -0.37 m and +0.30 m in height within a second, with the
 (falling). The drive's rest rule ("the owner's part is still and the copy is in the band: nothing is written, the
 bodies may sleep") was made for a build resting on the ground; a part its owner holds still in the air satisfies it,
 so nothing is written, the copy falls out of the band, and the drive catches it again.
+
+**Fixes of notes 1 to 3 (built, not played yet).**
+- Note 1: the stand-in veto lists every live entity, loose ones and owned ones too (`publish` in coop_ent.c).
+- Note 3: the group view carries the owner's class; `follow_rigid` does not rest an island whose owner holds or
+  rides it.
+- Note 2: `follow_rigid` counts how long the owner's root has rested with the copy out of the rest band; after 2 s
+  it logs "put in place" and the island is placed once at phase 0, by the path of the 10 m teleport.

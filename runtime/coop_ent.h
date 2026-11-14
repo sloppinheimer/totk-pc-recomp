@@ -140,6 +140,7 @@ typedef struct {            // seq is written last, so the reader sees whole eve
 struct FollowState;
 typedef struct {
     uint8_t used, mine, agree, asked, teleport;
+    uint8_t cls;                          // a follower: its owner's class (CLS_*), IDLE once aged; the drive does not rest a held or ridden one
     Eid root; uint64_t key64; uint64_t owner;
     int n; uint64_t parts[ENT_MEMBERS]; uint32_t gen[ENT_MEMBERS]; Eid id[ENT_MEMBERS];
     uint32_t no_write;                    // bit r: member r is behind a body other than the main one (S 3.5): not written

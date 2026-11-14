@@ -73,6 +73,7 @@ typedef struct FollowState {
     float integ[3];         // the integral term (m/s)
     int rest;               // 1: resting (nothing written)
     int64_t still_since;    // since when the runner's root has been still (its clock)
+    int64_t off_since;      // since when the runner has rested with the copy out of the rest band (this game's clock), 0: not so
     int64_t last_us;
 } FollowState;
 
@@ -331,11 +332,11 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
     int64_t hus[3], off;
     uint64_t parts[21];
     uint32_t gens[21], skip;
-    int np;
+    int np, cls;
     uint32_t key;
     FollowState *fs;
     coop_lock_wait(&grp_lock);
-    memcpy(hm, e->hm, sizeof hm), memcpy(hus, e->hus, sizeof hus), off = e->clock_off;
+    memcpy(hm, e->hm, sizeof hm), memcpy(hus, e->hus, sizeof hus), off = e->clock_off, cls = e->cls;
     np = e->n < 21 ? e->n : 21, key = cid32(e);
     memcpy(parts, e->parts, sizeof parts), memcpy(gens, e->gen, sizeof gens), skip = e->no_write;
     if (!e->fs) e->fs = calloc(1, sizeof(FollowState));
@@ -406,13 +407,24 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
     float vn = sqrtf(v_r[0] * v_r[0] + v_r[1] * v_r[1] + v_r[2] * v_r[2]), wn = sqrtf(w_r[0] * w_r[0] + w_r[1] * w_r[1] + w_r[2] * w_r[2]);
     if (vn < 0.05f && wn < 0.05f) { if (!fs->still_since) fs->still_since = hus[2]; }
     else fs->still_since = 0;
-    int runner_rests = fs->still_since && hus[2] - fs->still_since >= 500000;
+    // An object its owner holds or rides is never at rest: held still in the air it met the rule, nothing was written,
+    // the copy fell out of the band and was caught again, over and over.
+    int runner_rests = cls == CLS_IDLE && fs->still_since && hus[2] - fs->still_since >= 500000;
     const float deg = 180.0f / 3.14159265f;
     // (a wide band: a copy resting on the ground a few centimetres from where the runner's rests cannot be pushed
     // there through its contacts, and trying makes it chatter; plan RK2)
     if (fs->rest && (!runner_rests || ep > 0.25f || er * deg > 8)) fs->rest = 0;
     else if (!fs->rest && runner_rests && ep < 0.10f && er * deg < 4) fs->rest = 1;
-    if (fs->rest) { fs->have_written = 0; for (int i = 0; i < 3; i++) fs->integ[i] *= (float)(1 - dt); return 0; }
+    if (fs->rest) { fs->off_since = 0, fs->have_written = 0; for (int i = 0; i < 3; i++) fs->integ[i] *= (float)(1 - dt); return 0; }
+    // The runner rests and the copy has stayed out of the band for 2 s: the field cannot bring it there (a copy tipped
+    // over lies on its contacts at another angle). It is put in place once; the caller marks it for phase 0.
+    int place = 0;
+    if (!runner_rests) fs->off_since = 0;
+    else if (!fs->off_since) fs->off_since = now;
+    else if (now - fs->off_since > 2000000) {
+        fs->off_since = 0, place = 1;
+        rt_log("coop: follow: copy %08x out of place for 2 s at rest (%.3f m, %.1f deg): put in place", key, ep, er * deg);
+    }
     // the field: V, W with bounded corrections (gains fall with speed)
     float kp = vn <= 5 ? 5 : vn >= 15 ? 2.5f : 5 - 2.5f * (vn - 5) / 10, kr = wn <= 2 ? 5 : wn >= 6 ? 3 : 5 - 2 * (wn - 2) / 4;
     float cv[3], cw[3];
@@ -454,7 +466,7 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
                now / 1e6, key, ep, e_p[0], e_p[1], e_p[2], er * deg, age, v_star[0], v_star[1], v_star[2], V[0], V[1], V[2], fs->gc,
                fs->integ[0], fs->integ[1], fs->integ[2], root[7], vb[0], vb[1], vb[2], (unsigned long long)flags, (unsigned long long)in_world, (unsigned long long)req, p_star[1]);
     }
-    return 1;
+    return place ? 2 : 1;
 }
 
 // ---- Gates read from game threads: the sets coop_ent.c publishes each frame (specification section 11) ----------------
@@ -1624,8 +1636,8 @@ void ctn_drive(Cpu *c) {
         if (agree) dev_follow(c, g, now);   // (its devices as where it is owned, also while this player holds it)
         if (!go) continue;
         float err = 0;
-        follow_rigid(c, g, now, &err);
-        if (err > 10.0f) {   // (done at phase 0; the row may be another island's by now: marked only if it is still this one)
+        int placed = follow_rigid(c, g, now, &err) == 2;   // (2: out of place at rest for 2 s)
+        if (err > 10.0f || placed) {   // (done at phase 0; the row may be another island's by now: marked only if it is still this one)
             coop_lock_wait(&grp_lock);
             if (g->used == 1 && !g->mine && g->key64 == key && g->owner == owner) g->teleport = 1;
             plat_mutex_unlock(&grp_lock);
