@@ -63,7 +63,9 @@ def pct(xs, p):
 
 
 def live(snap):
-    return {e['id']: e for e in snap.get('ents', []) if e['life'] == 0}
+    """the live entities that are sent (not a preview: the actors the game's part maker makes for an Autobuild, and
+    for the picture of a new build right after a glue, are this game's alone until confirmed)"""
+    return {e['id']: e for e in snap.get('ents', []) if e['life'] == 0 and not e['flags'] & 4}
 
 
 TRACE = re.compile(r"ftrace: (\d+) (\w+) cls (\d) rests \d dt [\d.]+ sample (\d+) .*\| vr ([-\d. ]+) ar .*\| V ([-\d. ]+) W [-\d. ]+ \| vb [-\d.]+ [-\d.]+ [-\d.]+(?: \| vd ([-\d. ]+) sent (\d))?")
@@ -221,6 +223,17 @@ def main():
             results.append(('hand', hand_told[k] >= hand_s[k] - 2, f'the Link of {dirs[k]} held an entity with Ultrahand in {hand_s[k]} lines; the other game had it as held in {hand_told[k]}'))
     if not any(hand_s):
         results.append(('hand', None, 'no Link held an entity with Ultrahand'))
+    # what the run was meant to do (--expect hand1,hand2,bonds=2): a scripted action that did not happen fails the run
+    for arg in sys.argv:
+        if not arg.startswith('--expect='):
+            continue
+        for want in arg[9:].split(','):
+            if want in ('hand1', 'hand2'):
+                k = int(want[4]) - 1
+                results.append(('expected', hand_s[k] >= 2, f'player {k + 1} takes an entity with Ultrahand: ' + (f'held for {hand_s[k]} lines' if hand_s[k] else 'it never held one (the scripted grab did not land)')))
+            elif want.startswith('bonds='):
+                last = min(len(A[-1].get('bonds', [])), len(B[-1].get('bonds', [])))
+                results.append(('expected', last == int(want[6:]), f'{want[6:]} bonds at the end: {len(A[-1].get("bonds", []))} and {len(B[-1].get("bonds", []))}'))
     if rest_d:
         ok = pct(rest_d, .9) <= 0.10 and pct(rest_a, .9) <= 5 and max(rest_d) <= 0.25 and max(rest_a) <= 10
         results.append(('rest', ok, f'{len(rest_d)} lines: {pct(rest_d, .5):.3f} m median, {pct(rest_d, .9):.3f} at 90%, {max(rest_d):.3f} at most; '
@@ -231,12 +244,15 @@ def main():
         results.append(('moving', pct(move_d, .9) <= 0.30, f'{len(move_d)} lines: {pct(move_d, .5):.3f} m median, {pct(move_d, .9):.3f} at 90%, {max(move_d):.3f} at most; worst: {worst_move[1]}'))
     else:
         results.append(('moving', None, 'no line with an owner\'s object moving'))
+    # A bench that moved a Link by jumps while it held a part (join) moved the part by jumps: the two lines below then
+    # measure the bench, and are told but not judged.
+    jumped = any(grep(log, r'coop: bench: .* join: .* moved by') for log in logs)
     traces = [trace_read(log) for log in logs]
     steps = [s for tr in traces for s in tr[0].values() if len(s) >= 30]
     if steps:
         allv = [x for s in steps for x in s]
         heldv = [x for tr in traces for s in tr[1].values() for x in s]
-        results.append(('smooth', pct(allv, .9) <= 1.0, f'{len(allv)} frames of {len(steps)} copies: the written velocity changes by {pct(allv, .5):.2f} m/s a frame median, '
+        results.append(('smooth', None if jumped else pct(allv, .9) <= 1.0, ('(not judged: the bench moved a holding Link by jumps) ' if jumped else '') + f'{len(allv)} frames of {len(steps)} copies: the written velocity changes by {pct(allv, .5):.2f} m/s a frame median, '
                         f'{pct(allv, .9):.2f} at 90%, {max(allv):.2f} at most' + (f'; while held ({len(heldv)} frames) {pct(heldv, .5):.2f} median, {pct(heldv, .9):.2f} at 90%' if heldv else '')))
     else:
         results.append(('smooth', None, 'no trace of a moving copy (TOTK_COOP_FOLLOW_TRACE=1)'))
@@ -244,8 +260,8 @@ def main():
     if len(speed) >= 20:
         ratio, off = [x[0] for x in speed], [x[1] for x in speed]
         heldn = sum(1 for x in speed if x[2])
-        ok = 0.7 <= pct(ratio, .5) <= 1.4
-        results.append(('speed', ok, f'{len(speed)} poses ({heldn} while held): the velocity the owner sends is {pct(ratio, .5):.2f} of what its poses give (median; '
+        ok = None if jumped else 0.7 <= pct(ratio, .5) <= 1.4
+        results.append(('speed', ok, ('(not judged: the bench moved a holding Link by jumps) ' if jumped else '') + f'{len(speed)} poses ({heldn} while held): the velocity the owner sends is {pct(ratio, .5):.2f} of what its poses give (median; '
                         f'{pct(ratio, .1):.2f} to {pct(ratio, .9):.2f} for 8 in 10), {pct(off, .5):.2f} m/s apart median'))
     else:
         results.append(('speed', None, f'{len(speed)} poses of a moving owner with a sent velocity: too few to say'))

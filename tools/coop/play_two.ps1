@@ -18,7 +18,9 @@
 # (tools\coop\ent_report.py) is printed at the end and kept in build\ent_report.txt.
 param([string]$Name1 = "Player 1", [string]$Name2 = "Player 2", [string]$Size = "1904x1071", [switch]$Fresh, [switch]$TwoPads,
       [switch]$ShareWorld, [switch]$FrozenSaves, [string]$Bench = "", [int]$Seconds = 0, [string]$Script1 = "", [string]$Script2 = "",
-      [string]$Shots = "")
+      [string]$Shots = "", [string]$Expect = "")
+# -Expect hand1,hand2,bonds=2: what the scripted run is meant to do (a player takes an entity with Ultrahand; the bonds
+# at the end); the report fails when it did not happen.
 # -Script1 / -Script2 <file>: with -Bench, the input script of game 1 / game 2 in place of the plain load (a script that
 # loads the save and then plays, as tools\coop\hand_a.txt). -Shots w20-60:2: both games save a 480x270 picture at those
 # world seconds (TOTK_SHOTS, boot.c) in build\shots\1 and build\shots\2, emptied at each start.
@@ -123,7 +125,7 @@ $report = Join-Path $root 'build/audit_report.txt'
 "(kept in $report)"
 if ($Bench) {
     $ent = Join-Path $root 'build/ent_report.txt'
-    $lines = & (Join-Path $root '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'ent_report.py') $a $b --bench
+    $lines = & (Join-Path $root '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'ent_report.py') $a $b --bench $(if ($Expect) { "--expect=$Expect" })
     $lines | Set-Content -Encoding utf8 $ent   # (Tee-Object writes UTF-16 in Windows PowerShell)
     $lines
     "(kept in $ent)"

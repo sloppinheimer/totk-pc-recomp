@@ -1,0 +1,13 @@
+# For the bench (TOTK_COOP_BENCH=fans,aim1=<fan>@22.7 or aim2=<fan>@22.7; runtime/coop_ent_bench.c): as hand_a.txt
+# up to the grab at 24 s; then the left stick walks the held fan sideways toward its neighbour from 25.5 s and A at
+# 28 s attaches it (Ultrahand glues what it holds to what it touches). The hold ends with the glue. Whether a bond
+# was made is in the audit ("bonds"), read by tools/coop/ent_report.py.
+480 A 4
+700 DOWN 4
+760 DOWN 4
+820 A 4
+980 A 4
+@21000 L 150
+@21800 RSTICK 0 -20000 800
+@24000 A 150
+@28000 A 150

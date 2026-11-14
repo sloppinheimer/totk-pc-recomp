@@ -14,8 +14,12 @@
 //    12 s left alone (it falls and rests), a throw with a turn about x for 0.5 s that tips it, 12 s left alone. Every step logs
 //    where the fan is against where it was sent, and a last line says whether the action happened as meant, so a
 //    scenario that did not land is not read as a result.
-//    option "near1" / "near2": that player's Link is put 2.5 m from fan 0, facing it, for an input script that takes
-//    the fan with Ultrahand as a player does (tools/coop/hand_*.txt); the other Link stands 2.5 m to the side.
+//    option "aim1=<fan>[@<s>]" / "aim2=<fan>[@<s>]" (fan 0 to 2; "near1" / "near2" is fan 0): that player's Link is
+//    put 2.5 m from that fan, and from world second <s> the middle of its picture is brought onto the fan
+//    (bench_aim_tick), for an input script that takes the fan with Ultrahand as a player does (tools/coop/hand_*.txt:
+//    L, a tilt down, then A; <s> is after the tilt and before the A).
+//    option "join1=@<s>" / "join2=@<s>": from that second what that Link holds is brought next to the nearest part of
+//    another island (bench_join_tick), for a script whose next A attaches it.
 // The scenario moves the owner's object; what the other game shows of it is the thing under test. "drive" writes
 // velocities, which no player does: it tests the following and the resting, not a grab, a hold or a hand-over.
 #include <math.h>
@@ -89,7 +93,83 @@ void coop_ent_audit(FILE *f) {
 
 // ---- The scene and the scenario ------------------------------------------------------------------------------------------
 #define FANS 3
-static int bench_scene, bench_drive, bench_near;   // near: the player id whose Link stands at fan 0 (0: none)
+static double bench_join_at[2];   // per player: the world second from which what its Link holds is brought to a neighbour
+
+// What this Link's Ultrahand holds brought next to the nearest entity that is not of its island (join<id>=@<s>, for
+// 2.5 s from that second), for a script whose next A attaches it: walking a held part to another by timed stick input
+// ended beside it or short of it by the run. The held part follows its Link, so the Link is moved by what the two
+// centres are apart less 0.9 m, at most 0.6 m every sixth frame.
+static void bench_join_tick(Cpu *c, uint64_t me, int id, double now) {
+    int w = id == 1 ? 0 : 1;
+    double t0 = bench_join_at[w];
+    static int n;
+    static double said;
+    if (t0 <= 0 || now < t0 || now > t0 + 2.5 || n++ % 6) return;
+    uint64_t held = ent_held_actor();
+    Ent *he = held ? ent_by_actor(held) : NULL, *set[64];
+    float hm[12], best = 1e9f, T[3] = {0};
+    if (!he || !he->main_body || !coop_rd(he->main_body + 0x98, hm, sizeof hm)) { if (now - said > 1) said = now, rt_log("coop: bench: %.2f s: join: this Link holds no entity", now); return; }
+    int ns = ent_island_members(he, set, 64);
+    for (int i = 0; i < ENT_N; i++) {
+        Ent *e = &ents[i];
+        float m[12];
+        int same = 0;
+        if (!e->used || e == he || !e->actor || e->life != LIFE_LIVE || (e->flags & ENT_PREVIEW) || !e->main_body || !coop_rd(e->main_body + 0x98, m, sizeof m)) continue;
+        for (int k = 0; k < ns; k++) same |= set[k] == e;
+        if (same) continue;
+        float d = sqrtf((m[3] - hm[3]) * (m[3] - hm[3]) + (m[11] - hm[11]) * (m[11] - hm[11]));
+        if (d < best) best = d, T[0] = m[3], T[1] = m[7], T[2] = m[11];
+    }
+    if (best > 1e8f) return;
+    if (best < 1.0f) { if (now - said > 0.5) said = now, rt_log("coop: bench: %.2f s: join: the held part is %.2f m from its neighbour", now, best); return; }
+    float s = (best - 0.9f) / best, dx = (T[0] - hm[3]) * s, dz = (T[2] - hm[11]) * s, l = sqrtf(dx * dx + dz * dz);
+    if (l > 0.6f) dx *= 0.6f / l, dz *= 0.6f / l;
+    float p[3], lr[9];
+    if (!coop_rd(me + COOP_ACTOR_POS, p, 12) || !coop_rd(me + COOP_ACTOR_ROT, lr, 36)) return;
+    float m[12] = {lr[0], lr[1], lr[2], p[0] + dx, lr[3], lr[4], lr[5], p[1], lr[6], lr[7], lr[8], p[2] + dz};
+    coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
+    if (now - said > 0.5) said = now, rt_log("coop: bench: %.2f s: join: the held part is %.2f m from its neighbour: this Link moved by %.2f %.2f", now, best, dx, dz);
+}
+static int bench_scene, bench_drive;
+static int bench_aim[2] = {-1, -1};   // per player (id 1, id 2): the fan its Link is put in front of, -1 none
+static double bench_aim_at[2];        // and the world second from which the middle of its picture is brought onto that fan
+
+// The middle of this game's picture brought onto a fan (aim<id>=<fan>@<s>, for 1.2 s from that second): Ultrahand takes
+// what the middle of the picture is on, and where the camera looks after a load, a placement and a stick tilt is not
+// the same in every run. The camera keeps its place relative to its Link, so the Link is moved sideways by what the
+// camera's line of sight misses the fan by at the fan's height, every sixth frame, until it is within 0.1 m. The fan is
+// the entity nearest the place fan <fan> was made at.
+static void bench_aim_tick(Cpu *c, uint64_t me, int id, double now) {
+    int w = id == 1 ? 0 : 1, k = bench_aim[w];
+    double t0 = bench_aim_at[w];
+    static int n, on_target, said_fail;
+    if (k < 0 || t0 <= 0 || now < t0 || now > t0 + 1.2 || on_target) {
+        if (k >= 0 && t0 > 0 && now > t0 + 1.2 && !on_target && !said_fail) said_fail = 1, rt_log("coop: bench: %.2f s: aim: the picture's middle was not brought onto fan %d: the grab will not land", now, k);
+        return;
+    }
+    if (n++ % 6) return;
+    uint64_t cam = coop_resident_named("PlayerCamera", NULL);
+    float C[3], r[9], spot[3] = {29.8f, 1514.5f, 1509.2f + 1.5f * k}, T[3], best = 1.5f;
+    int found = 0;
+    if (!cam || !coop_rd(cam + COOP_ACTOR_POS, C, 12) || !coop_rd(cam + COOP_ACTOR_ROT, r, 36)) return;
+    for (int i = 0; i < ENT_N; i++) {
+        Ent e = ents[i];
+        float m[12];
+        if (!e.used || !e.actor || !ctn_alive_as(e.actor, e.gen) || !e.main_body || !coop_rd(e.main_body + 0x98, m, sizeof m)) continue;
+        float d = sqrtf((m[3] - spot[0]) * (m[3] - spot[0]) + (m[11] - spot[2]) * (m[11] - spot[2]));
+        if (d < best) best = d, T[0] = m[3], T[1] = m[7], T[2] = m[11], found = 1;
+    }
+    if (!found) { rt_log("coop: bench: %.2f s: aim: no entity within 1.5 m of where fan %d was made", now, k); return; }
+    float F[3] = {-r[2], -r[5], -r[8]};   // (it looks along -Z: the third column, negated)
+    if (F[1] > -0.05f) { rt_log("coop: bench: %.2f s: aim: the camera looks level or up (%.2f): tilt it down first", now, F[1]); return; }
+    float t = (T[1] - C[1]) / F[1], dx = T[0] - (C[0] + F[0] * t), dz = T[2] - (C[2] + F[2] * t), miss = sqrtf(dx * dx + dz * dz);
+    if (miss < 0.1f) { on_target = 1; rt_log("coop: bench: %.2f s: aim: the picture's middle is on fan %d (%.2f m off, %.1f m from the camera)", now, k, miss, t); return; }
+    float p[3], lr[9];
+    if (!coop_rd(me + COOP_ACTOR_POS, p, 12) || !coop_rd(me + COOP_ACTOR_ROT, lr, 36)) return;
+    float m[12] = {lr[0], lr[1], lr[2], p[0] + dx, lr[3], lr[4], lr[5], p[1], lr[6], lr[7], lr[8], p[2] + dz};
+    coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
+    rt_log("coop: bench: %.2f s: aim: %.2f m off fan %d at %.1f m: this Link moved by %.2f %.2f", now, miss, k, t, dx, dz);
+}
 static void bench_read(void) {
     static int done;
     if (done) return;
@@ -98,7 +178,19 @@ static void bench_read(void) {
     if (!e || !*e) return;
     bench_scene = !strncmp(e, "fans", 4);
     bench_drive = bench_scene && strstr(e, ",drive") != NULL;
-    bench_near = !bench_scene ? 0 : strstr(e, ",near1") ? 1 : strstr(e, ",near2") ? 2 : 0;
+    for (int k = 0; bench_scene && k < 2; k++) {
+        char key[16];
+        snprintf(key, sizeof key, ",aim%d=", k + 1);
+        const char *a = strstr(e, key);
+        if (a && a[6] >= '0' && a[6] < '0' + FANS) {
+            bench_aim[k] = a[6] - '0';
+            if (a[7] == '@') bench_aim_at[k] = atof(a + 8);
+        }
+        snprintf(key, sizeof key, ",join%d=@", k + 1);
+        if ((a = strstr(e, key))) bench_join_at[k] = atof(a + 8);
+        snprintf(key, sizeof key, ",near%d", k + 1);
+        if (strstr(e, key)) bench_aim[k] = 0;
+    }
     if (!bench_scene) rt_log("coop: bench: TOTK_COOP_BENCH=%s: no such scene (fans[,drive])", e);
 }
 static void set_vel(Cpu *c, uint64_t body, const float v[3], const float w[3]) {
@@ -117,15 +209,29 @@ void coop_ent_bench_tick(Cpu *c, uint64_t me) {
     int id = coop_net_id();
     if (id <= 0) return;
     static int placed;
-    if (!placed && now > 15) {   // facing -x, the fans' row 2 m ahead; with near<id>: that Link 2.5 m from fan 0, in line with it
-        float z = id == 1 ? 1509.7f : 1511.7f, x = 31.8f;
-        if (bench_near == id) x = 32.3f, z = 1509.2f;
-        else if (bench_near) z = 1511.7f;
-        float m[12] = {0, 0, -1, x, 0, 1, 0, 1514.8f, 1, 0, 0, z};
+    if (!placed && now > 15) {
+        // Facing -x, the fans' row 2 m ahead. A Link that aims at a fan (aim<id>=<fan>, near<id>) is put 2.5 m from
+        // where that fan is made, on the line its camera looks along, facing as the camera does: Ultrahand takes
+        // what the middle of the picture is on, and the camera keeps its direction when its Link is moved. (A ZL
+        // press to bring the camera round locked onto the other player's stand-in instead, in one run of three.)
+        float z = id == 1 ? 1509.7f : 1511.7f, x = 31.8f, fx = -1, fz = 0;
+        int aim = bench_aim[id == 1 ? 0 : 1];
+        if (aim >= 0) {
+            uint64_t cam = coop_resident_named("PlayerCamera", NULL);
+            float r[9];
+            if (cam && coop_rd(cam + COOP_ACTOR_ROT, r, sizeof r)) {   // (it looks along -Z: the third column, negated)
+                float l = sqrtf(r[2] * r[2] + r[8] * r[8]);
+                if (l > 1e-3f) fx = -r[2] / l, fz = -r[8] / l;
+            }
+            x = 29.8f - 2.5f * fx, z = 1509.2f + 1.5f * aim - 2.5f * fz;
+        }
+        float m[12] = {fz, 0, fx, x, 0, 1, 0, 1514.8f, -fx, 0, fz, z};
         coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
         placed = 1;
-        rt_log("coop: bench: %.1f s: this Link (player %d) put at %.1f 1514.8 %.1f", now, id, x, z);
+        rt_log("coop: bench: %.1f s: this Link (player %d) put at %.1f 1514.8 %.1f, facing %.2f %.2f%s", now, id, x, z, fx, fz, aim >= 0 ? " as its camera, at a fan" : "");
     }
+    bench_aim_tick(c, me, id, now);
+    bench_join_tick(c, me, id, now);
     {   // what this Link's Ultrahand holds, said at each change: whether a scripted grab landed, and when it ended
         static uint64_t held_was;
         uint64_t held = ent_held_actor();
