@@ -77,6 +77,8 @@ typedef struct FollowState {
     int rest_leaves;        // how often the copy has left its rest while the runner went on resting
     int no_rest;            // 1: it left three times: held by the field until the runner moves
     int placed;             // how often it was put in place in this rest of the runner
+    int64_t stuck_since;    // since when the copy has not moved though a velocity is written to it, 0: not so
+    int64_t hold_until;     // just put in place: held still until then
     int64_t last_us;
 } FollowState;
 
@@ -352,6 +354,22 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
     // one a step runs on; a second one was replaced before any step used it and gave the step observer a write to
     // compare with that no step had seen.
     if (fs->last_us == now) return 0;
+    // Just put in place: held still there for 0.4 s, and counted as resting, so that the list of copies that pass
+    // through each other (rebuilt four times a second) has it as a resting one before it is let go: let go at once, a
+    // copy whose place is against another copy fell through it and left its rest again.
+    if (now < fs->hold_until) {
+        _Alignas(16) static const float zero[4] = {0, 0, 0, 0};
+        for (int j = 0; j < np; j++) {
+            uint64_t b = (skip >> j & 1) || !alive_as(parts[j], gens[j]) ? 0 : main_body_of(parts[j]);
+            if (!b) continue;
+            sync_writing = 1;
+            coop_guest_call(c, MOD_MAIN_BASE + 0x567750, b, (uint64_t)(uintptr_t)zero, 0, 0);   // SetLinearVelocity
+            coop_guest_call(c, MOD_MAIN_BASE + 0x25a1f0, b, (uint64_t)(uintptr_t)zero, 0, 0);   // SetAngularVelocity
+            sync_writing = 0;
+        }
+        fs->last_us = now, fs->have_written = 0;
+        return 0;
+    }
     // the sample's age by the arrival offset's minimum (the jitter is taken out, the base delay is not: plan 3.2)
     double age = (now - (hus[2] + off)) / 1e6;
     double tau = clampf((float)age, 0, 0.25f);
@@ -458,9 +476,29 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
         // copy 0.4 m the moment the placement freed it)
         memset(fs->integ, 0, sizeof fs->integ), memset(fs->comp, 0, sizeof fs->comp), fs->have_written = 0;
         if (!fs->no_rest) fs->rest = 1;
+        fs->hold_until = now + 400000;
         return 2;
     }
-    if (fs->rest) { fs->have_written = 0; for (int i = 0; i < 3; i++) fs->integ[i] *= (float)(1 - dt); return 0; }
+    if (fs->rest) { fs->have_written = 0, fs->stuck_since = 0; for (int i = 0; i < 3; i++) fs->integ[i] *= (float)(1 - dt); return 0; }
+    // A copy that does not move when it is told to: over 0.25 m off, over 1 m/s written last frame, and its root's
+    // velocity now under a third of that, for 0.5 s. Something holds it that did not hold the runner's object (a bench
+    // run: 3 m/s written for 2 s, nothing moved, 0.49 m off). It is put in place at once, as by the 2 s rule.
+    {
+        float vb0[3] = {0}, vw = sqrtf(fs->v_written[0][0] * fs->v_written[0][0] + fs->v_written[0][1] * fs->v_written[0][1] + fs->v_written[0][2] * fs->v_written[0][2]);
+        int coop_runs_for_ms(void);   // coop_players.c: -1 while this game sits in a menu (nothing moves then)
+        int stuck = fs->have_written && coop_runs_for_ms() > 500 && ep > 0.25f && vw > 1.0f && coop_rd(rb + 0xf8, vb0, sizeof vb0) &&
+                    sqrtf(vb0[0] * vb0[0] + vb0[1] * vb0[1] + vb0[2] * vb0[2]) < vw / 3;
+        if (!stuck) fs->stuck_since = 0;
+        else if (!fs->stuck_since) fs->stuck_since = now;
+        else if (now - fs->stuck_since > 500000) {
+            fs->stuck_since = 0, fs->off_since = 0;
+            rt_log("coop: follow: copy %08x does not move when written to (%.3f m off, %.1f m/s written): put in place", key, ep, vw);
+            memset(fs->integ, 0, sizeof fs->integ), memset(fs->comp, 0, sizeof fs->comp), fs->have_written = 0;
+            if (runner_rests && !fs->no_rest) fs->rest = 1;
+            fs->hold_until = now + 400000;
+            return 2;
+        }
+    }
     // the field: V, W with bounded corrections (gains fall with speed)
     float kp = vn <= 5 ? 5 : vn >= 15 ? 2.5f : 5 - 2.5f * (vn - 5) / 10, kr = wn <= 2 ? 5 : wn >= 6 ? 3 : 5 - 2 * (wn - 2) / 4;
     float cv[3], cw[3];
@@ -1217,6 +1255,7 @@ void coop_ctn_structure_event(void) { coop_ent_structure_event(); }
 #endif
 int ctn_alive(uint64_t a) { return alive(a); }
 void ctn_follow_reset(struct FollowState *fs) { if (fs) memset(fs, 0, sizeof *fs); }
+int ctn_follow_rests(const struct FollowState *fs) { return fs && (fs->rest || fs->hold_until > frame_step_world_us()); }   // (read at phase 0 while the drive may write it: a frame late at worst)
 uint32_t ctn_gen_of(uint64_t a) { return gen_of(a); }
 int ctn_alive_as(uint64_t a, uint32_t gen) { return alive_as(a, gen); }
 uint64_t ctn_main_body(uint64_t a) { return main_body_of(a); }

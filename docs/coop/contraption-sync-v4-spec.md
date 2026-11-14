@@ -1146,3 +1146,26 @@ of those flows and pass by the report; their own pictures were not looked at.
 - The capsule's create path, a break of a glue, a ride, devices switched on, a player who leaves: no scenario yet.
 - The Autobuild copy's smoothness line (the build falls 4 m after the confirm): 1.4 to 1.7 m/s a frame at the 90th
   percentile over about 50 frames; not looked into.
+
+**Found and fixed with the suite, continued (2026-11-14).**
+- The velocity an owner sends was carried on for up to a second after its object stopped (the owner goes to one pose
+  a second then): the target ran 0.5 m past. The sent velocities fade from 0.1 s to 0.3 s of the pose's age.
+- A resting copy the ground holds a little off took a growing push (the integral term, 1.5 m/s after 2 s) that moved
+  nothing and then threw it 0.4 m when a placement freed it: no build-up while the owner rests, and a placement drops
+  what was built up.
+- A copy put in place once is left within the leave band (0.25 m, 8 degrees) for the rest of its owner's rest: a fan
+  on its edge lay 5 degrees off after every placement and was put back every 2 s without end.
+- A copy that does not move when written to (over 0.25 m off, over 1 m/s written, under a third of it read back, for
+  0.5 s, this game not in a menu) is put in place at once.
+- Two copies no longer passing through each other at all took the support from a copy whose owner's object rests
+  against another (a fan that rolled against its neighbour): its copy could not stay in place, in every run. A pair
+  of copies is refused only while the drive is moving one of them; a copy just put in place is held still for 0.4 s
+  and counted as resting, so the list has caught up before it is let go.
+
+**The suite's state.** Nine scenarios (drive, hand, hand-over, glue, glue-cross, glue-both, paused, autobuild,
+powered): all nine passed in the last whole round. In the two rounds before the last fixes 6 and 8 of 9 passed; the
+failures were the copy of the fan that rolls at the scene's start (above) and the smoothness line of the Autobuild
+copy as the build lands (1.0 to 1.5 m/s a frame at the 90th percentile against a limit of 1.0, over 50 to 80
+frames). One copy per run is still put in place once or twice in the scene's first seconds: the fan that rolls
+right after it is made does not move when the drive writes to it; why a velocity written to it has no effect then is
+not read.

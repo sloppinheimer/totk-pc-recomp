@@ -29,7 +29,8 @@
 #include "platform/platform.h"
 
 void coop_lock_wait(PlatMutex *m);                 // coop_spawn.c: waits without holding the caller's core
-void coop_life_veto_rebuild(Cpu *c, const uint64_t *parts, int nparts, const uint64_t *driven, int ndriven);
+void coop_life_veto_rebuild(Cpu *c, const uint64_t *parts, int nparts, const uint64_t *driven, int ndriven, const uint64_t *moving, int nmoving);
+int ctn_follow_rests(const struct FollowState *fs);   // coop_ctn.c: the drive lets this copy rest
 int coop_held_here(uint64_t a);                    // coop_ctn.c
 void coop_obj_entity(uint64_t actor);              // coop_players.c: an actor that is an entity now (the tick's tables)
 
@@ -474,8 +475,10 @@ static Grp *grp_for(uint64_t key64, uint64_t owner) {
 static void publish(Cpu *c) {
     uint64_t me = coop_ctr_me();
     int64_t now = ent_ms();
-    static uint64_t part_list[ENT_N], drv_list[ENT_N];   // drv_list: the copies the drive moves (no two of them collide here)
-    int np = 0, nd = 0;
+    // drv_list: the copies the drive has; mov_list: those of them it is moving now (a pair of copies with one of these
+    // does not collide here)
+    static uint64_t part_list[ENT_N], drv_list[ENT_N], mov_list[ENT_N];
+    int np = 0, nd = 0, nmv = 0;
     static uint8_t seen[ENT_N];
     static int64_t bodies_ms;
     int bodies_now = now - bodies_ms > 250;
@@ -535,6 +538,7 @@ static void publish(Cpu *c) {
                 if (!g->asked) {
                     set_add(ENT_SET_DRIVEN, mem[k]->actor), set_add(ENT_SET_DRIVEN_BODY, mem[k]->main_body);
                     if (nd < ENT_N) drv_list[nd++] = mem[k]->actor;
+                    if (nmv < ENT_N && !ctn_follow_rests(g->fs)) mov_list[nmv++] = mem[k]->actor;
                     if (coop_rd_ptr(coop_rd_ptr(mem[k]->actor + 0x228) + 0x448)) set_add(ENT_SET_SHOOTER, mem[k]->actor);   // (it has a Shooter component)
                 }
             }
@@ -577,7 +581,7 @@ static void publish(Cpu *c) {
         set_commit(w);
     }
     static int64_t veto_ms;
-    if (now - veto_ms > 250) veto_ms = now, coop_life_veto_rebuild(c, part_list, np, drv_list, nd);
+    if (now - veto_ms > 250) veto_ms = now, coop_life_veto_rebuild(c, part_list, np, drv_list, nd, mov_list, nmv);
 }
 
 // An entity as the riders name it between the games (coop_players.c: the stand-in of a player who stands on it is

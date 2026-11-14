@@ -297,7 +297,7 @@ def main():
                         f'{pct(ratio, .1):.2f} to {pct(ratio, .9):.2f} for 8 in 10), {pct(off, .5):.2f} m/s apart median'))
     else:
         results.append(('speed', None, f'{len(speed)} poses of a moving owner with a sent velocity: too few to say'))
-    placed = sum(len(grep(log, 'put in place')) for log in logs)
+    placed = sum(len(grep(log, 'coop: follow: .*: put in place')) for log in logs)
     heldc = sum(len(grep(log, 'left its rest three times')) for log in logs)
     if paused_n:
         results.append(('paused', None, f'a game\'s world clock stood {paused_n} time(s): places were not judged then, nor for 3 s after'))
