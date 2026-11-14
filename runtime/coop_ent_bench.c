@@ -14,7 +14,10 @@
 //    12 s left alone (it falls and rests), a throw with a turn about x for 0.5 s that tips it, 12 s left alone. Every step logs
 //    where the fan is against where it was sent, and a last line says whether the action happened as meant, so a
 //    scenario that did not land is not read as a result.
-// The scenario moves the owner's object; what the other game shows of it is the thing under test.
+//    option "near1" / "near2": that player's Link is put 2.5 m from fan 0, facing it, for an input script that takes
+//    the fan with Ultrahand as a player does (tools/coop/hand_*.txt); the other Link stands 2.5 m to the side.
+// The scenario moves the owner's object; what the other game shows of it is the thing under test. "drive" writes
+// velocities, which no player does: it tests the following and the resting, not a grab, a hold or a hand-over.
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -58,8 +61,10 @@ void coop_ent_audit(FILE *f) {
         int k = 0;
         for (const char *s = e.name; *s && k < 47; s++) if (*s != '"' && *s != '\\' && (unsigned char)*s >= 32) nm[k++] = *s;
         nm[k] = 0;
-        fprintf(f, "%s{\"id\":\"%s\",\"owner\":\"%04x\",\"mine\":%d,\"life\":%d,\"flags\":%d,\"state\":%d,\"actor\":%d,\"name\":\"%s\"", first ? "" : ",",
-                ent_eid_str(e.id, b), (unsigned)(e.owner & 0xffff), e.owner == me, e.life, e.flags, e.state, have, nm);
+        // the owner's class as this game has it: its own island's, or what the owner's POSE said
+        int cls = e.owner == me ? (e.isl >= 0 && e.isl < ISL_N ? isls[e.isl].cls : 0) : e.st >= 0 && e.st < STATED_N ? stated[e.st].cls : e.cls;
+        fprintf(f, "%s{\"id\":\"%s\",\"owner\":\"%04x\",\"mine\":%d,\"life\":%d,\"flags\":%d,\"state\":%d,\"cls\":%d,\"actor\":%d,\"name\":\"%s\"", first ? "" : ",",
+                ent_eid_str(e.id, b), (unsigned)(e.owner & 0xffff), e.owner == me, e.life, e.flags, e.state, cls, have, nm);
         first = 0;
         if (have) fprintf(f, ",\"p\":[%.3f,%.3f,%.3f],\"r\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f]", m[3], m[7], m[11], m[0], m[1], m[2], m[4], m[5], m[6],
                           m[8], m[9], m[10]);
@@ -68,12 +73,23 @@ void coop_ent_audit(FILE *f) {
     fputs("],\"loose\":[", f);
     LooseScan s = {f, 0};
     coop_actors_live(loose_fn, &s);
+    fputs("],\"bonds\":[", f);   // the bonds of this game's world, each as its two ends
+    int nb = bond_n;
+    for (int i = 0; i < nb && i < BOND_N; i++) {
+        char a[24], b[24];
+        Bond bd = bonds[i];
+        fprintf(f, "%s[\"%s\",\"%s\"]", i ? "," : "", ent_eid_str(bd.a, a), ent_eid_str(bd.b, b));
+    }
     fputc(']', f);
+    uint64_t held = ent_held_actor();   // what this Link's Ultrahand holds
+    Ent *he = held ? ent_by_actor(held) : NULL;
+    char hb[24] = "";
+    fprintf(f, ",\"hand\":\"%s\"", he ? ent_eid_str(he->id, hb) : held ? "?" : "");
 }
 
 // ---- The scene and the scenario ------------------------------------------------------------------------------------------
 #define FANS 3
-static int bench_scene, bench_drive;
+static int bench_scene, bench_drive, bench_near;   // near: the player id whose Link stands at fan 0 (0: none)
 static void bench_read(void) {
     static int done;
     if (done) return;
@@ -82,6 +98,7 @@ static void bench_read(void) {
     if (!e || !*e) return;
     bench_scene = !strncmp(e, "fans", 4);
     bench_drive = bench_scene && strstr(e, ",drive") != NULL;
+    bench_near = !bench_scene ? 0 : strstr(e, ",near1") ? 1 : strstr(e, ",near2") ? 2 : 0;
     if (!bench_scene) rt_log("coop: bench: TOTK_COOP_BENCH=%s: no such scene (fans[,drive])", e);
 }
 static void set_vel(Cpu *c, uint64_t body, const float v[3], const float w[3]) {
@@ -100,12 +117,14 @@ void coop_ent_bench_tick(Cpu *c, uint64_t me) {
     int id = coop_net_id();
     if (id <= 0) return;
     static int placed;
-    if (!placed && now > 15) {   // facing -x, the fans' row 2 m ahead
-        float z = id == 1 ? 1509.7f : 1511.7f;
-        float m[12] = {0, 0, -1, 31.8f, 0, 1, 0, 1514.8f, 1, 0, 0, z};
+    if (!placed && now > 15) {   // facing -x, the fans' row 2 m ahead; with near<id>: that Link 2.5 m from fan 0, in line with it
+        float z = id == 1 ? 1509.7f : 1511.7f, x = 31.8f;
+        if (bench_near == id) x = 32.3f, z = 1509.2f;
+        else if (bench_near) z = 1511.7f;
+        float m[12] = {0, 0, -1, x, 0, 1, 0, 1514.8f, 1, 0, 0, z};
         coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
         placed = 1;
-        rt_log("coop: bench: %.1f s: this Link (player %d) put at 31.8 1514.8 %.1f", now, id, z);
+        rt_log("coop: bench: %.1f s: this Link (player %d) put at %.1f 1514.8 %.1f", now, id, x, z);
     }
     if (id != 1) return;
     static _Alignas(16) uint8_t handle[FANS][0x40], link[FANS][0x40];

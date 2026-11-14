@@ -17,7 +17,11 @@
 # needed). -Seconds N: the session is ended after N seconds. With -Bench, the contraption report
 # (tools\coop\ent_report.py) is printed at the end and kept in build\ent_report.txt.
 param([string]$Name1 = "Player 1", [string]$Name2 = "Player 2", [string]$Size = "1904x1071", [switch]$Fresh, [switch]$TwoPads,
-      [switch]$ShareWorld, [switch]$FrozenSaves, [string]$Bench = "", [int]$Seconds = 0)
+      [switch]$ShareWorld, [switch]$FrozenSaves, [string]$Bench = "", [int]$Seconds = 0, [string]$Script1 = "", [string]$Script2 = "",
+      [string]$Shots = "")
+# -Script1 / -Script2 <file>: with -Bench, the input script of game 1 / game 2 in place of the plain load (a script that
+# loads the save and then plays, as tools\coop\hand_a.txt). -Shots w20-60:2: both games save a 480x270 picture at those
+# world seconds (TOTK_SHOTS, boot.c) in build\shots\1 and build\shots\2, emptied at each start.
 # One gamepad (the first) moves both games; Minus with the right stick click, or F9, switches to only the game in
 # focus and back (input.c, pad_focus_gate). -TwoPads: game 1 reads the first gamepad, game 2 the second, as before.
 $ErrorActionPreference = 'Stop'
@@ -46,6 +50,8 @@ foreach ($f in Get-ChildItem $a -Force) {
     else { New-Item -ItemType HardLink $t -Target $f.FullName | Out-Null }
 }
 
+# (a game that never reaches the world writes no audit: an older run's must not stand in for it)
+foreach ($d in $a, $b) { Remove-Item -Force (Join-Path $d 'logs\audit.jsonl') -ErrorAction SilentlyContinue }
 $relay = Start-NoConsole (Join-Path $root '.venv\Scripts\python.exe') 'server\coop_relay.py' $root
 $games = @()
 foreach ($g in @(@{dir = $a; n = 1; name = $Name1; pad = '0'}, @{dir = $b; n = 2; name = $Name2; pad = $(if ($TwoPads) { '1' } else { '0' })})) {
@@ -70,7 +76,22 @@ foreach ($g in @(@{dir = $a; n = 1; name = $Name1; pad = '0'}, @{dir = $b; n = 2
     $env:TOTK_MOUSE_SENS = '0'          # no mouse camera, no cursor capture: the mouse moves between the windows
     $env:TOTK_COOP_HIDE_CONSOLE = '1'
     Remove-Item Env:TOTK_INPUT_SCRIPT, Env:TOTK_INPUT, Env:TOTK_COOP_BENCH -ErrorAction SilentlyContinue
-    if ($Bench) { $env:TOTK_INPUT_SCRIPT = Join-Path $root 'tools\coop\idle_3rd.txt'; $env:TOTK_COOP_BENCH = $Bench }
+    if ($Bench) {
+        $s = if ($g.n -eq 1) { $Script1 } else { $Script2 }
+        $env:TOTK_INPUT_SCRIPT = Join-Path $root $(if ($s) { $s } else { 'tools\coop\idle_3rd.txt' })
+        $env:TOTK_COOP_BENCH = $Bench
+        # The mouse pointer chooses in the menus, and a menu's pointer starts in the middle of the picture: on the third
+        # row of the save list. The script's two DOWNs then ended on the fifth row, an empty one, in whichever game
+        # had the pointer. Off for a scripted load.
+        $env:TOTK_MENU_CURSOR = '0'
+    } else { Remove-Item Env:TOTK_MENU_CURSOR -ErrorAction SilentlyContinue }
+    Remove-Item Env:TOTK_SHOTS, Env:TOTK_SHOTS_DIR -ErrorAction SilentlyContinue
+    if ($Shots) {
+        $sd = Join-Path $root "build\shots\$($g.n)"
+        if (Test-Path $sd) { Remove-Item -Recurse -Force $sd }
+        New-Item -ItemType Directory -Force $sd | Out-Null
+        $env:TOTK_SHOTS = $Shots; $env:TOTK_SHOTS_DIR = $sd
+    }
     if ($ShareWorld) { $env:TOTK_COOP_SHARE_WORLD = '1' } else { Remove-Item Env:TOTK_COOP_SHARE_WORLD -ErrorAction SilentlyContinue }
     $games += Start-NoConsole (Join-Path $g.dir 'totk.exe') '' $g.dir
     Start-Sleep 3
@@ -102,7 +123,7 @@ $report = Join-Path $root 'build/audit_report.txt'
 "(kept in $report)"
 if ($Bench) {
     $ent = Join-Path $root 'build/ent_report.txt'
-    $lines = & (Join-Path $root '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'ent_report.py') $a $b
+    $lines = & (Join-Path $root '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'ent_report.py') $a $b --bench
     $lines | Set-Content -Encoding utf8 $ent   # (Tee-Object writes UTF-16 in Windows PowerShell)
     $lines
     "(kept in $ent)"

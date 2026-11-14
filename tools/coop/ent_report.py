@@ -15,6 +15,10 @@ that is no entity. The lines of the two games are paired by time. Printed, each 
   rest      while the owner's object is still (under 0.05 m/s for two lines): the copy within 0.10 m and 5 degrees at
             the 90th percentile, 0.25 m and 10 degrees at most
   moving    while the owner's object moves (over 0.2 m/s): the copy within 0.30 m at the 90th percentile
+  bonds     the two games have the same glue bonds (a difference of up to 3 lines in a row is a glue in the making)
+  hand      what a Link holds with Ultrahand, and that the other game has that entity as held by its owner
+  speed     from the drive's trace: the velocity an owner sends with a pose against the one its last two poses give;
+            the median ratio between 0.7 and 1.4 (a body moved without its stored velocity would send none)
   smooth    from the drive's trace (TOTK_COOP_FOLLOW_TRACE=1), while the owner's object moves: the velocity written to
             the copy changes by at most 1.0 m/s from one frame to the next at the 90th percentile
   settle    how often the drive put a copy in place or held one that kept leaving its rest (told, not judged)
@@ -62,26 +66,38 @@ def live(snap):
     return {e['id']: e for e in snap.get('ents', []) if e['life'] == 0}
 
 
-TRACE = re.compile(r"ftrace: (\d+) (\w+) cls \d rests \d dt [\d.]+ sample \d+ .*\| vr ([-\d. ]+) ar .*\| V ([-\d. ]+) W ")
+TRACE = re.compile(r"ftrace: (\d+) (\w+) cls (\d) rests \d dt [\d.]+ sample (\d+) .*\| vr ([-\d. ]+) ar .*\| V ([-\d. ]+) W [-\d. ]+ \| vb [-\d.]+ [-\d.]+ [-\d.]+(?: \| vd ([-\d. ]+) sent (\d))?")
 
 
-def trace_steps(log):
-    """per copy: the frame-to-frame change of the written velocity while its owner's object moves"""
-    out, prev = defaultdict(list), {}
+def norm(v):
+    return math.sqrt(sum(x * x for x in v))
+
+
+def trace_read(log):
+    """per copy: the frame-to-frame change of the written velocity while its owner's object moves (all, and while it
+    is held); and, on each frame a new pose arrived with the owner's sent velocity, that velocity against the one the
+    last two poses give"""
+    steps, held, speed, prev = defaultdict(list), defaultdict(list), [], {}
     if not os.path.exists(log):
-        return out
+        return steps, held, speed
     with open(log, encoding='utf-8', errors='replace') as f:
         for line in f:
             m = TRACE.search(line)
             if not m:
                 continue
-            now, key = int(m.group(1)), m.group(2)
-            vr, v = [float(x) for x in m.group(3).split()], [float(x) for x in m.group(4).split()]
+            now, key, cls, sample = int(m.group(1)), m.group(2), int(m.group(3)), int(m.group(4))
+            vr, v = [float(x) for x in m.group(5).split()], [float(x) for x in m.group(6).split()]
             p = prev.get(key)
-            if p and now - p[0] < 40000 and math.sqrt(sum(x * x for x in vr)) > 0.3:
-                out[key].append(dist(v, p[1]))
-            prev[key] = (now, v)
-    return out
+            if p and now - p[0] < 40000 and norm(vr) > 0.3:
+                steps[key].append(dist(v, p[1]))
+                if cls:
+                    held[key].append(dist(v, p[1]))
+            if m.group(7) and m.group(8) == '1' and p and sample != p[2]:
+                vd = [float(x) for x in m.group(7).split()]
+                if norm(vd) > 0.5:
+                    speed.append((norm(vr) / norm(vd), dist(vr, vd), cls))
+            prev[key] = (now, v, sample)
+    return steps, held, speed
 
 
 def grep(log, pattern):
@@ -99,21 +115,31 @@ def main():
         return 2
     A, B = (load(os.path.join(d, 'logs', 'audit.jsonl')) for d in dirs)
     logs = [os.path.join(d, 'logs', 'totk.log') for d in dirs]
-    if not A or not B or 'ents' not in A[-1] or 'ents' not in B[-1]:
-        print(f'no entity audit: {len(A)} lines in {dirs[0]}, {len(B)} in {dirs[1]} (a build before the audit, or TOTK_COOP_CONTRAPTION is off)')
-        return 2
     results = []   # (name, ok or None, text)
     # the bench's own word on its scenario
     bench = [l for log in logs for l in grep(log, r'coop: bench: .*(landed|did not land|not ready|is gone)')]
     if bench:
         bad = [l for l in bench if 'did not land' in l or 'not ready' in l or 'is gone' in l]
         results.append(('scenario', not bad, '; '.join(l.split('coop: bench: ')[1] for l in bench)))
+    if '--bench' in sys.argv:   # a bench run: both games must have been in the world, and the scene made
+        for k in (0, 1):
+            if not grep(logs[k], r'coop: bench: .* this Link .* put at'):
+                results.append(('scene', False, f'the game of {dirs[k]} never put its Link in place: it did not reach the world, or had no other player (the bench runs with one)'))
+        if not grep(logs[0], 'coop: bench: .*scene ready') and not grep(logs[1], 'coop: bench: .*scene ready'):
+            results.append(('scene', False, 'the fans were never made'))
+    if not A or not B or 'ents' not in A[-1] or 'ents' not in B[-1]:
+        for name, ok, text in results:
+            print(f'  {"PASS" if ok else "FAIL"}  {name:9s} {text}')
+        print(f'no entity audit to compare: {len(A)} lines in {dirs[0]}, {len(B)} in {dirs[1]}')
+        return 1
     first_seen, last_pair = {}, {}
     missing, owners = defaultdict(list), defaultdict(list)
     rest_d, rest_a, move_d = [], [], []
     worst_rest, worst_move = (0, ''), (0, '')
     loose = [0, 0]
     loose_names = [set(), set()]
+    hand_s, hand_told = [0, 0], [0, 0]
+    bond_diff, bond_max = [], 0
     pairs, bi = 0, 0
     prev = None
     t0 = min(A[0]['t'], B[0]['t'])
@@ -129,6 +155,16 @@ def main():
         for k, s in enumerate((a, b)):
             loose[k] = max(loose[k], len(s.get('loose', [])))
             loose_names[k] |= {x['name'] for x in s.get('loose', [])}
+        for k, s in enumerate((a, b)):   # Ultrahand: what each Link holds, and whether the other game was told (class 1)
+            h = s.get('hand', '')
+            if h:
+                hand_s[k] += 1
+                other = (eb, ea)[k].get(h)
+                hand_told[k] += bool(other and other.get('cls') == 1)
+        ba, bb = ({tuple(sorted(x)) for x in s.get('bonds', [])} for s in (a, b))
+        if ba != bb:
+            bond_diff.append((t, f'{len(ba)} bonds in {dirs[0]}, {len(bb)} in {dirs[1]}'))
+        bond_max = max(bond_max, len(ba), len(bb))
         for eid in ea.keys() | eb.keys():
             first_seen.setdefault(eid, t)
             if t - first_seen[eid] < 3:
@@ -167,6 +203,22 @@ def main():
     results.append(('count', not miss, f'{n_ents} entities seen' + (''.join(f'; {v[0][1]} from {v[0][0] - t0:.0f} s for {len(v)} lines' for v in miss.values()) if miss else ', each in both games')))
     results.append(('loose', not any(loose), 'none' if not any(loose) else '; '.join(f'{loose[k]} in {dirs[k]} ({", ".join(sorted(loose_names[k]))})' for k in (0, 1) if loose[k])))
     results.append(('owner', not own, 'one owner each' if not own else '; '.join(f'{v[0][1]} from {v[0][0] - t0:.0f} s for {len(v)} lines' for v in own.values())))
+    # a difference of the bond sets that lasts over 3 lines in a row
+    run, longest, first_long = 0, 0, None
+    for i, h in enumerate(bond_diff):
+        run = run + 1 if i and bond_diff[i - 1][0] > h[0] - 1.6 else 1
+        if run > longest:
+            longest = run
+        if run == 4 and not first_long:
+            first_long = h
+    results.append(('bonds', None if not bond_max and not bond_diff else longest <= 3,
+                    f'at most {bond_max} bonds; ' + ('the same in both games' if not bond_diff else f'different in {len(bond_diff)} lines, {longest} in a row at most'
+                                                     + (f' ({first_long[1]} at {first_long[0] - t0:.0f} s)' if first_long else ''))))
+    for k in (0, 1):
+        if hand_s[k]:
+            results.append(('hand', hand_told[k] >= hand_s[k] - 2, f'the Link of {dirs[k]} held an entity with Ultrahand in {hand_s[k]} lines; the other game had it as held in {hand_told[k]}'))
+    if not any(hand_s):
+        results.append(('hand', None, 'no Link held an entity with Ultrahand'))
     if rest_d:
         ok = pct(rest_d, .9) <= 0.10 and pct(rest_a, .9) <= 5 and max(rest_d) <= 0.25 and max(rest_a) <= 10
         results.append(('rest', ok, f'{len(rest_d)} lines: {pct(rest_d, .5):.3f} m median, {pct(rest_d, .9):.3f} at 90%, {max(rest_d):.3f} at most; '
@@ -177,18 +229,31 @@ def main():
         results.append(('moving', pct(move_d, .9) <= 0.30, f'{len(move_d)} lines: {pct(move_d, .5):.3f} m median, {pct(move_d, .9):.3f} at 90%, {max(move_d):.3f} at most; worst: {worst_move[1]}'))
     else:
         results.append(('moving', None, 'no line with an owner\'s object moving'))
-    steps = [s for log in logs for s in trace_steps(log).values() if len(s) >= 30]
+    traces = [trace_read(log) for log in logs]
+    steps = [s for tr in traces for s in tr[0].values() if len(s) >= 30]
     if steps:
         allv = [x for s in steps for x in s]
+        heldv = [x for tr in traces for s in tr[1].values() for x in s]
         results.append(('smooth', pct(allv, .9) <= 1.0, f'{len(allv)} frames of {len(steps)} copies: the written velocity changes by {pct(allv, .5):.2f} m/s a frame median, '
-                        f'{pct(allv, .9):.2f} at 90%, {max(allv):.2f} at most'))
+                        f'{pct(allv, .9):.2f} at 90%, {max(allv):.2f} at most' + (f'; while held ({len(heldv)} frames) {pct(heldv, .5):.2f} median, {pct(heldv, .9):.2f} at 90%' if heldv else '')))
     else:
         results.append(('smooth', None, 'no trace of a moving copy (TOTK_COOP_FOLLOW_TRACE=1)'))
+    speed = [x for tr in traces for x in tr[2]]
+    if len(speed) >= 20:
+        ratio, off = [x[0] for x in speed], [x[1] for x in speed]
+        heldn = sum(1 for x in speed if x[2])
+        ok = 0.7 <= pct(ratio, .5) <= 1.4
+        results.append(('speed', ok, f'{len(speed)} poses ({heldn} while held): the velocity the owner sends is {pct(ratio, .5):.2f} of what its poses give (median; '
+                        f'{pct(ratio, .1):.2f} to {pct(ratio, .9):.2f} for 8 in 10), {pct(off, .5):.2f} m/s apart median'))
+    else:
+        results.append(('speed', None, f'{len(speed)} poses of a moving owner with a sent velocity: too few to say'))
     placed = sum(len(grep(log, 'put in place')) for log in logs)
     heldc = sum(len(grep(log, 'left its rest three times')) for log in logs)
     results.append(('settle', None, f'{placed} copies put in place, {heldc} held by the drive at rest'))
     print(f'{pairs} paired lines over {A[-1]["t"] - t0:.0f} s')
     failed = 0
+    if pairs < 10:   # (nothing to compare is no pass)
+        results.insert(0, ('pairs', False, f'only {pairs} lines of the two games pair by time: the games were not both in the world together, or an audit file is an older run\'s'))
     for name, ok, text in results:
         failed += ok is False
         print(f'  {"PASS" if ok else "    " if ok is None else "FAIL"}  {name:9s} {text}')

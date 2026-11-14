@@ -368,6 +368,7 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
     // The linear velocity is the one the owner read from its root body, when the pose carries it. Taken from the
     // difference of two poses 33 ms apart it stepped by 3 m/s at a typical pose (13 m/s at one in ten), and an
     // acceleration taken from three poses sat at its clamp: no acceleration is used.
+    float v_d[3] = {v_r[0], v_r[1], v_r[2]};   // (the difference of the last two poses, kept for the trace: the sent one is checked against it)
     if (hv_ok) memcpy(v_r, hv, sizeof v_r);
     // the prediction: where the runner's root is now
     float p_star[3], v_star[3], r_star[9], r_now[9];
@@ -431,16 +432,22 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
             rt_log("coop: follow: copy %08x left its rest three times (%.3f m, %.1f deg): held by the drive until its owner's object moves", key, ep, er * deg);
         }
     } else if (!fs->rest && runner_rests && !fs->no_rest && in_band) fs->rest = 1;
-    if (fs->rest) { fs->off_since = 0, fs->have_written = 0; for (int i = 0; i < 3; i++) fs->integ[i] *= (float)(1 - dt); return 0; }
-    // The runner rests and the copy has stayed out of the band for 2 s: the field cannot bring it there (a copy tipped
-    // over lies on its contacts at another angle). It is put in place once; the caller marks it for phase 0.
+    // The runner rests and the copy has stayed out of the entry band for 2 s, resting or not: the field cannot bring it
+    // there (a copy tipped over lies on its contacts at another angle), or it rests inside the wider leave band (a copy
+    // lay 5.8 degrees off for a whole bench run). It is put in place once; the caller marks it for phase 0. The third
+    // time in one rest of the runner it is held by the field instead, as a copy that keeps leaving its rest is.
     int place = 0;
     if (!runner_rests || in_band) fs->off_since = 0;
     else if (!fs->off_since) fs->off_since = now;
     else if (now - fs->off_since > 2000000) {
         fs->off_since = 0, place = 1;
         rt_log("coop: follow: copy %08x out of place for 2 s at rest (%.3f m, %.1f deg): put in place", key, ep, er * deg);
+        if (++fs->rest_leaves >= 3 && !fs->no_rest) {
+            fs->no_rest = 1, fs->rest = 0;
+            rt_log("coop: follow: copy %08x put in place three times: held by the drive until its owner's object moves", key);
+        }
     }
+    if (fs->rest) { fs->have_written = 0; for (int i = 0; i < 3; i++) fs->integ[i] *= (float)(1 - dt); return place ? 2 : 0; }
     // the field: V, W with bounded corrections (gains fall with speed)
     float kp = vn <= 5 ? 5 : vn >= 15 ? 2.5f : 5 - 2.5f * (vn - 5) / 10, kr = wn <= 2 ? 5 : wn >= 6 ? 3 : 5 - 2 * (wn - 2) / 4;
     float cv[3], cw[3];
@@ -469,6 +476,7 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
         fs->v_written[j][0] = vj[0], fs->v_written[j][1] = vj[1], fs->v_written[j][2] = vj[2];
     }
     fs->have_written = 1;
+    // "vd" is the owner's velocity as the difference of its last two poses and "sent" whether "vr" is the one it sent.
     // TOTK_COOP_FOLLOW_TRACE=1: one line for every frame the drive writes, to read a jitter from. "sample" is the
     // owner's clock of the newest pose (a new value: a pose arrived this frame); "vb" is the root body's velocity
     // as read before this frame's write, so against the last line's V it shows what the physics step made of it.
@@ -479,10 +487,10 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
         coop_rd(rb + 0xf8, vb, sizeof vb);
         rt_log("coop: ftrace: %lld %08x cls %d rests %d dt %.4f sample %lld age %.4f | e %.3f %.3f %.3f (%.3f m) rot %.2f %.2f %.2f (%.2f deg) | "
                "vr %.2f %.2f %.2f ar %.1f %.1f %.1f wr %.2f %.2f %.2f | v* %.2f %.2f %.2f cv %.2f %.2f %.2f comp %.2f %.2f %.2f I %.2f %.2f %.2f | "
-               "V %.2f %.2f %.2f W %.2f %.2f %.2f | vb %.2f %.2f %.2f",
+               "V %.2f %.2f %.2f W %.2f %.2f %.2f | vb %.2f %.2f %.2f | vd %.2f %.2f %.2f sent %d",
                (long long)now, key, cls, runner_rests, dt, (long long)hus[2], age, e_p[0], e_p[1], e_p[2], ep, e_r[0] * deg, e_r[1] * deg, e_r[2] * deg, er * deg,
                v_r[0], v_r[1], v_r[2], a_r[0], a_r[1], a_r[2], w_r[0], w_r[1], w_r[2], v_star[0], v_star[1], v_star[2], cv[0], cv[1], cv[2],
-               fs->comp[0], fs->comp[1], fs->comp[2], fs->integ[0], fs->integ[1], fs->integ[2], V[0], V[1], V[2], W[0], W[1], W[2], vb[0], vb[1], vb[2]);
+               fs->comp[0], fs->comp[1], fs->comp[2], fs->integ[0], fs->integ[1], fs->integ[2], V[0], V[1], V[2], W[0], W[1], W[2], vb[0], vb[1], vb[2], v_d[0], v_d[1], v_d[2], hv_ok);
     }
     static int64_t said;
     if (now - said > 500000) {
