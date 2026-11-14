@@ -10,7 +10,7 @@ enum {
     ENT_BOND_REQ = 47, ENT_BOND_ACK = 48, ENT_BOND_NAK = 49, ENT_REQ = 50, ENT_DEATH = 51, ENT_INDEX = 52, ENT_APPLIED = 53,
     ENT_REQ_ANS = 54, ENT_INDEX_END = 55,
 };
-enum { POSE_OFFER = 1 };
+enum { POSE_OFFER = 1, POSE_VEL = 2 };   // VEL: `v` was read from the root's body
 enum { REF_NOT_OWNER = 1, REF_STALE, REF_HELD, REF_RIDDEN };
 enum { NAK_NOT_OWNER = 1, NAK_GONE, NAK_FULL, NAK_NOT_HERE, NAK_POSE };
 enum { REQ_TOGGLE = 1, REQ_EVENT };
@@ -23,6 +23,7 @@ typedef struct {
     int64_t us;                      // the owner's world clock
     uint64_t payer;
     float m[12];                     // the root's main body matrix
+    float v[3];                      // that body's linear velocity (body +0xf8), with POSE_VEL
     uint8_t cls, n, flags, pad;
     uint32_t sw, on, fw, fk, fb, fp, burn;   // bit r: member r in ascending Eid
     float pf[ENT_MEMBERS][4];        // sent for n members only

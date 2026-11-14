@@ -692,7 +692,10 @@ samples, the clock offset and `FollowState` are the tick's own, keyed by (owner,
 changes; the tick reads POSE for them (the part of today's `receive` that is kept). The rest band stays 0.10 m and
 4 degrees, except that an island with a bond wanted (7.3 step 1) is out of the drive. An island whose owner's class
 is HOLD or RIDE (the row's `cls`, IDLE once the class has aged) never rests. The owner's root at rest and the copy
-out of the band for 2 s: the drive tick sets `teleport` as below (section 20, notes 2 and 3). No sample for 1 s: nothing
+out of the band for 2 s: the drive tick sets `teleport` as below (section 20, notes 2 and 3). POSE carries the root
+body's linear velocity (`v`, flag POSE_VEL) and the drive uses it in place of the difference of two poses; no
+acceleration is used. `follow_rigid` writes once a frame (the co-op tick comes twice). A copy that leaves its rest
+three times while its owner's root rests is held by the field until that root moves (section 20, notes 4 and 5). No sample for 1 s: nothing
 written. An error above 10 m: the drive tick sets `teleport` in the row and phase 0 does one SetTransform of the island
 from `rel_root`; then the drive. All per-part masks are
 by ascending Eid and used only under an agreeing digest. `springs_phase0`, `burning_phase0`, `dev_flush`,
@@ -1058,3 +1061,10 @@ and the drive starts again: a cycle of 0.27 s. The copy does not stay where the 
 clears the 2 s count, so the rule of note 2 never fired (0 "put in place" lines in this session). Why the copy
 cannot rest there is not read; P1's four fans from its save are missing at P2 (note 7), and an owner's object
 leaning on one of them would do it.
+
+**Fixes of notes 4 and 5 (built, not played yet).**
+- Note 4: POSE carries the root body's linear velocity as its owner reads it (body +0xf8) and `follow_rigid` uses
+  it; the acceleration term is gone; `follow_rigid` writes once a frame. The turn rate is still the difference of
+  two poses: where a body keeps its angular velocity has not been read.
+- Note 5: a copy that leaves its rest three times while its owner's root rests is held by the field (as a held one
+  is) until that root moves; the 2 s count of note 2 runs only while the copy is outside the entry band.

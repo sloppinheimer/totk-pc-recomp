@@ -148,6 +148,7 @@ typedef struct {
     int64_t stamp_ms;                     // when phase 0 last wrote this row
     // a follower: the owner's last three root samples (newest last, its clock), the clock offset, the drive
     float hm[3][12]; int64_t hus[3], clock_off, clock_off_at, heard_us; struct FollowState *fs;
+    float hv[3]; uint8_t hv_ok;           // the newest sample's root velocity as its owner read it (hv_ok 0: not sent)
     // devices: at the owner computed here, at a follower from POSE (used only when agree)
     uint32_t sw, on, fp, burn, fw, fk, fb; float pf[ENT_MEMBERS][4];
     uint64_t payer; int64_t toggled_us, payer_us;

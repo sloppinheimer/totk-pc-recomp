@@ -686,6 +686,7 @@ static void pose_in(const CoopCtrMsg *m) {
             g->heard_us = wnow;
             memmove(g->hm[0], g->hm[1], 2 * sizeof g->hm[0]), memmove(g->hus, g->hus + 1, 2 * sizeof g->hus[0]);
             memcpy(g->hm[2], s.m, sizeof s.m), g->hus[2] = s.us;
+            memcpy(g->hv, s.v, sizeof g->hv), g->hv_ok = (s.flags & POSE_VEL) != 0;
             if (!g->clock_off_at || off < g->clock_off || wnow - g->clock_off_at > 10000000) g->clock_off = off, g->clock_off_at = wnow;
         }
         uint32_t mine_digest = st ? st->my_digest : e->digest;
@@ -1009,6 +1010,9 @@ void own_send(Cpu *c) {
         PoseMsg s = {0};
         s.key = eid_hash(is->root), s.root = is->root, s.epoch = is->epoch, s.digest = is->digest, s.us = frame_step_world_us();
         memcpy(s.m, root->m, sizeof s.m), s.cls = is->cls, s.n = (uint8_t)is->n, s.flags = is->frozen ? POSE_OFFER : 0, s.payer = me;
+        // the root body's own velocity: a follower that took it from the difference of two poses 33 ms apart wrote a
+        // velocity that stepped by metres a second at every pose
+        if (root->actor && root->main_body && ctn_alive_as(root->actor, root->gen) && coop_rd(root->main_body + 0xf8, s.v, sizeof s.v)) s.flags |= POSE_VEL;
         for (int g = 0; g < GRP_N; g++)
             if (grps[g].used && grps[g].mine && eid_eq(grps[g].root, is->root)) {
                 Grp *v = &grps[g];

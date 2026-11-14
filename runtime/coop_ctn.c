@@ -74,6 +74,8 @@ typedef struct FollowState {
     int rest;               // 1: resting (nothing written)
     int64_t still_since;    // since when the runner's root has been still (its clock)
     int64_t off_since;      // since when the runner has rested with the copy out of the rest band (this game's clock), 0: not so
+    int rest_leaves;        // how often the copy has left its rest while the runner went on resting
+    int no_rest;            // 1: it left three times: held by the field until the runner moves
     int64_t last_us;
 } FollowState;
 
@@ -332,23 +334,29 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
     int64_t hus[3], off;
     uint64_t parts[21];
     uint32_t gens[21], skip;
-    int np, cls;
+    int np, cls, hv_ok;
+    float hv[3];
     uint32_t key;
     FollowState *fs;
     coop_lock_wait(&grp_lock);
     memcpy(hm, e->hm, sizeof hm), memcpy(hus, e->hus, sizeof hus), off = e->clock_off, cls = e->cls;
+    memcpy(hv, e->hv, sizeof hv), hv_ok = e->hv_ok;
     np = e->n < 21 ? e->n : 21, key = cid32(e);
     memcpy(parts, e->parts, sizeof parts), memcpy(gens, e->gen, sizeof gens), skip = e->no_write;
     if (!e->fs) e->fs = calloc(1, sizeof(FollowState));
     fs = e->fs;
     plat_mutex_unlock(&grp_lock);
     if (!fs || !hus[2] || !np) return 0;
+    // The co-op tick comes twice a frame at one clock value, before and after the physics step. The first write is the
+    // one a step runs on; a second one was replaced before any step used it and gave the step observer a write to
+    // compare with that no step had seen.
+    if (fs->last_us == now) return 0;
     // the sample's age by the arrival offset's minimum (the jitter is taken out, the base delay is not: plan 3.2)
     double age = (now - (hus[2] + off)) / 1e6;
     double tau = clampf((float)age, 0, 0.25f);
     // the runner's velocity, acceleration and turn rate from its last samples
     float v_r[3] = {0}, a_r[3] = {0}, w_r[3] = {0};
-    double d1 = hus[1] && hus[2] > hus[1] ? (hus[2] - hus[1]) / 1e6 : 0, d0 = hus[0] && hus[1] > hus[0] ? (hus[1] - hus[0]) / 1e6 : 0;
+    double d1 = hus[1] && hus[2] > hus[1] ? (hus[2] - hus[1]) / 1e6 : 0;
     if (d1 > 0.005 && d1 < 0.5) {
         for (int i = 0; i < 3; i++) v_r[i] = (hm[2][i * 4 + 3] - hm[1][i * 4 + 3]) / (float)d1;
         float r1[9], r2[9], r1t[9], dr[9];
@@ -356,13 +364,11 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
         for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) r1t[i * 3 + j] = r1[j * 3 + i];
         mat_mul3(r2, r1t, dr), log_rot(dr, w_r);
         for (int i = 0; i < 3; i++) w_r[i] /= (float)d1;
-        if (d0 > 0.005 && d0 < 0.5)
-            for (int i = 0; i < 3; i++) {
-                float v0 = (hm[1][i * 4 + 3] - hm[0][i * 4 + 3]) / (float)d0;
-                a_r[i] = (v_r[i] - v0) / (float)(0.5 * (d0 + d1));
-            }
-        clamp_vec(a_r, 2 * 29.0f);   // (2 g at this game's gravity, X1)
     }
+    // The linear velocity is the one the owner read from its root body, when the pose carries it. Taken from the
+    // difference of two poses 33 ms apart it stepped by 3 m/s at a typical pose (13 m/s at one in ten), and an
+    // acceleration taken from three poses sat at its clamp: no acceleration is used.
+    if (hv_ok) memcpy(v_r, hv, sizeof v_r);
     // the prediction: where the runner's root is now
     float p_star[3], v_star[3], r_star[9], r_now[9];
     for (int i = 0; i < 3; i++) p_star[i] = hm[2][i * 4 + 3] + v_r[i] * (float)tau + 0.5f * a_r[i] * (float)(tau * tau), v_star[i] = v_r[i] + a_r[i] * (float)tau;
@@ -413,13 +419,23 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
     const float deg = 180.0f / 3.14159265f;
     // (a wide band: a copy resting on the ground a few centimetres from where the runner's rests cannot be pushed
     // there through its contacts, and trying makes it chatter; plan RK2)
-    if (fs->rest && (!runner_rests || ep > 0.25f || er * deg > 8)) fs->rest = 0;
-    else if (!fs->rest && runner_rests && ep < 0.10f && er * deg < 4) fs->rest = 1;
+    // A copy that leaves its rest three times while the runner goes on resting cannot rest where the runner's object
+    // does (what holds that one up is not under the copy): left alone it fell out of the band, was brought back and
+    // let go again, four times a second. It is held by the field until the runner moves.
+    int in_band = ep < 0.10f && er * deg < 4;
+    if (!runner_rests) fs->rest_leaves = 0, fs->no_rest = 0;
+    if (fs->rest && (!runner_rests || ep > 0.25f || er * deg > 8)) {
+        fs->rest = 0;
+        if (runner_rests && ++fs->rest_leaves >= 3 && !fs->no_rest) {
+            fs->no_rest = 1;
+            rt_log("coop: follow: copy %08x left its rest three times (%.3f m, %.1f deg): held by the drive until its owner's object moves", key, ep, er * deg);
+        }
+    } else if (!fs->rest && runner_rests && !fs->no_rest && in_band) fs->rest = 1;
     if (fs->rest) { fs->off_since = 0, fs->have_written = 0; for (int i = 0; i < 3; i++) fs->integ[i] *= (float)(1 - dt); return 0; }
     // The runner rests and the copy has stayed out of the band for 2 s: the field cannot bring it there (a copy tipped
     // over lies on its contacts at another angle). It is put in place once; the caller marks it for phase 0.
     int place = 0;
-    if (!runner_rests) fs->off_since = 0;
+    if (!runner_rests || in_band) fs->off_since = 0;
     else if (!fs->off_since) fs->off_since = now;
     else if (now - fs->off_since > 2000000) {
         fs->off_since = 0, place = 1;
