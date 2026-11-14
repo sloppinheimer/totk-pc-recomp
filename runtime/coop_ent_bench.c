@@ -20,6 +20,8 @@
 //    L, a tilt down, then A; <s> is after the tilt and before the A).
 //    option "on=@<s>": at that second game 1 switches on the devices of everything it owns (the path a remote
 //    player's hit takes at the owner, ctn_toggle_put): a build that moves by its own devices.
+//    option "saved": at 16 s each game makes fans that get no identity, as devices that come with a save: two in
+//    game 1, one in game 2 (the host's are to be in both games after, the other's gone: coop_ent_saved_tick).
 //    option "nofans": the Links are placed and no fan is made (a script that makes its own parts, as an Autobuild).
 //    option "join1=@<s>" / "join2=@<s>": from that second what that Link holds is brought next to the nearest part of
 //    another island (bench_join_tick), for a script whose next A attaches it.
@@ -154,7 +156,7 @@ static void bench_join_tick(Cpu *c, uint64_t me, int id, double now) {
     coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
     if (now - said > 0.5) said = now, rt_log("coop: bench: %.2f s: join: the held part is %.2f m from its neighbour: this Link moved by %.2f %.2f", now, best, dx, dz);
 }
-static int bench_scene, bench_drive, bench_nofans;
+static int bench_scene, bench_drive, bench_nofans, bench_saved;
 static double bench_on_at;
 static int bench_aim[2] = {-1, -1};   // per player (id 1, id 2): the fan its Link is put in front of, -1 none
 static double bench_aim_at[2];        // and the world second from which the middle of its picture is brought onto that fan
@@ -204,6 +206,7 @@ static void bench_read(void) {
     bench_scene = !strncmp(e, "fans", 4);
     bench_drive = bench_scene && strstr(e, ",drive") != NULL;
     bench_nofans = bench_scene && strstr(e, ",nofans") != NULL;
+    bench_saved = bench_scene && strstr(e, ",saved") != NULL;
     { const char *o = bench_scene ? strstr(e, ",on=@") : NULL; if (o) bench_on_at = atof(o + 5); }
     for (int k = 0; bench_scene && k < 2; k++) {
         char key[16];
@@ -256,6 +259,23 @@ void coop_ent_bench_tick(Cpu *c, uint64_t me) {
         coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
         placed = 1;
         rt_log("coop: bench: %.1f s: this Link (player %d) put at %.1f 1514.8 %.1f, facing %.2f %.2f%s", now, id, x, z, fx, fz, aim >= 0 ? " as its camera, at a fan" : "");
+    }
+    {   // saved: at 16 s each game makes fans with no identity, as a save's devices are: two in game 1, one in game 2
+        static _Alignas(16) uint8_t sh[2][0x40], sl[2][0x40];
+        static int sst[2];
+        int want = !bench_saved ? 0 : id == 1 ? 2 : 1;
+        for (int k = 0; k < want && now > 16; k++) {
+            if (sst[k] == 0) {
+                // (in a row across both Links' view, turned to face them, so a picture shows which are there)
+                float at[3] = {28.3f, 1515.0f, id == 1 ? 1510.0f + 1.2f * k : 1512.6f}, rot[9] = {0, 0, 1, 0, 1, 0, -1, 0, 0};
+                sst[k] = coop_request_create(c, "SpObj_WindGenerator_A_01", at, rot, sh[k]) ? 1 : 9;
+            }
+            if (sst[k] == 1 && coop_handle_status(sh[k]) == 3) {
+                uint64_t ref, a = coop_claim(c, sh[k], sl[k], &ref);
+                sst[k] = 2;
+                rt_log("coop: bench: %.1f s: a fan with no identity made in this game (player %d), as a save's: %llx", now, id, (unsigned long long)a);
+            }
+        }
     }
     bench_aim_tick(c, me, id, now);
     bench_join_tick(c, me, id, now);

@@ -1169,3 +1169,11 @@ copy as the build lands (1.0 to 1.5 m/s a frame at the 90th percentile against a
 frames). One copy per run is still put in place once or twice in the scene's first seconds: the fan that rolls
 right after it is made does not move when the drive writes to it; why a velocity written to it has no effect then is
 not read.
+
+**Devices that were in the world before the session (note 7): the host's only** (the tester's choice, 2026-11-14).
+A Zonai device that is no entity, no copy and no map placement, and has been so for 3 s while another player is in
+the session, is given an identity in the host's game (relay id 1) as one its player put out, and is deleted in every
+other game (`coop_ent_saved_tick`, coop_ent_id.c, on the co-op tick; TOTK_COOP_SAVED_DEVICES=0: off). A guest's game
+that saves afterwards saves its world without those devices. The suite's scenario "saved" makes two such fans in
+game 1 and one in game 2: both games end with the host's two (by the report, and by pictures of both games: three
+fans in the guest's picture at 18 s, its own among them, the host's two at 34 s).

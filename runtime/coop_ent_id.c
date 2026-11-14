@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "coop_ctn.h"
 #include "coop_ctr.h"
 #include "coop_ent.h"
@@ -117,6 +118,61 @@ int coop_ent_created_hook(Cpu *c, uint64_t addr) {
         break;
     }
     return 1;
+}
+// ---- Devices that were in the world before the session (a save's) -------------------------------------------------------
+// A Zonai device that came with a save was made before any hook of this session saw a create, so it has no identity,
+// and the object mirror does not send what was there at the start: each game kept its own (six fans in one game,
+// three in the other, a play session). The rule (the tester's, 2026-11-14): the world is the host's. A device that is
+// no entity, no copy and no map placement, and has been so for 3 s while another player is in the session, is given an
+// identity in the host's game (the player with relay id 1), as one its player put out, and is deleted in every other
+// game. The 3 s keep it off a part that is getting its identity another way (a create's event is taken within a
+// frame; the mirror's answer for another creator's within a few). TOTK_COOP_SAVED_DEVICES=0: off.
+// On the co-op tick, which runs only with another player there.
+typedef struct { uint64_t actor; uint32_t gen; int64_t since; uint8_t seen; } LooseDev;
+static LooseDev loose_dev[96];
+static void loose_fn(uint64_t a, void *arg) {
+    char nm[48];
+    int64_t now = *(int64_t *)arg;
+    LooseDev *free_row = NULL;
+    coop_actor_name(a, nm, sizeof nm);
+    if (strncmp(nm, "SpObj_", 6) || strstr(nm, "Capsule") || !ctn_alive(a) || coop_ent_is(a) || coop_is_copy(a) || coop_actor_placed(a)) return;
+    uint32_t gen = ctn_gen_of(a);
+    for (int i = 0; i < 96; i++) {
+        if (loose_dev[i].actor == a && loose_dev[i].gen == gen) { loose_dev[i].seen = 1; return; }
+        if (!loose_dev[i].actor && !free_row) free_row = &loose_dev[i];
+    }
+    if (free_row) *free_row = (LooseDev){a, gen, now, 1};
+}
+void coop_ent_saved_tick(Cpu *c) {
+    static int on = -1;
+    static int64_t last;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_SAVED_DEVICES"); on = !(e && *e == '0'); }
+    int64_t now = ent_ms();
+    int id = coop_net_id();
+    if (!on || !ent_on() || id <= 0 || ent_loading() || now - last < 500) return;
+    last = now;
+    if (id > 1 && !coop_ctr_incarnation(1)) return;   // (no host known yet: nothing is deleted)
+    for (int i = 0; i < 96; i++) loose_dev[i].seen = 0;
+    coop_actors_live(loose_fn, &now);
+    for (int i = 0; i < 96; i++) {
+        LooseDev *d = &loose_dev[i];
+        char nm[48] = "";
+        float p[3] = {0};
+        if (!d->actor) continue;
+        if (!d->seen) { d->actor = 0; continue; }   // (gone, or an entity or a copy by now)
+        if (now - d->since < 3000) continue;
+        coop_actor_name(d->actor, nm, sizeof nm), coop_rd(d->actor + COOP_ACTOR_POS, p, 12);
+        if (id == 1) {
+            Ev ev = {0};
+            ev.kind = EV_CREATED, ev.actor = d->actor, ev.gen = d->gen, ev.decision = DEC_MINT;
+            ent_post(&ev);
+            rt_log("coop: ent: %lld a %s that was in this world before the session (at %.1f %.1f %.1f) is this host's: given an identity", (long long)now, nm, p[0], p[1], p[2]);
+        } else {
+            ctn_part_delete(c, d->actor);
+            rt_log("coop: ent: %lld a %s that was in this world before the session (at %.1f %.1f %.1f) is not in the host's: deleted here", (long long)now, nm, p[0], p[1], p[2]);
+        }
+        d->actor = 0;
+    }
 }
 // The test bench (coop_ent_bench.c): a device it made and claimed gets an identity as one this player put out.
 void coop_ent_test_mint(uint64_t actor) {

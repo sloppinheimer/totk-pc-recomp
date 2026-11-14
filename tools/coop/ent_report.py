@@ -165,11 +165,11 @@ def main():
             paused_until = t + 3
         frozen = t <= paused_until
         ea, eb = live(a), live(b)
-        for k, s in enumerate((a, b)):   # (a loose device in three lines in a row: one line can be a copy in the making)
+        for k, s in enumerate((a, b)):   # (a loose device in seven lines in a row: fewer can be a copy in the making, or a save's being taken)
             n = len(s.get('loose', []))
             loose_run[k] = min(loose_run[k], n) if loose_run[k] and n else n
             loose_len[k] = loose_len[k] + 1 if n else 0
-            if loose_len[k] >= 3:
+            if loose_len[k] >= 7:   # (a save's device is the host's or gone 3 s after the session has it: 7 lines is too long)
                 loose[k] = max(loose[k], loose_run[k])
                 loose_names[k] |= {x['name'] for x in s.get('loose', [])}
         for k, s in enumerate((a, b)):   # Ultrahand: what each Link holds, and whether the other game was told (class 1)

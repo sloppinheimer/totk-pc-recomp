@@ -13,6 +13,7 @@
 #   glue-both   glue-cross, then player 1 glues the third fan onto that pair: a second glue by the other player
 #   paused      hand-over while the owner has its inventory open: the take is asked of a paused game
 #   autobuild   player 1 builds the first Autobuild schematic (a wing with three fans): previews, the confirm, a build of four
+#   saved       each game starts with fans of its own that have no identity, as a save's: the host's two end in both games, the other's is gone
 #   powered     autobuild, then game 1 switches the build's fans on: a build that moves by its own devices, and their state
 param([string]$Only = "", [string]$Shots = "")
 $ErrorActionPreference = 'Stop'
@@ -30,7 +31,8 @@ $all = @(
     @{ name = 'glue-both';  bench = 'fans,aim1=2@36.7,aim2=0@22.7,join2=@25,join1=@39.5'; seconds = 88;  expect = 'hand1,hand2,bonds=2'; s1 = 'tools\coop\hand_glue_late.txt'; s2 = 'tools\coop\hand_glue.txt' },
     @{ name = 'paused';     bench = 'fans,aim2=0@22.7';                                   seconds = 88;  expect = 'hand2';               s1 = 'tools\coop\hand_pause.txt'; s2 = 'tools\coop\hand_a.txt' },
     @{ name = 'autobuild';  bench = 'fans,nofans';                                        seconds = 75;  expect = 'ents=4,bonds=3';      s1 = 'tools\coop\hand_autobuild.txt' },
-    @{ name = 'powered';    bench = 'fans,nofans,on=@38';                                 seconds = 85;  expect = 'ents=4,bonds=3,onseen'; s1 = 'tools\coop\hand_autobuild.txt' }
+    @{ name = 'powered';    bench = 'fans,nofans,on=@38';                                 seconds = 85;  expect = 'ents=4,bonds=3,onseen'; s1 = 'tools\coop\hand_autobuild.txt' },
+    @{ name = 'saved';      bench = 'fans,nofans,saved';                                  seconds = 60;  expect = 'ents=2' }
 )
 $want = if ($Only) { $Only -split ',' } else { $all | ForEach-Object { $_.name } }
 $summary = @()
