@@ -187,6 +187,11 @@ void own_end_hold(Cpu *c, Ent *e) {
     coop_guest_call(c, MOD_MAIN_BASE + 0x2b76c34, held + 0x378, (uint64_t)(uintptr_t)msg, 0, 0);
     if (hold_end.actor != held) hold_end.actor = held, hold_end.tries = 0;
     hold_end.sent = ent_ms(), hold_end.tries++;
+    {   // (a hold this code ends is a thing the player sees: always said)
+        char b[24] = "?";
+        Ent *he = ent_by_actor(held);
+        rt_log("coop: ent: %lld this Link's hold of %s is ended by this game (message %d)", (long long)ent_ms(), he ? ent_eid_str(he->id, b) : b, hold_end.tries);
+    }
 }
 // A ride is ended with the game's own get-off (S 5.6): main+0xc448c8(rider = [[Link +0x228] +0x410], 1, 1).
 void own_end_ride(Cpu *c) {

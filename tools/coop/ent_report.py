@@ -139,6 +139,7 @@ def main():
     loose = [0, 0]
     loose_names = [set(), set()]
     hand_s, hand_told = [0, 0], [0, 0]
+    timeline = defaultdict(list)
     bond_diff, bond_max = [], 0
     pairs, bi = 0, 0
     prev = None
@@ -183,6 +184,7 @@ def main():
                 continue
             dt = t - prev[0]['t']
             v = dist(own['p'], own_was['p']) / dt if dt > 0 else 0
+            timeline[eid].append(f"{t - t0:6.1f} s  owner {'1' if x['mine'] else '2'} class {own['cls']}  owner speed {v:5.2f} m/s  apart {d:.3f} m {ang:5.1f} deg")
             was_still = last_pair.get(eid, (9, 0))[0] < 0.05
             last_pair[eid] = (v, t)
             if v < 0.05 and was_still:
@@ -258,6 +260,10 @@ def main():
         failed += ok is False
         print(f'  {"PASS" if ok else "    " if ok is None else "FAIL"}  {name:9s} {text}')
     print('all measured lines pass' if not failed else f'{failed} line(s) fail')
+    if '--timeline' in sys.argv:   # every paired line of every entity: when it was apart, and what its owner did then
+        for eid in sorted(timeline):
+            print(f'-- {eid}')
+            print('\n'.join(timeline[eid]))
     return 1 if failed else 0
 
 

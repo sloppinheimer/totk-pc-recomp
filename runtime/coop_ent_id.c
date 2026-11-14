@@ -175,6 +175,8 @@ void coop_ent_grab_seen(uint64_t spr, uint64_t holder) {   // main+0x1c0b83c: an
     Ev ev = {0};
     ev.kind = EV_GRAB, ev.actor = spr, ev.a2 = holder;
     ent_post(&ev);
+    static _Atomic int said;
+    if (atomic_fetch_add(&said, 1) < 200) rt_log("coop: ent: %lld an Ultrahand takes hold (SPR %llx)", (long long)ent_ms(), (unsigned long long)spr);
 }
 void coop_ent_toggle_seen(uint64_t actor, int want) {   // a hit here on a device another game owns: the state wanted
     Ev ev = {0};

@@ -126,6 +126,17 @@ void coop_ent_bench_tick(Cpu *c, uint64_t me) {
         placed = 1;
         rt_log("coop: bench: %.1f s: this Link (player %d) put at %.1f 1514.8 %.1f", now, id, x, z);
     }
+    {   // what this Link's Ultrahand holds, said at each change: whether a scripted grab landed, and when it ended
+        static uint64_t held_was;
+        uint64_t held = ent_held_actor();
+        if (held != held_was) {
+            char nm[48] = "", b[24] = "-";
+            Ent *he = held ? ent_by_actor(held) : NULL;
+            if (held) coop_actor_name(held, nm, sizeof nm);
+            rt_log("coop: bench: %.2f s: this Link's Ultrahand holds %s%s%s", now, held ? nm : "nothing", he ? ", entity " : held ? ", no entity" : "", he ? ent_eid_str(he->id, b) : "");
+            held_was = held;
+        }
+    }
     if (id != 1) return;
     static _Alignas(16) uint8_t handle[FANS][0x40], link[FANS][0x40];
     static uint64_t fan[FANS];
