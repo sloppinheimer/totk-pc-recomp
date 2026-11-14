@@ -3,12 +3,16 @@
 # to the real profile. The copies are kept from one start to the next, with what was saved in them; -Fresh makes them
 # again from the real profile. (Made fresh each start, a session's saves were lost at the next one, a play session,
 # 2026-11-06.) Close either window (or this console) to end the session.
-#   powershell -ExecutionPolicy Bypass -File tools\coop\play_two.ps1 [-Fresh] [-TwoPads] [-ShareWorld]   (or double-click "Play co-op (two pads).vbs")
+#   powershell -ExecutionPolicy Bypass -File tools\coop\play_two.ps1 [-Fresh] [-FrozenSaves] [-TwoPads] [-ShareWorld]   (or double-click "Play co-op (two pads).vbs")
 # The other player is shown as a PlayerPuppet, TotK Online's stand-in (its pack made by tools/coop/make_puppet_pack.py).
 # Horses stay off. -ShareWorld adds shared world progress (TOTK_COOP_SHARE_WORLD=1), not yet for play: on two saves
 # each game's own load was taken as changes and sent to the other (2026-11-07).
+# -FrozenSaves: each start both games get the saves of the real profile again (its save, save-backup and save-tx
+# folders), so what a session saves is gone at the next start and every test begins from the same three saves. The rest
+# of a play copy (mods, play time) is kept. The saves a copy held at the first such start are moved to
+# build\prof-play-N-saves-kept, once, and never touched again.
 param([string]$Name1 = "Player 1", [string]$Name2 = "Player 2", [string]$Size = "1904x1071", [switch]$Fresh, [switch]$TwoPads,
-      [switch]$ShareWorld)
+      [switch]$ShareWorld, [switch]$FrozenSaves)
 # One gamepad (the first) moves both games; Minus with the right stick click, or F9, switches to only the game in
 # focus and back (input.c, pad_focus_gate). -TwoPads: game 1 reads the first gamepad, game 2 the second, as before.
 $ErrorActionPreference = 'Stop'
@@ -43,6 +47,16 @@ foreach ($g in @(@{dir = $a; n = 1; name = $Name1; pad = '0'}, @{dir = $b; n = 2
     $p = Join-Path $root "build\prof-play-$($g.n)"
     if ($Fresh -and (Test-Path $p)) { Remove-Item -Recurse -Force $p }
     if (-not (Test-Path $p)) { Copy-Item -Recurse (Join-Path $root 'build\profile-v143') $p }
+    elseif ($FrozenSaves) {
+        $kept = Join-Path $root "build\prof-play-$($g.n)-saves-kept"
+        $first = -not (Test-Path $kept)
+        if ($first) { New-Item -ItemType Directory $kept | Out-Null }
+        foreach ($d in 'save', 'save-backup', 'save-tx') {
+            $have = Join-Path $p $d; $orig = Join-Path $root "build\profile-v143\$d"
+            if (Test-Path $have) { if ($first) { Move-Item $have (Join-Path $kept $d) } else { Remove-Item -Recurse -Force $have } }
+            if (Test-Path $orig) { Copy-Item -Recurse $orig $have }
+        }
+    }
     $env:TOTK_PROFILE_DIR = $p
     $env:TOTK_PAD_INDEX = $g.pad
     $env:TOTK_ASSUME_FOCUS = '1'        # both games keep running and reading their pad without the focus
