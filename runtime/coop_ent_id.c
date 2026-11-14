@@ -136,6 +136,7 @@ static void loose_fn(uint64_t a, void *arg) {
     LooseDev *free_row = NULL;
     coop_actor_name(a, nm, sizeof nm);
     if (strncmp(nm, "SpObj_", 6) || strstr(nm, "Capsule") || !ctn_alive(a) || coop_ent_is(a) || coop_is_copy(a) || coop_actor_placed(a)) return;
+    if (coop_held_here(a)) return;   // (what this Link holds with Ultrahand is never taken from its hand)
     uint32_t gen = ctn_gen_of(a);
     for (int i = 0; i < 96; i++) {
         if (loose_dev[i].actor == a && loose_dev[i].gen == gen) { loose_dev[i].seen = 1; return; }
@@ -146,10 +147,16 @@ static void loose_fn(uint64_t a, void *arg) {
 void coop_ent_saved_tick(Cpu *c) {
     static int on = -1;
     static int64_t last;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_SAVED_DEVICES"); on = !(e && *e == '0'); }
+    // Off unless TOTK_COOP_SAVED_DEVICES=1 (code review 3): "the host" is taken as relay id 1 here, which is whoever
+    // connected first, so a host that came second would have its own world's devices deleted; and the rule takes every
+    // device without an identity, not only a save's (one the mirror declined, a fused one if it keeps its SpObj name,
+    // a copy maker's orphan). It deletes, so it stays off until who the host is comes from the session and the rule is
+    // narrowed to what was there at the join. With it off, a save's devices are in one game only, as before.
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_SAVED_DEVICES"); on = e && *e == '1'; }
     int64_t now = ent_ms();
     int id = coop_net_id();
-    if (!on || !ent_on() || id <= 0 || ent_loading() || now - last < 500) return;
+    int coop_runs_for_ms(void);   // coop_players.c: -1 while this game sits in a menu (phase 0 takes no create then)
+    if (!on || !ent_on() || id <= 0 || ent_loading() || coop_runs_for_ms() < 1000 || now - last < 500) return;
     last = now;
     if (id > 1 && !coop_ctr_incarnation(1)) return;   // (no host known yet: nothing is deleted)
     for (int i = 0; i < 96; i++) loose_dev[i].seen = 0;
@@ -466,6 +473,10 @@ void ent_ring_events(Cpu *c) {
     for (int i = 0; i < ENT_N; i++) {
         Ent *e = &ents[i];
         if (!e->used || !(e->flags & ENT_PREVIEW)) continue;
+        // A preview whose actor is gone with no delete seen (it went before its row was in the published set the
+        // delete hook reads) is a cancelled one: dropped. Kept, it never confirmed, its run never ended, and the copy
+        // maker waited on it for good (code review 3).
+        if (!e->actor || !ctn_alive_as(e->actor, e->gen)) { ent_drop(e); continue; }
         int holo = 0, queued_any = 0, seen = 1;
         for (int k = 0; k < ENT_N; k++) {
             Ent *o = &ents[k];
@@ -480,12 +491,14 @@ void ent_ring_events(Cpu *c) {
         if (holo) { e->make_ms = 0; continue; }
         // The parts of an Autobuild are there a second or two before the hologram bit is on them (the Autobuild screen
         // is still open: SPR +0x20 read 0x2 then, 0xc014000000002 once the design was picked, a bench run). A run
-        // whose hologram has not been seen yet is not confirmed by the bit being clear: it waits for the bit, 30 s at
-        // most (a maker run that never shows one is taken as it is then, and said).
+        // whose hologram has not been seen yet is not confirmed by the bit being clear: it waits for the bit, with no
+        // limit (a limit of 30 s stated the Autobuild screen's own parts of a player who looked at one design that
+        // long, code review 3). Said once a minute while it waits.
         if (!seen) {
-            if (now - e->preview_ms < 30000) continue;
-            rt_log("coop: ent: %lld a part maker's run showed no hologram for 30 s: its parts are taken as a build", (long long)now);
-            for (int k = 0; k < ENT_N; k++) if (ents[k].used && (ents[k].flags & ENT_PREVIEW) && ents[k].batch == e->batch) ents[k].holo_seen = 1;
+            static int64_t said;
+            if (now - e->preview_ms > 60000 && now - said > 60000)
+                said = now, rt_log("coop: ent: %lld parts of a part maker's run of this game have shown no hologram for over a minute: they stay this game's alone", (long long)now);
+            continue;
         }
         if (!e->make_ms) e->make_ms = now;   // (confirmed: every hologram bit is clear)
         if (queued_any && now - e->make_ms < 1000) continue;

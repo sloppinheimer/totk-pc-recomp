@@ -777,7 +777,9 @@ void coop_life_veto_rebuild(Cpu *c, const uint64_t *parts, int nparts, const uin
     if (!on) return;
     static int64_t last;
     int64_t now = frame_step_world_us();
-    if (now - last < 250000 && now >= last) return;
+    // (the caller's 0.1 s is the period; this one, on the world clock, only keeps a paused game from rebuilding. Two
+    // gates of 0.25 s each on two clocks made the lists up to 0.5 s old, longer than the hold after a placement.)
+    if (now - last < 50000 && now >= last) return;
     last = now;
     int coop_players_all(uint64_t *out, int max);
     uint64_t coop_eq_row_ref(uint64_t actor, int row);

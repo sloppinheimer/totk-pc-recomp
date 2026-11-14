@@ -357,7 +357,9 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
     // Just put in place: held still there for 0.4 s, and counted as resting, so that the list of copies that pass
     // through each other (rebuilt four times a second) has it as a resting one before it is let go: let go at once, a
     // copy whose place is against another copy fell through it and left its rest again.
-    if (now < fs->hold_until) {
+    // (the timers of a drive that was not run for a while, as while this player's take was open, are not carried over)
+    if (fs->last_us && now - fs->last_us > 500000) fs->off_since = fs->stuck_since = 0, fs->have_written = 0, fs->hold_until = 0;
+    if (now < fs->hold_until && cls == CLS_IDLE) {   // (not once its owner has taken it up: the copy goes with the hand)
         _Alignas(16) static const float zero[4] = {0, 0, 0, 0};
         for (int j = 0; j < np; j++) {
             uint64_t b = (skip >> j & 1) || !alive_as(parts[j], gens[j]) ? 0 : main_body_of(parts[j]);
@@ -413,6 +415,7 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
     mat_mul3(r_star, rft, re), log_rot(re, e_r);
     float ep = sqrtf(e_p[0] * e_p[0] + e_p[1] * e_p[1] + e_p[2] * e_p[2]), er = sqrtf(e_r[0] * e_r[0] + e_r[1] * e_r[1] + e_r[2] * e_r[2]);
     *err_out = ep;
+    if (ep > 10.0f) memset(fs->integ, 0, sizeof fs->integ), memset(fs->comp, 0, sizeof fs->comp);   // (the caller teleports it: nothing built up is kept)
     double dt = fs->last_us && now > fs->last_us ? (now - fs->last_us) / 1e6 : 1 / 60.0;
     if (dt > 0.1) dt = 0.1;
     fs->last_us = now;
@@ -438,7 +441,8 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
     if (vn_now < 0.5f) fs->comp[0] *= 0.8f, fs->comp[2] *= 0.8f;
     // rest: the runner still for 0.5 s and the copy where it should be: nothing written, bodies may sleep
     float vn = sqrtf(v_r[0] * v_r[0] + v_r[1] * v_r[1] + v_r[2] * v_r[2]), wn = sqrtf(w_r[0] * w_r[0] + w_r[1] * w_r[1] + w_r[2] * w_r[2]);
-    if (vn < 0.05f && wn < 0.05f) { if (!fs->still_since) fs->still_since = hus[2]; }
+    // (0.1 m/s for a velocity the owner read from its body: a body that rests awake does not read exactly none)
+    if (vn < (hv_ok ? 0.1f : 0.05f) && wn < 0.05f) { if (!fs->still_since) fs->still_since = hus[2]; }
     else fs->still_since = 0;
     // An object its owner holds or rides is never at rest: held still in the air it met the rule, nothing was written,
     // the copy fell out of the band and was caught again, over and over.
@@ -465,9 +469,25 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
     // Once it has been put in place in this rest of the runner, a copy that comes to lie a few degrees off again is
     // left so, up to the leave band: its own resting place on the ground is not the runner's to the degree (a fan on
     // its edge lay 5 degrees off after every placement, and was put back every 2 s without end).
-    int out_of_place = fs->placed ? ep > 0.25f || er * deg > 8 : !in_band;
+    // A copy is put in place three times at most in one rest of the runner; after that it is held by the field where
+    // it can be (code review 3: nothing ended the placements of a copy that cannot stay, one every 2.4 s). And never
+    // while this game's Link stands within 1.5 m of the place: the copy is solid to this Link (in its owner's game this
+    // player's stand-in is not), and was put inside the Link again and again.
+    int out_of_place = fs->placed ? ep > 0.25f || er * deg > 8 : !in_band, may_place = fs->placed < 3;
+    {
+        float lp[3];
+        uint64_t link = coop_player_actor();
+        if (link && coop_rd(link + COOP_ACTOR_POS, lp, 12)) {
+            float dx = lp[0] - hm[2][3], dy = lp[1] - hm[2][7], dz = lp[2] - hm[2][11];
+            if (dx * dx + dy * dy + dz * dz < 1.5f * 1.5f) may_place = 0;
+        }
+    }
     if (!runner_rests) fs->placed = 0;
-    if (!runner_rests || !out_of_place) fs->off_since = 0;
+    if (runner_rests && out_of_place && fs->placed >= 3 && !fs->no_rest) {
+        fs->no_rest = 1, fs->rest = 0;
+        rt_log("coop: follow: copy %08x put in place three times in one rest of its owner's object: held by the drive from here", key);
+    }
+    if (!runner_rests || !out_of_place || !may_place) fs->off_since = 0;
     else if (!fs->off_since) fs->off_since = now;
     else if (now - fs->off_since > 2000000) {
         fs->off_since = 0, fs->placed++;
@@ -486,12 +506,15 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
     {
         float vb0[3] = {0}, vw = sqrtf(fs->v_written[0][0] * fs->v_written[0][0] + fs->v_written[0][1] * fs->v_written[0][1] + fs->v_written[0][2] * fs->v_written[0][2]);
         int coop_runs_for_ms(void);   // coop_players.c: -1 while this game sits in a menu (nothing moves then)
-        int stuck = fs->have_written && coop_runs_for_ms() > 500 && ep > 0.25f && vw > 1.0f && coop_rd(rb + 0xf8, vb0, sizeof vb0) &&
+        // Only while the runner rests (code review 3): a copy carried past an edge is held up for a moment too, and
+        // put at the runner's last pose and held still it fell behind its owner and hung in the air; and counted with
+        // the 2 s rule's placements, under the same limits.
+        int stuck = runner_rests && may_place && fs->have_written && coop_runs_for_ms() > 500 && ep > 0.25f && vw > 1.0f && coop_rd(rb + 0xf8, vb0, sizeof vb0) &&
                     sqrtf(vb0[0] * vb0[0] + vb0[1] * vb0[1] + vb0[2] * vb0[2]) < vw / 3;
         if (!stuck) fs->stuck_since = 0;
         else if (!fs->stuck_since) fs->stuck_since = now;
         else if (now - fs->stuck_since > 500000) {
-            fs->stuck_since = 0, fs->off_since = 0;
+            fs->stuck_since = 0, fs->off_since = 0, fs->placed++;
             rt_log("coop: follow: copy %08x does not move when written to (%.3f m off, %.1f m/s written): put in place", key, ep, vw);
             memset(fs->integ, 0, sizeof fs->integ), memset(fs->comp, 0, sizeof fs->comp), fs->have_written = 0;
             if (runner_rests && !fs->no_rest) fs->rest = 1;
@@ -1489,7 +1512,9 @@ int ctn_make_is(Eid root) {
     return eid_eq(mk_done_root, root) && ent_ms() - mk_done_ms < 700;
 }
 static void mk_end(int failed) {
-    mk_done_root = mk.root, mk_done_ms = ent_ms();
+    // (after a make that failed there is nothing to leave alone: its island takes its back-off in the reconcile)
+    if (failed) mk_done_ms = 0;
+    else mk_done_root = mk.root, mk_done_ms = ent_ms();
     for (int i = 0; i < 21; i++) atomic_store(&mk_pub[i], 0);
     if (failed && mk.st_i >= 0 && mk.st_i < STATED_N && stated[mk.st_i].used && eid_eq(stated[mk.st_i].root, mk.root)) {
         Stated *st = &stated[mk.st_i];

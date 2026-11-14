@@ -1177,3 +1177,51 @@ other game (`coop_ent_saved_tick`, coop_ent_id.c, on the co-op tick; TOTK_COOP_S
 that saves afterwards saves its world without those devices. The suite's scenario "saved" makes two such fans in
 game 1 and one in game 2: both games end with the host's two (by the report, and by pictures of both games: three
 fans in the guest's picture at 18 s, its own among them, the host's two at 34 s).
+
+## 22. Code review 3 (2026-11-14): the day's changes, four readers
+
+Readings: research notes sync-v4/code-review3 (drive, identity, veto-and-tests, interactions). What was changed for
+it, and what was left.
+
+**Changed.**
+- The rule for devices that were in the world before the session (section 21) is off unless TOTK_COOP_SAVED_DEVICES=1.
+  It took "the host" as relay id 1, which is whoever connected first: a host that came second would have had its own
+  world's devices deleted. It also takes any device without an identity, not only a save's. Until the host comes from
+  the session and the rule is narrowed to what was there at the join, a save's devices are in one game only (note 7
+  stands). With it on, nothing this Link holds is taken, and nothing while this game sits in a menu.
+- Placements end: three at most in one rest of the owner's object (the 2 s rule and the stuck rule together), then the
+  copy is held by the field. (Section 21 and a comment said so before; no code did.)
+- No placement while this game's Link stands within 1.5 m of the place: the copy is solid to this Link, the owner's
+  game has only this player's stand-in there, and the copy was put inside the Link again and again.
+- The stuck rule runs only while the owner's object rests; the hold after a placement ends when the owner takes the
+  object up; the timers of a drive that was not run for 0.5 s are not carried over; a 10 m teleport drops what the
+  field had built up.
+- An arrival offset over 0.1 s above the kept minimum is taken at once: an owner's hitch made every pose read older
+  for up to 10 s, and with the fade its copies had no velocity then.
+- A sent velocity under 0.1 m/s counts as still (0.05 for one taken from poses).
+- A preview's run waits for its hologram with no limit (30 s stated the Autobuild screen's parts of a player who
+  looked that long); a preview whose actor is gone with no delete seen is dropped (it blocked the copy maker for good).
+- A failed make keeps its back-off: the maker's guard in the reconcile comes after the back-off test and does not
+  follow a failed run.
+- The veto's lists are rebuilt every 0.1 s (two gates of 0.25 s on two clocks made them up to 0.5 s old); the parts
+  list is bounded.
+- The report: a line that does not parse (a nan or inf in a matrix) fails the run; so does an audit that ends over
+  5 s before the other, a fault in four lines in all (not only two in a row), an expectation it does not know, and any
+  error in the script; "bonds=N" needs N in both games; a hold of something that is no entity is no grab; the drive
+  scenario expects its own "landed" lines. The suite passes a scenario only on the report's "all measured lines
+  pass".
+
+**Left, known.**
+- The copy-pair veto counts as moving every copy the drive does not let rest (a new row, one held by the field, one
+  with no pose for 2.5 s): a copy resting on such a one has no support for that time.
+- The veto's lists are capped at 2560 records with a 1024-bit filter and linear scans behind it; with many entities
+  the cap drops the last ones silently and the scans cost frame time. Not measured.
+- A part that reads green only after it was stated is stated again, but a follower that has made its copy keeps it
+  plain.
+- The audit is on in every co-op session and its file grows without limit (the entity part adds to it).
+- The velocity sent is read from the body a frame after the pose it goes with, and may be the centre of mass's.
+- A build made above a Link that stands in its place is brought down onto that Link by the field.
+- These sections describe an earlier state and are to be read with sections 20 to 22: 4.2 rule 6, 4.4 and 4.6
+  (previews, entering by a scan), 6.1 (POSE carries `v`), 7.4 and 9.2 (the maker waits for the Link; now it lifts),
+  11 (the veto's lists, rebuilt at 10 Hz), 12.1 (2.5 s without a pose, the leave band, the fade, the stuck rule, the
+  hold), 15 (its drive test), 18.

@@ -258,8 +258,8 @@ static void rec_one(Cpu *c, Stated *st, int st_i) {
         if (lim < 15) lim = 15;   // (a radius that was not read, or a small one: still made when this Link stands by it)
         in_range = sqrtf(dx * dx + dy * dy + dz * dz) < lim;
     }
+    if (st->state == ST_NOT_SHOWN && now < st->backoff_until) return;   // (before the maker's guard: a failed make keeps its back-off)
     { int ctn_make_is(Eid root); if (ctn_make_is(st->root)) { st->state = ST_MAKING, st->pass_ms = now; return; } }   // (the maker has it: coop_ctn.c)
-    if (st->state == ST_NOT_SHOWN && now < st->backoff_until) return;
     if (missing && !in_range) { st->state = ST_FAR, st->why = WHY_NONE, st->passes = 0; return; }
     if (st->state == ST_FAR) st->passes = 0, st->backoff = 0, st->rung2_done = 0;   // (came into range)
     if (missing && !making) {

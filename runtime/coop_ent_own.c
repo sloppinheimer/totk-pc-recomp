@@ -692,7 +692,10 @@ static void pose_in(const CoopCtrMsg *m) {
             memmove(g->hm[0], g->hm[1], 2 * sizeof g->hm[0]), memmove(g->hus, g->hus + 1, 2 * sizeof g->hus[0]);
             memcpy(g->hm[2], s.m, sizeof s.m), g->hus[2] = s.us;
             memcpy(g->hv, s.v, sizeof g->hv), g->hv_ok = (s.flags & POSE_VEL) != 0;
-            if (!g->clock_off_at || off < g->clock_off || wnow - g->clock_off_at > 10000000) g->clock_off = off, g->clock_off_at = wnow;
+            // (an offset over 0.1 s above the kept minimum is taken at once: the owner's world clock loses time when its
+            // game hitches, and until the 10 s renewal every pose then read as that much older, which with the fade of
+            // the sent velocity left its copies without one; a single late packet raises it for one pose only)
+            if (!g->clock_off_at || off < g->clock_off || off > g->clock_off + 100000 || wnow - g->clock_off_at > 10000000) g->clock_off = off, g->clock_off_at = wnow;
         }
         uint32_t mine_digest = st ? st->my_digest : e->digest;
         if (mine_digest == s.digest && s.n == g->n) {

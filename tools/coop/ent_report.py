@@ -35,16 +35,25 @@ import sys
 from collections import defaultdict
 
 
+BAD_LINES = {}   # path -> lines that did not parse, the last one aside
+
+
 def load(path):
-    out = []
+    """the audit's lines; a line that does not parse is counted unless it is the last (cut short when the game was
+    closed): a matrix with nan or inf in it is written so that the line does not parse, and that is a finding"""
+    out, bad, last_bad = [], 0, False
     if not os.path.exists(path):
         return out
     with open(path, encoding='utf-8', errors='replace') as f:
         for line in f:
+            if not line.strip():
+                continue
             try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass   # a line cut short when the game was closed
+                out.append(json.loads(line, parse_constant=lambda c: (_ for _ in ()).throw(ValueError(c))))
+                last_bad = False
+            except (json.JSONDecodeError, ValueError):
+                bad, last_bad = bad + 1, True
+    BAD_LINES[path] = bad - (1 if last_bad else 0)
     return out
 
 
@@ -120,9 +129,9 @@ def main():
     logs = [os.path.join(d, 'logs', 'totk.log') for d in dirs]
     results = []   # (name, ok or None, text)
     # the bench's own word on its scenario
-    bench = [l for log in logs for l in grep(log, r'coop: bench: .*(landed|did not land|not ready|is gone)')]
+    bench = [l for log in logs for l in grep(log, r'coop: bench: .*(landed|did not land|will not land|not ready|is gone|was not brought)')]
     if bench:
-        bad = [l for l in bench if 'did not land' in l or 'not ready' in l or 'is gone' in l]
+        bad = [l for l in bench if 'not land' in l or 'not ready' in l or 'is gone' in l or 'was not brought' in l]
         results.append(('scenario', not bad, '; '.join(l.split('coop: bench: ')[1] for l in bench)))
     if '--bench' in sys.argv:   # a bench run: both games must have been in the world, and the scene made
         for k in (0, 1):
@@ -130,11 +139,18 @@ def main():
                 results.append(('scene', False, f'the game of {dirs[k]} never put its Link in place: it did not reach the world, or had no other player (the bench runs with one)'))
         if not grep(logs[0], 'coop: bench: .*scene ready') and not grep(logs[1], 'coop: bench: .*scene ready'):
             results.append(('scene', False, 'the fans were never made'))
+    for path, bad in BAD_LINES.items():   # (python reads nan and inf; the loader refuses them)
+        if bad:
+            results.append(('audit', False, f'{bad} lines of {path} do not parse: a place or rotation that is not a number (nan, inf) writes such a line'))
     if not A or not B or 'ents' not in A[-1] or 'ents' not in B[-1]:
+        results.append(('audit', False, f'no entity audit to compare: {len(A)} lines in {dirs[0]}, {len(B)} in {dirs[1]}'))
         for name, ok, text in results:
             print(f'  {"PASS" if ok else "FAIL"}  {name:9s} {text}')
-        print(f'no entity audit to compare: {len(A)} lines in {dirs[0]}, {len(B)} in {dirs[1]}')
+        print('nothing was measured: the run fails')
         return 1
+    # both games wrote to the end: one that stopped over 5 s before the other hung or was closed early
+    if abs(A[-1]['t'] - B[-1]['t']) > 5:
+        results.append(('audit', False, f'the audit of {dirs[0] if A[-1]["t"] < B[-1]["t"] else dirs[1]} ends {abs(A[-1]["t"] - B[-1]["t"]):.0f} s before the other game\'s: that game stopped'))
     first_seen, last_pair = {}, {}
     missing, owners = defaultdict(list), defaultdict(list)
     rest_d, rest_a, move_d = [], [], []
@@ -174,7 +190,7 @@ def main():
                 loose_names[k] |= {x['name'] for x in s.get('loose', [])}
         for k, s in enumerate((a, b)):   # Ultrahand: what each Link holds, and whether the other game was told (class 1)
             h = s.get('hand', '')
-            if h:
+            if h and h != '?':   # ("?": it holds something that is no entity)
                 hand_s[k] += 1
                 other = (eb, ea)[k].get(h)
                 hand_told[k] += bool(other and other.get('cls') == 1)
@@ -219,7 +235,9 @@ def main():
                     worst_move = (d, f"{x['name']} {eid} at {t - t0:.0f} s: {d:.2f} m at {v:.1f} m/s")
         prev = (a, b)
 
-    def held(hits):   # in two paired lines in a row
+    def held(hits):   # in two paired lines in a row, or in four lines in all (a fault that comes and goes every other line)
+        if len(hits) >= 4:
+            return hits
         return [h for i, h in enumerate(hits) if (i and hits[i - 1][0] > h[0] - 1.6) or (i + 1 < len(hits) and hits[i + 1][0] < h[0] + 1.6)]
     miss = {k: held(v) for k, v in missing.items() if held(v)}
     own = {k: held(v) for k, v in owners.items() if held(v)}
@@ -235,7 +253,7 @@ def main():
             longest = run
         if run == 4 and not first_long:
             first_long = h
-    results.append(('bonds', None if not bond_max and not bond_diff else longest <= 3,
+    results.append(('bonds', None if not bond_max and not bond_diff else longest <= 3 and len(bond_diff) <= 8,
                     f'at most {bond_max} bonds; ' + ('the same in both games' if not bond_diff else f'different in {len(bond_diff)} lines, {longest} in a row at most'
                                                      + (f' ({first_long[1]} at {first_long[0] - t0:.0f} s)' if first_long else ''))))
     # devices switched on: the same ones in both games (a difference of up to 2 lines in a row is a switch on its way)
@@ -243,7 +261,7 @@ def main():
     for i, h in enumerate(on_diff):
         run = run + 1 if i and on_diff[i - 1][0] > h[0] - 1.6 else 1
         longest_on = max(longest_on, run)
-    results.append(('devices', None if not on_max and not on_diff else longest_on <= 2,
+    results.append(('devices', None if not on_max and not on_diff else longest_on <= 2 and len(on_diff) <= 6,
                     f'at most {on_max} on in both games at once; ' + ('the same ones on in both' if not on_diff else f'different in {len(on_diff)} lines, {longest_on} in a row at most ({on_diff[0][1]} at {on_diff[0][0] - t0:.0f} s)')))
     for k in (0, 1):
         if hand_s[k]:
@@ -264,8 +282,13 @@ def main():
                 na, nb2 = len(live(A[-1])), len(live(B[-1]))
                 results.append(('expected', na == nb2 == int(want[5:]), f'{want[5:]} entities at the end: {na} and {nb2}'))
             elif want.startswith('bonds='):
-                last = min(len(A[-1].get('bonds', [])), len(B[-1].get('bonds', [])))
-                results.append(('expected', last == int(want[6:]), f'{want[6:]} bonds at the end: {len(A[-1].get("bonds", []))} and {len(B[-1].get("bonds", []))}'))
+                na, nb2 = len(A[-1].get('bonds', [])), len(B[-1].get('bonds', []))
+                results.append(('expected', na == nb2 == int(want[6:]), f'{want[6:]} bonds at the end: {na} and {nb2}'))
+            elif want == 'drive':   # the scripted drive said that its carry and its tip landed
+                said = [l for log in logs for l in grep(log, r'coop: bench: .*(carry|tip).*: landed')]
+                results.append(('expected', len(said) >= 2, f'the scripted drive says its carry and its tip landed: {len(said)} of 2 lines'))
+            else:
+                results.append(('expected', False, f'"{want}" is no expectation this script knows'))
     if rest_d:
         ok = pct(rest_d, .9) <= 0.10 and pct(rest_a, .9) <= 5 and max(rest_d) <= 0.25 and max(rest_a) <= 10
         results.append(('rest', ok, f'{len(rest_d)} lines: {pct(rest_d, .5):.3f} m median, {pct(rest_d, .9):.3f} at 90%, {max(rest_d):.3f} at most; '
@@ -318,4 +341,14 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')   # (a name with a byte the console cannot print must not end the report)
+    except (AttributeError, ValueError):
+        pass
+    try:
+        code = main()
+    except Exception as e:   # a report that could not be made is a failed run, said in the report's own words
+        print(f'  FAIL  report    the report could not be made: {type(e).__name__}: {e}')
+        print('1 line(s) fail')
+        code = 1
+    sys.exit(code)

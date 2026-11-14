@@ -525,7 +525,7 @@ static void publish(Cpu *c) {
             // The stand-in veto takes every entity, loose ones too: a loose copy is a free body under the drive, and
             // a stand-in walking into it pushed it where the player's own game moved nothing; an owned loose object
             // is the real one and another player's stand-in must not move it either.
-            part_list[np++] = mem[k]->actor;
+            if (np < ENT_N) part_list[np++] = mem[k]->actor;
             if (nm >= 2) set_add(ENT_SET_PART, mem[k]->actor);
             if (!mine) {
                 set_add(ENT_SET_FOLLOWER, mem[k]->actor);
@@ -581,7 +581,7 @@ static void publish(Cpu *c) {
         set_commit(w);
     }
     static int64_t veto_ms;
-    if (now - veto_ms > 250) veto_ms = now, coop_life_veto_rebuild(c, part_list, np, drv_list, nd, mov_list, nmv);
+    if (now - veto_ms > 100) veto_ms = now, coop_life_veto_rebuild(c, part_list, np, drv_list, nd, mov_list, nmv);
 }
 
 // An entity as the riders name it between the games (coop_players.c: the stand-in of a player who stands on it is
