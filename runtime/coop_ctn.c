@@ -371,6 +371,13 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
     // acceleration taken from three poses sat at its clamp: no acceleration is used.
     float v_d[3] = {v_r[0], v_r[1], v_r[2]};   // (the difference of the last two poses, kept for the trace: the sent one is checked against it)
     if (hv_ok) memcpy(v_r, hv, sizeof v_r);
+    // A velocity is good for the pose it came with. An owner whose object stops goes to one pose a second, and the
+    // last pose before that may carry the speed of a moment: carried on for that second it put the target 0.5 m
+    // past the object (a bench run). Past 0.1 s of age the velocities fade, to none at 0.3 s.
+    if (age > 0.1) {
+        float keep = age >= 0.3 ? 0 : (float)((0.3 - age) / 0.2);
+        for (int i = 0; i < 3; i++) v_r[i] *= keep, w_r[i] *= keep;
+    }
     // the prediction: where the runner's root is now
     float p_star[3], v_star[3], r_star[9], r_now[9];
     for (int i = 0; i < 3; i++) p_star[i] = hm[2][i * 4 + 3] + v_r[i] * (float)tau + 0.5f * a_r[i] * (float)(tau * tau), v_star[i] = v_r[i] + a_r[i] * (float)tau;
