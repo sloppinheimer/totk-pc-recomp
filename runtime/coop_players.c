@@ -3951,7 +3951,18 @@ static void stand_test(Cpu *c, uint64_t me) {
 // half the glider's speed); objects are sent within 20 m of any Link (a glider flown 20 m from its maker went away
 // under its rider). At 5 m/s B rode the 50 m, 0.1-0.2 m from where it stood, and came down with the glider after.
 // Seen in the other games the rider is put on their one of the object (ride_place). TOTK_COOP_RIDE=0 turns it off.
-typedef struct { uint64_t actor; float pos[3], rot[9]; int owner; uint32_t id; int native; } RideObj;   // native: a part of a build this game runs
+// An entity of the entity sync is ridden by other rules than a loose copy (a play session, 2026-11-14, a car with one
+// player at its stick and one on its deck):
+// - A part of a build reaches 3.5 m across and 2.5 m up from its origin (reach, top): a Link on a long deck is further
+//   than 1.6 m from every part's origin, rode nothing by that rule and sent no ride, and the driver's game placed its
+//   stand-in from its state 60 ms old while the car was at its present (it trailed and shook).
+// - It is never carried by ride_carry (native): a copy of an entity is moved by velocities, and its body carries the
+//   Link by the game's own physics (the passenger above kept its place on the deck within 3 cm for 18 s at 5.9 m/s
+//   while it rode nothing here). ride_carry's forced place is for copies that are put in place.
+// - A part whose body collides with nothing is not ridden (ctn_part_solid): a battery that runs out leaves its build
+//   and lies loose for about a second before it goes; the Link beside it rode it for that second by the 1.6 m rule,
+//   and ride_carry put the battery's tumble on the Link (in one session it sank through the deck in that second).
+typedef struct { uint64_t actor; float pos[3], rot[9]; int owner; uint32_t id; int native; float reach, top; } RideObj;   // native: its body carries the Link by itself
 static int ride_objects(RideObj *out, int max, const float near[3]) {
     int n = 0;
     for (int i = 0; i < COOP_MAX_PLAYERS; i++)
@@ -3963,6 +3974,7 @@ static int ride_objects(RideObj *out, int max, const float near[3]) {
                 int coop_ctn_part(uint64_t a);
                 if (coop_ctn_part(slots[i].mir[k].actor)) continue;   // (a build's part: below, at its place now)
                 out[n].actor = slots[i].mir[k].actor, out[n].owner = slots[i].net_id, out[n].id = slots[i].mir[k].id, out[n].native = 0;
+                out[n].reach = 1.6f, out[n].top = 1.6f;
                 memcpy(out[n].pos, slots[i].mir[k].pos, 12), memcpy(out[n].rot, slots[i].mir[k].rot, 36);
                 n++;
             }
@@ -3986,15 +3998,20 @@ static int ride_objects(RideObj *out, int max, const float near[3]) {
             if (!coop_rd(parts[j] + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || !coop_rd(parts[j] + COOP_ACTOR_POS, out[n].pos, 12)) continue;
             float dx = out[n].pos[0] - near[0], dz = out[n].pos[2] - near[2];
             if (dx * dx + dz * dz > 16.0f || !coop_rd(parts[j] + COOP_ACTOR_ROT, out[n].rot, 36) || !coop_obj_ident(parts[j], &owner, &id) || !id) continue;
-            // (a part of a build this game runs carries the Link by its own physics: listed so the ride is sent, never
+            // (an entity carries the Link by its own physics, owned here or a copy: listed so the ride is sent, never
             // moved by ride_carry, which moved the Link a second time each tick, finding 5)
-            out[n].actor = parts[j], out[n].owner = owner, out[n].id = id, out[n].native = coop_ctn_runs_part(parts[j]);
+            int ctn_part_solid(uint64_t a), coop_ctn_part(uint64_t a);
+            if (!ctn_part_solid(parts[j])) continue;
+            int built = coop_ctn_part(parts[j]);
+            out[n].actor = parts[j], out[n].owner = owner, out[n].id = id, out[n].native = 1;
+            out[n].reach = built ? 3.5f : 1.6f, out[n].top = built ? 2.5f : 1.6f;
             n++;
         }
     }
     for (int k = 0; k < 128 && n < max; k++)
         if (key_found[k].actor && key_found[k].last && prop_tick - key_found[k].last < 150 && !pickable(key_found[k].name)) {
             out[n].actor = key_found[k].actor, out[n].owner = key_found[k].from, out[n].id = COOP_OBJ_KEYED | key_found[k].key, out[n].native = 0;
+            out[n].reach = 1.6f, out[n].top = 1.6f;
             memcpy(out[n].pos, key_found[k].pos, 12), quat_mat(key_found[k].q, out[n].rot);
             n++;
         }
@@ -4212,21 +4229,42 @@ static void ride_carry(Cpu *c, uint64_t me) {
     int n = ride_objects(objs, 64, p);
     static float stand_y;   // this Link's height above the object's origin, in its frame, when it stepped on
     const RideObj *on = NULL;
-    for (int i = 0; i < n && !on; i++) {
+    float best = 1e9f;
+    // What it rides stays while it is still on it; else the nearest it is on (the first in the list was taken: with
+    // a build's reach several parts answer, and the list's order is the registry's).
+    for (int i = 0; i < n; i++) {
         float dx = p[0] - objs[i].pos[0], dy = p[1] - objs[i].pos[1], dz = p[2] - objs[i].pos[2];
         // on it: above its origin; once riding, down to 0.5 m below the boarding height too (it sinks in)
         float lo = objs[i].actor == riding ? stand_y - 0.5f : 0;
-        if (dx * dx + dz * dz < 1.6f * 1.6f && dy > lo && dy < 1.6f) on = &objs[i];
+        if (dx * dx + dz * dz >= objs[i].reach * objs[i].reach || dy <= lo || dy >= objs[i].top) continue;
+        if (objs[i].actor == riding) { on = &objs[i]; break; }
+        float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < best) best = d2, on = &objs[i];
     }
+    // (the lines: every change, six a second at most, the rest counted: a cap of 40 for the session was used up
+    // minutes before the moment that was looked for)
+    static int64_t said_us;
+    static int said_n, said_skipped;
+    const char *coop_ent_label(uint64_t actor, char *buf, int n);   // coop_ent_log.c
+    char lab[96];
+    if (now_us - said_us > 1000000) {
+        if (said_skipped) rt_log("coop: ride: %d more changes in that second", said_skipped);
+        said_us = now_us, said_n = said_skipped = 0;
+    }
+    (void)said;
     if (!on) {
-        if (riding && said < 40) said++, rt_log("coop: ride: off %llx", (unsigned long long)riding);
+        if (riding) { if (said_n < 6) said_n++, rt_log("coop: ride: off %llx", (unsigned long long)riding); else said_skipped++; }
         riding = 0, ride_owner_now = 0, ride_id_now = 0;
         return;
     }
     if (on->actor != riding) {   // stepped on: carried from the next tick
         float off[3] = {p[0] - on->pos[0], p[1] - on->pos[1], p[2] - on->pos[2]};
         stand_y = on->rot[1] * off[0] + on->rot[4] * off[1] + on->rot[7] * off[2];   // local y (rows rotate local to world)
-        if (said < 40) said++, rt_log("coop: ride: on %llx, %.2f m above it", (unsigned long long)on->actor, stand_y);
+        if (said_n < 6)
+            said_n++, rt_log("coop: ride: on %llx %s, %.2f m above it, %.2f m across (reach %.1f m%s)", (unsigned long long)on->actor,
+                             coop_ent_label(on->actor, lab, sizeof lab), stand_y, sqrtf(off[0] * off[0] + off[2] * off[2]), on->reach,
+                             on->native ? "; its body carries this Link" : "; carried by placing");
+        else said_skipped++;
         riding = on->actor;
     } else {
         // delta = R_now * R_last^T: the offset from the object's origin turns with it, the Link's facing too
@@ -5312,7 +5350,13 @@ static void audit_tick(Cpu *c, uint64_t me, const CoopObj *sent, int n_sent, con
     char fz[3][32];
     for (int k = 0; k < 3; k++) snprintf(fz[k], 32, "%s", st->fuse[k]);
     audit_gear(f, "fuse", fz, 3);
-    fprintf(f, ",\"dye\":[%d,%d,%d,%d,%d,%d]}", my_dye[0], my_dye[1], my_dye[2], my_dye[3], my_dye[4], my_dye[5]);
+    fprintf(f, ",\"dye\":[%d,%d,%d,%d,%d,%d]", my_dye[0], my_dye[1], my_dye[2], my_dye[3], my_dye[4], my_dye[5]);
+    // what this Link rides as it is sent (owner, id; 0 0 none) and the animations it sends (index:weight of each slot
+    // with a weight): what a stand-in shows of it in the other game can be held against these
+    fprintf(f, ",\"ride\":[%d,%u],\"anim\":[", ride_owner_now, ride_id_now);
+    for (int k = 0, m = 0; k < COOP_ANIM_SLOTS; k++)
+        if (st->anim[k].weight) fprintf(f, "%s[%u,%u]", m++ ? "," : "", st->anim[k].idx, st->anim[k].weight);
+    fputs("]}", f);
     // the co-op Links as shown here
     fputs(",\"links\":[", f);
     int first = 1;
@@ -5330,8 +5374,9 @@ static void audit_tick(Cpu *c, uint64_t me, const CoopObj *sent, int n_sent, con
             static const uint64_t hand_of[3] = {0, 3, 4};
             for (int k = 0; k < 3; k++) if (coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, eq, hand_of[k], 0, 0) & 1) hands |= 1u << k;
         }
-        fprintf(f, "%s{\"owner\":%d,\"life\":%d,\"max\":%d,\"hands\":%u", first ? "" : ",", s->net_id, coop_life_of(s->actor),
-                coop_life_max_of(s->actor), hands);
+        // (what its owner says it rides, and whether this game found its own actor of that: 0 = placed by its state alone)
+        fprintf(f, "%s{\"owner\":%d,\"life\":%d,\"max\":%d,\"hands\":%u,\"ride\":[%d,%u,%d]", first ? "" : ",", s->net_id, coop_life_of(s->actor),
+                coop_life_max_of(s->actor), hands, s->ride_owner, s->ride_id, s->ride_actor != 0);
         first = 0;
         audit_vec(f, "p", q);
         audit_gear(f, "gear", g, COOP_GEAR_SLOTS);

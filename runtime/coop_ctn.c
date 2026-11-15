@@ -1284,6 +1284,15 @@ int ctn_follow_rests(const struct FollowState *fs) { return fs && (fs->rest || f
 void ctn_follow_peek(const struct FollowState *fs, int *rest, int *no_rest, int *placed) {
     *rest = fs ? fs->rest : 0, *no_rest = fs ? fs->no_rest : 0, *placed = fs ? fs->placed : 0;
 }
+// Whether a part's main body collides with anything: the upper half of the first word of its collision filter record
+// ([body +0x140] +8) is not 0. Read from the session record (a play session, 2026-11-14): a battery that runs out goes
+// from 0x03f7ffff there to 0 as it leaves its build, a second before its death, in the game that runs it and in a
+// copy alike; what the bits are one by one is not read. A part whose record cannot be read counts as solid.
+int ctn_part_solid(uint64_t a) {
+    uint64_t body = main_body_of(a), h = body ? coop_rd_ptr(body + 0x140) : 0, w = 0;
+    if (!h || !coop_rd(h + 8, &w, 8)) return 1;
+    return (w >> 32) != 0;
+}
 uint32_t ctn_gen_of(uint64_t a) { return gen_of(a); }
 int ctn_alive_as(uint64_t a, uint32_t gen) { return alive_as(a, gen); }
 uint64_t ctn_main_body(uint64_t a) { return main_body_of(a); }

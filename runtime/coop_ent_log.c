@@ -189,10 +189,10 @@ void coop_ent_log_tick(Cpu *c, uint64_t me) {
                 if (!!world_p != !!w->bworld) SAYB("%s; ", world_p ? "in a physics world again" : "in no physics world");
                 for (int k = 0; k < 2; k++) {
                     if (hold[k] != w->hold[k]) SAYB("filter record %d %llx -> %llx; ", k, (unsigned long long)w->hold[k], (unsigned long long)hold[k]);
-                    if (rec[k][0] != w->rec[k][0] || rec[k][1] != w->rec[k][1])
-                        SAYB("filter %d %016llx %016llx -> %016llx %016llx; ", k, (unsigned long long)w->rec[k][0], (unsigned long long)w->rec[k][1],
-                             (unsigned long long)rec[k][0], (unsigned long long)rec[k][1]);
                 }
+                // (the first record's first word alone: the second record's changes every frame, a count of some kind,
+                // and filled the log; this one went from 03f7ffff00001000 to 0000000000001000 as a battery broke off)
+                if (rec[0][0] != w->rec[0][0]) SAYB("filter %016llx -> %016llx; ", (unsigned long long)w->rec[0][0], (unsigned long long)rec[0][0]);
                 if (grp != w->group || gc != w->gcount) SAYB("group %llx of %d -> %llx of %d; ", (unsigned long long)w->group, w->gcount, (unsigned long long)grp, gc);
                 // (some flag bits go on and off every frame: bits that changed are said once, then counted for a second)
                 uint64_t ch = body == w->body ? fl ^ w->bflags : 0;

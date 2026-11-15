@@ -1276,3 +1276,29 @@ Recorded as told; not acted on until asked.
      driver's game's own per-frame figures for the passenger's stand-in (the "coop: puppet:" lines) give a jerk of
      5 to 15 mm a frame with peaks to 190 mm, and the stand-in's body 0.36 to 0.62 m from its owner's place before
      each frame's placement, 0.2 to 0.48 m of it level: the car moves 98 mm a frame at 5.9 m/s.
+4. Session 5, the same setup again (driver game 2, passenger game 1; mark 1 at 19:44:07). The passenger did not fall;
+   in the driver's game its stand-in crouched from the first battery's break (19:43:25) on, while the passenger's own
+   game shows its Link standing (the two mark pictures).
+   - What a battery's break does to the bodies (the new body lines), the same in both games: the battery leaves the
+     group, its collision mask word goes from 03f7ffff to 0 and its body flag 0x800 is set, about a second before its
+     death; the other parts get a new group object of one fewer. The chassis keeps its main body, its filter record
+     and its flags. Nothing there explains a Link through the deck.
+   - What the passenger rides. coop_players.c ride_carry takes this Link as riding a part when it is within 1.6 m
+     across of that part's origin and 0 to 1.6 m above it. A passenger standing on a long deck is further than that
+     from every part's origin: in this session its game logged four ride lines in all, "on" a battery and "off" it at
+     each break, and none for the chassis. So the passenger rides nothing by this rule, sends no ride, and the
+     driver's game places its stand-in from its state 60 ms old while the car is at its present: the trailing and the
+     jitter of note 2. And for the second in which a broken-off battery lies under the rule, the passenger rides the
+     battery: ride_carry puts the battery's own move and turn on the Link each frame. The battery of note 2 turned
+     129 degrees in that second, and the Link sank through the deck in it; that session's ride lines were used up
+     earlier (the log stops at 40), so that the Link rode the battery then is not in its log.
+   - The crouch is not explained: nothing recorded says what animation a stand-in shows.
+   - The record's faults: the second filter record's first word changes every frame and fills the log; the ride
+     lines stop at 40.
+   - Changed for it (not yet played): a part of a build is ridden from 3.5 m across and 2.5 m up (a loose entity as
+     before, 1.6 m); the nearest part the Link is on is taken, and the one it rides is kept while it is on it; no
+     entity is carried by ride_carry (its body carries the Link); a part whose body collides with nothing is not
+     ridden. The ride lines have no cap for the session (six a second, the rest counted) and name what is ridden; the
+     audit has what each Link sends as its ride and its animations, and for each stand-in whether this game found
+     the actor it is said to ride. A deck on which a Link stands further than 3.5 m from every part's origin is
+     still not ridden.
