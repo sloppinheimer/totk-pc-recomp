@@ -1,12 +1,12 @@
 # Enemy sync: the design
 
-Status, 2026-11-15: first draft. Nothing in it is built or run. It rests on two rounds of game-code readings
-(nine verification reports and nine gap reports, kept outside the repository; cited here as V1..V9 and G1..G8) that
-re-checked [enemy-system.md](enemy-system.md) against the game. Where this file and enemy-system.md disagree, this
-file is the later reading. A statement marked [inf] rests on an inference of a reading, [open] is not read yet (section
-14 says what settles each), [run] can only be settled by a game run. A third round of readings (R1 the copy switch,
-R2 the native action modules and the animation blackboard, R3 a census over every enemy) is under way; sections 4, 6
-and 12 are provisional until it is in.
+Status, 2026-11-15: second draft. Nothing in it is built or run. It rests on three rounds of game-code readings
+(nine verification reports, nine gap reports and five follow-ups, kept outside the repository; cited here as V1..V9,
+G1..G8 and R1..R5) that re-checked [enemy-system.md](enemy-system.md) against the game. Where this file and
+enemy-system.md disagree, this file is the later reading. A statement marked [inf] rests on an inference of a
+reading, [open] is not read (section 14 says what settles each), [run] can only be settled by a game run. Readers
+have contradicted each other once already (which graph the actor's update runs inline, section 4), so every [inf]
+that the structure rests on is on the list of runs.
 
 The specification (data, messages, procedures, tests) is written from this file once the [open] points that change the
 structure are closed, and is reviewed by readers that did not write it before any code, as the contraption sync was
@@ -56,9 +56,13 @@ as a stated event (section 8).
 ## 3. Ownership
 
 3.1 **The unit.** Ownership is per **pack**: an enemy, the actors that are parts of it (weak points, arms, a rider
-and its mount, the weapons and devices it holds, section 10), and every enemy that the game ties to it in a group
-that exchanges messages (a camp, an army, a swarm) [open: the census R3 says which components make a group]. A pack
-has one owner; a boss's parts are never handed over apart from its body (seen in a run of the old code).
+and its mount, the weapons and devices it holds, section 10, the children it made), and every enemy that the game ties to it in a
+group that exchanges messages: the members of a camp are the actors in the camp actor's link list (main+0x2af3d48),
+to each of which the camp's own node relays its members' messages (R5); an army's members; a swarm's. Enemies also
+hear each other's noise and send each other reaction, discover and investigate messages outside a camp (177 of the
+221 enemy kinds, R3); two enemies of different owners do not hear each other, which is accepted for enemies that no
+group ties together [run: whether it shows]. A pack has one owner; a boss's parts are never handed over apart from
+its body (seen in a run of the old code).
 
 3.2 **Who.** An enemy nobody owns is FREE. A game claims a FREE pack when it has the pack's actors and updates them
 (the actor is in the part of the world this game simulates). Two claimers are settled by (epoch, incarnation), as the
@@ -86,36 +90,52 @@ is kept, the actors are let go, and everything owned is offered once.
 
 ## 4. Stopping a copy's thinking
 
-Facts (G1, on the Bokoblin; R3 extends them): an enemy has up to nine graph units (main, sub and three special action
-slots, brain, utility, and two more utility graphs) plus, in its scheduler, the action-sequence graphs, an interrupt
-graph and a move-control graph. They are run by one runner body that exists three times: main+0x50b404, main+0x42e0c8
-and a copy inlined in the actor's calc (main+0x41bb20 at 0x41c6b8) that runs the brain [inf]. The running action
-sequence has its own inlined loop (calc 0x41f7f4).
+Facts (G1, R1 on the Bokoblin; R3 over all 221 enemy kinds with graphs): an enemy has up to nine graph units (main
+action on all; sub action on 55; three special action slots on 8; brain and utility on all; a second utility graph on
+21; none uses the third) plus, in its scheduler, the action-sequence graphs (1 to 69), an interrupt graph (all) and a
+move-control graph (178). One runner body exists four times: main+0x50b404, main+0x42e0c8, main+0x2beb80 and a copy
+inlined in the actor's calc (main+0x41bb20 at 0x41c6b8). The two readings disagree on what the inlined copy runs: the
+brain (G1, by elimination) or the interrupt graph (R1, from the scheduler's init; the later and better-founded
+reading), and the brain's per-frame runner is then not found at all [run 1 settles it]. The action sequences are
+ticked by the scheduler (main+0x44ff30); the move-control graph by main+0x2beb80 from inside every action request for
+slot 0.
 
-The game's stop timers are **not** the switch: they stop the brain only, not when an interrupt is pending or the enemy
-is dying, and any active timer makes the life update throw the frame's damage away (V1, G1).
+The game's own switches are **not** the switch: the stop timers stop the inlined runner only, not when an interrupt
+is pending or the enemy is dying, and any active timer makes the life update throw the frame's damage away (V1, G1);
+the pause mask for AI also stops the animation; the flag byte BSA+0x26ad bit 5 only skips a distance test (R1).
 
-The switch has one item per runner (G1 6.1). The mod's hooks are at function entries only, so each item is either an
-entry hook that returns at once for a copy, or a field the mod writes each frame that makes the game's own test skip
-the runner [open, R1: the exact set]:
+The mod's hooks are at function entries only. The switch (R1 section 9), for an actor that is a copy:
 
-| Runner | Candidate switch |
-| --- | --- |
-| scheduler (picks the action sequence) | entry of main+0x44ff30 |
-| utility graphs, brain bootstrap, post-sensor utility | entry of main+0x50b404, by the controller's actor |
-| action slots | entry of main+0x50ad74 (hooked today) |
-| the other controllers | entry of main+0x42e0c8, main+0x2beb80 |
-| running action sequence (inline) | never started when the scheduler never runs [inf] |
-| brain (inline) | a flag the calc tests before it (BSA+0x26ad bit 5 skips the brain) [open], or a hook on a callee of the inlined body |
-| interrupt and move-control graphs | not located [open] |
+| # | Entry hook | Does | The actor is |
+| --- | --- | --- | --- |
+| H1 | main+0x1920, the node tick every runner ends in | returns | [[[x0+8]+8]+0x1f8] (node, instance, controller) |
+| H2 | main+0x50b404 | returns | [x0+0x1f8] |
+| H3 | main+0x42e0c8 | returns | [x0+0x1f8] |
+| H4 | main+0x2beb80 | returns | [x0+0x1f8] |
+| H5 | main+0x44ff30, the scheduler | returns | [x0+0xb70] |
+| H6 | main+0x50ad74, the action request | returns 2 ("no slot") | [x0+0x18] |
+
+H1 alone covers every runner, known or not, the inlined one included; H2 to H6 stop each known runner before it does
+any bookkeeping, and say in the record which one was reached. The inlined body is also emptied by four writes before
+the calc (root index [ctrl+0x19c] = -1, the instance's pending root [inst+0xde] = -1, its queue count [inst+0x90] =
+0, its run bit [inst+0xd8] bit 0 clear; ctrl = [[BSA+0x2618]+0x18], inst = [[ctrl+0x20]]) [run 2]. Whether a node's
+enter function (main+0x1bb410) can run game logic with the tick off is not read; it is counted in run 2 and hooked if
+it does.
+
+A copy with no runner still has readers of what the runners kept fresh (R1 section 8). The mod holds, each frame: the
+brain verb (requestBrainVerb main+0xad9844 with force, on the owner's change; the queued verb BSA+0x5c at 0), the
+action sequence status BSA+0x64 at 0, the verb ids of action slots 0 and 1 as the owner's (the game's own
+bookkeeping then gives the copy's controller the owner's physics flags), the slot status bytes at 0, the form key
+string, target slots 0 and 8 (section 9.4), and no stop timer.
 
 What stays on in a copy: the pre-part of the calc, the animation update (main+0x432fa0), the attack arming from
 animation events (main+0x42ec98), the life update (with the frame's damage taken away, section 8), the death tick
 (driven, section 9), the perception receiver update (so a copy has an emitter and can be seen by local actors), the
 physics result and the model.
 
-The switch is **proved by a counter, always on**: per copy and frame, the number of runner entries that reached a
-graph. It is 0 or the session record says which runner ran (section 13).
+The switch is **proved by a counter, always on**: per copy and frame, the number of hook entries that turned a
+runner away, by hook. H1 at 0 with H2 to H6 doing the work is the expected picture; anything else is in the session
+record with the caller's address (section 13).
 
 Global side effects that then happen only in the owner's game, as they should: reads of "the player" and of the camera
 in 36 to 71 enemy graphs, the global no-attack time, messages between enemies, the battle-music request (G2).
@@ -147,8 +167,10 @@ always comes from the states; the event only says why.
 to it, as riders of contraptions are, so the two streams' delays do not show as sliding.
 
 5.6 **Ragdoll.** The owner states the ragdoll state (none, partial, full; component [[a+0x228]+0x3e8] +0x20) and,
-while it is not none, the bones. The copy's physics would fall differently, so it is not asked. The copy enters and
-leaves the state at the owner's word [open, R2: the smallest enter and leave].
+while it is partial or full, the bones. The copy's own ragdoll is never started (its physics would fall differently):
+the copy's bones are overwritten after the game recomputes the world matrices (main+0x283c750), the point with run
+evidence from the stand-ins. The get-up is an ordinary animation command plus the blackboard angle the game's
+recover module wrote (section 6.2). 78 enemy kinds have no ragdoll at all (R3).
 
 5.7 **Animation-driven movement** is off on copies (41 enemies have it), since the pose already holds it.
 
@@ -158,22 +180,32 @@ leaves the state at the owner's word [open, R2: the smallest enter and leave].
 (attack windows, sounds, weapon trails, footsteps) and arms the attack sensor from them (G5). The copy is therefore
 told what to play, not which bones to hold.
 
-6.2 **The owner states, per animation slot:** the command (a name hash), its rate, and for each live blend
-controller its node and its clock (slot state S at G+0x20+i*0x48: command S+0x10, rate S+0xd0, controllers
-*(S+0x50)+0x28.., clock ctx+0x68). On a change at once and reliably; the clocks with every motion state. Also: the
-actor's time rate (actor+0x280: hit-stop, slow motion), the animation blackboard values the behaviour writes
-(DirectionAngle, GroundNormal, StickX, UserSpeed, the play rates [open, R2: the full list and where to read them]),
-and the look-at target (section 9.4).
+6.2 **The owner states:**
+- every play request, as made: every animation an enemy's behaviour starts, from a graph node or a native module,
+  goes through main+0x4dc628 (or its two older forms), so a hook there on the owner's enemy gives the command name,
+  slot, rate, blend, transition and the "leave an equal command alone" flag exactly (R2). Reliable, with the clock
+  time. Slot removals and partial changes (main+0x2934934, main+0x29361b4 and its two siblings) likewise;
+- per slot with every motion state: the current blend controller and, for each live one, its clock and weight (slot
+  state S at G+0x20+i*0x48: rate S+0xd0, controllers *(S+0x50)+0x28.., current index +0x95, clock ctx+0x68, weight
+  ctx+0x6c), read at the start of the owner's next frame, when all of the frame's behaviour has run;
+- the animation blackboard, whole, on change: the table is small and its enemy writers are few (a turn angle from 12
+  graph nodes and the ragdoll modules, a rider's gear, a stick value for two kinds; R2), but the writers of several
+  keys are not found, so the table is not picked from (B = *(G+0x40); floats listed by vt+0x260 / vt+0x1d0);
+- the actor's time rate (actor+0x280: hit-stop, slow motion); the look-at state (9.4); the model controller's three
+  values (ice amount +0x4c, death effect +0x58, hide mask +0x9b of [[a+0x228]+0x280], each with the game's setter so
+  its dirty bit is set).
 
-6.3 **The copy applies:** a command change by the game's play request (main+0x4dc628; an equal command is left
-alone), then the clocks. A copy runs the same delay behind as its position (5.3), so its picture is one moment of the
-owner's enemy, not a pose from one time at a place from another. Phase is corrected softly: an error under 100 ms is
-closed by running the copy's rate up to 10% off for a while; a larger one is written into the controller clock
-[run: that writing ctx+0x68 with flag bit 10 holds].
+6.3 **The copy applies**, before its calc, so the frame's animation update shows it: a play request by the same call
+with the owner's arguments (the name by content), then 0 into the slot's start-delay timer (6.4), then the clocks and
+weights. A copy runs the same delay behind as its position (5.3), so its picture is one moment of the owner's enemy,
+not a pose from one time at a place from another. Phase is corrected softly: an error under 100 ms is closed by
+running the copy's rate up to 10% off for a while; a larger one is written into the controller clock with the "do
+not advance this update" flag (ctx+0xa0 bit 10, seen in main+0x433c24) [run 4: that it holds, and what a clock jump
+does to the events inside it].
 
-6.4 **Randomness.** The animation system draws a random number at each command start and slot update. The copy's
-draws differ, so wherever a draw selects a clip the owner's result (controller node and clock, 6.2) is what the copy
-is given, not the draw [open: the reader of S+0x1e4].
+6.4 **Randomness.** The one random value of a slot (S+0x1e4) is a start delay, counted down before a new command
+advances; it selects nothing (R4). The owner's clock already contains the owner's delay, so a copy writes 0 there
+after each play request.
 
 6.5 **What an action did besides its animation** is the list of section 8. Nothing else of an action reaches a copy.
 
@@ -208,17 +240,27 @@ there the owner's game does what it does for any hit: reaction, life, death.
 
 8.2 **The reaction comes back as what the enemy does:** the interrupt action's animation command (section 6), its
 knock-back as motion with a stated cause (5.4), a ragdoll (5.6), a dropped weapon (section 10), a condition look (ice,
-burn, shock: stated as the condition and its time left, shown by the copy's own model controller [open]). The hitter
+burn, shock: the owner states the condition slots' flags and the chemical state; ice is one model-controller value,
+6.2; what draws fire and sparks, and the timers, are not read [run]). The hitter
 sees it one round trip plus the delay later. If the measured time is too long for small hits, the hitter's game
 plays the flinch at once from the same table the owner uses (the reaction key is a function of the entry, G7) and the
 owner's stream corrects it; this is added only on that measurement.
 
-8.3 **An enemy hits a player.** Each game decides for its own player. A copy arms its attack sensor from its own
-animation [open, R3: which enemies arm from a behaviour node instead; those are armed by an owner event], so the
-player's game sees the blow when its picture shows it, and guard, parry, dodge and the flurry rush are that game's
-own. In the owner's game the enemy's blow passes through the other player's stand-in without damage, as today. What
-the enemy learns of the outcome (guarded, parried, hit) is sent to the owner by the hit player's game [open: what the
-enemy's behaviour reads of it].
+8.3 **An enemy hits a player.** Each game decides for its own player, so the player's game sees the blow when its
+picture shows it, and guard, parry and dodge are that game's own. A copy's attack sensor is armed in two ways,
+because the game has two (R3): 148 enemy kinds arm from an animation event only, which the copy's own animation
+update does; 34 arm some attacks and 17 all of them from a behaviour node (Lynel, Like Like, Wizzrobe, Hinox,
+Mogurudo, the Chuchus, a boss, the Keese swarm), and for those the owner states each arming call (main+0x1bf20cc:
+its parameters are data, equal in both games) and the copy makes it; 22 kinds attack by projectile or contact and
+were not resolved [open]. In the owner's game the enemy's blow passes through the other player's stand-in without
+damage, as today.
+
+What the enemy learns of the outcome: its behaviour reads the guard type from its own life record (L+0xfc, L+0x104
+bit 1) and its reaction (repelled, guard break) is chosen from a hit on its own life (R4). So the hit player's game
+sends the owner the outcome (the enemy, the attack, guarded / parried / dodged / landed, the guard values, direction
+and power), and the owner applies it by the route of 8.1. For the flurry rush an ordinary enemy marks its attack as
+dodgeable with a bit a behaviour node sets (limiter client +0x34 bit 7); a copy never sets it, so the owner states
+it. What reads it in the player's game, and what slows the enemy during the rush, are not found [run].
 
 8.4 **Projectiles and thrown things.** Only the owner's enemy shoots or throws (a copy has no node that could). Each
 projectile is stated as its own event (name, launch pose, velocity, clock time, an id), reliably, not as a field of
@@ -243,10 +285,23 @@ behaviour node, is given to the copy by the mod when the owner says the death fi
 things the owner made. The defeat counters (five game-data values, G3) are added by the owner's game only; the copy's
 end does not add (gate main+0xb28394 for copies), since the values are shared.
 
-9.4 **Awareness.** A copy must look the way the owner's enemy is, to the local player and the local game: the look-at
-target (target slot 8, turned into the id of a player or a place), the state that the Sneakstrike prompt reads
-[open: which field], the alert marks over its head [open: who draws them]. The owner states the battle target as a
-player id; the copy's target slot 0 is written so that local readers of "its target" have one.
+9.4 **Awareness.** A copy must look the way the owner's enemy is, to the local player and the local game:
+- the look-at: the look arbiter's requests (activate main+0x1bae4ac, pause main+0x1bae5f0, interrupt main+0xc061cc)
+  and its target, target slot 8, turned into the id of a player or a place;
+- the battle target as a player id, written into the copy's target slot 0 so local readers of "its target" have one;
+- Sneakstrike and lock-on: both are entries of the enemy's attention sender ([[a+0x228]+0x130]) that the player's
+  game picks from, and each entry has a byte of reasons it is off (S+0x24+type). Behaviour graphs switch them (the
+  silent-kill entries from the brain verb and the form key; lock-on off while dying), so on a copy they would all
+  stay on: the stray Sneakstrike prompt of the old runs (R4). The owner states the 64 bytes on change;
+- the marks over its head: their state is in a component at [[a+0x228]+0x140] and, probably, the receiver's notice
+  level; the drawing code is not read [run: log both on an owner that notices a player];
+- battle music: no behaviour node asks for it; a native manager does, probably from the brain verbs of enemies near
+  the player, which a copy holds [run].
+
+9.5 **What a behaviour graph asks of the player's game** reaches only the owner's player, since only the owner's
+graphs run: camera shake and controller rumble (50 enemy kinds), the boss life gauge, its "prevent" requests and the
+boss save point (213), a Wizzrobe's weather. The owner states these requests and the other game makes them. The
+attack-permission manager and the global no-attack time are per game and stay the owner's; a copy asks for nothing.
 
 ## 10. What an enemy holds
 
@@ -267,8 +322,9 @@ owner minted; copies never create children.
 
 11.2 **The owner states the actor.** The actor name at a placement can differ between two saves (the level sensor
 swaps it by a score that is refreshed at unknown times, G3). The owner's name wins: a game whose own placement made
-another name puts that actor away (the placement's suppress bit, job+0x98 bit 0, not the save's flag) and makes the
-stated one.
+another name puts that actor away and makes the stated one. Putting a placed actor away without the save's flag is
+not solved: the placement update (main+0x65b710) creates whenever the placement has no actor and none of four bits
+of job+0x98 is set, and it clears the suppress bit (bit 0) itself on each pass (R5) [run: which state holds].
 
 11.3 **A game makes a copy** for every stated enemy within the range it shows enemies at [run: the range] when it
 has no actor for the id: by adopting the actor its own placement made (same hash, same name), else by a create with
@@ -277,8 +333,11 @@ the stated name and pose. It lets a copy go when the enemy is beyond that range 
 11.4 **Run-time spawns** proceed only where their creator is owned or there is none (G6): summons, split parts, nest
 and army members are made by the owner's actor and stated; the same create on a copy does not happen (its graphs are
 off) or is gated. The enemies the game places around a player by itself (night Stal, field Keese, pop-up Lizalfos)
-are each game's own for its own player and are stated like any other; that two players side by side get twice as
-many is prevented where the spawner can be gated [open: the auto-placement's create call].
+are each game's own for its own player (the spawner places them around the position it tracks, the local player's
+[inf]) and are stated like any other: the create is seen at the create request with the spawner's return address
+(main+0x599670 called from 0x538ca4). The spawner itself refuses a second enemy of the same name and rule near that
+position; two players side by side would still get one set each, so a game does not spawn (the request push
+main+0xa80f28 returns) while a copy of the same name stands within that rule's radius of its player.
 
 11.5 **Kill flags and the map.** The owner's kill writes the save's flag through the placement (main+0x195321c); that
 call is stated, and a receiver makes the same call on its placement, which sets the flag and the suppress bit (the
@@ -286,17 +345,32 @@ flag alone would bring the enemy back at the next load, G3). The 165 enemy flags
 today (reset mask 80) join the shared set.
 
 11.6 **Blood moon.** The reset writes the flags straight into the table inside the game-data update, where the
-mod's capture does not see it. Both games' clocks are shared, but what triggers the moon is not read [open]. The
-rule: one game (the session's first) decides a blood moon and states it; the others run theirs then.
+mod's capture does not see it. What decides that tonight is the night is not read, and need not be: the moon
+starts through one call (main+0x21cd650 on the world object) and ends through another (main+0x21cd698). The first
+game to enter the start states it; the others make the same call, and each game's own sequence then resets its
+table. The moon the game forces when memory runs short is one bit (world +0x60 bit 19) and is each game's own.
 
 ## 12. Enemies that are not a Bokoblin
 
-All detailed readings were made on one Bokoblin. The census (R3) lists, for each of the 279 enemy actors, its graph
-units, native modules, components and movement kind. Known already: 225 use a character controller; 54 are
-rigid-body parts (Talus arms, Stal heads, rocks, barriers), which follow the pack's body or the rules for shared
-objects; flyers are controller bodies in the free move state; bosses read the camera and "the player" in their graphs
-(harmless on a copy that does not think, but the owner's boss then watches the owner's camera: section 14). Each
-family gets a row in the specification saying what it needs beyond this file, and a bench case.
+All detailed readings were made on one Bokoblin. The census (R3) covers the 306 enemy actor kinds: 221 have behaviour
+graphs, 85 do not (army managers, the six dragons, weak points, limbs and projectiles, dummies). Since a copy runs no
+graph, the differences between families are in what the owner must state, in this order of distance from the
+Bokoblin:
+
+| Family | Beyond this file |
+| --- | --- |
+| Bokoblin relatives: all tiers, Moblin, Horriblin, Lizalfos, Yiga, Constructs, Gibdo (most actors; the graph shape is shared) | swimming and ceiling states; riders |
+| Lynel | arming events (8.3); root-motion movement off (5.7); its rider |
+| riders and mounts (40 riders, 23 ridable) | the pair is one pack; mount and dismount events; the rider stated relative to the mount (5.5) |
+| flyers and swimmers | nothing new for motion (controller bodies in the free state); water entry events |
+| odd bodies: Stal heads and the Stalnox eye (rigid bodies, no controller), Chuchu, Like Like, Mogurudo, Octorok | pose-drive of a rigid body; arming events; the swallow as a stated attachment to a player |
+| swarms and summoners: Keese swarm, Wizzrobe, Treant, Gibdo nests | children with minted ids (11.4); the swarm's members |
+| multi-part giants and constructs: Talus, Hinox, Stalnox, Frox, Flux Construct, Battle Talus | parts as children (Talus arms are shot from the body, attention helpers and the eye are held children); how a part's damage reaches the body is not read [open]; the second utility graph is on a copy's switch already |
+| dungeon bosses and the dragons | scripted events, the camera their graphs read, children; the dragons have no graph and are driven by a component not read [open] |
+
+Each family gets a section in the specification and a bench case. Scale: at most 15 placed enemies within 50 m and
+51 within 200 m on the surface, one cluster of 61 in the depths, 44 in the castle; the tables are sized for 64 synced
+enemies in range, and run-time spawns are counted in a run.
 
 ## 13. The record: what is logged from the first build
 
@@ -316,22 +390,24 @@ A tool pairs the two games' records by id and clock time and lists every disagre
 
 ## 14. Open points, and what settles each
 
-By reading (third round, under way): the copy switch as entry hooks and fields, the interrupt and move-control
-runners (R1); the native action modules, the animation blackboard, entering and leaving ragdoll (R2); every other
-enemy family, which enemies arm attacks from a node, what makes a group (R3).
+By reading, still open: the brain's per-frame runner (run 1 will name it); how the 22 unresolved enemy kinds attack;
+how a part's damage reaches its body, and the parts of Frox, Flux Construct, Gohma, Mucktorok, Queen Gibdo and Gloom
+Hands; the dragons' component; the camp-cleared record and its chest; the code that draws the marks, the health bar
+and starts battle music; the enemy side of the flurry rush; fire and shock visuals and condition timers; the update
+and load ranges in metres; whether a boss that reads the camera needs the other player's camera stated to its owner.
+None of these changes the structure; each is read when its section of the specification is written.
 
-By reading, not yet asked: the field the Sneakstrike prompt reads and who draws the alert marks; what an enemy's
-behaviour reads of its attack's outcome on a player; the reader of the animation's random draw; the auto-placement
-create call; the blood-moon trigger; condition looks on a copy; how boss parts are created and linked; whether a boss
-that reads the camera needs the target player's camera stated to the owner.
-
-By a run (each needs the tester's yes; all are logging runs on one placed camp, nothing is changed in the game):
-1. the identity of the brain controller and the per-frame count of runner entries on an untouched Bokoblin (G1 8b);
-2. the same counts with the switch on, and that the animation update still raises its events;
-3. a static main body under ForceSetMatrix on an enemy; the controller's readers afterwards;
-4. a command played by the mod with the clock written: does the phase hold;
-5. the Sight list order with two Player emitters over a minute; target slot 0 per frame;
-6. the first motion bench: the measures of section 7 on walking, running, a jump attack and a knock-back.
+By a run (each needs the tester's yes; runs 1 to 5 only log, on one placed camp; nothing is synced by them):
+1. an untouched Bokoblin: every entry of the four runner bodies and of the node tick with its controller and caller,
+   against the unit pointers of its graphs: names every runner, the brain's included, and the inlined graph;
+2. the same with the switch on for that Bokoblin in one game: the counts are 0, the animation update still raises
+   its events, nothing reads a stale field into a fault; node enters counted;
+3. a static main body under ForceSetMatrix on an enemy, and the controller's readers afterwards;
+4. a command played by the mod with the clock written: does the phase hold, do events fire once;
+5. two players before one camp for a minute: the Sight list order, target slot 0, the attention bytes, the notice
+   component, the animation blackboard, the limiter bit, per frame;
+6. the first motion bench: the measures of section 7 on walking, running, a jump attack and a knock-back;
+7. placements: which state keeps a placed actor away without the save's flag (11.2).
 
 ## 15. The code that exists
 
