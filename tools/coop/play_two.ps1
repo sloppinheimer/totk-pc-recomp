@@ -24,6 +24,8 @@ param([string]$Name1 = "Player 1", [string]$Name2 = "Player 2", [string]$Size = 
 # -Script1 / -Script2 <file>: with -Bench, the input script of game 1 / game 2 in place of the plain load (a script that
 # loads the save and then plays, as tools\coop\hand_a.txt). -Shots w20-60:2: both games save a 480x270 picture at those
 # world seconds (TOTK_SHOTS, boot.c) in build\shots\1 and build\shots\2, emptied at each start.
+# Home or numpad 0, in any window: a mark. Both games write it in their logs with a picture each (logs\mark-<n>.png);
+# after the session tools\coop\ent_marks.py shows what both games wrote around each (kept in build\sessions).
 # One gamepad (the first) moves both games; Minus with the right stick click, or F9, switches to only the game in
 # focus and back (input.c, pad_focus_gate). -TwoPads: game 1 reads the first gamepad, game 2 the second, as before.
 $ErrorActionPreference = 'Stop'
@@ -53,7 +55,13 @@ foreach ($f in Get-ChildItem $a -Force) {
 }
 
 # (a game that never reaches the world writes no audit: an older run's must not stand in for it)
-foreach ($d in $a, $b) { Remove-Item -Force (Join-Path $d 'logs\audit.jsonl') -ErrorAction SilentlyContinue }
+foreach ($d in $a, $b) {
+    Remove-Item -Force (Join-Path $d 'logs\audit.jsonl'), (Join-Path $d 'logs\motion.jsonl'), (Join-Path $d 'logs\mark-*.png') -ErrorAction SilentlyContinue
+}
+# The session record (runtime\coop_ent_log.c) is on by itself; the drive's line for every frame it writes a copy is
+# asked for here, for every session: about 0.4 KB a frame for each copy that moves, none for one at rest.
+if (-not $env:TOTK_COOP_FOLLOW_TRACE) { $env:TOTK_COOP_FOLLOW_TRACE = '1' }
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $relay = Start-NoConsole (Join-Path $root '.venv\Scripts\python.exe') 'server\coop_relay.py' $root
 $games = @()
 foreach ($g in @(@{dir = $a; n = 1; name = $Name1; pad = '0'}, @{dir = $b; n = 2; name = $Name2; pad = $(if ($TwoPads) { '1' } else { '0' })})) {
@@ -123,6 +131,21 @@ $report = Join-Path $root 'build/audit_report.txt'
 & (Join-Path $root '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'sync_audit.py') (Join-Path $a 'logs/audit.jsonl') (Join-Path $b 'logs/audit.jsonl') |
     Tee-Object -FilePath $report
 "(kept in $report)"
+# The session kept: both games' log, audit, motion file and mark pictures in build\sessions\<start time>\1 and \2, so
+# the next start does not write over them, and what was written around each of the tester's marks (Home or numpad 0;
+# tools\coop\ent_marks.py) in marks.txt beside them. Nothing here deletes an older session.
+$keep = Join-Path $root "build\sessions\$stamp"
+foreach ($g in @(@{dir = $a; n = 1}, @{dir = $b; n = 2})) {
+    $to = Join-Path $keep "$($g.n)"
+    New-Item -ItemType Directory -Force $to | Out-Null
+    foreach ($f in 'totk.log', 'audit.jsonl', 'motion.jsonl', 'mark-*.png') {
+        Copy-Item -Force (Join-Path $g.dir "logs\$f") $to -ErrorAction SilentlyContinue
+    }
+}
+Copy-Item -Force $report $keep -ErrorAction SilentlyContinue
+$marks = & (Join-Path $root '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'ent_marks.py') (Join-Path $keep '1') (Join-Path $keep '2')
+$marks | Set-Content -Encoding utf8 (Join-Path $keep 'marks.txt')
+"(session kept in $keep; marks: $(@($marks | Where-Object { $_ -match '^== MARK' }).Count))"
 if ($Bench) {
     $ent = Join-Path $root 'build/ent_report.txt'
     $lines = & (Join-Path $root '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'ent_report.py') $a $b --bench $(if ($Expect) { "--expect=$Expect" })

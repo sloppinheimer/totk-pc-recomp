@@ -5297,7 +5297,8 @@ static void audit_tick(Cpu *c, uint64_t me, const CoopObj *sent, int n_sent, con
         on = !(e && !strcmp(e, "0"));
     }
     uint64_t now = plat_now_ns(), sec = now / 1000000000ull;
-    if (!on || sec == last_s) return;
+    int coop_ent_log_take_mark(void);   // coop_ent_log.c: the tester's mark was pressed: a line at once, beside the second's
+    if (!on || (sec == last_s && !coop_ent_log_take_mark())) return;
     last_s = sec;
     if (!f && !(f = fopen("logs/audit.jsonl", "w"))) { on = 0; return; }
     int coop_life_of(uint64_t a), coop_life_max_of(uint64_t a);

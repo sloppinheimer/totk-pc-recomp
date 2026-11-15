@@ -233,6 +233,7 @@ static void save_shot(const tex_t *t, const char *path) {
 // present at or after each step (full size with TOTK_SHOTS_FULL=1; TOTK_SHOTS_CROP=x,y,w,h saves only that part of
 // the frame, in its own pixels, unscaled), for finding short glitches. Pipeline builds stay asynchronous, so the
 // pictures show what a player sees.
+static void shot_scaled(const tex_t *t, const char *path, uint32_t ow, uint32_t oh, unsigned cx, unsigned cy, unsigned cw, unsigned ch);
 static void series_shot(const tex_t *t, uint64_t n) {
     static int parsed;
     static unsigned long long lo, hi, step, next;
@@ -260,10 +261,28 @@ static void series_shot(const tex_t *t, uint64_t n) {
     } else if (n < lo || n > hi || (n - lo) % step) {
         return;
     }
+    char path[PLAT_PATH_MAX];
+    snprintf(path, sizeof path, "%s/f%05llu.png", dir, (unsigned long long)n);
+    shot_scaled(t, path, full ? 0 : 480, full ? 0 : 270, cx, cy, cw, ch);
+}
+
+// The tester's mark (coop_ent_log.c): the next picture presented is saved at this path, 960x540.
+static char mark_path[PLAT_PATH_MAX];
+static int mark_due;   // (set on the game thread, read where pictures are presented)
+void rt_mark_shot(const char *path) {
+    if (__atomic_load_n(&mark_due, __ATOMIC_ACQUIRE)) return;   // (one still waits for its picture)
+    snprintf(mark_path, sizeof mark_path, "%s", path);
+    __atomic_store_n(&mark_due, 1, __ATOMIC_RELEASE);
+}
+
+// The presented picture box-filtered to ow x oh (0: its own size) and saved as a PNG; with a crop (cw, ch not 0) only
+// that part of it, in its own pixels, unscaled.
+static void shot_scaled(const tex_t *t, const char *path, uint32_t ow, uint32_t oh, unsigned cx, unsigned cy, unsigned cw, unsigned ch) {
     int fmt = t->d.format;
     int bgra = fmt == NVN_FORMAT_BGRA8 || fmt == NVN_FORMAT_BGRA8_SRGB;
     if (!bgra && fmt != NVN_FORMAT_RGBA8 && fmt != NVN_FORMAT_RGBA8_SRGB) return;
-    uint32_t w = t->d.width, h = t->d.height, ow = full ? w : 480, oh = full ? h : 270;
+    uint32_t w = t->d.width, h = t->d.height;
+    if (!ow || !oh) ow = w, oh = h;
     int crop = cw && ch && cx + cw <= w && cy + ch <= h;
     if (crop) ow = cw, oh = ch;
     uint8_t *px = malloc(4ull * w * h), *out = malloc(4ull * ow * oh);
@@ -287,8 +306,6 @@ static void series_shot(const tex_t *t, uint64_t n) {
             for (int c = 0; c < 4; c++) o[c] = (uint8_t)(sum[bgra && c != 3 ? 2 - c : c] / k);
             o[3] = 255;
         }
-    char path[PLAT_PATH_MAX];
-    snprintf(path, sizeof path, "%s/f%05llu.png", dir, (unsigned long long)n);
     rt_write_png(path, out, ow, oh);
     free(out);
     free(px);
@@ -300,6 +317,7 @@ static void series_shot(const tex_t *t, uint64_t n) {
 void rt_frame_presented(const tex_t *t, uint64_t n) {
     const RtConfig *cfg = rt_config();
     series_shot(t, n);
+    if (__atomic_load_n(&mark_due, __ATOMIC_ACQUIRE)) shot_scaled(t, mark_path, 960, 540, 0, 0, 0, 0), __atomic_store_n(&mark_due, 0, __ATOMIC_RELEASE);
     int64_t w = cfg->seconds ? frame_step_world_us() : -1;
     if (w < 0 || (double)w < cfg->seconds * 1e6) return;
     if (cfg->shot) save_shot(t, cfg->shot);

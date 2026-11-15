@@ -679,7 +679,12 @@ int coop_life_v3(Cpu *c, uint64_t off) {
 // m: those of d that the drive is moving now (not at rest). A pair of two copies is refused only when one of them is
 // in m: two resting copies meet as their owners' objects do (a fan that rolled against its neighbour rests on it; with
 // every pair refused its copy had nothing to lean on and could not stay where its owner's lay, in every bench run).
-static struct { uint64_t s[VETO_S], p[VETO_P], d[VETO_P], m[VETO_P], sbits[4], pbits[16], dbits[16]; int ns, np, nd, nm; } veto_buf[2];
+// so, po, dn: the actor each record of s, p and d is of (a gear actor's records name the stand-in that holds it), for
+// the log of which pairs were refused (veto_note).
+static struct {
+    uint64_t s[VETO_S], p[VETO_P], d[VETO_P], m[VETO_P], sbits[4], pbits[16], dbits[16], so[VETO_S], po[VETO_P], dn[VETO_P];
+    int ns, np, nd, nm;
+} veto_buf[2];
 static _Atomic int veto_cur = -1;
 static _Atomic uint32_t veto_count, veto_seen;   // pairs refused; pairs with a stand-in body at all
 static _Atomic uint32_t veto_copies;             // pairs of two driven copies refused
@@ -687,6 +692,62 @@ static unsigned veto_hash(uint64_t h) { return (unsigned)((h >> 4) ^ (h >> 13));
 static int veto_has(const uint64_t *l, int n, uint64_t v) {
     for (int i = 0; i < n; i++) if (l[i] == v) return 1;
     return 0;
+}
+static int veto_at(const uint64_t *l, int n, uint64_t v) {
+    for (int i = 0; i < n; i++) if (l[i] == v) return i;
+    return -1;
+}
+// Which pairs of actors the veto keeps apart, for the log: a pair refused is noted here (on the physics job threads:
+// a flag taken without waiting; a note that cannot have it is counted and dropped), and the rebuild on the game thread
+// says when a pair is first refused and when it has not been asked for 0.5 s, with how often it was refused.
+// kind 0: a stand-in and a part; 1: two copies this game drives.
+#define VP_N 48
+static struct { uint64_t a, b; uint32_t n; int64_t first_us, last_us; uint8_t kind, said; } vpair[VP_N];
+static atomic_flag vp_busy = ATOMIC_FLAG_INIT;
+static _Atomic uint32_t vp_dropped;
+static void veto_note(int kind, uint64_t a, uint64_t b) {
+    if (!a || !b) return;
+    if (kind && a > b) { uint64_t t = a; a = b, b = t; }
+    if (atomic_flag_test_and_set_explicit(&vp_busy, memory_order_acquire)) { atomic_fetch_add_explicit(&vp_dropped, 1, memory_order_relaxed); return; }
+    int64_t now = frame_step_world_us();
+    int at = -1, fr = -1;
+    for (int i = 0; i < VP_N && at < 0; i++) {
+        if (vpair[i].a == a && vpair[i].b == b && vpair[i].kind == kind) at = i;
+        else if (!vpair[i].a && fr < 0) fr = i;
+    }
+    if (at >= 0) vpair[at].n++, vpair[at].last_us = now;
+    else if (fr >= 0) vpair[fr].a = a, vpair[fr].b = b, vpair[fr].kind = (uint8_t)kind, vpair[fr].n = 1, vpair[fr].first_us = vpair[fr].last_us = now, vpair[fr].said = 0;
+    else atomic_fetch_add_explicit(&vp_dropped, 1, memory_order_relaxed);
+    atomic_flag_clear_explicit(&vp_busy, memory_order_release);
+}
+static void veto_pairs_say(int64_t now) {
+    const char *coop_ent_label(uint64_t actor, char *buf, int n);   // coop_ent_log.c
+    struct { uint64_t a, b; uint32_t n; int64_t first_us, last_us; uint8_t kind, begin; } say[VP_N];
+    int ns = 0;
+    while (atomic_flag_test_and_set_explicit(&vp_busy, memory_order_acquire)) plat_yield();
+    for (int i = 0; i < VP_N; i++) {
+        if (!vpair[i].a) continue;
+        int end = now - vpair[i].last_us > 500000 || now < vpair[i].last_us;
+        if (vpair[i].said && !end) continue;
+        say[ns].a = vpair[i].a, say[ns].b = vpair[i].b, say[ns].n = vpair[i].n, say[ns].first_us = vpair[i].first_us, say[ns].last_us = vpair[i].last_us;
+        say[ns].kind = vpair[i].kind, say[ns].begin = !vpair[i].said, ns++;
+        if (end) vpair[i].a = 0;
+        else vpair[i].said = 1;
+    }
+    atomic_flag_clear_explicit(&vp_busy, memory_order_release);
+    for (int i = 0; i < ns; i++) {
+        char la[96], lb[96];
+        const char *why = say[i].kind ? "two copies, one of them moved by the drive" : "a stand-in and an entity";
+        coop_ent_label(say[i].a, la, sizeof la), coop_ent_label(say[i].b, lb, sizeof lb);
+        // (the game asks the predicate when it considers a pair; how often it asks again for a pair that stays close is
+        // not read, so the second line says only that it has not asked for 0.5 s)
+        if (say[i].begin) rt_log("coop: veto: %.2f s: the collision of %s with %s is refused here (%s)", say[i].first_us / 1e6, la, lb, why);
+        else rt_log("coop: veto: %.2f s: %s with %s: not asked again for 0.5 s; refused %u times over %.1f s (%s)", now / 1e6, la, lb, say[i].n,
+                    (say[i].last_us - say[i].first_us) / 1e6, why);
+    }
+    static int64_t dropped_said;
+    uint32_t dr = atomic_load(&vp_dropped);
+    if (dr && now - dropped_said > 10000000) dropped_said = now, rt_log("coop: veto: %u refusals so far were not noted by pair (the table was busy or full)", dr);
 }
 // ---- every rigid body of an actor (main+0x3cc9b4 and main+0x2962c58) ----
 #define AB_CAP 256   // (ours: the game checks no count)
@@ -761,13 +822,14 @@ static int all_bodies(Cpu *c, uint64_t actor, uint64_t *out, int max) {
     return n;
 }
 // the record holders of every body of an actor, of both physics worlds
-static int actor_holders(Cpu *c, uint64_t a, uint64_t *out, int n, int max) {
+// (of: when given, of[i] is set to `who` for each record added: the actor the log names for it)
+static int actor_holders(Cpu *c, uint64_t a, uint64_t *out, int n, int max, uint64_t *of, uint64_t who) {
     uint64_t b[96];
     int nb = all_bodies(c, a, b, 96);
     for (int i = 0; i < nb; i++)
         for (int w = 0; w < 2; w++) {
             uint64_t h = coop_rd_ptr(b[i] + (w ? 0x148 : 0x140));
-            if (h && n < max && !veto_has(out, n, h)) out[n++] = h;
+            if (h && n < max && !veto_has(out, n, h)) { if (of) of[n] = who; out[n++] = h; }
         }
     return n;
 }
@@ -786,21 +848,22 @@ void coop_life_veto_rebuild(Cpu *c, const uint64_t *parts, int nparts, const uin
     uint64_t sa[8];
     int nsa = coop_players_all(sa, 8), w = atomic_load(&veto_cur) == 0 ? 1 : 0, gear = 0;
     int ns = 0, np = 0, nd = 0;
-    for (int i = 0; i < ndriven; i++) nd = actor_holders(c, driven[i], veto_buf[w].d, nd, VETO_P);
+    veto_pairs_say(now);
+    for (int i = 0; i < ndriven; i++) nd = actor_holders(c, driven[i], veto_buf[w].d, nd, VETO_P, veto_buf[w].dn, driven[i]);
     memset(veto_buf[w].dbits, 0, sizeof veto_buf[w].dbits);
     for (int i = 0; i < nd; i++) { unsigned h = veto_hash(veto_buf[w].d[i]) & 1023; veto_buf[w].dbits[h >> 6] |= 1ull << (h & 63); }
     int nm = 0;
-    for (int i = 0; i < nmoving; i++) nm = actor_holders(c, moving[i], veto_buf[w].m, nm, VETO_P);
+    for (int i = 0; i < nmoving; i++) nm = actor_holders(c, moving[i], veto_buf[w].m, nm, VETO_P, NULL, 0);
     veto_buf[w].nm = nm;
     veto_buf[w].nd = ndriven >= 2 && nm ? nd : 0;
     for (int i = 0; i < nsa; i++) {
-        ns = actor_holders(c, sa[i], veto_buf[w].s, ns, VETO_S);
+        ns = actor_holders(c, sa[i], veto_buf[w].s, ns, VETO_S, veto_buf[w].so, sa[i]);
         for (int row = 0; row < 24; row++) {   // the gear actors it holds (EquipmentUser rows, as coop_players.c reads them)
             uint64_t ref = coop_eq_row_ref(sa[i], row), item = ref ? coop_rd_ptr(ref + 0x40) : 0;
-            if (item && item != sa[i]) ns = actor_holders(c, item, veto_buf[w].s, ns, VETO_S), gear++;
+            if (item && item != sa[i]) ns = actor_holders(c, item, veto_buf[w].s, ns, VETO_S, veto_buf[w].so, sa[i]), gear++;
         }
     }
-    for (int i = 0; i < nparts; i++) np = actor_holders(c, parts[i], veto_buf[w].p, np, VETO_P);
+    for (int i = 0; i < nparts; i++) np = actor_holders(c, parts[i], veto_buf[w].p, np, VETO_P, veto_buf[w].po, parts[i]);
     memset(veto_buf[w].sbits, 0, sizeof veto_buf[w].sbits), memset(veto_buf[w].pbits, 0, sizeof veto_buf[w].pbits);
     for (int i = 0; i < ns; i++) { unsigned h = veto_hash(veto_buf[w].s[i]) & 255; veto_buf[w].sbits[h >> 6] |= 1ull << (h & 63); }
     for (int i = 0; i < np; i++) { unsigned h = veto_hash(veto_buf[w].p[i]) & 1023; veto_buf[w].pbits[h >> 6] |= 1ull << (h & 63); }
@@ -821,10 +884,13 @@ int coop_life_veto(Cpu *c) {   // main+0x40a240's entry: 1 when the pair is refu
     if (veto_buf[cur].nd) {   // two copies this game drives
         const uint64_t *db = veto_buf[cur].dbits;
         unsigned da = veto_hash(ha) & 1023, dq = veto_hash(hb) & 1023;
-        if (((db[da >> 6] >> (da & 63)) & 1) && ((db[dq >> 6] >> (dq & 63)) & 1) && veto_has(veto_buf[cur].d, veto_buf[cur].nd, ha) &&
-            veto_has(veto_buf[cur].d, veto_buf[cur].nd, hb) &&
+        int ia, ib;
+        if (((db[da >> 6] >> (da & 63)) & 1) && ((db[dq >> 6] >> (dq & 63)) & 1) && (ia = veto_at(veto_buf[cur].d, veto_buf[cur].nd, ha)) >= 0 &&
+            (ib = veto_at(veto_buf[cur].d, veto_buf[cur].nd, hb)) >= 0 &&
             (veto_has(veto_buf[cur].m, veto_buf[cur].nm, ha) || veto_has(veto_buf[cur].m, veto_buf[cur].nm, hb))) {
             atomic_fetch_add_explicit(&veto_copies, 1, memory_order_relaxed);
+            // (two bodies of one actor are no pair to name)
+            if (veto_buf[cur].dn[ia] != veto_buf[cur].dn[ib]) veto_note(1, veto_buf[cur].dn[ia], veto_buf[cur].dn[ib]);
             c->x[0] = 0;
             return 1;
         }
@@ -836,13 +902,16 @@ int coop_life_veto(Cpu *c) {   // main+0x40a240's entry: 1 when the pair is refu
     if (!ma && !mb) return 0;   // (neither can be a stand-in's)
     const uint64_t *s = veto_buf[cur].s, *p = veto_buf[cur].p;
     int ns = veto_buf[cur].ns, np = veto_buf[cur].np;
-    int as = ma && veto_has(s, ns, ha), bs = !as && mb && veto_has(s, ns, hb);
+    int si = ma ? veto_at(s, ns, ha) : -1, as = si >= 0, bs = 0;
+    if (!as && mb) si = veto_at(s, ns, hb), bs = si >= 0;
     if (!as && !bs) return 0;
     atomic_fetch_add_explicit(&veto_seen, 1, memory_order_relaxed);
     uint64_t other = as ? hb : ha;
     unsigned qo = veto_hash(other) & 1023;
-    if (!((veto_buf[cur].pbits[qo >> 6] >> (qo & 63)) & 1) || !veto_has(p, np, other)) return 0;
+    int pi;
+    if (!((veto_buf[cur].pbits[qo >> 6] >> (qo & 63)) & 1) || (pi = veto_at(p, np, other)) < 0) return 0;
     atomic_fetch_add_explicit(&veto_count, 1, memory_order_relaxed);
+    veto_note(0, veto_buf[cur].so[si], veto_buf[cur].po[pi]);
     c->x[0] = 0;
     return 1;
 }

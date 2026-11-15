@@ -1279,6 +1279,11 @@ void coop_ctn_structure_event(void) { coop_ent_structure_event(); }
 int ctn_alive(uint64_t a) { return alive(a); }
 void ctn_follow_reset(struct FollowState *fs) { if (fs) memset(fs, 0, sizeof *fs); }
 int ctn_follow_rests(const struct FollowState *fs) { return fs && (fs->rest || fs->hold_until > frame_step_world_us()); }   // (read at phase 0 while the drive may write it: a frame late at worst)
+// For the session record (coop_ent_log.c): whether the drive lets this copy rest, holds it by the field for good, and
+// how often it has put it in place in this rest of its owner's object.
+void ctn_follow_peek(const struct FollowState *fs, int *rest, int *no_rest, int *placed) {
+    *rest = fs ? fs->rest : 0, *no_rest = fs ? fs->no_rest : 0, *placed = fs ? fs->placed : 0;
+}
 uint32_t ctn_gen_of(uint64_t a) { return gen_of(a); }
 int ctn_alive_as(uint64_t a, uint32_t gen) { return alive_as(a, gen); }
 uint64_t ctn_main_body(uint64_t a) { return main_body_of(a); }

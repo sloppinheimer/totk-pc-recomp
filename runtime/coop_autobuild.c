@@ -1995,6 +1995,7 @@ void coop_autobuild_tick(Cpu *c, uint64_t me) {
     coop_ent_drive(c);
     { void coop_ent_saved_tick(Cpu *c); coop_ent_saved_tick(c); }                    // the devices of a save (coop_ent_id.c)
     { void coop_ent_bench_tick(Cpu *c, uint64_t me); coop_ent_bench_tick(c, me); }   // TOTK_COOP_BENCH (coop_ent_bench.c)
+    { void coop_ent_log_tick(Cpu *c, uint64_t me); coop_ent_log_tick(c, me); }       // the session record (coop_ent_log.c)
     if (!ablog_on()) return;
     deck_test(c, me, atomic_load(&tracked_n) < TRACK_N ? atomic_load(&tracked_n) : TRACK_N);
     failspam_test(c, me);

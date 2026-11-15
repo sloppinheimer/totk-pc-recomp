@@ -1225,3 +1225,29 @@ it, and what was left.
   (previews, entering by a scan), 6.1 (POSE carries `v`), 7.4 and 9.2 (the maker waits for the Link; now it lifts),
   11 (the veto's lists, rebuilt at 10 Hz), 12.1 (2.5 s without a pose, the leave band, the fade, the stuck rule, the
   hold), 15 (its drive test), 18.
+
+## 23. The session record (2026-11-14)
+
+What a play session writes down by itself, so that a fault a player saw is found in the logs and not by running it
+again (runtime/coop_ent_log.c; TOTK_COOP_RECORD=0: off).
+
+- In the log: a clock line a second (the PC's time of day, the clock the audit and the motion file carry, the world
+  clock, the entity sync's clock), so every line can be placed in time; the frame times every 10 s and any frame of
+  over 100 ms at once; a line for an entity whose main body moved further in a frame than its velocity explains
+  ("jump"); a line for every change of what this game holds of an entity (owner, life, flags, a copy's state, the
+  owner's class, its device, its actor, the drive's state for it and its placements); what this Link's Ultrahand
+  holds and what it rides; the Zonai devices here that are no entity, when that set changes.
+- The collision veto names its pairs (coop_life.c, veto_note): which stand-in and which entity, or which two copies,
+  when the pair is first refused and when it has not been asked for 0.5 s, with the count.
+- logs/motion.jsonl: ten lines a second while anything moves, with the place, rotation, velocity and drive state of
+  each entity that moved since the last line, this Link and the stand-ins. The audit stays at one line a second.
+- The tester's mark: Home or numpad 0, read in any window, so both games on one PC write "coop: MARK n" at the same
+  moment, each with a picture (logs/mark-n.png, 960x540) and an audit line.
+- tools/coop/play_two.ps1 asks for the drive's line per frame (TOTK_COOP_FOLLOW_TRACE) in every session and keeps
+  each session's logs, audits, motion files and pictures in build/sessions/<start time>. tools/coop/ent_marks.py
+  prints, for each mark or for a time of day (--at), both logs' lines around it by time, how far apart the two games
+  had each entity, and the drive's largest error per copy.
+
+Not recorded: how a thing looks beyond the mark's picture (effects, sounds, a device's own motion), bodies other than
+an entity's main one, and what the game's physics did inside a step. The veto's lines say a pair was refused, not
+that the two overlapped.

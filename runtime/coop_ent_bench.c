@@ -114,7 +114,8 @@ void coop_ent_audit(FILE *f) {
     fprintf(f, ",\"hand\":\"%s\"", he ? ent_eid_str(he->id, hb) : held ? "?" : "");
     // (a game in a menu moves nothing, though its actor phase 0 may go on: the report judges no place then)
     int coop_runs_for_ms(void);   // coop_players.c: -1 while this game sits in a menu or a load
-    fprintf(f, ",\"paused\":%d,\"loading\":%d,\"menu\":%d", ent_paused(), ent_loading(), coop_runs_for_ms() < 0);
+    int coop_ent_log_mark(void);   // coop_ent_log.c: the tester's marks so far
+    fprintf(f, ",\"paused\":%d,\"loading\":%d,\"menu\":%d,\"mark\":%d", ent_paused(), ent_loading(), coop_runs_for_ms() < 0, coop_ent_log_mark());
 }
 
 // ---- The scene and the scenario ------------------------------------------------------------------------------------------
