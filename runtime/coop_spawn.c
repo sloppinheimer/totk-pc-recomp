@@ -1832,7 +1832,11 @@ void coop_tick(struct Cpu *c) {
     static int report_ticks;
     if (trace_on && ++report_ticks % 300 == 0) report_callers();   // input tracing only
     static int prev;
-    int keys = input_coop_keys(), pressed = keys & ~prev;
+    // The numpad test keys (an apple, a Korok, ... made beside this Link) only with TOTK_COOP_TEST_KEYS=1: one was
+    // pressed by chance in a play session (2026-11-15) and a Korok stood beside the Link.
+    static int test_keys = -1;
+    if (test_keys < 0) test_keys = cfg_get("TOTK_COOP_TEST_KEYS") != NULL;
+    int keys = test_keys ? input_coop_keys() : 0, pressed = keys & ~prev;
     prev = keys;
     // Once: main's .data/.bss words holding the input object the copy fills (copy_dst[0]) or its owner (dst - 0x198),
     // so the generated C can be searched for the code that loads them.
