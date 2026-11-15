@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "gfx.h"
 #include "host.h"
 #include "input.h"
 #include "ov.h"
@@ -99,6 +100,7 @@ static void npad_states(Cpu *c, uint32_t want) {
         s.attributes = ATTR_CONNECTED;
         input_poll(&s.buttons, &s.lx, &s.ly, &s.rx, &s.ry);
         coop_local_input(s.buttons, s.lx, s.ly, s.rx, s.ry);   // this player's input for the co-op relay
+        vk_reflex_marker(6, vk_reflex_frame());   // VK_LATENCY_MARKER_INPUT_SAMPLE_NV
     }
     *out = s;
     ret_x(c, 1);
