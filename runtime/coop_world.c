@@ -162,6 +162,7 @@ static uint64_t place_hash(uint64_t a) {
     if (pp) coop_rd(pp + PLACE_HASH, &ph, 8);
     return ph == ~0ull ? 0 : ph;
 }
+int coop_actor_placed(uint64_t a) { return place_hash(a) != 0; }   // an actor of the map's placement (the same in every game)
 static uint32_t place_key(uint64_t a, const char *name) {
     uint64_t ph = place_hash(a);
     if (!ph) return 0;
@@ -2920,6 +2921,16 @@ static void contacts_filter(uint64_t dc) {
         size_t wl = strlen(wn);
         int arrow = wl >= 5 && !strcmp(wn + wl - 5, "Arrow");   // NormalArrow, FireArrow, ...
         int who = ct_is_link(by), drop = who && (!strncmp(wn, "Weapon_", 7) || (arrow && who == 1));
+        // A beam, a flame or a cannon ball of a device this game only follows: the game that runs the device has the
+        // same emitter on the same enemy, and that one counts (coop_ctn.c coop_ctn_emitter_of_followed).
+        int coop_ctn_emitter_of_followed(uint64_t a);
+        int emitter = !drop && ((w && coop_ctn_emitter_of_followed(w)) || (by && coop_ctn_emitter_of_followed(by)));
+        if (emitter) {
+            static _Atomic int said_e;
+            if (atomic_fetch_add(&said_e, 1) < 10) rt_log("coop: contact on the copy of %s by a followed device's %s: taken out (the game that runs the device counts it)", coop_actor_name(a, an, sizeof an), wn[0] ? wn : "emitter");
+            out++;
+            continue;
+        }
         static _Atomic int said;
         if (atomic_fetch_add(&said, 1) < 40)
             rt_log("coop: contact on the copy of %s by %s with %s (kind %u): %s", coop_actor_name(a, an, sizeof an),
@@ -3574,12 +3585,8 @@ static void peer_tick(Cpu *c, uint64_t me) {
     guard_scan_test(me);
     hit_watch_test(me);
     link_hit_check(me);
-    void coop_glue_tick(Cpu *c, uint64_t me);   // coop_glue.c: Ultrahand glue made here sent, the others' made again
     void coop_autobuild_tick(Cpu *c, uint64_t me);   // coop_autobuild.c
     coop_autobuild_tick(c, me);
-    coop_glue_tick(c, me);
-    void coop_bonds_tick(Cpu *c);   // coop_bonds.c: contraptions made one unit in the other games too
-    coop_bonds_tick(c);
     int my_id = coop_net_id();
     // Hits from the others on the enemies this game runs: the damage taken from this game's one.
     HitPacket hp;
@@ -3594,10 +3601,6 @@ static void peer_tick(Cpu *c, uint64_t me) {
                 ground_take((const GroundPacket *)&lhp, n);
                 continue;
             }
-            int coop_glue_take(const void *p, int n, int from);   // coop_glue.c: "GA" and "GL" packets (Ultrahand glue)
-            if (coop_glue_take(&lhp, n, from)) continue;
-            int coop_bonds_take(const void *p, int n, int from);   // coop_bonds.c: "CB" packets (contraptions)
-            if (coop_bonds_take(&lhp, n, from)) continue;
             if (n >= (int)offsetof(ContactPacket, e) && (cp->kind == ECONTACT_KIND || cp->kind == ECONTACT_ARROW) && (int)cp->to == my_id && cp->n <= CONTACT_MAX &&
                 n == (int)(offsetof(ContactPacket, e) + cp->n * CONTACT_SZ)) {
                 ce_take(cp, from);

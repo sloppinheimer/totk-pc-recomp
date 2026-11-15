@@ -73,6 +73,7 @@ uint32_t input_key_char(int key);
 int input_flight_key(void);
 // Co-op spawn test keys (runtime/coop_spawn.c): bit 0..3 = numpad 1..4 held while the game window is in front.
 int input_coop_keys(void);
+int input_mark_key(void);   // Home or numpad 0 is down, in any window: the tester's mark (coop_ent_log.c)
 // Co-op player 2: the second connected gamepad (Switch bits, sticks after the dead zone); 0 without one.
 
 // Mouse camera and cursor (input_win.c, Win32 window thread). The window procedure calls input_window_msg first for raw

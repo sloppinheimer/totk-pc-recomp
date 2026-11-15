@@ -90,6 +90,10 @@ static uint64_t dev_switch(uint64_t a) {   // component 166, when the device tak
 // once they have differed for 0.8 s (the other player's stand-in swing may toggle a copy itself first: a hit in the
 // owner's game reaches the copy through it) and at most once every 2.5 s (a device takes about 1 s to turn on).
 typedef struct { int64_t differ_us, toggled_us; } Follow;
+// Copies follow their owner's state only for this long after it changes (or is first heard): followed all the time, a
+// copy switched here (a hit of this game's Link, the other's stand-in swing) and the owner's state fought, and two
+// glued fans in a play session were switched off again every 2.5 s, 30 times (flicker-battery-1916 logs).
+#define FOLLOW_US 6000000
 static int dev_follow(uint64_t *dev, int n, int want_on, Follow *f, int64_t now, const char *what) {
     int on = 0, sw = 0;
     for (int i = 0; i < n; i++)
@@ -129,6 +133,30 @@ static uint64_t call5(Cpu *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2
 // Two objects of this game bonded as an autobuild bonds its devices (main+0x1c05a98 from a's glue component to b's main
 // body, bit 24 cleared on both bodies first): the bond the graph joins into one group. For tests (coop_glue.c glue_test,
 // TOTK_COOP_TEST_GLUEBOND). 1: called.
+// As coop_bonds_bond, with the two matrices main+0x1c05a98 takes as what they are: each body's attachment frame in
+// that body's own space (createScotch's entry +0x448 / +0x4b0), here one world point, the middle of the two bodies,
+// with the world's axes, written in each. coop_bonds_bond gives it the two bodies' world matrices, which joins two
+// frames that are not at one place: a contraption made again that way and bonded flew apart in two physics steps
+// (contraption-sync.md, Phase 0 item 3).
+static void frame_in(const float m[12], const float p[3], float out[12]) {   // [R|t]^-1 [I|p] = [R^T | R^T (p - t)]
+    float d[3] = {p[0] - m[3], p[1] - m[7], p[2] - m[11]};
+    for (int r = 0; r < 3; r++) {
+        for (int k = 0; k < 3; k++) out[r * 4 + k] = m[k * 4 + r];
+        out[r * 4 + 3] = m[0 * 4 + r] * d[0] + m[1 * 4 + r] * d[1] + m[2 * 4 + r] * d[2];
+    }
+}
+int coop_bonds_bond_at(Cpu *c, uint64_t a, uint64_t b) {
+    uint64_t comp = comp_of(a), mb = main_body(a), rb = main_body(b);
+    float wm[12], wr[12];
+    static _Alignas(16) float fa[12], fb[12];
+    if (!comp || !mb || !rb || !coop_rd(mb + 0x98, wm, sizeof wm) || !coop_rd(rb + 0x98, wr, sizeof wr)) return 0;
+    float mid[3] = {(wm[3] + wr[3]) / 2, (wm[7] + wr[7]) / 2, (wm[11] + wr[11]) / 2};
+    frame_in(wm, mid, fa), frame_in(wr, mid, fb);
+    __atomic_fetch_and((uint64_t *)(uintptr_t)(mb + 0x68), ~BODY_SKIP_BIT, __ATOMIC_SEQ_CST);
+    __atomic_fetch_and((uint64_t *)(uintptr_t)(rb + 0x68), ~BODY_SKIP_BIT, __ATOMIC_SEQ_CST);
+    call5(c, MOD_MAIN_BASE + BOND_BODIES, comp, 0, rb, (uint64_t)(uintptr_t)fa, (uint64_t)(uintptr_t)fb);
+    return 1;
+}
 int coop_bonds_bond(Cpu *c, uint64_t a, uint64_t b) {
     uint64_t comp = comp_of(a), mb = main_body(a), rb = main_body(b);
     static _Alignas(16) float wm[12], wr[12];
@@ -261,7 +289,7 @@ static void take_group(int from, uint32_t group, BondEntry *e, int n, int64_t no
     }
 }
 #define GST_N 32
-static struct { int from; uint32_t group; int owner_on, flagged; int64_t heard_us; Follow f; } gst[GST_N];
+static struct { int from; uint32_t group; int owner_on, flagged, prev; int64_t heard_us, follow_until; Follow f; } gst[GST_N];
 static void group_state(int from, uint32_t group, const BondEntry *e, int n, int64_t now) {
     int on = 0, flagged = 0, f = -1, free = -1;
     for (int i = 0; i < n; i++) flagged |= (e[i].flags & 2) != 0, on |= (e[i].flags & 3) == 3;
@@ -272,9 +300,10 @@ static void group_state(int from, uint32_t group, const BondEntry *e, int n, int
     if (f < 0) {
         if ((f = free) < 0) return;
         memset(&gst[f], 0, sizeof gst[f]);
-        gst[f].from = from, gst[f].group = group;
+        gst[f].from = from, gst[f].group = group, gst[f].prev = -1;
     }
     gst[f].owner_on = on, gst[f].flagged = flagged, gst[f].heard_us = now;
+    if (on != gst[f].prev) gst[f].prev = on, gst[f].follow_until = now + FOLLOW_US;   // followed after a change only
 }
 static int group_copies(int from, uint32_t group, uint64_t *out, int max) {   // this game's bonded copies of that group
     int n = 0;
@@ -291,7 +320,7 @@ static int group_copies(int from, uint32_t group, uint64_t *out, int max) {   //
 }
 static int claimed_group(int from, uint32_t group);
 #define SST_N 64
-static struct { int from, owner_on; BondObj o; int64_t heard_us; Follow f; } sst[SST_N];   // devices alone, by owner
+static struct { int from, owner_on, prev; BondObj o; int64_t heard_us, follow_until; Follow f; } sst[SST_N];   // devices alone
 static void single_state(int from, const BondEntry *e, int64_t now) {
     int f = -1, free = -1;
     for (int k = 0; k < SST_N && f < 0; k++) {
@@ -301,9 +330,10 @@ static void single_state(int from, const BondEntry *e, int64_t now) {
     if (f < 0) {
         if ((f = free) < 0) return;
         memset(&sst[f], 0, sizeof sst[f]);
-        sst[f].from = from, sst[f].o = e->o;
+        sst[f].from = from, sst[f].o = e->o, sst[f].prev = -1;
     }
     sst[f].owner_on = (e->flags & 3) == 3, sst[f].heard_us = now;
+    if (sst[f].owner_on != sst[f].prev) sst[f].prev = sst[f].owner_on, sst[f].follow_until = now + FOLLOW_US;
 }
 static int device_sync(void) {   // TOTK_COOP_DEVICE_SYNC=0: devices' on and off not followed
     static int on = -1;
@@ -315,7 +345,7 @@ static void follow_owners(int64_t now) {   // this game's copies of each group o
     for (int k = 0; device_sync() && k < SST_N; k++) {
         if (!sst[k].heard_us || now - sst[k].heard_us > 3000000) continue;
         uint64_t a = coop_obj_find((int)sst[k].o.owner, sst[k].o.id, sst[k].o.name);
-        if (!a || !coop_is_copy(a) || coop_bonds_member(a)) continue;
+        if (!a || !coop_is_copy(a) || coop_bonds_member(a) || now >= sst[k].follow_until) continue;
         char what[80];
         snprintf(what, sizeof what, "player %d's %s", sst[k].from, sst[k].o.name);
         dev_follow(&a, 1, sst[k].owner_on, &sst[k].f, now, what);
@@ -326,7 +356,7 @@ static void follow_owners(int64_t now) {   // this game's copies of each group o
         int n = group_copies(gst[k].from, gst[k].group, dev, 64);
         char what[64];
         snprintf(what, sizeof what, "player %d's contraption", gst[k].from);
-        if (n) dev_follow(dev, n, gst[k].owner_on, &gst[k].f, now, what);
+        if (n && now < gst[k].follow_until) dev_follow(dev, n, gst[k].owner_on, &gst[k].f, now, what);
         static int log = -1;   // TOTK_COOP_TEST_DEVSYNCLOG=1: every 0.5 s, the owner's state and how many copies are on
         static int64_t logged[GST_N];
         if (log < 0) log = cfg_get("TOTK_COOP_TEST_DEVSYNCLOG") != NULL;
@@ -355,8 +385,11 @@ int coop_bonds_take(const void *data, int n, int from) {   // coop_world.c peer_
         if (!p.e[i].group) { p.e[i].o.name[NAME_N - 1] = 0, single_state(from, &p.e[i], now), i++; continue; }   // a device alone
         uint32_t j = i;
         while (j < cnt && p.e[j].group == p.e[i].group) p.e[j].o.name[NAME_N - 1] = 0, j++;
-        take_group(from, p.e[i].group, &p.e[i], (int)(j - i), now);
-        group_state(from, p.e[i].group, &p.e[i], (int)(j - i), now);
+        // (a contraption made here by the Autobuild from its owner's record, coop_autobuild.c, is bonded, switched and
+        // followed there: its group is not taken here)
+        int coop_contraption_owns(int from, uint32_t id), theirs = 0;
+        for (uint32_t q = i; q < j && !theirs; q++) theirs = coop_contraption_owns(from, p.e[q].o.id);
+        if (!theirs) take_group(from, p.e[i].group, &p.e[i], (int)(j - i), now), group_state(from, p.e[i].group, &p.e[i], (int)(j - i), now);
         i = j;
     }
     return 1;
@@ -368,11 +401,34 @@ int coop_bonds_take(const void *data, int n, int from) {   // coop_world.c peer_
 // is bonded, once it shares its contraption's group. TOTK_COOP_TEST_GREEN=0: not marked; =all: every bonded copy.
 #define MARK_AUTOBUILT 0x1c07114
 int coop_copy_autobuilt(uint64_t actor);   // coop_players.c
+// Groups whose copies came apart by accident twice in 30 s: no longer marked (green) here, so they hold. the tester's
+// session (apart-1924): copies of an autobuilt board came apart with nobody near, four times; each one gone left the
+// others bonded to nothing, and marked, the game destroyed them too.
+#define NOGREEN_N 16
+static struct { int from; uint32_t group; int strikes; int64_t first_us, last_us; int off; } nogreen[NOGREEN_N];
+static int nogreen_find(int from, uint32_t group, int make) {
+    int free = -1;
+    for (int i = 0; i < NOGREEN_N; i++) {
+        if (nogreen[i].from == from && nogreen[i].group == group && nogreen[i].first_us) return i;
+        if (free < 0 && !nogreen[i].first_us) free = i;
+    }
+    if (!make) return -1;
+    if (free < 0) free = 0;
+    memset(&nogreen[free], 0, sizeof nogreen[free]);
+    nogreen[free].from = from, nogreen[free].group = group;
+    return free;
+}
 static void mark_autobuilt(Cpu *c, uint64_t a) {
     static const char *mode = (const char *)1;
     if (mode == (const char *)1) mode = cfg_get("TOTK_COOP_TEST_GREEN");
     if (mode && *mode == '0') return;
     if (!(mode && !strcmp(mode, "all")) && !coop_copy_autobuilt(a)) return;
+    for (int k = 0; k < PAIR_N; k++)   // (a group that kept coming apart: not marked any more)
+        if (pair[k].used && (pair[k].ma == a || pair[k].ra == a)) {
+            int g = nogreen_find(pair[k].from, pair[k].group, 0);
+            if (g >= 0 && nogreen[g].off) return;
+            break;
+        }
     static uint64_t done[128];
     static int n;
     for (int i = 0; i < n; i++) if (done[i] == a) return;
@@ -477,6 +533,33 @@ int coop_bonds_carried(uint64_t actor) {
         if (pair[k].ma == actor && pair[k].done) member = 1;
     }
     return member;
+}
+// A copy here came apart by accident (coop_players.c): the green bit taken off the rest of its group first, so they
+// are not destroyed as parts broken off (they hold their bonds to the part gone), and they are marked again once the
+// remade copy shares their group. Twice in 30 s: that group is no longer marked here.
+void coop_bonds_came_apart(uint64_t actor, int owner, uint32_t id) {   // (by its owner's number: its pair may be gone)
+    int from = -1;
+    uint32_t group = 0;
+    for (int k = 0; k < PAIR_N && from < 0; k++)   // (the pair of a copy gone is dropped first: its record still says)
+        if ((pair[k].from == owner || pair[k].m.owner == (uint32_t)owner) && (pair[k].m.id == id || pair[k].root.id == id) && pair[k].first_us)
+            from = pair[k].from, group = pair[k].group;
+    if (from < 0) return;
+    for (int k = 0; k < PAIR_N; k++) {
+        if (!pair[k].used || pair[k].from != from || pair[k].group != group) continue;
+        uint64_t two[2] = {pair[k].ma, pair[k].ra};
+        for (int j = 0; j < 2; j++) {
+            uint64_t comp = two[j] != actor ? comp_of(two[j]) : 0;
+            if (comp) __atomic_fetch_and((uint32_t *)(uintptr_t)(comp + 0x150), ~1u, __ATOMIC_SEQ_CST);
+        }
+        pair[k].marked = 0;
+    }
+    int64_t now = frame_step_world_us();
+    int g = nogreen_find(from, group, 1);
+    if (now - nogreen[g].first_us > 30000000) nogreen[g].first_us = now, nogreen[g].strikes = 0;
+    if (now - nogreen[g].last_us > 1000000) nogreen[g].strikes++;   // (parts gone in one second: one time)
+    nogreen[g].last_us = now;
+    if (nogreen[g].strikes >= 2 && !nogreen[g].off)
+        nogreen[g].off = 1, rt_log("coop: bonds: player %d's contraption (group %08x) came apart here twice in 30 s: no longer marked green", from, group);
 }
 int coop_bonds_member(uint64_t actor) {   // a copy bonded here into another player's contraption (any thread: a read)
     for (int k = 0; actor && k < PAIR_N; k++)

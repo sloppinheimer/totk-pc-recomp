@@ -763,7 +763,9 @@ static void glue_test(Cpu *c, uint64_t me) {
         for (int k = 0; k < 2; k++) { uint64_t t = coop_rd_ptr(obj[k] + 0x228); sw[k] = t ? coop_rd_ptr(t + 0x530) : 0; }
         if (stage == 3 && cfg_get("TOTK_COOP_TEST_GLUEON") && sw[0] && sw[1]) {
             if (on_stage == 0 && now > glued_at + 8) on_stage = 1, ST8(sw[0] + 0x8d, (uint8_t)(LD8(sw[0] + 0x8d) | 8)), rt_log("coop: test: glue: the first one switched");
-            if (on_stage == 1 && now > glued_at + 14)
+            static double off_after = -1;   // TOTK_COOP_TEST_GLUEONFOR=<s>: switched off that long after on (14 - 8 s)
+            if (off_after < 0) { const char *e = cfg_get("TOTK_COOP_TEST_GLUEONFOR"); off_after = e ? atof(e) : 6; }
+            if (on_stage == 1 && now > glued_at + 8 + off_after)
                 on_stage = 2, ST8(sw[0] + 0x8d, (uint8_t)(LD8(sw[0] + 0x8d) | 8)), ST8(sw[1] + 0x8d, (uint8_t)(LD8(sw[1] + 0x8d) | 8)),
                 rt_log("coop: test: glue: both switched");
             static double said_at;

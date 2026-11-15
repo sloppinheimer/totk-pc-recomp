@@ -1,0 +1,10 @@
+# For the bench, the owner's game while the other player takes one of its fans (the other plays hand_a.txt and grabs
+# at 24 s of its clock, about 27.5 s of this one's): the inventory is opened at 24 s and closed at 36 s, so the take is
+# asked of a paused owner.
+480 A 4
+700 DOWN 4
+760 DOWN 4
+820 A 4
+980 A 4
+@24000 PLUS 150
+@36000 PLUS 150

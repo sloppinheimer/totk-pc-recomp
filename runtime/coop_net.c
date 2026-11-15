@@ -29,7 +29,8 @@ typedef int Sock;
 #include "host.h"
 #include "platform/platform.h"
 
-enum { HELLO = 1, WELCOME = 2, STATE = 3, LEAVE = 4, BYE = 5, WORLD = 6, HIT = 7, POSE = 8, OBJS = 9, EPOSE = 10, VERSION = COOP_NET_VERSION, HEADER = 8 };
+enum { HELLO = 1, WELCOME = 2, STATE = 3, LEAVE = 4, BYE = 5, WORLD = 6, HIT = 7, POSE = 8, OBJS = 9, EPOSE = 10, CTR = 11,
+       VERSION = COOP_NET_VERSION, HEADER = 8 };
 
 static PlatMutex lock = PLAT_MUTEX_INIT;
 static NetState mine;                 // lock
@@ -62,6 +63,19 @@ static int objs_out_n, objs_in_n;   // lock
 #define HITQ 64
 static struct { uint8_t d[COOP_HIT_MAX]; int len, from; } hit_out[HITQ], hit_in[HITQ];   // lock
 static int hit_out_n, hit_in_n;   // lock
+// Contraption traffic (coop_ctr.c): FIFO rings both ways; out entries carry the destination (0 everyone).
+static struct { uint8_t d[COOP_CTR_MAX]; int len, peer; } ctr_out[COOP_CTR_QUEUE], ctr_in[COOP_CTR_QUEUE];   // lock
+static int ctr_out_head, ctr_out_n, ctr_in_head, ctr_in_n;   // lock
+static uint32_t ctr_out_dropped, ctr_in_dropped;              // lock
+// Who is here: bumped on changes (coop_net_session, coop_net_presence).
+static volatile uint32_t session_gen;
+static uint32_t presence_gen[COOP_MAX_PLAYERS + 1];          // lock
+static void set_my_id(int id) {
+    if (my_id != id) my_id = id, session_gen++;
+}
+static void set_live(int id, int live) {   // (lock held)
+    if (others[id].live != live) others[id].live = live, presence_gen[id]++;
+}
 
 static void header(uint8_t *p, int kind) { memcpy(p, "TKCO", 4), p[4] = VERSION, p[5] = (uint8_t)kind, p[6] = (uint8_t)my_id, p[7] = 0; }
 
@@ -202,6 +216,22 @@ static void net_thread(void *arg) {
                 memcpy(w + HEADER, hits[i].d, hits[i].len);
                 sendto(s, (const char *)w, HEADER + hits[i].len, 0, res->ai_addr, (int)res->ai_addrlen);
             }
+            {   // contraption traffic: every queued packet, each to its destination (header byte 7)
+                static uint8_t cp[HEADER + COOP_CTR_MAX];
+                for (;;) {
+                    int cl = 0, to = 0;
+                    plat_mutex_lock(&lock);
+                    if (ctr_out_n) {
+                        cl = ctr_out[ctr_out_head].len, to = ctr_out[ctr_out_head].peer;
+                        memcpy(cp + HEADER, ctr_out[ctr_out_head].d, cl);
+                        ctr_out_head = (ctr_out_head + 1) % COOP_CTR_QUEUE, ctr_out_n--;
+                    }
+                    plat_mutex_unlock(&lock);
+                    if (!cl) break;
+                    header(cp, CTR), cp[7] = (uint8_t)to;
+                    sendto(s, (const char *)cp, HEADER + cl, 0, res->ai_addr, (int)res->ai_addrlen);
+                }
+            }
         }
         struct sockaddr_storage from;
         socklen_t from_len = sizeof from;
@@ -217,9 +247,9 @@ static void net_thread(void *arg) {
                                                            : "no answer from %s", host);
             rt_log("coop net: %s", last_error);
             if (net_gen == gen) {
-                net_active = 0, my_id = 0;
+                net_active = 0, set_my_id(0);
                 plat_mutex_lock(&lock);
-                for (int i = 0; i <= COOP_MAX_PLAYERS; i++) others[i].live = 0;
+                for (int i = 0; i <= COOP_MAX_PLAYERS; i++) set_live(i, 0);
                 plat_mutex_unlock(&lock);
             }
             joined = 0;
@@ -232,9 +262,9 @@ static void net_thread(void *arg) {
         if (kind == WELCOME) {
             if (id < 1 || id > COOP_MAX_PLAYERS) continue;
             if (net_gen != gen) break;   // (a left session's thread does not set the new one's id)
-            if (!my_id) rt_log("coop net: joined as player %d", id);
+            if (my_id != id) rt_log(my_id ? "coop net: the relay now calls this game player %d (was %d)" : "coop net: joined as player %d", id, my_id);
             joined = 1;
-            my_id = id;
+            set_my_id(id);
             for (int off = HEADER; off + 17 <= n; off += 17) {
                 int other = buf[off];
                 if (other < 1 || other > COOP_MAX_PLAYERS) continue;
@@ -247,7 +277,7 @@ static void net_thread(void *arg) {
             if (!others[id].live) rt_log("coop net: player %d is here", id);
             memcpy(&others[id].st, buf + HEADER, sizeof(NetState));
             others[id].at_ns = plat_now_ns();
-            others[id].live = 1;
+            set_live(id, 1);
             plat_mutex_unlock(&lock);
         } else if (kind == WORLD && id >= 1 && id <= COOP_MAX_PLAYERS && n - HEADER <= WORLD_MAX) {
             plat_mutex_lock(&lock);
@@ -274,10 +304,18 @@ static void net_thread(void *arg) {
             if (hit_in_n < HITQ) memcpy(hit_in[hit_in_n].d, buf + HEADER, n - HEADER), hit_in[hit_in_n].len = n - HEADER,
                                  hit_in[hit_in_n].from = id, hit_in_n++;
             plat_mutex_unlock(&lock);
+        } else if (kind == CTR && id >= 1 && id <= COOP_MAX_PLAYERS && n > HEADER && n - HEADER <= COOP_CTR_MAX) {
+            plat_mutex_lock(&lock);
+            if (ctr_in_n < COOP_CTR_QUEUE) {
+                int at = (ctr_in_head + ctr_in_n++) % COOP_CTR_QUEUE;
+                memcpy(ctr_in[at].d, buf + HEADER, n - HEADER), ctr_in[at].len = n - HEADER, ctr_in[at].peer = id;
+            } else
+                ctr_in_dropped++;
+            plat_mutex_unlock(&lock);
         } else if (kind == LEAVE && id >= 1 && id <= COOP_MAX_PLAYERS) {
             plat_mutex_lock(&lock);
             if (others[id].live) rt_log("coop net: player %d left", id);
-            others[id].live = 0;
+            set_live(id, 0);
             plat_mutex_unlock(&lock);
         }
     }
@@ -294,10 +332,11 @@ static void net_thread(void *arg) {
 void coop_net_leave(void) {
     net_gen++;
     net_active = 0;
-    my_id = 0;
+    set_my_id(0);
     plat_mutex_lock(&lock);
-    for (int i = 0; i <= COOP_MAX_PLAYERS; i++) others[i].live = 0;
+    for (int i = 0; i <= COOP_MAX_PLAYERS; i++) set_live(i, 0);
     mine_set = 0, hit_out_n = hit_in_n = 0, objs_out_n = objs_in_n = 0, epose_out_n = epose_in_n = 0;
+    ctr_out_n = ctr_in_n = 0;
     // (and what was waiting to go or came for the last session: its world and pose went first in the next one,
     // code review 2026-11-06)
     world_out_new = 0, pose_out_new = 0;
@@ -450,4 +489,54 @@ int coop_net_hit_take(void *out, int max, int *from) {
     }
     plat_mutex_unlock(&lock);
     return n;
+}
+
+int coop_net_ctr_send(int to, const void *data, int len) {
+    if (len <= 0 || len > COOP_CTR_MAX || to < 0 || to > COOP_MAX_PLAYERS || !my_id) return 0;
+    plat_mutex_lock(&lock);
+    int ok = ctr_out_n < COOP_CTR_QUEUE;
+    if (ok) {
+        int at = (ctr_out_head + ctr_out_n++) % COOP_CTR_QUEUE;
+        memcpy(ctr_out[at].d, data, len), ctr_out[at].len = len, ctr_out[at].peer = to;
+    } else
+        ctr_out_dropped++;
+    plat_mutex_unlock(&lock);
+    return ok;
+}
+
+int coop_net_ctr_take(void *out, int max, int *from) {
+    plat_mutex_lock(&lock);
+    int n = 0;
+    while (ctr_in_n && !n) {   // (one too big for the caller is dropped and counted, never handed on cut)
+        int at = ctr_in_head;
+        ctr_in_head = (ctr_in_head + 1) % COOP_CTR_QUEUE, ctr_in_n--;
+        if (ctr_in[at].len > max) { ctr_in_dropped++; continue; }
+        n = ctr_in[at].len, memcpy(out, ctr_in[at].d, n), *from = ctr_in[at].peer;
+    }
+    plat_mutex_unlock(&lock);
+    return n;
+}
+
+void coop_net_ctr_drops(uint32_t *out_dropped, uint32_t *in_dropped) {
+    plat_mutex_lock(&lock);
+    *out_dropped = ctr_out_dropped, *in_dropped = ctr_in_dropped;
+    plat_mutex_unlock(&lock);
+}
+
+uint32_t coop_net_session(void) { return session_gen; }
+
+uint32_t coop_net_presence(int id) {
+    if (id < 1 || id > COOP_MAX_PLAYERS) return 0;
+    plat_mutex_lock(&lock);
+    uint32_t g = presence_gen[id];
+    plat_mutex_unlock(&lock);
+    return g;
+}
+
+int coop_net_live(int id) {
+    if (id < 1 || id > COOP_MAX_PLAYERS || id == my_id) return 0;
+    plat_mutex_lock(&lock);
+    int live = others[id].live;
+    plat_mutex_unlock(&lock);
+    return live;
 }

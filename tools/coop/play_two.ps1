@@ -3,12 +3,29 @@
 # to the real profile. The copies are kept from one start to the next, with what was saved in them; -Fresh makes them
 # again from the real profile. (Made fresh each start, a session's saves were lost at the next one, a play session,
 # 2026-11-06.) Close either window (or this console) to end the session.
-#   powershell -ExecutionPolicy Bypass -File tools\coop\play_two.ps1 [-Fresh] [-TwoPads] [-ShareWorld]   (or double-click "Play co-op (two pads).vbs")
+#   powershell -ExecutionPolicy Bypass -File tools\coop\play_two.ps1 [-Fresh] [-FrozenSaves] [-TwoPads] [-ShareWorld]   (or double-click "Play co-op (two pads).vbs")
 # The other player is shown as a PlayerPuppet, TotK Online's stand-in (its pack made by tools/coop/make_puppet_pack.py).
 # Horses stay off. -ShareWorld adds shared world progress (TOTK_COOP_SHARE_WORLD=1), not yet for play: on two saves
 # each game's own load was taken as changes and sent to the other (2026-11-07).
+# -FrozenSaves: each start both games get the saves of the real profile again (its save, save-backup and save-tx
+# folders), so what a session saves is gone at the next start and every test begins from the same three saves. The rest
+# of a play copy (mods, play time) is kept. The saves a copy held at the first such start are moved to
+# build\prof-play-N-saves-kept, once, and never touched again.
+# -Bench fans: both games load the third save by themselves (tools\coop\idle_3rd.txt, played beside the gamepad, which
+# works from the first frame), each Link is put on flat ground and three fans are made in front of them
+# (TOTK_COOP_BENCH, runtime\coop_ent_bench.c). -Bench fans,drive: game 1 then moves a fan by itself (no gamepad
+# needed). -Seconds N: the session is ended after N seconds. With -Bench, the contraption report
+# (tools\coop\ent_report.py) is printed at the end and kept in build\ent_report.txt.
 param([string]$Name1 = "Player 1", [string]$Name2 = "Player 2", [string]$Size = "1904x1071", [switch]$Fresh, [switch]$TwoPads,
-      [switch]$ShareWorld)
+      [switch]$ShareWorld, [switch]$FrozenSaves, [string]$Bench = "", [int]$Seconds = 0, [string]$Script1 = "", [string]$Script2 = "",
+      [string]$Shots = "", [string]$Expect = "")
+# -Expect hand1,hand2,bonds=2: what the scripted run is meant to do (a player takes an entity with Ultrahand; the bonds
+# at the end); the report fails when it did not happen.
+# -Script1 / -Script2 <file>: with -Bench, the input script of game 1 / game 2 in place of the plain load (a script that
+# loads the save and then plays, as tools\coop\hand_a.txt). -Shots w20-60:2: both games save a 480x270 picture at those
+# world seconds (TOTK_SHOTS, boot.c) in build\shots\1 and build\shots\2, emptied at each start.
+# Home or numpad 0, in any window: a mark. Both games write it in their logs with a picture each (logs\mark-<n>.png);
+# after the session tools\coop\ent_marks.py shows what both games wrote around each (kept in build\sessions).
 # One gamepad (the first) moves both games; Minus with the right stick click, or F9, switches to only the game in
 # focus and back (input.c, pad_focus_gate). -TwoPads: game 1 reads the first gamepad, game 2 the second, as before.
 $ErrorActionPreference = 'Stop'
@@ -37,12 +54,30 @@ foreach ($f in Get-ChildItem $a -Force) {
     else { New-Item -ItemType HardLink $t -Target $f.FullName | Out-Null }
 }
 
+# (a game that never reaches the world writes no audit: an older run's must not stand in for it)
+foreach ($d in $a, $b) {
+    Remove-Item -Force (Join-Path $d 'logs\audit.jsonl'), (Join-Path $d 'logs\motion.jsonl'), (Join-Path $d 'logs\mark-*.png') -ErrorAction SilentlyContinue
+}
+# The session record (runtime\coop_ent_log.c) is on by itself; the drive's line for every frame it writes a copy is
+# asked for here, for every session: about 0.4 KB a frame for each copy that moves, none for one at rest.
+if (-not $env:TOTK_COOP_FOLLOW_TRACE) { $env:TOTK_COOP_FOLLOW_TRACE = '1' }
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $relay = Start-NoConsole (Join-Path $root '.venv\Scripts\python.exe') 'server\coop_relay.py' $root
 $games = @()
 foreach ($g in @(@{dir = $a; n = 1; name = $Name1; pad = '0'}, @{dir = $b; n = 2; name = $Name2; pad = $(if ($TwoPads) { '1' } else { '0' })})) {
     $p = Join-Path $root "build\prof-play-$($g.n)"
     if ($Fresh -and (Test-Path $p)) { Remove-Item -Recurse -Force $p }
     if (-not (Test-Path $p)) { Copy-Item -Recurse (Join-Path $root 'build\profile-v143') $p }
+    elseif ($FrozenSaves) {
+        $kept = Join-Path $root "build\prof-play-$($g.n)-saves-kept"
+        $first = -not (Test-Path $kept)
+        if ($first) { New-Item -ItemType Directory $kept | Out-Null }
+        foreach ($d in 'save', 'save-backup', 'save-tx') {
+            $have = Join-Path $p $d; $orig = Join-Path $root "build\profile-v143\$d"
+            if (Test-Path $have) { if ($first) { Move-Item $have (Join-Path $kept $d) } else { Remove-Item -Recurse -Force $have } }
+            if (Test-Path $orig) { Copy-Item -Recurse $orig $have }
+        }
+    }
     $env:TOTK_PROFILE_DIR = $p
     $env:TOTK_PAD_INDEX = $g.pad
     $env:TOTK_ASSUME_FOCUS = '1'        # both games keep running and reading their pad without the focus
@@ -50,7 +85,23 @@ foreach ($g in @(@{dir = $a; n = 1; name = $Name1; pad = '0'}, @{dir = $b; n = 2
     $env:TOTK_COOP_RELAY = '127.0.0.1'; $env:TOTK_COOP_NAME = $g.name
     $env:TOTK_MOUSE_SENS = '0'          # no mouse camera, no cursor capture: the mouse moves between the windows
     $env:TOTK_COOP_HIDE_CONSOLE = '1'
-    Remove-Item Env:TOTK_INPUT_SCRIPT, Env:TOTK_INPUT -ErrorAction SilentlyContinue
+    Remove-Item Env:TOTK_INPUT_SCRIPT, Env:TOTK_INPUT, Env:TOTK_COOP_BENCH -ErrorAction SilentlyContinue
+    if ($Bench) {
+        $s = if ($g.n -eq 1) { $Script1 } else { $Script2 }
+        $env:TOTK_INPUT_SCRIPT = Join-Path $root $(if ($s) { $s } else { 'tools\coop\idle_3rd.txt' })
+        $env:TOTK_COOP_BENCH = $Bench
+        # The mouse pointer chooses in the menus, and a menu's pointer starts in the middle of the picture: on the third
+        # row of the save list. The script's two DOWNs then ended on the fifth row, an empty one, in whichever game
+        # had the pointer. Off for a scripted load.
+        $env:TOTK_MENU_CURSOR = '0'
+    } else { Remove-Item Env:TOTK_MENU_CURSOR -ErrorAction SilentlyContinue }
+    Remove-Item Env:TOTK_SHOTS, Env:TOTK_SHOTS_DIR -ErrorAction SilentlyContinue
+    if ($Shots) {
+        $sd = Join-Path $root "build\shots\$($g.n)"
+        if (Test-Path $sd) { Remove-Item -Recurse -Force $sd }
+        New-Item -ItemType Directory -Force $sd | Out-Null
+        $env:TOTK_SHOTS = $Shots; $env:TOTK_SHOTS_DIR = $sd
+    }
     if ($ShareWorld) { $env:TOTK_COOP_SHARE_WORLD = '1' } else { Remove-Item Env:TOTK_COOP_SHARE_WORLD -ErrorAction SilentlyContinue }
     $games += Start-NoConsole (Join-Path $g.dir 'totk.exe') '' $g.dir
     Start-Sleep 3
@@ -69,7 +120,8 @@ for ($i = 0; $i -lt $games.Count; $i++) {
 }
 if ($TwoPads) { "Session running: game 1 = first gamepad, game 2 = second gamepad. Load your save in both windows." }
 else { "Session running: one gamepad moves both games. Minus + right stick click (or F9): only the game in focus, and back." }
-while (-not ($games | Where-Object { $_.HasExited })) { Start-Sleep 1 }
+$until = if ($Seconds -gt 0) { (Get-Date).AddSeconds($Seconds) } else { [DateTime]::MaxValue }
+while (-not ($games | Where-Object { $_.HasExited }) -and (Get-Date) -lt $until) { Start-Sleep 1 }
 $games | Where-Object { -not $_.HasExited } | Stop-Process -Force
 Stop-Process -Id $relay.Id -Force -ErrorAction SilentlyContinue
 "Session ended."
@@ -79,3 +131,25 @@ $report = Join-Path $root 'build/audit_report.txt'
 & (Join-Path $root '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'sync_audit.py') (Join-Path $a 'logs/audit.jsonl') (Join-Path $b 'logs/audit.jsonl') |
     Tee-Object -FilePath $report
 "(kept in $report)"
+# The session kept: both games' log, audit, motion file and mark pictures in build\sessions\<start time>\1 and \2, so
+# the next start does not write over them, and what was written around each of the tester's marks (Home or numpad 0;
+# tools\coop\ent_marks.py) in marks.txt beside them. Nothing here deletes an older session.
+$keep = Join-Path $root "build\sessions\$stamp"
+foreach ($g in @(@{dir = $a; n = 1}, @{dir = $b; n = 2})) {
+    $to = Join-Path $keep "$($g.n)"
+    New-Item -ItemType Directory -Force $to | Out-Null
+    foreach ($f in 'totk.log', 'audit.jsonl', 'motion.jsonl', 'mark-*.png') {
+        Copy-Item -Force (Join-Path $g.dir "logs\$f") $to -ErrorAction SilentlyContinue
+    }
+}
+Copy-Item -Force $report $keep -ErrorAction SilentlyContinue
+$marks = & (Join-Path $root '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'ent_marks.py') (Join-Path $keep '1') (Join-Path $keep '2')
+$marks | Set-Content -Encoding utf8 (Join-Path $keep 'marks.txt')
+"(session kept in $keep; marks: $(@($marks | Where-Object { $_ -match '^== MARK' }).Count))"
+if ($Bench) {
+    $ent = Join-Path $root 'build/ent_report.txt'
+    $lines = & (Join-Path $root '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'ent_report.py') $a $b --bench $(if ($Expect) { "--expect=$Expect" })
+    $lines | Set-Content -Encoding utf8 $ent   # (Tee-Object writes UTF-16 in Windows PowerShell)
+    $lines
+    "(kept in $ent)"
+}

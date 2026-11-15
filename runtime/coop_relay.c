@@ -1,5 +1,6 @@
 // The co-op relay inside the game (the Host button): the same protocol as server/coop_relay.py, on a thread of its
-// own. It hands out player ids on HELLO, forwards STATE / WORLD / HIT / POSE / OBJS / EPOSE packets to everyone else and drops players
+// own. It hands out player ids on HELLO, forwards STATE / WORLD / HIT / POSE / OBJS / EPOSE packets to everyone else
+// (CTR packets to the player header byte 7 names, everyone else when 0) and drops players
 // that stay quiet for 5 s. The hosting game joins it itself through 127.0.0.1 like any other player.
 #include <stdint.h>
 #include <stdio.h>
@@ -27,7 +28,7 @@ typedef int Sock;
 #include "host.h"
 #include "platform/platform.h"
 
-enum { HELLO = 1, WELCOME = 2, STATE = 3, LEAVE = 4, BYE = 5, WORLD = 6, HIT = 7, POSE = 8, OBJS = 9, EPOSE = 10, HEADER = 8 };
+enum { HELLO = 1, WELCOME = 2, STATE = 3, LEAVE = 4, BYE = 5, WORLD = 6, HIT = 7, POSE = 8, OBJS = 9, EPOSE = 10, CTR = 11, HEADER = 8 };
 
 static volatile int relay_gen;    // a new value stops the running relay thread
 static volatile int relay_port;   // nonzero while a relay runs here
@@ -111,12 +112,15 @@ static void relay_thread(void *arg) {
             for (int i = 0; i < np; i++)
                 if (i != at) out[o] = (uint8_t)peers[i].id, memcpy(out + o + 1, peers[i].name, 16), o += 17;
             sendto(s, (const char *)out, o, 0, (struct sockaddr *)&from, sizeof from);
-        } else if ((kind == STATE || kind == WORLD || kind == HIT || kind == POSE || kind == OBJS || kind == EPOSE) && at >= 0) {
+        } else if ((kind == STATE || kind == WORLD || kind == HIT || kind == POSE || kind == OBJS || kind == EPOSE || kind == CTR) && at >= 0) {
             peers[at].seen_ns = now;
+            int to = kind == CTR ? buf[7] : 0;   // (CTR: one player, or everyone else when 0)
             memcpy(out, buf, n);
             put_header(out, kind, peers[at].id);
+            out[7] = (uint8_t)to;
             for (int i = 0; i < np; i++)
-                if (i != at) sendto(s, (const char *)out, n, 0, (struct sockaddr *)&peers[i].addr, sizeof peers[i].addr);
+                if (i != at && (!to || peers[i].id == to))
+                    sendto(s, (const char *)out, n, 0, (struct sockaddr *)&peers[i].addr, sizeof peers[i].addr);
         } else if (kind == BYE && at >= 0) {
             rt_log("coop relay: player %d \"%s\" left (said bye)", peers[at].id, peers[at].name);
             put_header(out, LEAVE, peers[at].id);

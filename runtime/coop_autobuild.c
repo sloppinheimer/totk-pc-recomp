@@ -25,6 +25,8 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "coop_ctn.h"
+#include "coop_ctr.h"
 #include "coop_game.h"
 #include "coop_net.h"
 #include "host.h"
@@ -382,7 +384,14 @@ static void hit_test(Cpu *c, uint64_t me, int n) {
         int fan = -1, wing = -1;
         for (int i = 0; i < n; i++) {
             if (!live_device(i, nm, sizeof nm)) continue;
-            if (fan < 0 && !strcmp(nm, "SpObj_WindGenerator_A_01")) fan = i;
+            if (!strcmp(nm, "SpObj_WindGenerator_A_01")) {
+                // (TOTK_COOP_TEST_ABHIT_FANX=1: the fan furthest along +x, the same one in every run, not the first found)
+                float pa[3], pb[3];
+                if (fan < 0) fan = i;
+                else if (cfg_get("TOTK_COOP_TEST_ABHIT_FANX") && coop_rd(atomic_load(&tracked[i]) + COOP_ACTOR_POS, pa, 12) &&
+                         coop_rd(atomic_load(&tracked[fan]) + COOP_ACTOR_POS, pb, 12) && pa[0] > pb[0])
+                    fan = i;
+            }
             if (wing < 0 && !strcmp(nm, "SpObj_LiftGeneratorWing_A_01")) wing = i;
         }
         float f[3], w[3];
@@ -395,7 +404,10 @@ static void hit_test(Cpu *c, uint64_t me, int n) {
         if (l < 0.1f) ux = 1, uz = 0, l = 1;
         ux /= l, uz /= l;
         float dx = -ux, dz = -uz;   // facing the fan
-        float m[12] = {dz, 0, dx, f[0] + ux, 0, 1, 0, f[1] - 0.2f, -dx, 0, dz, f[2] + uz};
+        // (TOTK_COOP_TEST_ABHIT_DIST=<m>: that far from it instead of 1 m; a stand-in put inside the build shoves it)
+        const char *ds = cfg_get("TOTK_COOP_TEST_ABHIT_DIST");
+        float dist = ds ? (float)atof(ds) : 1.0f;
+        float m[12] = {dz, 0, dx, f[0] + ux * dist, 0, 1, 0, f[1] - 0.2f, -dx, 0, dz, f[2] + uz * dist};
         coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
         placed = 1;
         {   // TOTK_COOP_TEST_ABLOOSE=1: a loose fan made 1.6 m to this Link's right, for its script to push the build into
@@ -461,7 +473,6 @@ static void glue_try(Cpu *c, int n, int64_t since) {
     }
     if (done || !cfg_get("TOTK_COOP_TEST_ABGLUE") || coop_net_id() == 1 || frame_step_world_us() - since < 4000000) return;
     done = 1;
-    int coop_glue_pair(Cpu *c, uint64_t a, uint64_t b);
     char nm[48];
     uint64_t wing = 0;
     for (int i = 0; i < n && !wing; i++)
@@ -469,9 +480,8 @@ static void glue_try(Cpu *c, int n, int64_t since) {
     for (int i = 0; i < n && wing; i++)
         if (live_device(i, nm, sizeof nm) && !strcmp(nm, "SpObj_WindGenerator_A_01"))
         {
-            extern uint64_t coop_glue_last_entry;
-            int ok = coop_glue_pair(c, atomic_load(&tracked[i]), wing);
-            uint64_t edge = coop_glue_last_entry ? coop_rd_ptr(coop_glue_last_entry + 0x560) : 0;
+            int ok = 0;   // (the glue test's call left the build with coop_glue.c)
+            uint64_t edge = 0;
             rt_log("coop: test: abglue: device %d to the wing: %s, its edge %llx (vtable main+%llx)", i, ok ? "glued" : "not glued",
                    (unsigned long long)edge, (unsigned long long)(coop_rd_ptr(edge) - MOD_MAIN_BASE));
             if (edge) dump("glue edge", edge, 0x120);
@@ -479,14 +489,18 @@ static void glue_try(Cpu *c, int n, int64_t since) {
         }
 }
 
-// TOTK_COOP_TEST_ABPART=<s> (game A, the first joined): at that world time the build's last fan is taken off its
+// TOTK_COOP_TEST_ABPART=<s>[,<player>] (by default game A, the first joined): at that world time the build's last
+// fan (in game B: a fan of its copy) is taken off its
 // contraption as Ultrahand's shake does: removeScotch (main+0x1c042bc: the fan's glue component, its id
 // [actor+0x380], 0x2051000a), whose message makes every actor bonded to it break its bonds with it (main+0x1c0aefc).
 static void part_test(Cpu *c, int n) {
     static double at = -1;
-    static int done;
-    if (at < 0) { const char *e = cfg_get("TOTK_COOP_TEST_ABPART"); at = e ? atof(e) : 0; }
-    if (done || at <= 0 || coop_net_id() != 1 || frame_step_world_us() / 1e6 < at) return;
+    static int done, who = 1;
+    if (at < 0) {
+        const char *e = cfg_get("TOTK_COOP_TEST_ABPART"), *k = e ? strchr(e, ',') : NULL;
+        at = e ? atof(e) : 0, who = k ? atoi(k + 1) : 1;
+    }
+    if (done || at <= 0 || coop_net_id() != who || frame_step_world_us() / 1e6 < at) return;
     done = 1;
     char nm[48];
     int fan = -1;
@@ -818,12 +832,53 @@ static void compdump_test(int n) {
 // Autobuild ability's update (main+0x9a2c00) runs, called again at that time on the object it ran on: whether the
 // game's own build can be run from code (the other game's copies made as the game makes them)
 uint64_t coop_ab_obj;
-uint8_t coop_ab_cai[0xc + 0x15 * 0x118];
+uint8_t coop_ab_cai[0x1820];   // the whole CmbAct: parts from +0xc, bond records from +0x1704
 // The ability update's preparation, replayed (main+0x9a2c00 before its call at main+0x9a70ec): the blueprint put back
 // as it was at the build (its part count, +9, reads 0 after it), the build's entry pool released (+0x4d10 counter
 // stepped, +0x4d10+0x220 cleared, the +0x4f48 used entries put back on the free list at +0x4f58), then per part an entry
 // from the pool at +0x1b0 (main+0x1d3cfc8) with the record's +0x98 and +0xd8, its +0x90 and +0x94, the record's +0xd7
 // and +0x117 cleared; then main+0x1d3b470.
+// TOTK_COOP_TEST_ABSAVE=<s>,<file> (game A, after a build kept with TOTK_COOP_TEST_CREATEDUMP=1): at that time its
+// blueprint (the whole CmbAct) and the build's base matrix (BuildObject +0x120) written to <file>.
+// TOTK_COOP_TEST_ABLOAD=<s>,<file> (game B, which has built nothing): at that time this game's own Autobuild build
+// object ([ability +0x51f0], the ability caught in its update) taken as the one to build with, the file's blueprint
+// kept as if built here and its base matrix put in the object, so TOTK_COOP_TEST_REBUILD and REBUILDGO make A's
+// contraption here. A test of building another game's contraption with the game's own Autobuild; the file stands in
+// for the network.
+extern _Atomic uint64_t coop_ab_ability;
+static void abfile_test(void) {
+    for (int mode = 0; mode < 2; mode++) {
+        static double at[2] = {-1, -1};
+        static char path[2][260];
+        const char *name = mode ? "TOTK_COOP_TEST_ABLOAD" : "TOTK_COOP_TEST_ABSAVE";
+        if (at[mode] < 0) {
+            const char *e = cfg_get(name), *k = e ? strchr(e, ',') : NULL;
+            at[mode] = e && k ? atof(e) : 0;
+            if (k) snprintf(path[mode], sizeof path[mode], "%s", k + 1);
+        }
+        if (at[mode] <= 0 || frame_step_world_us() / 1e6 < at[mode]) continue;
+        at[mode] = 0;
+        float m[12];
+        if (!mode) {
+            if (!coop_ab_obj || !coop_ab_cai[9] || !coop_rd(coop_ab_obj + 0x120, m, sizeof m)) { rt_log("coop: test: absave: no build kept"); continue; }
+            FILE *f = fopen(path[0], "wb");
+            int ok = f && fwrite(coop_ab_cai, sizeof coop_ab_cai, 1, f) == 1 && fwrite(m, sizeof m, 1, f) == 1;
+            if (f) fclose(f);
+            rt_log("coop: test: absave: %s: blueprint (%u parts, %u bonds) and base at %.2f %.2f %.2f: %d", path[0], coop_ab_cai[9], coop_ab_cai[10], m[3], m[7], m[11], ok);
+            continue;
+        }
+        uint64_t ab = atomic_load(&coop_ab_ability), o = ab ? coop_rd_ptr(ab + 0x51f0) : 0;
+        FILE *f = fopen(path[1], "rb");
+        int ok = f && fread(coop_ab_cai, sizeof coop_ab_cai, 1, f) == 1 && fread(m, sizeof m, 1, f) == 1;
+        if (f) fclose(f);
+        if (!ok || !o) { rt_log("coop: test: abload: %s read %d, build object %llx: nothing", path[1], ok, (unsigned long long)o); continue; }
+        if (!coop_rd_ptr(o + 0x3c50)) ST64(o + 0x3c50, o + 0xc50);   // (the blueprint buffer, as a load sets it)
+        memcpy((void *)(uintptr_t)(o + 0x120), m, sizeof m);
+        coop_ab_obj = o;
+        rt_log("coop: test: abload: %s: blueprint (%u parts, %u bonds) and base %.2f %.2f %.2f into this game's build object %llx (blueprint at %llx)",
+               path[1], coop_ab_cai[9], coop_ab_cai[10], m[3], m[7], m[11], (unsigned long long)o, (unsigned long long)coop_rd_ptr(o + 0x3c50));
+    }
+}
 static void rebuild_test(Cpu *c) {
     static double at = -1;
     if (at < 0) { const char *e = cfg_get("TOTK_COOP_TEST_REBUILD"); at = e ? atof(e) : 0; }
@@ -832,7 +887,17 @@ static void rebuild_test(Cpu *c) {
     uint64_t o = coop_ab_obj, cai = o ? coop_rd_ptr(o + 0x3c50) : 0;
     if (!cai || !coop_ab_cai[9]) { rt_log("coop: test: rebuild: no build kept (object %llx)", (unsigned long long)o); return; }
     int n = coop_ab_cai[9];
-    memcpy((void *)(uintptr_t)cai, coop_ab_cai, 0xc + (size_t)n * 0x118);
+    memcpy((void *)(uintptr_t)cai, coop_ab_cai, sizeof coop_ab_cai);
+    {   // TOTK_COOP_TEST_REBUILDBASE=<m>: the build's base matrix (BuildObject +0x120, three rows [R|t]) moved <m> along z,
+        // so the parts are made beside the first build (main+0x1d3b470 composes it with each record's frame 0)
+        const char *bs = cfg_get("TOTK_COOP_TEST_REBUILDBASE");
+        float m[12];
+        if (bs && coop_rd(o + 0x120, m, sizeof m)) {
+            rt_log("coop: test: rebuild: base matrix t %.2f %.2f %.2f, moved %s m along z", m[3], m[7], m[11], bs);
+            m[11] += (float)atof(bs);
+            memcpy((void *)(uintptr_t)(o + 0x120), m, sizeof m);
+        }
+    }
     {   // TOTK_COOP_TEST_REBUILDDX=<m>: each float triplet in the records within 15 m of this Link moved <m> along x (the
         // parts' places, wherever the record keeps them), so the second build stands beside the first
         const char *dxs = cfg_get("TOTK_COOP_TEST_REBUILDDX");
@@ -899,7 +964,7 @@ static void rebuild_ok(Cpu *c) {
     {   // the confirm reads the blueprint's +9 (parts) and +0xa (3 for the Fanplane: its bonds, it seems), both zeroed again
         // by the build step: put back as at the build
         uint64_t cai = coop_rd_ptr(coop_ab_obj + 0x3c50);
-        if (cai && coop_ab_cai[9]) memcpy((void *)(uintptr_t)cai, coop_ab_cai, 0xc + (size_t)coop_ab_cai[9] * 0x118);
+        if (cai && coop_ab_cai[9]) memcpy((void *)(uintptr_t)cai, coop_ab_cai, sizeof coop_ab_cai);
     }
     // TOTK_COOP_TEST_REBUILDCLAIM=1: first each part's create handle (its pool entry +0x60, which main+0x1d3b470 gives
     // requestCreateActor) put in the world (coop_claim): the new parts stayed in state 3, made and not put in
@@ -982,7 +1047,955 @@ static void deck_test(Cpu *c, uint64_t me, int n) {
     memcpy(last, rel, 12);
 }
 
+// TOTK_COOP_TEST_PLAYERDIFF=<s1>,<s2>: this Link's actor (0x1000 bytes) and components (0x400 each) kept at s1 and s2;
+// each 32-bit word that changed is logged as an int and a float: where the Link's battery lives (Zonai devices it ran
+// in between drew it down)
+static void playerdiff_test(uint64_t me) {
+    static double t1 = -1, t2;
+    static uint8_t (*snap)[257][0x400];
+    static int stage;
+    if (t1 < 0) { const char *e = cfg_get("TOTK_COOP_TEST_PLAYERDIFF"); t1 = 0; if (e && sscanf(e, "%lf,%lf", &t1, &t2) != 2) t1 = 0; }
+    double now = frame_step_world_us() / 1e6;
+    if (t1 <= 0 || stage >= 2 || now < (stage ? t2 : t1)) return;
+    if (!snap) snap = calloc(2, sizeof *snap);
+    if (!snap) { t1 = 0; return; }
+    uint64_t t = coop_rd_ptr(me + 0x228);
+    for (int j = 0; j < 4; j++) coop_rd(me + 0x400 * (uint64_t)j, snap[stage][256 - 4 + j], 0x400);   // (the actor in the last rows)
+    for (int j = 0; j < 252; j++) { uint64_t comp = t ? coop_rd_ptr(t + 8 * (uint64_t)j) : 0; if (comp) coop_rd(comp, snap[stage][j], 0x400); }
+    if (++stage < 2) return;
+    int said = 0;
+    for (int j = 0; j < 256 && said < 400; j++)
+        for (int w = 0; w < 0x400; w += 4) {
+            uint32_t a, b;
+            memcpy(&a, &snap[0][j][w], 4), memcpy(&b, &snap[1][j][w], 4);
+            if (a == b) continue;
+            float fa, fb;
+            memcpy(&fa, &a, 4), memcpy(&fb, &b, 4);
+            if (fabsf(fa) > 1e6f || fabsf(fb) > 1e6f || (a >> 20) == 0x1a || (a >> 20) == 0x19) continue;   // (pointers, noise)
+            // TOTK_COOP_TEST_PLAYERDIFFDOWN=1: only floats in (0, 5000) that went down by 0.01..500 (a battery drawn)
+            if (cfg_get("TOTK_COOP_TEST_PLAYERDIFFDOWN") && !(fa > 0 && fa < 5000 && fb < fa && fa - fb > 0.01f && fa - fb < 500 && fb >= 0)) continue;
+            rt_log("coop: test: playerdiff %s %d (%llx) +%03x: %08x -> %08x (%g -> %g)", j >= 252 ? "actor" : "comp", j >= 252 ? (j - 252) : j,
+                   (unsigned long long)(j >= 252 ? me : coop_rd_ptr(coop_rd_ptr(me + 0x228) + 8 * (uint64_t)j)),
+                   j >= 252 ? (j - 252) * 0x400 + w : w, a, b, fa, fb);
+            said++;
+        }
+    rt_log("coop: test: playerdiff: %d words", said);
+}
+
+// TOTK_COOP_TEST_SERIAL=<s> (contraption-sync.md, Phase 0 item 2): at that world time, with nothing held, the
+// game's history writer (main+0x1913694, the call the Autobuild ability makes on the contraption Ultrahand holds) is
+// run on the first live tracked part, as the ability calls it: x0 = [[main+0x395f6f8]], x1 = an ActorLink to the
+// part (main+0x155ec), x2 = an alignment matrix (identity here), x3 = the record buffer (the ability gives
+// ability+0x52e0, 0x1a20 bytes written), x4 = a matrix out. Logs what it wrote: counts, each part's name, scale and
+// frame 0 translation, each bond record; and the same part's world place, to compare.
+#define HISTORY_WRITE 0x1913694
+#define LINK_SET_FN 0x155ec
+#define HISTORY_MGR_SLOT 0x395f6f8
+static uint64_t serial_call5(Cpu *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {   // as coop_guest_call
+    uint64_t saved_x[31], sp0 = c->sp;
+    memcpy(saved_x, c->x, sizeof saved_x);
+    c->sp = (sp0 - 0x100) & ~0xfull;
+    uint64_t r = rt_call(c, fn, 5, a0, a1, a2, a3, a4);
+    c->sp = sp0;
+    memcpy(c->x, saved_x, sizeof saved_x);
+    return r;
+}
+static _Atomic int serial_due;
+static int tracked_part(uint64_t a);
+static void serial_run(Cpu *c, int n);
+static void serial_test(Cpu *c, int n) {   // the tick: due at that time; run in this Link's update (coop_autobuild_link_calc)
+    (void)c, (void)n;
+    static double at = -1;
+    if (at == -1) at = cfg_get("TOTK_COOP_TEST_SERIAL") ? atof(cfg_get("TOTK_COOP_TEST_SERIAL")) : 0;
+    if (at <= 0 || frame_step_world_us() / 1e6 < at) return;
+    at = 0;
+    atomic_store(&serial_due, 1);
+}
+// The actor manager's phase byte ([[main+0x395da68]]+0x424): 2 while the actors update in parallel, when an actor
+// link resolves (main+0x45efd4) only to an actor the calling job may touch; at other values it resolves to any.
+static int actor_phase(void) {
+    uint64_t m = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + 0x395da68));
+    uint8_t b = 0xff;
+    if (m) coop_rd(m + 0x424, &b, 1);
+    return b;
+}
+static void serial_try(Cpu *c, const char *where) {
+    static int seen[256];
+    int ph = actor_phase();
+    if (!atomic_load(&serial_due)) return;
+    if (!seen[ph & 0xff]++) rt_log("coop: test: serial: due, %s at actor phase %d", where, ph);
+    // TOTK_COOP_TEST_SERIALPHASE=1: run at once, with the phase byte set to 4 for the call (both callers only ever see
+    // 2): a test of what the writer makes when the lookup lets it, not a way to call it in the game.
+    int force = ph == 2 && cfg_get("TOTK_COOP_TEST_SERIALPHASE");
+    if (ph == 2 && !force) return;
+    if (!atomic_exchange(&serial_due, 0)) return;
+    rt_log("coop: test: serial: run from %s at actor phase %d%s", where, ph, force ? ", set to 4 for the call" : "");
+    uint64_t m = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + 0x395da68));
+    if (force) *(volatile uint8_t *)(uintptr_t)(m + 0x424) = 4;
+    int n = atomic_load(&tracked_n);
+    serial_run(c, n < TRACK_N ? n : TRACK_N);
+    if (force) *(volatile uint8_t *)(uintptr_t)(m + 0x424) = 2;
+}
+// Called at the start of this PC's Link's update (coop_spawn.c calc_wrap), on the actor job's thread. The actor-link
+// lookup the history writer starts with (main+0x45efd4) answers only on the game's job threads: called from the co-op
+// tick, it gave no actor and the writer returned 0.
+// TOTK_COOP_TEST_REBUILDGO=<s> (with TOTK_COOP_TEST_REBUILD made earlier, TOTK_COOP_TEST_CREATEDUMP=1 to keep the
+// blueprint): the second build's parts finished as the confirm would, from this Link's update (the Autobuild ability's
+// own job runs there): each part's create handle (pool entry +0x60) put in the world and linked at the entry's +0x48
+// (the hologram link the ready check main+0x9a83dc wants valid), each entry's state (+0x1c) 3 ("made from the
+// currency"), the object's +0x3c70 cleared, the whole blueprint put back, and main+0x1d3c0d4 called. Then for 4 s every
+// 0.5 s: each new part's group, green bit (SPR +0x150 bit 0) and place against the first build's.
+static double cfg_at(const char *name, double *second);
+static uint64_t go_parts[0x15];
+static int go_n;
+static void rebuild_go(Cpu *c) {
+    static double at = -1, claim_at;
+    static int claimed;
+    // TOTK_COOP_TEST_REBUILDGOCLAIM=<s>: the parts put in the world at that earlier time (as a real build's previews
+    // are before its confirm): claimed in the confirm's own tick, they entered the world a tick after it, and their SPR
+    // fields (the mark among them) came back cleared
+    if (at < 0) at = cfg_at("TOTK_COOP_TEST_REBUILDGO", NULL), claim_at = cfg_at("TOTK_COOP_TEST_REBUILDGOCLAIM", NULL);
+    double now_s = frame_step_world_us() / 1e6;
+    uint64_t o = coop_ab_obj, list = o ? coop_rd_ptr(o + 0x1b8) : 0;
+    int32_t ne = 0;
+    if (o) coop_rd(o + 0x1b0, &ne, 4);
+    static _Alignas(16) uint8_t tmp[0x15][0x40];
+    if (!claimed && claim_at > 0 && o && now_s >= claim_at) {
+        claimed = 1;
+        for (int k = 0; list && k < ne && k < 0x15; k++) {
+            uint64_t ent = coop_rd_ptr(list + 8 * (uint64_t)k), ref = 0;
+            int st = ent ? coop_handle_status((const uint8_t *)(uintptr_t)(ent + 0x60)) : 0;
+            uint64_t a = st == 3 ? coop_claim(c, (uint8_t *)(uintptr_t)(ent + 0x60), tmp[k], &ref) : 0;
+            if (a) go_parts[go_n++] = a;
+            rt_log("coop: test: rebuildgo: %.2f s entry %d claimed early: %llx", now_s, k, (unsigned long long)a);
+        }
+    }
+    if (at <= 0 || !o || now_s < at) return;
+    at = 0;
+    for (int k = 0; claimed && list && k < ne && k < 0x15 && k < go_n; k++) {   // (claimed early: only linked now)
+        uint64_t ent = coop_rd_ptr(list + 8 * (uint64_t)k);
+        if (!ent) continue;
+        uint8_t *l = (uint8_t *)(uintptr_t)(ent + 0x48);
+        memset(l + 0x10, 0xff, 4), l[0x14] = 1;
+        coop_guest_call(c, MOD_MAIN_BASE + LINK_SET_FN, ent + 0x48, go_parts[k], 1, 0);
+        ST32(ent + 0x1c, 3);
+    }
+    for (int k = 0; !claimed && list && k < ne && k < 0x15; k++) {
+        uint64_t ent = coop_rd_ptr(list + 8 * (uint64_t)k), ref = 0;
+        if (!ent) continue;
+        int st = coop_handle_status((const uint8_t *)(uintptr_t)(ent + 0x60));
+        uint64_t a = st == 3 ? coop_claim(c, (uint8_t *)(uintptr_t)(ent + 0x60), tmp[k], &ref) : 0;
+        if (a) {
+            uint8_t *l = (uint8_t *)(uintptr_t)(ent + 0x48);
+            memset(l + 0x10, 0xff, 4), l[0x14] = 1;
+            coop_guest_call(c, MOD_MAIN_BASE + LINK_SET_FN, ent + 0x48, a, 1, 0);
+            ST32(ent + 0x1c, 3);
+            go_parts[go_n++] = a;
+        }
+        char nm[48] = "";
+        rt_log("coop: test: rebuildgo: entry %d handle status %d: %s %llx", k, st, a ? coop_actor_name(a, nm, sizeof nm) : "-", (unsigned long long)a);
+    }
+    ST8(o + 0x3c70, 0);
+    uint64_t cai = coop_rd_ptr(o + 0x3c50);
+    if (cai && coop_ab_cai[9]) memcpy((void *)(uintptr_t)cai, coop_ab_cai, sizeof coop_ab_cai);
+    // TOTK_COOP_TEST_REBUILDGOPHASE=1: the actor manager's phase byte set to 4 for the call (a test of what the confirm
+    // does when every actor link resolves; Phase 0 item 2 found the lookup refuses other jobs' actors in phase 2)
+    // TOTK_COOP_TEST_REBUILDGOFREE=1: no currency charged: the confirm charges each part's cost (the record
+    // main+0xae6e04 finds for the entry's name in the table [[[main+0x395f900]]+8], its +0x48) through main+0x209b754;
+    // each record's cost set to 0 for the call and put back after
+    uint64_t costs_at[0x15] = {0};
+    uint32_t costs_were[0x15] = {0};
+    int ncost = 0;
+    if (cfg_get("TOTK_COOP_TEST_REBUILDGOFREE")) {
+        uint64_t tab = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + 0x395f900)) + 8);
+        static uint64_t key;
+        for (int k = 0; tab && list && k < ne && k < 0x15; k++) {
+            uint64_t ent = coop_rd_ptr(list + 8 * (uint64_t)k);
+            if (!ent) continue;
+            key = coop_rd_ptr(ent);
+            uint64_t rec = coop_guest_call(c, MOD_MAIN_BASE + 0xae6e04, tab, (uint64_t)(uintptr_t)&key, 0, 0);
+            int seen = 0;
+            for (int i = 0; i < ncost; i++) seen |= costs_at[i] == rec;
+            if (!rec || seen) continue;
+            costs_at[ncost] = rec, costs_were[ncost] = LD32(rec + 0x48), ST32(rec + 0x48, 0);
+            char nm[64] = "";
+            coop_rd(key, nm, sizeof nm - 1);
+            rt_log("coop: test: rebuildgo: %s costs %u: 0 for the confirm", nm, costs_were[ncost]);
+            ncost++;
+        }
+    }
+    uint64_t am = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + 0x395da68));
+    int force = cfg_get("TOTK_COOP_TEST_REBUILDGOPHASE") && am && actor_phase() == 2;
+    if (force) *(volatile uint8_t *)(uintptr_t)(am + 0x424) = 4;
+    uint64_t r = coop_guest_call(c, MOD_MAIN_BASE + 0x1d3c0d4, o, 0, 0, 0);
+    if (force) *(volatile uint8_t *)(uintptr_t)(am + 0x424) = 2;
+    for (int i = 0; i < ncost; i++) ST32(costs_at[i] + 0x48, costs_were[i]);
+    rt_log("coop: test: rebuildgo: %.2f s the confirm (main+0x1d3c0d4) returned %llu at actor phase %d", frame_step_world_us() / 1e6,
+           (unsigned long long)(r & 1), actor_phase());
+    // TOTK_COOP_TEST_REBUILDGOMARK=1: each part then given the confirm's own mark (main+0x1c07114: autobuilt, green,
+    // preview off), in case the confirm's own marking did not reach them
+    // TOTK_COOP_TEST_REBUILDGOMARK=2: the mark without its green bit (SPR +0x27c bit 0, +0x20 bit 28 on and bit 51 off,
+    // actor +0x5ac bit 2 off), the green (+0x150 bit 0) only once the part has a group (rebuild_go_log): green with no
+    // group is "a part broken off", which the game destroys (state 11 within a second, found with =1)
+    const char *mk = cfg_get("TOTK_COOP_TEST_REBUILDGOMARK");
+    for (int k = 0; mk && k < go_n; k++) {
+        uint64_t spr = coop_rd_ptr(coop_rd_ptr(go_parts[k] + 0x228) + 0x480);
+        if (!spr) continue;
+        if (*mk == '2') {
+            __atomic_fetch_or((uint32_t *)(uintptr_t)(spr + 0x27c), 1u, __ATOMIC_SEQ_CST);
+            uint64_t f20 = LD64(spr + 0x20);
+            ST64(spr + 0x20, (f20 & ~(1ull << 51)) | (1ull << 28));
+            __atomic_fetch_and((uint32_t *)(uintptr_t)(go_parts[k] + 0x5ac), ~4u, __ATOMIC_SEQ_CST);
+        } else coop_guest_call(c, MOD_MAIN_BASE + 0x1c07114, spr, 0, 0, 0);
+    }
+    for (int k = 0; k < go_n; k++) {   // straight after it: what it marked and queued on each part's SPR
+        uint64_t spr = coop_rd_ptr(coop_rd_ptr(go_parts[k] + 0x228) + 0x480);
+        uint32_t f150 = 0, f27c = 0, q = 0;
+        uint64_t f20 = 0;
+        if (spr) coop_rd(spr + 0x150, &f150, 4), coop_rd(spr + 0x27c, &f27c, 4), coop_rd(spr + 0x2b0, &q, 4), coop_rd(spr + 0x20, &f20, 8);
+        rt_log("coop: test: rebuildgo: part %d spr %llx: +0x150 %#x +0x27c %#x +0x20 %#llx, bonds queued %u", k, (unsigned long long)spr, f150,
+               f27c, (unsigned long long)f20, q);
+    }
+}
+// TOTK_COOP_TEST_PARTCMP=<s1>,<s2>: one line per part, for the real build's parts (tracked) at s1 and the rebuilt ones
+// (rebuild_go) at s2: the fields an Autobuild's confirm and what follows it set, to see what the rebuilt copy lacks:
+// actor state +0x24, actor +0x444 and +0x5ac, SPR +0x20 / +0x27c / +0x150 / +0x28 (group) / +0x2b0 (queued bonds),
+// the main body's flags +0x68 and its pending request's motion type, and the body's linear speed (+0x320 of the actor).
+static void part_line(const char *what, int k, uint64_t a) {
+    uint64_t t = coop_rd_ptr(a + 0x228), spr = t ? coop_rd_ptr(t + 0x480) : 0;
+    uint64_t body = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(t + 0x50) + 0x20) + 0x150);
+    int32_t st = 0;
+    uint32_t a444 = 0, a5ac = 0, f27c = 0, f150 = 0, q = 0, rq = 0, rt = 0;
+    uint64_t f20 = 0, g = 0, bf = 0, req = 0;
+    coop_rd(a + 0x24, &st, 4), coop_rd(a + 0x444, &a444, 4), coop_rd(a + 0x5ac, &a5ac, 4);
+    if (spr) coop_rd(spr + 0x20, &f20, 8), coop_rd(spr + 0x27c, &f27c, 4), coop_rd(spr + 0x150, &f150, 4), g = coop_rd_ptr(spr + 0x28), coop_rd(spr + 0x2b0, &q, 4);
+    if (body) coop_rd(body + 0x68, &bf, 8), req = coop_rd_ptr(body + 0x60);
+    if (req) coop_rd(req + 0xd4, &rq, 4), coop_rd(req + 0x80, &rt, 4);
+    float v[3] = {0};
+    coop_rd(a + 0x320, v, 12);
+    char nm[48];
+    rt_log("coop: test: partcmp: %s %d %.12s state %d +0x444 %#x +0x5ac %#x | spr +0x20 %#llx +0x27c %#x +0x150 %#x group %llx queued %u | body flags %#llx req %#x type %u | v %.2f %.2f %.2f",
+           what, k, coop_actor_name(a, nm, sizeof nm) + 6, st, a444, a5ac, (unsigned long long)f20, f27c, f150, (unsigned long long)(g & 0xffffff), q,
+           (unsigned long long)bf, rq, rt, v[0], v[1], v[2]);
+}
+static void partcmp_test(int n) {
+    static double s1 = -1, s2;
+    static int d1, d2;
+    if (s1 < 0) s1 = cfg_at("TOTK_COOP_TEST_PARTCMP", &s2);
+    if (s1 <= 0) return;
+    double t = frame_step_world_us() / 1e6;
+    char nm[48];
+    if (!d1 && t >= s1) {
+        d1 = 1;
+        for (int i = 0; i < n; i++) if (live_device(i, nm, sizeof nm)) part_line("real", i, atomic_load(&tracked[i]));
+    }
+    if (!d2 && t >= s2 && go_n) {
+        d2 = 1;
+        for (int k = 0; k < go_n; k++) part_line("rebuilt", k, go_parts[k]);
+    }
+}
+static void rebuild_go_watch(void) {   // TOTK_COOP_TEST_REBUILDGOWATCH=<from>,<to>: writes to rebuilt part 1's SPR +0x150
+    static double from = -1, to;
+    static int st;
+    if (from < 0) from = cfg_at("TOTK_COOP_TEST_REBUILDGOWATCH", &to);
+    if (from <= 0 || go_n < 2) return;
+    double t = frame_step_world_us() / 1e6;
+    int coop_watch_arm(uint64_t addr, uint64_t len);
+    void coop_watch_disarm(void);
+    extern int coop_watch_writes;
+    uint64_t spr = coop_rd_ptr(coop_rd_ptr(go_parts[1] + 0x228) + 0x480);
+    if (st == 0 && t >= from && spr) { coop_watch_writes = 1; rt_log("coop: test: rebuildgo: watching %llx +0x150: %d", (unsigned long long)spr, coop_watch_arm(spr + 0x150, 4)); st = 1; }
+    if (st == 1 && t >= to) { coop_watch_disarm(); st = 2; }
+}
+static void rebuild_go_log(void) {
+    static double next, until;
+    double t = frame_step_world_us() / 1e6;
+    if (!go_n) return;
+    if (!until) until = t + 10.2;
+    if (t < next || t > until) return;
+    next = t + 0.25;
+    char line[700];
+    int len = snprintf(line, sizeof line, "coop: test: rebuildgo: %.2f s", t);
+    {   // (mark mode 2) green only once in a group
+        const char *mk = cfg_get("TOTK_COOP_TEST_REBUILDGOMARK");
+        for (int k = 0; mk && *mk == '2' && k < go_n; k++) {
+            uint64_t spr = coop_rd_ptr(coop_rd_ptr(go_parts[k] + 0x228) + 0x480);
+            if (spr && coop_rd_ptr(spr + 0x28)) __atomic_fetch_or((uint32_t *)(uintptr_t)(spr + 0x150), 1u, __ATOMIC_SEQ_CST);
+        }
+    }
+    float p0[3] = {0};
+    coop_rd(go_parts[0] + COOP_ACTOR_POS, p0, 12);
+    for (int k = 0; k < go_n; k++) {
+        uint64_t spr = coop_rd_ptr(coop_rd_ptr(go_parts[k] + 0x228) + 0x480), g = spr ? coop_rd_ptr(spr + 0x28) : 0;
+        uint32_t gn = 0, f150 = 0;
+        if (g) coop_rd(g + 0x58, &gn, 4);
+        if (spr) coop_rd(spr + 0x150, &f150, 4);
+        float p[3] = {0};
+        coop_rd(go_parts[k] + COOP_ACTOR_POS, p, 12);
+        uint32_t q = 0;
+        if (spr) coop_rd(spr + 0x2b0, &q, 4);
+        int32_t ast = 0;
+        coop_rd(go_parts[k] + 0x24, &ast, 4);
+        len += snprintf(line + len, sizeof line - (size_t)len, " | %d st %d group %llx (%u) green %u queued %u at %.2f %.2f %.2f (from part 0 %.2f %.2f %.2f)", k,
+                        ast, (unsigned long long)(g & 0xffffff), gn, f150 & 1, q, p[0], p[1], p[2], p[0] - p0[0], p[1] - p0[1], p[2] - p0[2]);
+    }
+    rt_log("%s", line);
+}
+// The contraption sync itself is coop_ctn.c (docs/coop/contraption-sync-v3.md section 27).
+static int contraption_on(void) {
+    static int on = -1;
+    if (on < 0) on = cfg_get("TOTK_COOP_CONTRAPTION") && *cfg_get("TOTK_COOP_CONTRAPTION") == '1';
+    return on;
+}
+// TOTK_COOP_TEST_REBUILDGOIN=gamedata: the rebuild's confirm (and the history writer, TOTK_COOP_TEST_SERIAL) run from
+// GameDataMgr::calc instead, at actor phase 0 (coop_spawn.c coop_hook)
+void coop_autobuild_seq_calc(Cpu *c) {
+    coop_ent_phase0(c);
+    rebuild_go(c);
+    serial_try(c, "GameDataMgr::calc");
+}
+void coop_autobuild_link_calc(Cpu *c) {
+    if (!cfg_get("TOTK_COOP_TEST_REBUILDGOIN")) rebuild_go(c);
+    static int from_link = -1;
+    if (from_link < 0) { const char *in = cfg_get("TOTK_COOP_TEST_SERIALIN"); from_link = !in || strcmp(in, "part"); }
+    if (from_link) serial_try(c, "the Link's update");
+}
+// The same from inside the update of a part of the contraption: the job that updates a contraption's parts may be the
+// one the actor access check lets reach all of them (TOTK_COOP_TEST_SERIALIN=part). Cheap when off: one cached read.
+void coop_autobuild_part_calc(Cpu *c, uint64_t actor) {
+    static int on = -1;
+    if (on < 0) { const char *in = cfg_get("TOTK_COOP_TEST_SERIALIN"); on = in && !strcmp(in, "part"); }
+    if (!on || !atomic_load(&serial_due) || !tracked_part(actor) || !atomic_exchange(&serial_due, 0)) return;
+    rt_log("coop: test: serial: run from a part's update at actor phase %d", actor_phase());
+    int n = atomic_load(&tracked_n);
+    serial_run(c, n < TRACK_N ? n : TRACK_N);
+}
+static void serial_run(Cpu *c, int n) {
+    char nm[48];
+    uint64_t part = 0;
+    for (int i = 0; i < n; i++)   // (the writer refuses a part whose SPR +0x28 is empty: main+0x1c03a60 gives -1)
+        if (live_device(i, nm, sizeof nm)) {
+            uint64_t a = atomic_load(&tracked[i]), g = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x480) + 0x28);
+            rt_log("coop: test: serial: part %d %s: group %llx", i, nm, (unsigned long long)g);
+            if (g && !part) part = a;
+        }
+    if (part) coop_actor_name(part, nm, sizeof nm);
+    if (!part) { rt_log("coop: test: serial: no live part"); return; }
+    static _Alignas(16) uint8_t link[0x40], rec[0x3000];
+    // the alignment is a 3x3 rotation, nine floats (the Autobuild ability fills sp+0x1a0..0x1c0 with a heading basis
+    // before its call at main+0x9a36c4); given here as identity
+    static _Alignas(16) float align[12] = {1, 0, 0, 0, 1, 0, 0, 0, 1}, info[12];
+    memset(link, 0, sizeof link), memset(rec, 0, sizeof rec);
+    memset(link + 0x10, 0xff, 4), link[0x14] = 1;   // an empty link: id -1, +0x14 set (main+0x155ec does nothing without it)
+    coop_guest_call(c, MOD_MAIN_BASE + LINK_SET_FN, (uint64_t)(uintptr_t)link, part, 1, 0);   // (1: a strong link; the writer resolves it with 1)
+    uint64_t lw[3];
+    memcpy(lw, link, sizeof lw);
+    uint64_t ref_actor = lw[1] ? coop_rd_ptr(lw[1] + 0x40) : 0;
+    rt_log("coop: test: serial: link %016llx %016llx %016llx, its actor %llx (part %llx)", (unsigned long long)lw[0],
+           (unsigned long long)lw[1], (unsigned long long)lw[2], (unsigned long long)ref_actor, (unsigned long long)part);
+    if (ref_actor != part) { rt_log("coop: test: serial: the link does not lead to the part: not called"); return; }
+    {   // the writer's first step by hand: main+0x45efd4(link, 0, 1) with its result block in x8
+        static _Alignas(16) uint64_t out[4];
+        memset(out, 0, sizeof out);
+        uint64_t saved_x[31], sp0 = c->sp;
+        memcpy(saved_x, c->x, sizeof saved_x);
+        c->sp = (sp0 - 0x100) & ~0xfull, c->x[8] = (uint64_t)(uintptr_t)out;
+        rt_call(c, MOD_MAIN_BASE + 0x45efd4, 3, (uint64_t)(uintptr_t)link, 0, 1);
+        c->sp = sp0, memcpy(c->x, saved_x, sizeof saved_x);
+        int32_t st = -1;
+        coop_rd(part + 0x24, &st, 4);
+        uint32_t rid = 0, aid = 0, lid = 0;
+        coop_rd(coop_rd_ptr((uint64_t)(uintptr_t)link + 8) + 0x48, &rid, 4), coop_rd(part + 0x10, &aid, 4), memcpy(&lid, link + 0x10, 4);
+        uint8_t sys = 0;
+        coop_rd(coop_rd_ptr(MOD_MAIN_BASE + 0x395da68) ? coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + 0x395da68)) + 0x424 : 0, &sys, 1);
+        rt_log("coop: test: serial: link lookup gave %016llx %016llx %016llx (part state %d; ids: ref %x actor %x link %x; system byte %u)",
+               (unsigned long long)out[0], (unsigned long long)out[1], (unsigned long long)out[2], st, rid, aid, lid, sys);
+        // unlocked as the writer does after its own lookup (main+0x1913760: when byte +0x10 is set, main+0x2bb7a70([+0]+0x20))
+        if ((uint8_t)out[2] && out[0]) coop_guest_call(c, MOD_MAIN_BASE + 0x2bb7a70, out[0] + 0x20, 0, 0, 0);
+    }
+    uint64_t mgr = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + HISTORY_MGR_SLOT));
+    extern _Atomic int coop_call_trace;
+    extern volatile int g_fnprof;
+    int prof = g_fnprof;
+    extern Cpu *volatile coop_call_trace_cpu;
+    extern volatile uint64_t coop_call_trace_lo, coop_call_trace_hi;
+    coop_call_trace_lo = HISTORY_WRITE, coop_call_trace_hi = HISTORY_WRITE + 0xd00;   // (the writer ends before main+0x1914394)
+    coop_call_trace_cpu = c, g_fnprof = 1, atomic_store(&coop_call_trace, 400);
+    uint64_t ok = serial_call5(c, MOD_MAIN_BASE + HISTORY_WRITE, mgr, (uint64_t)(uintptr_t)link, (uint64_t)(uintptr_t)align,
+                                   (uint64_t)(uintptr_t)rec, (uint64_t)(uintptr_t)info);
+    atomic_store(&coop_call_trace, 0), g_fnprof = prof;
+    {   // what the writer checks first: the part's SPR, its group's id (+0x20) and count (+0x58), the table entry
+        uint64_t spr = coop_rd_ptr(coop_rd_ptr(part + 0x228) + 0x480), g = spr ? coop_rd_ptr(spr + 0x28) : 0;
+        uint32_t gid = 0, gn = 0, tn = 0, rid = 0, rn = 0;
+        if (g) coop_rd(g + 0x20, &gid, 4), coop_rd(g + 0x58, &gn, 4);
+        coop_rd(mgr + 0x20, &tn, 4);
+        uint64_t tab = coop_rd_ptr(mgr + 0x28), rec_g = tab ? tab + (uint64_t)(int16_t)gid * 0xa70 : 0;
+        if (rec_g) coop_rd(rec_g + 0x20, &rid, 4), coop_rd(rec_g + 0x58, &rn, 4);
+        uint64_t r2 = coop_guest_call(c, MOD_MAIN_BASE + 0x2bdd3c, part, 0, 0, 0);
+        rt_log("coop: test: serial: spr %llx group %llx id %u count %u; table %u at %llx, entry %llx (id %u count %u); 2bdd3c %llx",
+               (unsigned long long)spr, (unsigned long long)g, gid, gn, tn, (unsigned long long)tab, (unsigned long long)rec_g, rid, rn,
+               (unsigned long long)r2);
+    }
+    float pp[3] = {0};
+    coop_rd(part + COOP_ACTOR_POS, pp, 12);
+    rt_log("coop: test: serial: writer returned %llu on %s at %.2f %.2f %.2f; header %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+           (unsigned long long)(ok & 1), nm, pp[0], pp[1], pp[2], rec[0], rec[1], rec[2], rec[3], rec[4], rec[5], rec[6], rec[7], rec[8], rec[9], rec[10], rec[11]);
+    int parts = rec[9], bonds = rec[10];
+    for (int i = 0; i < parts && i < 21; i++) {
+        const uint8_t *r = rec + 0xc + i * 0x118;
+        float f[12], sc;
+        memcpy(f, r, sizeof f), memcpy(&sc, r + 0x90, 4);
+        rt_log("coop: test: serial: part %d %.40s scale %.2f on %u frame0 words %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f",
+               i, (const char *)r + 0x98, sc, r[0x94], f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11]);
+    }
+    for (int i = 0; i < bonds && i < 21; i++) {
+        const uint8_t *b = rec + 0x1704 + i * 12;
+        uint32_t sa, sb;
+        memcpy(&sa, b, 4), memcpy(&sb, b + 4, 4);
+        rt_log("coop: test: serial: bond %d: part %u body %u - part %u body %u", i, b[8], sa, b[9], sb);
+    }
+    rt_log("coop: test: serial: info words %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f", info[0], info[1], info[2], info[3],
+           info[4], info[5], info[6], info[7], info[8], info[9], info[10], info[11]);
+    for (int i = 0; i < n; i++)   // each live part's body matrix, to compare with the frames
+        if (live_device(i, nm, sizeof nm)) {
+            uint64_t a = atomic_load(&tracked[i]);
+            uint64_t body = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x50) + 0x20) + 0x150);
+            float w[12] = {0};
+            if (body) coop_rd(body + 0x98, w, sizeof w);
+            rt_log("coop: test: serial: body %d %s words %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f", i, nm, w[0], w[1], w[2], w[3],
+                   w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11]);
+        }
+    // the same parts' world places now, to compare with the frames
+    for (int i = 0; i < n; i++)
+        if (live_device(i, nm, sizeof nm)) {
+            float q[3] = {0};
+            coop_rd(atomic_load(&tracked[i]) + COOP_ACTOR_POS, q, 12);
+            rt_log("coop: test: serial: live %d %s at %.3f %.3f %.3f", i, nm, q[0], q[1], q[2]);
+        }
+}
+
+// Phase 0 items 4 and 5 of contraption-sync.md, hooks run from coop_spawn.c coop_hook:
+// TOTK_COOP_TEST_NOSELFPUSH=<s>: from that world time, while a fan of a tracked contraption runs its push
+// (WindGenerator_ApplyImpulse main+0x2487104), its velocity writes (main+0x567750) and impulses (main+0x29ae114) on a
+// body of a tracked part are skipped and the others let through, as a copy's fans would: the copy moved by its owner,
+// the rest of the world pushed as usual. Every 0.5 s: skipped and passed counts and the first part's place.
+// TOTK_COOP_TEST_DRAINMOVE=<s>,<s2>: from s, a charge to the Link's gauge (consume main+0x1fa4ca8, consumeRate
+// main+0x1fa4ed4) from a tracked part's on/off node (main+0x9f9088, main+0x9fad68) is kept, not applied; at s2 the kept
+// total is charged at once through consume. Every 0.5 s: the gauge's numbers, to see it stay and then drop.
+#define APPLY_IMPULSE_FN 0x2487104
+#define SET_LINVEL_FN 0x567750
+#define LIN_IMPULSE_FN 0x29ae114
+#define GAUGE_CONSUME 0x1fa4ca8
+#define GAUGE_CONSUME_RATE 0x1fa4ed4
+#define ONOFF_CALC 0x9f9088
+#define ONOFF_SET 0x9fad68
+static __thread int in_push, in_node, in_copy_node, in_copy_force, in_paid_node, in_force_inert;
+int coop_ab_force_inert(void) { return in_force_inert; }
+void coop_ctn_note_onoff(uint64_t node, uint64_t actor);
+void coop_ctn_event_seen(uint64_t actor);
+// The wheel that runs is ExecuteFastWheelMotion (wrapper main+0x22fa1b0, x0 = its node); main+0x22fc5f8 in motor_nodes
+// below is a twin no shipped graph uses (research notes sync-v3/m2/p5/wheels, section 0). A followed wheel's node
+// runs once with its inert test forced true: that is the game's own disabled branch, which takes the three motor
+// constraints off their bodies and disables them. After that the node is skipped, so the spin and steering floats the
+// model reads stay as coop_ctn.c writes them from the game that runs the build. A wheel no longer followed leaves the
+// table and its node runs again, re-anchoring by itself on its next working tick.
+// A slot holds the actor's id (actor +0x10) too: a new copy made at a freed copy's address is another wheel. A slot
+// whose wheel is no longer followed (its copy deleted, remade or unloaded: its node never runs again to free it) is
+// taken back when a new one needs room (review 1 findings 26, 60, 82).
+#define WHEEL_N 64
+static struct { _Atomic uint64_t node, actor; _Atomic uint32_t gen; } wheel_off[WHEEL_N];
+static uint32_t actor_gen(uint64_t a) {
+    uint32_t g = 0;
+    return a && coop_rd(a + 0x10, &g, 4) ? g : 0;
+}
+static PlatMutex wheel_lock = PLAT_MUTEX_INIT;   // (two game threads claiming and sweeping at once: review 2 finding 18)
+static int wheel_slot_locked(uint64_t node, uint64_t actor, int add);
+static int wheel_slot(uint64_t node, uint64_t actor, int add) {
+    plat_mutex_lock(&wheel_lock);
+    int k = wheel_slot_locked(node, actor, add);
+    plat_mutex_unlock(&wheel_lock);
+    return k;
+}
+static int wheel_slot_locked(uint64_t node, uint64_t actor, int add) {
+    uint32_t gen = actor_gen(actor);
+    for (int i = 0; i < WHEEL_N; i++)
+        if (atomic_load(&wheel_off[i].node) == node && atomic_load(&wheel_off[i].actor) == actor && atomic_load(&wheel_off[i].gen) == gen) return i;
+    for (int pass = 0; add && pass < 2; pass++) {
+        for (int i = 0; i < WHEEL_N; i++) {
+            uint64_t none = 0;
+            if (atomic_compare_exchange_strong(&wheel_off[i].node, &none, node)) {
+                atomic_store(&wheel_off[i].gen, gen), atomic_store(&wheel_off[i].actor, actor);
+                return i;
+            }
+        }
+        for (int i = 0; i < WHEEL_N; i++) {   // (full: the slots of wheels no longer followed freed)
+            uint64_t a = atomic_load(&wheel_off[i].actor);
+            if (!a || !coop_ctn_driven(a) || actor_gen(a) != atomic_load(&wheel_off[i].gen)) atomic_store(&wheel_off[i].actor, 0), atomic_store(&wheel_off[i].node, 0);
+        }
+    }
+    if (add) {
+        static _Atomic int said;
+        if (!atomic_fetch_add(&said, 1)) rt_log("coop: contraption: the table of followed wheels is full (%d): a wheel's node skipped without its inert run", WHEEL_N);
+    }
+    return -1;
+}
+// The device nodes that push their own part (research devices2/: rocket, sled, balloon, wing, hover stone, stabilizer,
+// spring, stake, homing cart, steering stick): on a copy their body writes are skipped; the wheel's and the cart's
+// motor nodes drive joints, and are skipped whole
+static const uint32_t force_nodes[] = {0x24343f4, 0x2458320, 0x222d694, 0x221cd04, 0x230a3fc, 0x24730dc, 0x221a7dc, 0x221420c,
+                                       0x225c52c, 0x226abd4};
+static const uint32_t motor_nodes[] = {0x22fc5f8, 0x2251440};
+static const uint32_t body_setters[] = {0x567750, 0x25a1f0, 0x29ae114, 0x29ae7a8, 0x29ae7fc, 0x29a4afc};
+static int in_list(const uint32_t *l, int n, uint64_t off) {
+    for (int i = 0; i < n; i++) if (l[i] == off) return 1;
+    return 0;
+}
+#define DEVSWITCH_UPDATE 0x4a3500
+static int contraption_on(void);
+int coop_contraption_made(uint64_t a);
+static __thread uint64_t push_body;   // the pushing fan's own body (a copy's fan never pushes its own contraption)
+static _Atomic int push_skipped, push_passed, drain_kept_n;
+static _Atomic uint64_t drain_mgr;
+static double drain_kept;
+static PlatMutex drain_lock = PLAT_MUTEX_INIT;
+static double cfg_at(const char *name, double *second) {
+    const char *e = cfg_get(name);
+    if (!e) return 0;
+    if (second) { const char *k = strchr(e, ','); *second = k ? atof(k + 1) : 0; }
+    return atof(e);
+}
+static uint64_t node_actor(uint64_t node) {   // an AI node's actor (main+0x9a89c4)
+    return coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(node + 8) + 8) + 0x1f8);
+}
+static int tracked_part(uint64_t a) {
+    int n = atomic_load(&tracked_n);
+    for (int i = 0; a && i < n && i < TRACK_N; i++)
+        if (atomic_load(&tracked[i]) == a) return 1;
+    return 0;
+}
+static int tracked_body(uint64_t body) {
+    int n = atomic_load(&tracked_n);
+    for (int i = 0; body && i < n && i < TRACK_N; i++) {
+        uint64_t a = atomic_load(&tracked[i]);
+        if (a && coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x50) + 0x20) + 0x150) == body) return 1;
+    }
+    return 0;
+}
+static int wrap_call(Cpu *c, uint64_t addr, int *flag, int on) {   // run the function with *flag set
+    int was = *flag;
+    *flag = on;
+    c->pc = addr;
+    rt_dispatch(c);
+    *flag = was;
+    return 1;
+}
+int coop_phase0_hook(Cpu *c, uint64_t addr) {
+    static double push_at = -1, drain_at = -1, drain_to;
+    if (push_at < 0) push_at = cfg_at("TOTK_COOP_TEST_NOSELFPUSH", NULL), drain_at = cfg_at("TOTK_COOP_TEST_DRAINMOVE", &drain_to);
+    double t = frame_step_world_us() / 1e6;
+    uint64_t off = addr - MOD_MAIN_BASE;
+    static __thread int inner;   // (the hooked function's own entry, reached again through rt_dispatch)
+    if (off == GAUGE_CONSUME || off == GAUGE_CONSUME_RATE) { void coop_ctn_gauge_seen(uint64_t mgr); coop_ctn_gauge_seen(c->x[0]); }
+    if (inner) { inner = 0; return 0; }
+    // A part of another player's contraption made here (TOTK_COOP_CONTRAPTION): its fan pushes nothing (the owner's game
+    // moves the contraption; the wind capsule and the look still run), and its on/off node charges no gauge
+    if (off == APPLY_IMPULSE_FN && contraption_on() && coop_ctn_driven(node_actor(c->x[0]))) return 1;
+    if (contraption_on()) {
+        if (off == ONOFF_CALC) {   // (the node of each device, and a switch event put on a followed one here: coop_ctn.c)
+            uint64_t actor = node_actor(c->x[0]);
+            coop_ctn_note_onoff(c->x[0], actor);
+            if (coop_ctn_follows(actor)) coop_ctn_event_seen(actor);
+        }
+        if (off == 0x22fa1b0) {
+            uint64_t node = c->x[0], actor = node_actor(node);
+            if (!coop_ctn_driven(actor)) {
+                plat_mutex_lock(&wheel_lock);
+                int k = wheel_slot_locked(node, actor, 0);
+                if (k >= 0) atomic_store(&wheel_off[k].actor, 0), atomic_store(&wheel_off[k].node, 0);
+                plat_mutex_unlock(&wheel_lock);
+                return 0;
+            }
+            if (wheel_slot(node, actor, 0) >= 0) return 1;
+            if (wheel_slot(node, actor, 1) < 0) return 1;
+            inner = 1;
+            return wrap_call(c, addr, &in_force_inert, 1);
+        }
+        if (in_list(body_setters, 6, off) && in_copy_force) {   // (a copy's device moving its own body: not here)
+            // but a followed spring's launch is made here: its two velocity writes (the calls that return to
+            // main+0x221a9c0 and 0x221aa14) are the head thrown out and the base pushed back, and what stands on the
+            // head is thrown by that contact in this game (research notes sync-v3/m2/p5/spring-stake)
+            uint64_t lr = c->x[30] - MOD_MAIN_BASE;
+            if (off == 0x567750 && (lr == 0x221a9c0 || lr == 0x221aa14)) return 0;
+            return 1;
+        }
+        if (in_list(motor_nodes, 2, off) && coop_ctn_driven(node_actor(c->x[0]))) return 1;
+        if (in_list(force_nodes, 10, off) && coop_ctn_driven(node_actor(c->x[0]))) {
+            inner = 1;
+            return wrap_call(c, addr, &in_copy_force, 1);
+        }
+        if (off == DEVSWITCH_UPDATE) {   // a toggle asked on a copy's device (a hit here): taken to the owner instead
+            uint64_t comp = c->x[0], actor = coop_rd_ptr(comp + 0x18);
+            uint8_t b8d = 0;
+            {   // (the hook's view of a toggle request on a contraption part: the first few, for the toggle test)
+                uint8_t bb = 0;
+                static _Atomic int said;
+                if (coop_rd(comp + 0x8d, &bb, 1) && (bb & 8) && coop_contraption_made(actor) && atomic_fetch_add(&said, 1) < 6)
+                    rt_log("coop: contraption: switch update of a copy part with a toggle request: driven %d, ours %d", coop_ctn_driven(actor), 0);
+            }
+            if (coop_ctn_follows(actor) && coop_rd(comp + 0x8d, &b8d, 1) && (b8d & 8)) {
+                __atomic_fetch_and((uint8_t *)(uintptr_t)(comp + 0x8d), (uint8_t)~8, __ATOMIC_SEQ_CST);
+                coop_ctn_toggle_asked(comp, actor);
+            }
+            // A device another player pays for may always be on here. The update ends by writing "this game's gauge
+            // can pay, and the device is in range of this game's Link" into +0x8d bit 0, and the on/off node forces
+            // a device off and refuses on while it is clear: a watcher's empty gauge or distance would switch its
+            // copy off. The bit is set again after every update (research notes sync-v3/m2/p5/energy, section 0).
+            if (coop_ctn_no_charge(actor)) {
+                static __thread int dummy;
+                inner = 1;
+                wrap_call(c, addr, &dummy, 1);
+                __atomic_fetch_or((uint8_t *)(uintptr_t)(comp + 0x8d), (uint8_t)1, __ATOMIC_SEQ_CST);
+                return 1;
+            }
+            return 0;
+        }
+    }
+    if ((off == ONOFF_CALC || off == ONOFF_SET) && contraption_on() && coop_ctn_no_charge(node_actor(c->x[0]))) {   // (another player pays)
+        inner = 1;
+        return wrap_call(c, addr, &in_copy_node, 1);
+    }
+    if ((off == ONOFF_CALC || off == ONOFF_SET) && contraption_on() && coop_contraption_made(node_actor(c->x[0])) && ablog_on()) {
+        inner = 1;   // (TOTK_COOP_TEST_ABLOG: a copy's device whose activator is this player: its charges logged)
+        return wrap_call(c, addr, &in_paid_node, 1);
+    }
+    if ((off == GAUGE_CONSUME || off == GAUGE_CONSUME_RATE) && in_paid_node) {
+        static _Atomic int64_t said_paid;
+        int64_t now = frame_step_world_us();
+        if (now - atomic_load(&said_paid) > 2000000) {
+            float amount, g = 0;
+            uint32_t bits = (uint32_t)c->v[0];
+            memcpy(&amount, &bits, 4);
+            coop_rd(c->x[0] + 0x54, &g, 4);
+            atomic_store(&said_paid, now), rt_log("coop: contraption: a copy's device charges this player: %s %.3f, gauge %.1f", off == GAUGE_CONSUME ? "consume" : "consumeRate", amount, g);
+        }
+    }
+    if ((off == GAUGE_CONSUME || off == GAUGE_CONSUME_RATE) && in_copy_node) {
+        static _Atomic int said_copy;
+        if (atomic_fetch_add(&said_copy, 1) < 3) rt_log("coop: contraption: a charge from a copy's device not made (%s)", off == GAUGE_CONSUME ? "consume" : "consumeRate");
+        return 1;
+    }
+    if (off == APPLY_IMPULSE_FN && push_at > 0 && t >= push_at) {
+        extern uint64_t coop_fan_actor;   // (coop_players.c TOTK_COOP_TEST_FANSET's loose fan counts as one of ours)
+        uint64_t a = node_actor(c->x[0]);
+        int mine = tracked_part(a) || (a && a == coop_fan_actor);
+        uint64_t was = push_body;
+        push_body = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x50) + 0x20) + 0x150);
+        inner = 1;
+        wrap_call(c, addr, &in_push, mine);
+        push_body = was;
+        return 1;
+    }
+    if ((off == SET_LINVEL_FN || off == LIN_IMPULSE_FN) && in_push) {
+        if (tracked_body(c->x[0]) || (push_body && c->x[0] == push_body)) { atomic_fetch_add(&push_skipped, 1); return 1; }   // skipped
+        atomic_fetch_add(&push_passed, 1);
+        return 0;
+    }
+    if ((off == ONOFF_CALC || off == ONOFF_SET) && drain_at > 0 && t >= drain_at) {
+        int mine = tracked_part(node_actor(c->x[0]));
+        inner = 1;
+        return wrap_call(c, addr, &in_node, mine);
+    }
+    if ((off == GAUGE_CONSUME || off == GAUGE_CONSUME_RATE) && in_node && drain_at > 0 && t < drain_to) {
+        float amount;
+        uint32_t bits = (uint32_t)c->v[0];
+        memcpy(&amount, &bits, 4);
+        plat_mutex_lock(&drain_lock);
+        drain_kept += amount * (off == GAUGE_CONSUME_RATE ? -1 : 1);   // (the rate form is kept apart: negative)
+        plat_mutex_unlock(&drain_lock);
+        atomic_store(&drain_mgr, c->x[0]);
+        if (atomic_fetch_add(&drain_kept_n, 1) < 5)
+            rt_log("coop: test: drainmove: %s %.4f from a tracked part's node kept", off == GAUGE_CONSUME ? "consume" : "consumeRate", amount);
+        return 1;
+    }
+    return 0;
+}
+// TOTK_COOP_TEST_RECBUILD=<s> (Phase 0 item 3): at that time the tracked contraption is made again 6 m to the side
+// (+z) from its parts' body matrices at that moment: each part requested (coop_request_create), each copy held at its
+// original's matrix plus the offset every tick until all are claimed, then every fan bonded to the wing in one pass
+// (coop_bonds_bond, the game's plain bond from the two bodies, main+0x1c05a98), held 2 ticks more and let go. For 4 s:
+// each copy's group and member count, and how far each copy sits from the wing copy against the originals.
+#define RB_N 8
+static struct { uint64_t orig, copy; float m[12]; char name[48]; uint8_t handle[0x40]; int wing; } rb[RB_N];
+static double prev_solid_at;
+static void recbuild_test(Cpu *c, int n) {
+    static double at = -1, done_at;
+    static int st, rn, hold;
+    static double holding = 1;   // TOTK_COOP_TEST_RECBUILD=<s>,0: the copies not held (made at the right place already)
+    if (at < 0) at = cfg_at("TOTK_COOP_TEST_RECBUILD", &holding), holding = strchr(cfg_get("TOTK_COOP_TEST_RECBUILD") ? cfg_get("TOTK_COOP_TEST_RECBUILD") : "", ',') ? holding : 1;
+    if (at <= 0) return;
+    double t = frame_step_world_us() / 1e6;
+    if (t < at) return;
+    if (st == 0) {
+        char nm[48];
+        for (int i = 0; i < n && rn < RB_N; i++) {
+            if (!live_device(i, nm, sizeof nm)) continue;
+            uint64_t a = atomic_load(&tracked[i]);
+            uint64_t body = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x50) + 0x20) + 0x150);
+            if (!body || !coop_rd(body + 0x98, rb[rn].m, sizeof rb[rn].m)) continue;
+            float pos[3] = {0};
+            coop_rd(a + COOP_ACTOR_POS, pos, 12);
+            rb[rn].orig = a, rb[rn].wing = !strcmp(nm, "SpObj_LiftGeneratorWing_A_01");
+            snprintf(rb[rn].name, sizeof rb[rn].name, "%s", nm);
+            rt_log("coop: test: recbuild: %s body matrix %.2f %.2f %.2f | %.2f %.2f %.2f | %.2f %.2f %.2f pos %.2f %.2f %.2f (actor %.2f %.2f %.2f)",
+                   nm, rb[rn].m[0], rb[rn].m[1], rb[rn].m[2], rb[rn].m[4], rb[rn].m[5], rb[rn].m[6], rb[rn].m[8], rb[rn].m[9],
+                   rb[rn].m[10], rb[rn].m[3], rb[rn].m[7], rb[rn].m[11], pos[0], pos[1], pos[2]);
+            rb[rn].m[11] += 6.0f;
+            float p[3] = {rb[rn].m[3], rb[rn].m[7], rb[rn].m[11]}, r[9] = {rb[rn].m[0], rb[rn].m[1], rb[rn].m[2], rb[rn].m[4],
+                                                                              rb[rn].m[5], rb[rn].m[6], rb[rn].m[8], rb[rn].m[9], rb[rn].m[10]};
+            if (cfg_get("TOTK_COOP_TEST_RECBUILD_IGNORE")) p[1] += 3.0f * (float)(rn + 1);   // made apart, put together later
+            // TOTK_COOP_TEST_RECBUILD_AB=1: made as the Autobuild makes its holograms (its type object, with
+            // TOTK_COOP_TEST_ABARGS=1 its other create fields, and the callback that marks it autobuilt), made solid
+            // by the confirm's own call 0.1 s after the bonds
+            if (cfg_get("TOTK_COOP_TEST_RECBUILD_AB")) coop_request_create_autobuilt(c, nm, p, r, rb[rn].handle);
+            else coop_request_create(c, nm, p, r, rb[rn].handle);
+            rn++;
+        }
+        st = 1;
+        return;
+    }
+    int all = 1;
+    for (int k = 0; k < rn; k++) {
+        if (!rb[k].copy && coop_handle_status(rb[k].handle) == 3) {
+            static _Alignas(16) uint8_t link[0x40];
+            uint64_t ref = 0;
+            rb[k].copy = coop_claim(c, rb[k].handle, link, &ref);
+            // TOTK_COOP_TEST_RECBUILD_PREVIEW=1: made a hologram at once, as an Autobuild's parts are (main+0x1c071f0,
+            // the preview mark), and solid only after the bonds, by the confirm's own call (main+0x1c07114)
+            uint64_t spr = rb[k].copy ? coop_rd_ptr(coop_rd_ptr(rb[k].copy + 0x228) + 0x480) : 0;
+            if (spr && cfg_get("TOTK_COOP_TEST_RECBUILD_PREVIEW")) coop_guest_call(c, MOD_MAIN_BASE + 0x1c071f0, spr, 0, 0, 0);
+        }
+        if (!rb[k].copy) all = 0;
+    }
+    if (holding && (st == 1 || hold > 0))   // held at the exact place
+        for (int k = 0; k < rn; k++)
+            if (rb[k].copy) coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, rb[k].copy, (uint64_t)(uintptr_t)rb[k].m, 0, 0);
+    // TOTK_COOP_TEST_RECBUILD_IGNORE=1: once all are made (apart), every pair set to ignore each other
+    // (main+0x2ae6cf4, the pair manager Ultrahand's release uses), two ticks later all put at their places, bonded the
+    // tick after
+    static int ig_ticks = -1;
+    if (st == 1 && all && cfg_get("TOTK_COOP_TEST_RECBUILD_IGNORE") && ig_ticks < 0) {
+        static uint64_t self;
+        int pairs = 0;
+        for (int i = 0; i < rn; i++)
+            for (int j = i + 1; j < rn; j++) {
+                self = rb[i].copy;
+                pairs += (int)(coop_guest_call(c, MOD_MAIN_BASE + 0x2ae6cf4, (uint64_t)(uintptr_t)&self, rb[j].copy, 0, 0) & 1);
+            }
+        rt_log("coop: test: recbuild: %.2f s %d pairs set to ignore each other (%d answered 1)", t, rn * (rn - 1) / 2, pairs);
+        ig_ticks = 0;
+        return;
+    }
+    if (ig_ticks >= 0 && st == 1) {
+        if (++ig_ticks == 3)
+            for (int k = 0; k < rn; k++) coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, rb[k].copy, (uint64_t)(uintptr_t)rb[k].m, 0, 0);
+        if (ig_ticks < 4) return;
+    }
+    if (st == 1 && all) {
+        int w = -1, made = 0;
+        for (int k = 0; k < rn; k++) if (rb[k].wing) w = k;
+        for (int k = 0; w >= 0 && k < rn; k++)
+            (void)k;   // (the plain-bond test call left the build with coop_bonds.c)
+        rt_log("coop: test: recbuild: %.2f s all %d copies made; %d bonds made to the wing copy in one pass", t, rn, made);
+        if (cfg_get("TOTK_COOP_TEST_RECBUILD_PREVIEW") || cfg_get("TOTK_COOP_TEST_RECBUILD_AB")) prev_solid_at = t + 0.1;
+        st = 2, hold = 2, done_at = t;
+        return;
+    }
+    if (hold > 0) hold--;
+    if (prev_solid_at > 0 && t >= prev_solid_at) {   // the confirm's mark: preview off, solid (and green)
+        for (int k = 0; k < rn; k++) {
+            uint64_t spr = coop_rd_ptr(coop_rd_ptr(rb[k].copy + 0x228) + 0x480);
+            if (spr) coop_guest_call(c, MOD_MAIN_BASE + 0x1c07114, spr, 0, 0, 0);
+        }
+        rt_log("coop: test: recbuild: %.2f s the copies made solid (main+0x1c07114)", t);
+        prev_solid_at = 0;
+    }
+    static int ticks;
+    if (st == 2 && ticks < 40) {   // each tick for 40 ticks: the copies' group, device state (+0x28 of comp166) and speed
+        ticks++;
+        char line[600];
+        int len = snprintf(line, sizeof line, "coop: test: recbuild: tick %d (%.3f s)", ticks, t);
+        for (int k = 0; k < rn; k++) {
+            uint64_t a = rb[k].copy, tab = coop_rd_ptr(a + 0x228);
+            uint64_t g = coop_rd_ptr(coop_rd_ptr(tab + 0x480) + 0x28), d = coop_rd_ptr(tab + 0x530);
+            int32_t ds = -1;
+            if (d) coop_rd(d + 0x28, &ds, 4);
+            float v[3] = {0};
+            coop_rd(a + 0x320, v, 12);
+            len += snprintf(line + len, sizeof line - (size_t)len, " | %.10s g %llx state %d v %.1f %.1f %.1f", rb[k].name + 6,
+                            (unsigned long long)(g & 0xffffff), ds, v[0], v[1], v[2]);
+        }
+        rt_log("%s", line);
+    }
+    static double next;
+    if (st == 2 && t >= next && t < done_at + 4.2) {
+        next = t + 0.5;
+        int w = -1;
+        for (int k = 0; k < rn; k++) if (rb[k].wing) w = k;
+        if (w < 0) return;
+        float ow[3], cw[3];
+        coop_rd(rb[w].orig + COOP_ACTOR_POS, ow, 12), coop_rd(rb[w].copy + COOP_ACTOR_POS, cw, 12);
+        char line[600];
+        int len = snprintf(line, sizeof line, "coop: test: recbuild: %.2f s", t);
+        for (int k = 0; k < rn; k++) {
+            float o[3], cp[3];
+            coop_rd(rb[k].orig + COOP_ACTOR_POS, o, 12), coop_rd(rb[k].copy + COOP_ACTOR_POS, cp, 12);
+            float e = 0;
+            for (int i = 0; i < 3; i++) { float d = (cp[i] - cw[i]) - (o[i] - ow[i]); e += d * d; }
+            uint64_t g = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(rb[k].copy + 0x228) + 0x480) + 0x28);
+            uint32_t gn = 0;
+            if (g) coop_rd(g + 0x58, &gn, 4);
+            len += snprintf(line + len, sizeof line - (size_t)len, " | %.10s group %llx (%u) off by %.3f m at %.1f %.1f %.1f",
+                            rb[k].name + 6, (unsigned long long)g, gn, sqrtf(e), cp[0], cp[1], cp[2]);
+        }
+        rt_log("%s", line);
+    }
+}
+// TOTK_COOP_TEST_BONDQ=<from>,<to>: who empties the bond queue the Autobuild confirm fills (each part A's SPR +0x2a0,
+// an intrusive list, count at +0x2b0; main+0x1c07604 appends): from <from> to <to> world seconds the writes to the
+// first fan's list head are watched (coop_watch_win.c; the writers are logged when it ends), and the count every 0.1 s.
+static void bondq_test(int n) {
+    static double from = -1, to;
+    static int st;
+    static uint64_t spr;
+    if (from < 0) from = cfg_at("TOTK_COOP_TEST_BONDQ", &to);
+    if (from <= 0) return;
+    double t = frame_step_world_us() / 1e6;
+    int coop_watch_arm(uint64_t addr, uint64_t len);
+    void coop_watch_disarm(void);
+    extern int coop_watch_writes;
+    if (st == 0 && t >= from) {
+        char nm[48];
+        for (int i = 0; i < n && !spr; i++)
+            if (live_device(i, nm, sizeof nm) && !strcmp(nm, "SpObj_WindGenerator_A_01"))
+                spr = coop_rd_ptr(coop_rd_ptr(atomic_load(&tracked[i]) + 0x228) + 0x480);
+        if (!spr) return;
+        coop_watch_writes = 1;
+        uint32_t cnt = 0;
+        coop_rd(spr + 0x2b0, &cnt, 4);
+        rt_log("coop: test: bondq: queued bonds before: %u", cnt);
+        rt_log("coop: test: bondq: watching the fan's SPR %llx +0x2a0 from %.2f s: %d", (unsigned long long)spr, t,
+               coop_watch_arm(spr + 0x2a0, 0x18));
+        st = 1;
+    }
+    // (the count is read only outside the watch: a read of the watched page from here would fault too)
+    if (st == 1 && t >= to) {
+        coop_watch_disarm();
+        uint32_t cnt = 0;
+        coop_rd(spr + 0x2b0, &cnt, 4);
+        rt_log("coop: test: bondq: %.2f s watch ended, queued bonds now %u", t, cnt);
+        st = 2;
+    }
+}
+// TOTK_COOP_TEST_FINDAB=<s>: at that time, where this game's Autobuild ability is (the Ultrahand part, vtable
+// main+0x3695798, 0xd0b8 bytes; the Autobuild's build object hangs at its +0x51f0): searched from this Link, its first
+// 0x2000 bytes and each component's first 0x800, as a direct pointer to the part or one pointer away (an object whose
+// +0x80 or +0x88 is it, as the power system's). Each place logged, with the part's +0x51f0 and the build object kept
+// by a build here (coop_ab_obj), to compare.
+_Atomic uint64_t coop_ab_ability;   // this game's Autobuild ability, from its update (coop_spawn.c coop_hook)
+static int is_uh_part(uint64_t p) {   // the Autobuild ability (vtable main+0x3695200: its update main+0x9a2c00 at +0x38)
+    return p && !(p & 7) && p > 0x100000000ull && p < 0x8000000000ull && coop_rd_ptr(p) == MOD_MAIN_BASE + 0x3695200;
+}
+static uint64_t ab_via(uint64_t q) {   // q itself, or an object q points to within its first 0x400 bytes
+    if (is_uh_part(q)) return q;
+    if (!q || (q & 7) || q < 0x100000000ull || q >= 0x8000000000ull) return 0;
+    for (uint64_t o = 0; o < 0x400; o += 8) { uint64_t r = coop_rd_ptr(q + o); if (is_uh_part(r)) return r; }
+    return 0;
+}
+static void findab_test(uint64_t me) {
+    static double at = -1;
+    if (at < 0) at = cfg_at("TOTK_COOP_TEST_FINDAB", NULL);
+    if (at <= 0 || !me || frame_step_world_us() / 1e6 < at) return;
+    at = 0;
+    int found = 0;
+    uint64_t tab = coop_rd_ptr(me + 0x228);
+    for (int src = -1; src < 0x200 && found < 12; src++) {
+        uint64_t base = src < 0 ? me : coop_rd_ptr(tab + 8 * (uint64_t)src);
+        uint64_t len = src < 0 ? 0x2000 : 0x800;
+        if (!base || (src >= 0 && !tab)) continue;
+        for (uint64_t off = 0; off < len && found < 12; off += 8) {
+            uint64_t q = coop_rd_ptr(base + off);
+            if (!q || (q & 7) || q < 0x100000000ull || q >= 0x8000000000ull) continue;
+            uint64_t part = ab_via(q);
+            const char *how = is_uh_part(q) ? "direct" : "one pointer on";
+            if (!part) continue;
+            rt_log("coop: test: findab: %s%#x +%#llx: the Autobuild ability %llx (%s); its +0x51f0 %llx, +0x51f8 %llx; this game's build object %llx",
+                   src < 0 ? "Link" : "component ", src < 0 ? 0 : src * 8, (unsigned long long)off, (unsigned long long)part, how,
+                   (unsigned long long)coop_rd_ptr(part + 0x51f0), (unsigned long long)coop_rd_ptr(part + 0x51f8), (unsigned long long)coop_ab_obj);
+            found++;
+        }
+    }
+    rt_log("coop: test: findab: %d places", found);
+}
+static void phase0_tick(Cpu *c, int n) {
+    recbuild_test(c, n);
+    bondq_test(n);
+    double t = frame_step_world_us() / 1e6;
+    static double next;
+    if (t < next) return;
+    next = t + 0.5;
+    if (cfg_get("TOTK_COOP_TEST_NOSELFPUSH")) {
+        extern uint64_t coop_fan_actor;
+        float p[3] = {0};
+        uint64_t who = n ? atomic_load(&tracked[0]) : coop_fan_actor;
+        coop_rd(who + COOP_ACTOR_POS, p, 12);
+        // TOTK_COOP_TEST_FANON=<s>: the loose test fan (TOTK_COOP_TEST_FANSET) switched on at that time by its toggle
+        // request (DeviceSwitch +0x8d bit 3), as a hit does
+        static int on_done;
+        double on_at = cfg_at("TOTK_COOP_TEST_FANON", NULL);
+        if (!on_done && on_at > 0 && t >= on_at && coop_fan_actor) {
+            uint64_t d = coop_rd_ptr(coop_rd_ptr(coop_fan_actor + 0x228) + 0x530);
+            if (d) __atomic_fetch_or((uint8_t *)(uintptr_t)(d + 0x8d), 8, __ATOMIC_SEQ_CST);
+            rt_log("coop: test: noselfpush: %.1f s the test fan's toggle request set (switch %llx)", t, (unsigned long long)d);
+            on_done = 1;
+        }
+        rt_log("coop: test: noselfpush: %.1f s skipped %d passed %d, part 0 at %.2f %.2f %.2f", t, atomic_load(&push_skipped),
+               atomic_load(&push_passed), p[0], p[1], p[2]);
+    }
+    double to = 0, at = cfg_at("TOTK_COOP_TEST_DRAINMOVE", &to);
+    if (at > 0) {
+        uint64_t mgr = atomic_load(&drain_mgr);
+        static int paid;
+        if (mgr && !paid && t >= to) {   // the kept one-shot charges, at once
+            plat_mutex_lock(&drain_lock);
+            double k = drain_kept;
+            plat_mutex_unlock(&drain_lock);
+            float amount = (float)k;
+            uint32_t bits;
+            memcpy(&bits, &amount, 4);
+            c->v[0] = bits;
+            coop_guest_call(c, MOD_MAIN_BASE + GAUGE_CONSUME, mgr, 0, 0, 0);
+            rt_log("coop: test: drainmove: %.1f s: the kept %.4f charged at once (%d charges kept)", t, k, atomic_load(&drain_kept_n));
+            paid = 1;
+        }
+        if (mgr) {
+            float f54 = 0, f58 = 0;
+            int32_t pend = 0;
+            coop_rd(mgr + 0x54, &f54, 4), coop_rd(mgr + 0x58, &f58, 4), coop_rd(mgr + 0x30, &pend, 4);
+            plat_mutex_lock(&drain_lock);
+            double k = drain_kept;
+            plat_mutex_unlock(&drain_lock);
+            rt_log("coop: test: drainmove: %.1f s gauge +0x54 %.1f +0x58 %.1f pending %d, kept %.4f", t, f54, f58, pend, k);
+        }
+    }
+}
+
 void coop_autobuild_tick(Cpu *c, uint64_t me) {
+    playerdiff_test(me);
+    coop_ent_mirror_tick();   // the object mirror's answers to the entity sync (this is the tick its tables live on)
+    coop_ent_drive(c);
+    { void coop_ent_saved_tick(Cpu *c); coop_ent_saved_tick(c); }                    // the devices of a save (coop_ent_id.c)
+    { void coop_ent_bench_tick(Cpu *c, uint64_t me); coop_ent_bench_tick(c, me); }   // TOTK_COOP_BENCH (coop_ent_bench.c)
+    { void coop_ent_log_tick(Cpu *c, uint64_t me); coop_ent_log_tick(c, me); }       // the session record (coop_ent_log.c)
     if (!ablog_on()) return;
     deck_test(c, me, atomic_load(&tracked_n) < TRACK_N ? atomic_load(&tracked_n) : TRACK_N);
     failspam_test(c, me);
@@ -992,6 +2005,7 @@ void coop_autobuild_tick(Cpu *c, uint64_t me) {
         for (int i = 0; i < atomic_load(&tracked_n) && i < TRACK_N; i++)
             if (live_device(i, nm, sizeof nm) && !strcmp(nm, "SpObj_WindGenerator_A_01")) { coop_fan_actor = fanhit_target(atomic_load(&tracked[i])); break; }
     }
+    abfile_test();
     rebuild_test(c);
     rebuild_ok(c);
     compdump_test(atomic_load(&tracked_n) < TRACK_N ? atomic_load(&tracked_n) : TRACK_N);
@@ -1011,6 +2025,13 @@ void coop_autobuild_tick(Cpu *c, uint64_t me) {
     }
     int n = atomic_load(&tracked_n);
     if (n > TRACK_N) n = TRACK_N;
+    if (n) serial_test(c, n);
+    phase0_tick(c, n);
+    findab_test(me);
+    rebuild_go_log();
+    partcmp_test(n);
+    rebuild_go_watch();
+    if (!cfg_get("TOTK_COOP_TEST_SERIALIN")) serial_try(c, "the co-op tick");
     if (n) hit_test(c, me, n), part_test(c, n), trace_tick(n), stick_test(c, me, n), msg_test(c, me, n), devhit_test(n);
     else if ((cfg_get("TOTK_COOP_TEST_ABHIT") || cfg_get("TOTK_COOP_TEST_ABSTICK")) && now > 20000000) {   // (near_dev_fn)
         static NearDev d;
@@ -1033,18 +2054,22 @@ void coop_autobuild_tick(Cpu *c, uint64_t me) {
         if (e && st == 0 && sscanf(e, "%llx,%llx,%lf,%lf", &at, &len, &from, &to) == 4) st = 1;
         // (=c166,<from s>,<to s>: the first live fan's component 166 +0x28, its state, which a hit sets 8 -> 4)
         if (e && st == 0 && !strncmp(e, "c166,", 5) && sscanf(e + 5, "%lf,%lf", &from, &to) == 2) st = 4;
+        // (=c28,<from s>,<to s>: the first live fan's component 28 +0x398, its draw on the battery: every read and write)
+        static int c28;
+        if (e && st == 0 && !strncmp(e, "c28,", 4) && sscanf(e + 4, "%lf,%lf", &from, &to) == 2) st = 4, c28 = 1;
         if (st == 4 && now / 1e6 >= from) {
             char nm[48];
             for (int i = 0; i < n && st == 4; i++) {
                 if (!live_device(i, nm, sizeof nm) || strcmp(nm, "SpObj_WindGenerator_A_01")) continue;
-                uint64_t t = coop_rd_ptr(atomic_load(&tracked[i]) + 0x228), c166 = t ? coop_rd_ptr(t + 0x530) : 0;
-                if (c166) at = c166 + 0x28, len = 8, st = 1, rt_log("coop: test: abwatch: device %d's component 166 +0x28 (%llx)", i, at);
+                uint64_t t = coop_rd_ptr(atomic_load(&tracked[i]) + 0x228), c166 = t ? coop_rd_ptr(t + (c28 ? 8 * 28 : 0x530)) : 0;
+                if (c166) at = c166 + (c28 ? 0x398 : 0x28), len = c28 ? 4 : 8, st = 1,
+                          rt_log("coop: test: abwatch: device %d's component %d +%#x (%llx)", i, c28 ? 28 : 166, c28 ? 0x398 : 0x28, at);
             }
         }
         int coop_watch_arm(uint64_t addr, uint64_t len);   // coop_watch_win.c
         void coop_watch_disarm(void);
         extern int coop_watch_writes;
-        if (st == 1 && now / 1e6 >= from) { coop_watch_writes = 1; st = coop_watch_arm(at, len) ? 2 : 3; }
+        if (st == 1 && now / 1e6 >= from) { coop_watch_writes = !c28; st = coop_watch_arm(at, len) ? 2 : 3; }
         if (st == 2 && now / 1e6 >= to) { coop_watch_disarm(); st = 3; }
     }
     static int64_t seen_at;
@@ -1056,9 +2081,13 @@ void coop_autobuild_tick(Cpu *c, uint64_t me) {
     last = now;
     static int scanned;
     if (!scanned && now - first > 12000000) { scanned = 1; bond_scan(n); }
-    // A write watch on the first device's glue component +0x20..+0x30 (its group at +0x28) for 14 s: who sets it.
+    // TOTK_COOP_TEST_GLUEWATCH=1: a write watch on the first device's glue component +0x20..+0x30 (its group at +0x28)
+    // for 14 s: who sets it. Off by default and never in pair runs: the watch makes the whole page inaccessible, so the
+    // co-op's own reads of that part fail meanwhile (docs/coop/contraption-sync.md, "Redesign: contraption sync v3").
     static int watch_stage;
-    if (watch_stage == 0 && cfg_get("TOTK_COOP_TEST_ABWATCH")) watch_stage = 2;
+    if (watch_stage == 0 && (!cfg_get("TOTK_COOP_TEST_GLUEWATCH") || cfg_get("TOTK_COOP_TEST_ABWATCH") || cfg_get("TOTK_COOP_TEST_BONDQ") || cfg_get("TOTK_COOP_TEST_RECBUILD") ||
+                             cfg_get("TOTK_COOP_TEST_SERIAL") || cfg_get("TOTK_COOP_TEST_REBUILDGO")))
+        watch_stage = 2;   // (the one watch is another test's then; and it slows the game: every access to that page faults)
     if (watch_stage == 0) {
         uint64_t a = atomic_load(&tracked[0]), t = coop_rd_ptr(a + 0x228), comp = t ? coop_rd_ptr(t + 0x480) : 0;
         int coop_watch_arm(uint64_t addr, uint64_t len);   // coop_watch_win.c

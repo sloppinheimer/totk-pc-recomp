@@ -198,6 +198,10 @@ int input_coop_keys(void) {
     return key_down(VK_NUMPAD1) | key_down(VK_NUMPAD2) << 1;   // the spawn tests (coop_spawn.c coop_tick)
 }
 
+// The tester's mark (coop_ent_log.c): Home or numpad 0, read whichever window has the focus, so that every game on
+// this PC writes the mark at the same moment.
+int input_mark_key(void) { return key_down(VK_HOME) || key_down(VK_NUMPAD0); }
+
 int input_flight_key(void) {
     HWND w = gfx_window_handle();
     return w && w == GetForegroundWindow() && key_down(VK_F8);

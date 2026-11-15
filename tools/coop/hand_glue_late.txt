@@ -1,0 +1,14 @@
+# For the bench, a second player's glue (TOTK_COOP_BENCH=fans,aim1=2@36.7,aim2=0@22.7: game 1 plays this, game 2
+# hand_glue.txt and has glued two fans by about 32 s of this game's clock): L at 35 s takes Ultrahand, the camera is
+# tilted down until 36.6 s, the bench brings the picture's middle onto the fan from 36.7 s, A at 38 s grabs it, the
+# left stick walks it sideways toward the glued pair from 39.5 s and A at 43 s attaches it: a glue between islands of
+# two owners, made by the one who did not make the first.
+480 A 4
+700 DOWN 4
+760 DOWN 4
+820 A 4
+980 A 4
+@35000 L 150
+@35800 RSTICK 0 -20000 800
+@38000 A 150
+@43000 A 150

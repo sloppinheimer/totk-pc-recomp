@@ -1,0 +1,20 @@
+# For the bench (TOTK_COOP_BENCH=fans,aim1=<fan>@22.7 for game 1, or aim2=<fan>@22.7 for game 2;
+# runtime/coop_ent_bench.c): the 100% save (third in the Continue list); the bench puts this Link 2.5 m from the fan
+# at 15 s and the fans are there from about 17 s. L at 21 s takes Ultrahand (the save's chosen ability), the right
+# stick tilts the camera down until 22.6 s, the bench brings the picture's middle onto the fan from 22.7 s, A at 24 s
+# grabs it, the right stick lifts it at 25 s, the left stick walks it right, left and right again from 26 s to
+# 33.5 s, then it is held still in the air until B lets it go at 38 s.
+# Whether the grab happened is in the audit ("hand"), read by tools/coop/ent_report.py.
+480 A 4
+700 DOWN 4
+760 DOWN 4
+820 A 4
+980 A 4
+@21000 L 150
+@21800 RSTICK 0 -20000 800
+@24000 A 150
+@25000 RSTICK 0 20000 400
+@26000 LSTICK 14000 0 2000
+@28500 LSTICK -14000 0 3000
+@32000 LSTICK 14000 0 1500
+@38000 B 150

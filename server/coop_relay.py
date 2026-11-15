@@ -9,6 +9,8 @@ Packets (little-endian), all starting with the header  b'TKCO', version u8, type
              writes the sender's id into the header.
   4 LEAVE    relay -> everyone: the player in the header left (said so, or silent for TIMEOUT seconds).
   5 BYE      client -> relay: leaving now.
+ 11 CTR      client -> relay -> one player (the reserved byte names it) or everyone else (0): contraption
+             traffic (runtime/coop_ctr.c). The relay writes the sender's id and keeps the destination byte.
 Any player may join or leave at any time; ids 1..MAX_PLAYERS are handed out on HELLO and freed on leave.
 """
 import argparse
@@ -17,14 +19,14 @@ import struct
 import sys
 import time
 
-MAGIC, VERSION = b'TKCO', 28
-HELLO, WELCOME, STATE, LEAVE, BYE, WORLD, HIT, POSE, OBJS, EPOSE = 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+MAGIC, VERSION = b'TKCO', 29
+HELLO, WELCOME, STATE, LEAVE, BYE, WORLD, HIT, POSE, OBJS, EPOSE, CTR = 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
 MAX_PLAYERS, TIMEOUT = 8, 5.0
 HEADER = struct.Struct('<4sBBBB')
 
 
-def header(kind, pid):
-    return HEADER.pack(MAGIC, VERSION, kind, pid, 0)
+def header(kind, pid, to=0):
+    return HEADER.pack(MAGIC, VERSION, kind, pid, to)
 
 
 def main():
@@ -67,7 +69,7 @@ def main():
             leave(other, 'timed out')
         if not data or len(data) < HEADER.size:
             continue
-        magic, version, kind, _, _ = HEADER.unpack_from(data)
+        magic, version, kind, _, to = HEADER.unpack_from(data)
         if magic != MAGIC or version != VERSION:
             continue
         if kind == HELLO:
@@ -84,12 +86,13 @@ def main():
             me['seen'] = now
             others = b''.join(struct.pack('<B16s', p['id'], p['name'].encode()[:16]) for k, p in players.items() if k != addr)
             send(header(WELCOME, me['id']) + others, addr)
-        elif kind in (STATE, WORLD, HIT, POSE, OBJS, EPOSE) and addr in players:
+        elif kind in (STATE, WORLD, HIT, POSE, OBJS, EPOSE, CTR) and addr in players:
             me = players[addr]
             me['seen'] = now
-            out = header(kind, me['id']) + data[HEADER.size:]
-            for other in players:
-                if other != addr:
+            to = to if kind == CTR else 0   # CTR: one player, or everyone else when 0
+            out = header(kind, me['id'], to) + data[HEADER.size:]
+            for other, p in players.items():
+                if other != addr and (not to or p['id'] == to):
                     send(out, other)
         elif kind == BYE and addr in players:
             leave(addr, 'said bye')
