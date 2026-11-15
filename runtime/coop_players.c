@@ -1254,9 +1254,20 @@ static void owner_matrix_raw(Slot *s, float m[12]) {
         m[r * 4 + 3] = s->want_pos[r] + s->vel[r] * ahead;
     }
 }
+// Where a stand-in's body goes: its owner's place, or, while its owner rides an object, its place on this game's one
+// of it (ride_place), as the placement after its step has it. The body went to the owner's place alone: that is the
+// owner's state of 60 ms ago, and on a platform climbing at 22 m/s it lay 1.3 to 1.8 m under the place the stand-in
+// was put at each frame ("physics vs owner before placement: position 1808 mm", a play session, 2026-11-14). The mesh
+// is drawn from that body in part, and the stand-in showed sunk to its head in the platform it was placed on.
+static int ride_place(const Slot *s, float out[3]);
+static void body_matrix(Slot *s, float m[12]) {
+    float rp[3];
+    owner_matrix(s, m);
+    if (ride_place(s, rp)) m[3] = rp[0], m[7] = rp[1], m[11] = rp[2];
+}
 static void snap(Cpu *c, Slot *s) {
     float m[12];
-    owner_matrix(s, m);
+    body_matrix(s, m);
     coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, s->actor, (uint64_t)(uintptr_t)m, 0, 0);
 }
 
@@ -6075,9 +6086,10 @@ void coop_players_tick(Cpu *c) {
             }
             if (s->state == LIVE && s->source == SRC_NET) arrow_copies(c, s);
             if (s->state == LIVE && s->source == SRC_NET && s->have_want) {
-                // Its body is moved to its owner: every tick (below), or once it is that far off.
+                // Its body is moved to its owner (to its place on what its owner rides: body_matrix): every tick
+                // (below), or once it is that far off.
                 float om[12];
-                owner_matrix(s, om);
+                body_matrix(s, om);
                 const float *bp = s->have_body ? s->body_pos : s->phys_pos;
                 float dx = bp[0] - om[3], dy = bp[1] - om[7], dz = bp[2] - om[11];
 

@@ -1315,3 +1315,12 @@ Recorded as told; not acted on until asked.
    - Changed for it (not yet played): ride_place adds one frame of the ridden entity's velocity
      (TOTK_COOP_RIDE_LEAD). And for note 5: a paraglider that is a candidate is taken as this game's at any time;
      the "not taken as made here" line names the first object.
+7. Session 7, the same platform. The paraglider shows again (note 5's change). With the one-frame lead both Links
+   and both stand-ins read 0.52 m above the stone's origin at 20 to 23 m/s (the actors' places), and the pictures
+   still show a stand-in sunk to its head in the platform, or wholly inside it. The games' own figures for the
+   stand-in in the climb: "physics vs owner before placement: position 1.7 to 1.86 m", "moved by its physics since
+   placed: vertical mean 0.7 to 1.06 m", "drawn root against placed: change per frame" up to 0.39 m. The stand-in's
+   body is put at its owner's place every tick (snap), which is the owner's state of 60 ms before, not at the place
+   on the ridden part that the placement after its step uses; the mesh is drawn from the body in part.
+   - Changed for it (not yet played): the body goes where the placement goes (body_matrix: the ride place while its
+     owner rides).
