@@ -94,11 +94,12 @@ Facts (G1, R1 on the Bokoblin; R3 over all 221 enemy kinds with graphs): an enem
 action on all; sub action on 55; three special action slots on 8; brain and utility on all; a second utility graph on
 21; none uses the third) plus, in its scheduler, the action-sequence graphs (1 to 69), an interrupt graph (all) and a
 move-control graph (178). One runner body exists four times: main+0x50b404, main+0x42e0c8, main+0x2beb80 and a copy
-inlined in the actor's calc (main+0x41bb20 at 0x41c6b8). The two readings disagree on what the inlined copy runs: the
-brain (G1, by elimination) or the interrupt graph (R1, from the scheduler's init; the later and better-founded
-reading), and the brain's per-frame runner is then not found at all [run 1 settles it]. The action sequences are
-ticked by the scheduler (main+0x44ff30); the move-control graph by main+0x2beb80 from inside every action request for
-slot 0.
+inlined in the actor's calc (main+0x41bb20 at 0x41c6b8). Measured on a Bokoblin (run 1, 2026-11-15): the inlined
+copy runs the interrupt graph every frame; the brain has no per-frame runner, it is run in bursts, a few times a
+second, through main+0x50b404 from the BSA tick's "not yet ticked" branch (0x443ca8); main action, utility and the
+running action sequence go through main+0x50b404 every frame (the last from inside the scheduler, main+0x44ff30);
+the move-control graph through main+0x2beb80 from inside every action request for slot 0; a controller's +0x1f8 is
+its actor for all of them; nothing else ran a node.
 
 The game's own switches are **not** the switch: the stop timers stop the inlined runner only, not when an interrupt
 is pending or the enemy is dying, and any active timer makes the life update throw the frame's damage away (V1, G1);
@@ -118,9 +119,12 @@ The mod's hooks are at function entries only. The switch (R1 section 9), for an 
 H1 alone covers every runner, known or not, the inlined one included; H2 to H6 stop each known runner before it does
 any bookkeeping, and say in the record which one was reached. The inlined body is also emptied by four writes before
 the calc (root index [ctrl+0x19c] = -1, the instance's pending root [inst+0xde] = -1, its queue count [inst+0x90] =
-0, its run bit [inst+0xd8] bit 0 clear; ctrl = [[BSA+0x2618]+0x18], inst = [[ctrl+0x20]]) [run 2]. Whether a node's
-enter function (main+0x1bb410) can run game logic with the tick off is not read; it is counted in run 2 and hooked if
-it does.
+0, its run bit [inst+0xd8] bit 0 clear; ctrl = [[BSA+0x2618]+0x18], inst = [[ctrl+0x20]]). Run 2 had the switch on
+for 20 s on an idle Bokoblin: H2 and H5 turned away the utility, the brain's bursts and the scheduler, and with them
+gone no node was ticked or entered, no action was requested and the inlined body ran nothing; H1 was never reached.
+When the switch went off every runner but the interrupt graph ran again at once; the interrupt graph, emptied by the
+four writes, has to be re-rooted at a hand-over (3.4). Still to see: the same in a fight, with the enemy in the
+picture, and why the enemy's update came at half rate during the test.
 
 A copy with no runner still has readers of what the runners kept fresh (R1 section 8). The mod holds, each frame: the
 brain verb (requestBrainVerb main+0xad9844 with force, on the owner's change; the queued verb BSA+0x5c at 0), the
