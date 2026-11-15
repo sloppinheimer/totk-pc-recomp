@@ -124,8 +124,9 @@ game, the switch on for 30 s on an idle Bokoblin): H2 and H5 turned away the uti
 first-tick call, each once a frame, and with them gone no node was ticked or entered, no action was requested and the
 inlined body ran nothing; H1 was never reached; the enemy stood in its idle animation, updated every frame. When the
 switch went off every runner but the interrupt graph ran again within a second and the enemy went on. The interrupt
-graph did not come back, with its root index set again or not: at a hand-over (3.4) what the four writes overwrote
-is put back [run]. Still to see: the same in a fight. (Two earlier runs with two games are void past their first
+graph comes back when the queue count and the bit word the writes overwrote are put back (run 8: it ran every frame
+again); setting its root index did not do it. So the writes save what they overwrite, for a hand-over (3.4). Still
+to see: the same in a fight. (Two earlier runs with two games are void past their first
 seconds: the old enemy sync, live between the games, took the test enemy away.)
 
 A copy with no runner still has readers of what the runners kept fresh (R1 section 8). The mod holds, each frame: the
@@ -204,16 +205,22 @@ told what to play, not which bones to hold.
   its dirty bit is set).
 
 6.3 **The copy applies**, before its calc, so the frame's animation update shows it: a play request by the same call
-with the owner's arguments (the name by content), then 0 into the slot's start-delay timer (6.4), then the clocks and
+with the owner's arguments (the name by content), then the clocks and
 weights. A copy runs the same delay behind as its position (5.3), so its picture is one moment of the owner's enemy,
 not a pose from one time at a place from another. Phase is corrected softly: an error under 100 ms is closed by
 running the copy's rate up to 10% off for a while; a larger one is written into the controller clock with the "do
-not advance this update" flag (ctx+0xa0 bit 10, seen in main+0x433c24) [run 4: that it holds, and what a clock jump
-does to the events inside it].
+not advance this update" flag (ctx+0xa0 bit 10, seen in main+0x433c24).
 
-6.4 **Randomness.** The one random value of a slot (S+0x1e4) is a start delay, counted down before a new command
-advances; it selects nothing (R4). The owner's clock already contains the owner's delay, so a copy writes 0 there
-after each play request.
+Measured on a Bokoblin whose graphs were off (run 8): a play request from the mod changed the command at once and
+the clip ran from its start in that frame's update; the clock counts 30ths of a second (0.5 a frame at 60 frames a
+second); a clock written to 0 with the flag read 0 after that frame's update and counted on from there; the
+animation's hold events went on and off with the clip while no graph ran. What a clock jump does to an event it
+jumps over is still to see.
+
+6.4 **Randomness.** A slot holds one random value (S+0x1e4). A reading took it for a start delay (R4); measured, it
+is a new number in [0, 1) every frame, and a clip started by the mod ran from its first frame with it at any value
+(run 8). What the animation graph uses it for is not read; an enemy whose graph picks a clip by it would show in the
+bench as a copy playing another variation than its owner, and gets the owner's pick stated then.
 
 6.5 **What an action did besides its animation** is the list of section 8. Nothing else of an action reaches a copy.
 
