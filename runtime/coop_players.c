@@ -2675,14 +2675,17 @@ static int report_props(uint64_t me, CoopObj *out, int max) {
     last_me = me, memcpy(last_p, ps.me, 12);
     if (ps.n_cand && !(ps.n_first_near <= 20 && frame_step_world_us() > 20000000 && prop_tick >= made_quiet_until)) {
         static int said;   // (which test kept new objects from being this game's: note 19)
-        if (said++ < 20) rt_log("coop: %d new objects near this Link not taken as made here: %d new at once (20 at most), world time %.1f s (20 s at least), %s",
-                                ps.n_cand, ps.n_first_near, frame_step_world_us() / 1e6, prop_tick < made_quiet_until ? "within 10 s of a warp or load" : "no warp");
+        if (said++ < 20) rt_log("coop: %d new objects near this Link (the first a %s) not taken as made here: %d new at once (20 at most), world time %.1f s (20 s at least), %s",
+                                ps.n_cand, props[ps.cand[0]].name, ps.n_first_near, frame_step_world_us() / 1e6, prop_tick < made_quiet_until ? "within 10 s of a warp or load" : "no warp");
     }
-    if (ps.n_first_near <= 20 && frame_step_world_us() > 20000000 && prop_tick >= made_quiet_until)
-        for (int i = 0; i < ps.n_cand; i++) {
-            int e = ps.cand[i];
-            props[e].made = 1, props[e].born = prop_tick, props[e].id = next_arrow_id++;
-        }
+    // (the paraglider whenever it is a candidate: its actor is new the first time it is opened and is kept and used
+    // again; opened within the first 20 s after a load it was not taken, was never new again, and the other game
+    // showed a stand-in gliding with nothing over it for the rest of the session, a play session, 2026-11-14)
+    int take_all = ps.n_first_near <= 20 && frame_step_world_us() > 20000000 && prop_tick >= made_quiet_until;
+    for (int i = 0; i < ps.n_cand; i++) {
+        int e = ps.cand[i];
+        if (take_all || !strncmp(props[e].name, "Parasail", 8)) props[e].made = 1, props[e].born = prop_tick, props[e].id = next_arrow_id++;
+    }
     int n = 0;
     for (int e = 0; e < PROPS_N && n < max; e++) {
         if (!props[e].actor) continue;
@@ -4021,6 +4024,7 @@ static int ride_objects(RideObj *out, int max, const float near[3]) {
 // here, or a placed one it moves) or its copy of a third player's, its place now, and the owner's offset in its
 // frame. Seen from the owner of a glider moved 1 m/s, the rider was 0.1 m behind where it stood in its own game
 // (the state's delay); faster, more (ride test, 2026-11-05).
+static float ride_frame_s = 1 / 60.0f;   // the last frame's length on the world clock (ride_carry, once a frame)
 static int ride_place(const Slot *s, float out[3]) {
     uint64_t a = s->ride_actor;
     float p[3], r[9];
@@ -4030,6 +4034,22 @@ static int ride_place(const Slot *s, float out[3]) {
     if (!coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || !coop_rd(a + 0x10, &g, 4) || g != s->ride_gen ||
         !coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(a + COOP_ACTOR_ROT, r, 36)) return 0;   // (the same actor still: finding 8)
     for (int i = 0; i < 3; i++) out[i] = p[i] + r[i * 3 + 0] * s->ride_off[0] + r[i * 3 + 1] * s->ride_off[1] + r[i * 3 + 2] * s->ride_off[2];
+    // An entity's place read here is the last physics step's: the stand-in is placed before this frame's step moves
+    // the part, and showed one frame of the part's travel behind it. On a platform lifted by rockets (a play session,
+    // 2026-11-14) the rider's own game had its Link 0.52 m above the stone's origin at every speed; the other game
+    // had the stand-in at 0.47 m at 4 m/s, 0.32 at 12, 0.15 at 24: a sixtieth of a second of the speed, to the knees
+    // in the stone. So the part's velocity (its main body's, +0xf8) for one frame is added. TOTK_COOP_RIDE_LEAD=0: off;
+    // another number: that many frames.
+    {
+        int coop_ent_is(uint64_t a);
+        uint64_t ctn_main_body(uint64_t a);
+        static float lead = -1;
+        if (lead < 0) { const char *e = cfg_get("TOTK_COOP_RIDE_LEAD"); lead = e ? (float)atof(e) : 1.0f; if (lead < 0 || lead > 4) lead = 1.0f; }
+        float v[3];
+        uint64_t body = lead > 0 && coop_ent_is(a) ? ctn_main_body(a) : 0;
+        if (body && coop_rd(body + 0xf8, v, sizeof v) && v[0] == v[0] && v[1] == v[1] && v[2] == v[2] && fabsf(v[0]) < 200 && fabsf(v[1]) < 200 && fabsf(v[2]) < 200)
+            for (int i = 0; i < 3; i++) out[i] += v[i] * lead * ride_frame_s;
+    }
     return 1;
 }
 // For coop_ctn.c's rider weight: each co-op player's Link that rides something here, the actor it rides and where its
@@ -4217,6 +4237,7 @@ static void ride_carry(Cpu *c, uint64_t me) {
     static int64_t last_us = -1;
     int64_t now_us = frame_step_world_us();
     if (now_us == last_us) return;
+    if (last_us > 0 && now_us > last_us && now_us - last_us < 100000) ride_frame_s = (now_us - last_us) / 1e6f;
     last_us = now_us;
     static int nocarry = -1;   // TOTK_COOP_TEST_NOCARRY=1: no carrying here, to see whether the moving copy carries the Link itself
     if (nocarry < 0) nocarry = cfg_get("TOTK_COOP_TEST_NOCARRY") != NULL;

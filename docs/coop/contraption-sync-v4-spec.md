@@ -1302,3 +1302,16 @@ Recorded as told; not acted on until asked.
      audit has what each Link sends as its ride and its animations, and for each stand-in whether this game found
      the actor it is said to ride. A deck on which a Link stands further than 3.5 m from every part's origin is
      still not ridden.
+5. Session 6: a stand-in glides with no paraglider shown. Each game's own log has "1 new objects near this Link not
+   taken as made here ... world time 15.2 s (20 s at least)" (17.5 s in the other): the paraglider's actor is new
+   when it is first opened, a new object is taken as this game's only from 20 s of world time on (and not within 10 s
+   of a warp or load; coop_players.c report_props), and the actor is kept and used again, so it is never new a second
+   time. Opened in the first 20 s after a load it is not sent for the rest of that session. Not from the day's changes.
+6. Session 6, two players on a platform lifted by rockets (a floating stone, bde9.161; owned by game 1). Both Links
+   ride the stone by the new rule, each game finds the other's ridden part, and at rest the two games agree to the
+   millimetre. Climbing, the rider's own game has its Link 0.52 m above the stone's origin at every speed; the other
+   game has the stand-in at 0.47 m at 4 m/s, 0.39 at 8, 0.32 at 12, 0.26 at 16, 0.20 at 20, 0.15 at 24: a sixtieth of
+   a second of the stone's speed. The stand-in is placed from the part's place of the last physics step.
+   - Changed for it (not yet played): ride_place adds one frame of the ridden entity's velocity
+     (TOTK_COOP_RIDE_LEAD). And for note 5: a paraglider that is a candidate is taken as this game's at any time;
+     the "not taken as made here" line names the first object.
