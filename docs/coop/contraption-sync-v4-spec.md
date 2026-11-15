@@ -1238,7 +1238,7 @@ again (runtime/coop_ent_log.c; TOTK_COOP_RECORD=0: off).
   owner's class, its device, its actor, the drive's state for it and its placements); what this Link's Ultrahand
   holds and what it rides; the Zonai devices here that are no entity, when that set changes.
 - The collision veto names its pairs (coop_life.c, veto_note): which stand-in and which entity, or which two copies,
-  when the pair is first refused and when it has not been asked for 0.5 s, with the count.
+  when the pair is first refused and when it has not been asked for 2 s, with the count.
 - logs/motion.jsonl: ten lines a second while anything moves, with the place, rotation, velocity and drive state of
   each entity that moved since the last line, this Link and the stand-ins. The audit stays at one line a second.
 - The tester's mark: Home or numpad 0, read in any window, so both games on one PC write "coop: MARK n" at the same

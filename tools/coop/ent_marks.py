@@ -131,8 +131,18 @@ def show(dirs, logs, motions, label, tm, before, after):
     print(f'-- both logs, {before:.0f} s before to {after:.0f} s after (times to the second: the clock line before each)')
     if not rows:
         print('   (no lines: is the session record on? TOTK_COOP_RECORD)')
+    last = {}   # per game and kind of line: its last text, numbers of time taken out; a line that only repeats is left out
+    left_out = 0
     for t, g, s in rows:
+        kind = (g, ' '.join(s.split()[:4]))
+        text = re.sub(r'^(coop: \w+: )\d+ ', r'\1', s)
+        if last.get(kind) == text:
+            left_out += 1
+            continue
+        last[kind] = text
         print(f'  {t - tm:+6.1f} s  game {g + 1}  {s}')
+    if left_out:
+        print(f'   ({left_out} lines that repeat the one before of their kind are left out)')
     names = {**logs[0][3], **logs[1][3]}
     worst, at_mark, owner, only = differences(motions[0], motions[1], t0, t1, tm)
     print('-- where the two games had each entity (motion files)')

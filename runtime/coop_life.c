@@ -699,7 +699,7 @@ static int veto_at(const uint64_t *l, int n, uint64_t v) {
 }
 // Which pairs of actors the veto keeps apart, for the log: a pair refused is noted here (on the physics job threads:
 // a flag taken without waiting; a note that cannot have it is counted and dropped), and the rebuild on the game thread
-// says when a pair is first refused and when it has not been asked for 0.5 s, with how often it was refused.
+// says when a pair is first refused and when it has not been asked for 2 s, with how often it was refused.
 // kind 0: a stand-in and a part; 1: two copies this game drives.
 #define VP_N 48
 static struct { uint64_t a, b; uint32_t n; int64_t first_us, last_us; uint8_t kind, said; } vpair[VP_N];
@@ -727,7 +727,9 @@ static void veto_pairs_say(int64_t now) {
     while (atomic_flag_test_and_set_explicit(&vp_busy, memory_order_acquire)) plat_yield();
     for (int i = 0; i < VP_N; i++) {
         if (!vpair[i].a) continue;
-        int end = now - vpair[i].last_us > 500000 || now < vpair[i].last_us;
+        // (2 s: the game asks for a pair that stays close in bursts under a second apart; at 0.5 s a stand-in beside
+        // three fans made six lines a second, a bench run)
+        int end = now - vpair[i].last_us > 2000000 || now < vpair[i].last_us;
         if (vpair[i].said && !end) continue;
         say[ns].a = vpair[i].a, say[ns].b = vpair[i].b, say[ns].n = vpair[i].n, say[ns].first_us = vpair[i].first_us, say[ns].last_us = vpair[i].last_us;
         say[ns].kind = vpair[i].kind, say[ns].begin = !vpair[i].said, ns++;
@@ -740,9 +742,9 @@ static void veto_pairs_say(int64_t now) {
         const char *why = say[i].kind ? "two copies, one of them moved by the drive" : "a stand-in and an entity";
         coop_ent_label(say[i].a, la, sizeof la), coop_ent_label(say[i].b, lb, sizeof lb);
         // (the game asks the predicate when it considers a pair; how often it asks again for a pair that stays close is
-        // not read, so the second line says only that it has not asked for 0.5 s)
+        // not read, so the second line says only that it has not asked for 2 s)
         if (say[i].begin) rt_log("coop: veto: %.2f s: the collision of %s with %s is refused here (%s)", say[i].first_us / 1e6, la, lb, why);
-        else rt_log("coop: veto: %.2f s: %s with %s: not asked again for 0.5 s; refused %u times over %.1f s (%s)", now / 1e6, la, lb, say[i].n,
+        else rt_log("coop: veto: %.2f s: %s with %s: not asked again for 2 s; refused %u times over %.1f s (%s)", now / 1e6, la, lb, say[i].n,
                     (say[i].last_us - say[i].first_us) / 1e6, why);
     }
     static int64_t dropped_said;
