@@ -229,9 +229,8 @@ static uint64_t lifted_function_at(uintptr_t rip, uintptr_t *host) {
     if (lo && host) *host = fn_rev[lo - 1].host;
     return lo ? fn_rev[lo - 1].guest : 0;
 }
-uint64_t rt_lifted_function(uintptr_t rip) { return lifted_function(rip); }   // coop_watch_win.c
-
 static uint64_t lifted_function(uintptr_t rip) { return lifted_function_at(rip, NULL); }
+uint64_t rt_lifted_function(uintptr_t rip) { return lifted_function(rip); }   // coop_watch_win.c
 
 static int readable(uint64_t a, uint64_t n) { return plat_mem_readable(a, n); }
 

@@ -455,7 +455,7 @@ static void record(VkExec *ex) {
     ex->recorded += 12;
     if (cb) vk_exec_inline_end(reopen);
     // the game's next draw binds its pipeline, state, descriptors and vertex buffers again
-    vk_exec_draw_new_cb();
+    vk_exec_draw_new_cb(ex);
     ex->dirty |= VK_EXEC_DIRTY_ALL;
     T.inside = 0;
 }
