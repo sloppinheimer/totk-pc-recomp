@@ -119,12 +119,14 @@ The mod's hooks are at function entries only. The switch (R1 section 9), for an 
 H1 alone covers every runner, known or not, the inlined one included; H2 to H6 stop each known runner before it does
 any bookkeeping, and say in the record which one was reached. The inlined body is also emptied by four writes before
 the calc (root index [ctrl+0x19c] = -1, the instance's pending root [inst+0xde] = -1, its queue count [inst+0x90] =
-0, its run bit [inst+0xd8] bit 0 clear; ctrl = [[BSA+0x2618]+0x18], inst = [[ctrl+0x20]]). Run 2 had the switch on
-for 20 s on an idle Bokoblin: H2 and H5 turned away the utility, the brain's bursts and the scheduler, and with them
-gone no node was ticked or entered, no action was requested and the inlined body ran nothing; H1 was never reached.
-When the switch went off every runner but the interrupt graph ran again at once; the interrupt graph, emptied by the
-four writes, has to be re-rooted at a hand-over (3.4). Still to see: the same in a fight, with the enemy in the
-picture, and why the enemy's update came at half rate during the test.
+0, its run bit [inst+0xd8] bit 0 clear; ctrl = [[BSA+0x2618]+0x18], inst = [[ctrl+0x20]]). Measured (run 5, one
+game, the switch on for 30 s on an idle Bokoblin): H2 and H5 turned away the utility, the scheduler and the brain's
+first-tick call, each once a frame, and with them gone no node was ticked or entered, no action was requested and the
+inlined body ran nothing; H1 was never reached; the enemy stood in its idle animation, updated every frame. When the
+switch went off every runner but the interrupt graph ran again within a second and the enemy went on. The interrupt
+graph did not come back, with its root index set again or not: at a hand-over (3.4) what the four writes overwrote
+is put back [run]. Still to see: the same in a fight. (Two earlier runs with two games are void past their first
+seconds: the old enemy sync, live between the games, took the test enemy away.)
 
 A copy with no runner still has readers of what the runners kept fresh (R1 section 8). The mod holds, each frame: the
 brain verb (requestBrainVerb main+0xad9844 with force, on the owner's change; the queued verb BSA+0x5c at 0), the
@@ -146,9 +148,11 @@ in 36 to 71 enemy graphs, the global no-attack time, messages between enemies, t
 
 ## 5. Where a copy is: motion
 
-5.1 **Pose-driven.** A copy's main body does not simulate. Its body is made static or keyframed (main+0xae4300) and
-its pose is set every frame (ForceSetMatrix main+0x45ce70) from the owner's states [run: that an enemy's controller
-accepts a static main body]. The controller's forward direction, speed and move state are written too, so every local
+5.1 **Pose-driven.** A copy's main body does not simulate. Its body is made static (main+0xae4300 with type 0) and
+its pose is set before every calc (ForceSetMatrix main+0x45ce70) from the owner's states. Measured on a Bokoblin
+moved along a circle for 30 s (run 7): actor and body were at the asked pose the next frame, every frame, to the
+millimetre, upright on the floor in the pictures, and the enemy went on by itself when its body was made dynamic
+again. A keyframed body (type 1) is wrong: the actor sank 3.3 m through the floor (run 6). The controller's forward direction, speed and move state are written too, so every local
 reader (foot placement, animation inputs, other actors' queries) agrees with what is shown. A copy is never eased
 toward a target: the old ease lags 0.1 s times the speed (2.5 m for a galloping Lynel) and snaps.
 
