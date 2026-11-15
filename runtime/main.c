@@ -159,10 +159,7 @@ const RtConfig *rt_config(void) { return &cfg; }
 
 // ---- runtime services the generated code calls (cpu.h)
 volatile int g_fnprof = 0;   // resolution.c switches it on until the game sets its render size (res_fn_hit)
-void coop_fn_hit(uint64_t addr, uint64_t lr, uint64_t x0);   // coop_spawn.c
-void coop_trace_hit(uint64_t addr, Cpu *c);   // coop_trace.c
-void coop_fn_args(uint64_t addr, Cpu *c);   // coop_spawn.c: TOTK_COOP_PROF=8
-void fnprof_hit(uint64_t addr, Cpu *c) { res_fn_hit(addr, c->x[0]), coop_fn_hit(addr, c->x[30], c->x[0]), coop_trace_hit(addr, c), coop_fn_args(addr, c); }
+void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) { (void)lr, res_fn_hit(addr, x0); }
 
 // cpu.h RT_FPCR_NOTE: diagnostic only, the write itself takes effect as before (runtime/simd.h slow paths).
 void rt_fpcr_rmode(uint64_t fpcr, uint64_t lr) {
@@ -650,13 +647,10 @@ static void portable_paths(RtConfig *c) {
     c->profile = portable_path(exe, "TOTK_PROFILE_DIR", "profile", NULL, pp_profile, sizeof pp_profile, c->profile);
 }
 
-void coop_hide_console(void);   // coop_watch_win.c
+void coop_hide_console(void);   // co-op: coop_watch_win.c, TOTK_COOP_HIDE_CONSOLE
 int main(int argc, char **argv) {
     mem_init();   // first: claim the guest address space before anything else can land there; reads totk.ini
-    {   // co-op sessions with several windows: the console window out of the way at once (TOTK_COOP_HIDE_CONSOLE=1)
-        const char *e = cfg_get("TOTK_COOP_HIDE_CONSOLE");
-        if (e && *e == '1') coop_hide_console();
-    }
+    coop_hide_console();   // co-op: the console out of the way at once (several game windows)
     // The build that wrote the log, at its top: an attached log from another install or version shows at a glance.
     rt_log("version: TotK Recomp %s, game %d.%d.%d", rt_port_version, rt_game_version / 100, rt_game_version / 10 % 10,
            rt_game_version % 10);

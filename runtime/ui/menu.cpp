@@ -47,7 +47,6 @@ extern "C" {
 #include "sysinfo.h"
 #include "ui/menu.h"
 #include "ui_text.h"
-#include "vk_tags.h"
 // host.h and vk.h pull in cpu.h, which is C only: the functions the menu needs from them, as declared there.
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void vk_queue_lock(void);
@@ -59,16 +58,7 @@ extern const int rt_game_version;
 extern const char rt_port_version[];
 void cheats_frame(uint64_t frame);   // cheats.c
 bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into the rebuild
-void tab_coop(float scale);          // ui/coop_tab.cpp (sets the page modal itself)
-bool coop_tags_wanted(void);          // ui/coop_tags.cpp: the other players' names over their Links
-void coop_tags_draw(float w, float h, float scale, bool menu_open);
-bool coop_markers_wanted(void);       // ui/coop_markers.cpp: the other players on the map and the minimap
-void coop_markers_draw(float w, float h, float scale, bool menu_open);
-const char *coop_markers_shot(uint64_t frame);
-int coop_notices_wanted(void);       // coop_notices.c: joins, leaves and fast travels to show (checked each frame)
-void coop_notices_draw(float w, float h, float scale, bool menu_open);   // ui/coop_notices.cpp
-void coop_notices_glyphs(const char *lang, void (*visit)(void *ctx, const char *text), void *ctx);
-const char *coop_notices_shot(void);   // ui/coop_notices.cpp: TOTK_COOP_TEST_NOTICESHOT's file for this frame, or NULL
+#include "ui/coop_menu.h"   // co-op
 // audren.h pulls in cpu.h through host.h: the one call the Sound tab needs from it, as declared there.
 enum { AUDIO_DEVICE_NAME_MAX = 256 };
 int audio_output_devices(char (*names)[AUDIO_DEVICE_NAME_MAX], int max);
@@ -203,8 +193,6 @@ static int g_failed_flag() { return g_failed.load(std::memory_order_relaxed); }
 static int g_vk_ok;               // back end initialised for g_vk_fmt
 static VkFormat g_vk_fmt;
 static float g_font_scale;        // the scale of the uploaded font atlas; 0 when none is uploaded
-static uint32_t g_font_gen;       // vk_tags_font's generation of that atlas
-extern "C" uint32_t menu_font_gen(void) { return g_font_gen; }
 static float g_style_scale;       // the scale the style was last sized for
 static ImGuiStyle g_base_style;   // the menu's style at 1080 lines
 static uint64_t g_last_ns;
@@ -386,12 +374,7 @@ static int fonts_up(float scale) {
     vk_queue_lock();   // the upload submits on the queue and waits for it
     int ok = ImGui_ImplVulkan_CreateFontsTexture();
     vk_queue_unlock();
-    if (ok) {   // a copy for the name tags the replay draws into the frame (vk_tags.c)
-        unsigned char *px = nullptr;
-        int fw = 0, fh = 0;
-        fa->GetTexDataAsRGBA32(&px, &fw, &fh);
-        g_font_gen = vk_tags_font(px, fw, fh);
-    }
+    if (ok) coop_menu_font(fa);   // co-op: the name tags' copy of the atlas
     fa->ClearInputData();   // the glyphs are in the texture: the font files and the pixels are not needed again
     fa->ClearTexData();
     for (uint8_t *d : data) free(d);
@@ -1690,7 +1673,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     perf_tick(plat_now_ns(), t);
     amiibo_tick();
     bool open = g_open.load(std::memory_order_relaxed);
-    bool notices = coop_notices_wanted();   // (each frame: it also finds the joins and leaves)
+    bool coop_ov = coop_overlay_wanted();   // co-op (each frame: it also finds the joins and leaves)
     if (!open) {
         if (g_save_pending) g_save_pending = opt_save_tick(1);   // closed: the last change goes to totk.ini now
         if (g_test.at && !g_test.opened && frame >= g_test.at) {
@@ -1699,7 +1682,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
             g_tab_request = 0;
             set_open(1);
             open = true;
-        } else if (!g_perf_mode && !coop_tags_wanted() && !coop_markers_wanted() && !notices) {
+        } else if (!g_perf_mode && !coop_ov) {
             return 0;
         }
     }
@@ -1751,22 +1734,9 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     ImGui::NewFrame();
     if (open) layout_menu(t->width, t->height, scale);
     perf_draw(t, scale);
-    coop_markers_draw((float)t->width, (float)t->height, scale, open);
-    coop_tags_draw((float)t->width, (float)t->height, scale, open);
-    coop_notices_draw((float)t->width, (float)t->height, scale, open);
+    coop_overlay_draw((float)t->width, (float)t->height, scale, open);   // co-op
     ImGui::Render();
-    if (!*shot) *shot = coop_markers_shot(frame);   // TOTK_COOP_TEST_MARKSHOTS (tests)
-    // TOTK_COOP_TEST_TAGSHOT=<frame>: that frame's swapchain image, overlay and all, to TOTK_MENU_TEST_DIR (tests)
-    if (!*shot) *shot = coop_notices_shot();   // (after the markers': it overwrote their shot, merge 53e62d1)
-    static long long tag_shot = -2;
-    if (tag_shot == -2) tag_shot = cfg_get("TOTK_COOP_TEST_TAGSHOT") ? atoll(cfg_get("TOTK_COOP_TEST_TAGSHOT")) : -1;
-    if (tag_shot > 0 && frame >= (uint64_t)tag_shot) {
-        static char tpath[512];
-        const char *dir = cfg_get("TOTK_MENU_TEST_DIR");
-        snprintf(tpath, sizeof tpath, "%s/tag-%llu.png", dir ? dir : ".", (unsigned long long)frame);
-        *shot = tpath;
-        tag_shot = -1;
-    }
+    if (!*shot) *shot = coop_overlay_shot(frame);   // co-op tests
     if (open) g_save_pending = opt_save_tick(0);
     g_cost_ns += plat_now_ns() - t0;
     if (g_test.page >= 0 && frame >= g_test.opened + g_test.per_page * (uint64_t)(g_test.page + 1)) {

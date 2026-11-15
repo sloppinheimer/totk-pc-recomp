@@ -407,3 +407,12 @@ void coop_trace_tick(uint64_t me) {
     pending = 1;
     rt_log("coop: trace %d on at %.2f s", trace_no, s);
 }
+
+// ---- the function-entry profiler's co-op call (runtime/coop_hooks.h FN_ENTER, g_fnprof on): upstream's fnprof_hit
+// (main.c: the render size watch) and the co-op readers of the entry registers.
+void coop_fn_hit(uint64_t addr, uint64_t lr, uint64_t x0);   // coop_spawn.c
+void coop_fn_args(uint64_t addr, Cpu *c);   // coop_spawn.c: TOTK_COOP_PROF=8
+void coop_fnprof_hit(uint64_t addr, Cpu *c) {
+    fnprof_hit(addr, c->x[30], c->x[0]);
+    coop_fn_hit(addr, c->x[30], c->x[0]), coop_trace_hit(addr, c), coop_fn_args(addr, c);
+}

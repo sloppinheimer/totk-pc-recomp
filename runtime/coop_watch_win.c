@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "cfg.h"
 #include "host.h"
 #include "layout.h"
 
@@ -92,6 +93,8 @@ void coop_watch_disarm(void) {
 // TOTK_COOP_HIDE_CONSOLE=1: hides the console window totk.exe (a console program) opens, for co-op sessions with
 // several game windows; the log still goes to logs\totk.log.
 void coop_hide_console(void) {
+    const char *e = cfg_get("TOTK_COOP_HIDE_CONSOLE");
+    if (!e || *e != '1') return;
     HWND w = GetConsoleWindow();
     if (w) ShowWindow(w, SW_HIDE);
 }

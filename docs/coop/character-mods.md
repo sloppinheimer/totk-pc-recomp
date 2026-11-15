@@ -221,7 +221,7 @@ own. TKMM merges mods into one folder before the game starts, which is the resta
 Ranked: 1, then 2 for retexture mods only, then 4 and 3. 1 is feasible; the shared armor is its one open question.
 
 **Dropped by choice (2026-11-08):** a stand-in played as this PC's own character was judged not worth it, so the
-renderer route is not built and this PC's own character keeps the restart. The `TOTK_TEST_DRAWSKIP` hook stays.
+renderer route is not built and this PC's own character keeps the restart. The `TOTK_TEST_DRAWSKIP` hook was removed with the fork-footprint cleanup of 2026-11-15; it is in the history before that (nvn_api_core.c test_pool, vk_exec_draw.c op_draw_idx).
 
 ### What does not work, and why
 

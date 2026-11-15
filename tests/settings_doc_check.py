@@ -30,7 +30,8 @@ def code_defaults(cfg):
 
 
 def main():
-    cfg = (ROOT / 'runtime' / 'cfg.c').read_text(encoding='utf-8')
+    cfg = re.sub(r'#include "(\w+\.inc)"', lambda m: (ROOT / 'runtime' / m.group(1)).read_text(encoding='utf-8'),
+                 (ROOT / 'runtime' / 'cfg.c').read_text(encoding='utf-8'))   # the names a fork adds in an .inc too
     example = (ROOT / 'totk.ini.example').read_text(encoding='utf-8')
     doc = (ROOT / 'docs' / 'settings.md').read_text(encoding='utf-8')
     known = known_names(cfg)
