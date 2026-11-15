@@ -1265,10 +1265,44 @@ static void body_matrix(Slot *s, float m[12]) {
     owner_matrix(s, m);
     if (ride_place(s, rp)) m[3] = rp[0], m[7] = rp[1], m[11] = rp[2];
 }
+// The velocity a stand-in's body is given when it is put in place: its owner's, or the ridden entity's while its owner
+// rides one. Put in place every tick, the body still made its own way through the physics step before the placement
+// after it: while its owner glided it moved 0.14 to 0.31 m down a frame on average and up to 1.0 m (18 m/s: a fall,
+// where its owner sinks at a glider's pace), and 0.06 to 0.17 m level ("moved by its physics since placed", a play
+// session, 2026-11-14); the mesh is drawn from the body in part, and the glide looked choppy. What velocity the body
+// had before is logged with what it is given, the largest difference of each second. That a body with this velocity
+// makes its owner's way through the step is the expectation, not yet seen. TOTK_COOP_PUPPET_VEL=0: off.
+static void snap_velocity(Cpu *c, Slot *s) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_PUPPET_VEL"); on = !(e && *e == '0'); }
+    uint64_t ctn_main_body(uint64_t a);
+    int coop_ent_is(uint64_t a);
+    uint64_t body = on ? ctn_main_body(s->actor) : 0, rb = 0;
+    if (!body) return;
+    _Alignas(16) float V[4] = {s->vel[0], s->vel[1], s->vel[2], 0};
+    float rv[3], was[3] = {0};
+    int riding = s->ride_owner && s->ride_owner != COOP_RIDE_MOUNT && s->ride_actor && coop_ent_is(s->ride_actor) && (rb = ctn_main_body(s->ride_actor)) != 0;
+    if (riding && coop_rd(rb + 0xf8, rv, sizeof rv)) V[0] = rv[0], V[1] = rv[1], V[2] = rv[2];
+    for (int k = 0; k < 3; k++) if (!(V[k] == V[k]) || fabsf(V[k]) > 200) return;   // (a state not yet taken, or nonsense: left as it is)
+    coop_rd(body + 0xf8, was, sizeof was);
+    coop_guest_call(c, MOD_MAIN_BASE + 0x567750, body, (uint64_t)(uintptr_t)V, 0, 0);   // SetLinearVelocity
+    static float worst, w_was[3], w_set[3];
+    static int64_t said_us;
+    float d = sqrtf((was[0] - V[0]) * (was[0] - V[0]) + (was[1] - V[1]) * (was[1] - V[1]) + (was[2] - V[2]) * (was[2] - V[2]));
+    if (d > worst) worst = d, memcpy(w_was, was, sizeof was), w_set[0] = V[0], w_set[1] = V[1], w_set[2] = V[2];
+    int64_t now = frame_step_world_us();
+    if (now - said_us > 1000000) {
+        if (worst > 1.0f)
+            rt_log("coop: puppet: slot %d body velocity before it is set: %.1f %.1f %.1f, set to %.1f %.1f %.1f (%s; the largest difference of the last second)",
+                   (int)(s - slots), w_was[0], w_was[1], w_was[2], w_set[0], w_set[1], w_set[2], riding ? "the ridden entity's" : "its owner's");
+        said_us = now, worst = 0;
+    }
+}
 static void snap(Cpu *c, Slot *s) {
     float m[12];
     body_matrix(s, m);
     coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, s->actor, (uint64_t)(uintptr_t)m, 0, 0);
+    snap_velocity(c, s);
 }
 
 // Autobuild. The game labels each device it makes for an autobuild with the string "ImaginaryAutoBuildedActor" at
@@ -4036,6 +4070,7 @@ static int ride_objects(RideObj *out, int max, const float near[3]) {
 // frame. Seen from the owner of a glider moved 1 m/s, the rider was 0.1 m behind where it stood in its own game
 // (the state's delay); faster, more (ride test, 2026-11-05).
 static float ride_frame_s = 1 / 60.0f;   // the last frame's length on the world clock (ride_carry, once a frame)
+// (the stand-in's body has the ridden entity's velocity too, snap_velocity)
 static int ride_place(const Slot *s, float out[3]) {
     uint64_t a = s->ride_actor;
     float p[3], r[9];

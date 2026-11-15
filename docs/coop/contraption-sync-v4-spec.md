@@ -1324,3 +1324,12 @@ Recorded as told; not acted on until asked.
    on the ridden part that the placement after its step uses; the mesh is drawn from the body in part.
    - Changed for it (not yet played): the body goes where the placement goes (body_matrix: the ride place while its
      owner rides).
+8. Session 8. The platform ride is told "a big improvement" (the body where the placement is). Gliding still looks
+   laggy and choppy. The games' figures while a stand-in's owner glides: its body, put in place every tick, moves
+   0.14 to 0.31 m down a frame on average before the placement after its step (up to 1.0 m) and 0.06 to 0.17 m
+   level; in the platform's climb 0.30 to 0.35 m a frame.
+   - Changed for it (not yet played): the body is given its owner's velocity when it is put in place, or the ridden
+     entity's (snap_velocity, TOTK_COOP_PUPPET_VEL); the velocity it had is logged when it differs by over 1 m/s.
+     Whether the body then makes its owner's way through the step is to be read from "moved by its physics since
+     placed" in the next session.
+   The tester has nothing more to try on contraptions for now.
