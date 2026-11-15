@@ -12,6 +12,11 @@
 //   coop: ent: change: <eid> <name>: ...                any change of what this game holds of an entity: its owner, its
 //       life, its flags, the state of a copy, its owner's class (idle, held, ridden), its device on or off, its actor
 //       here or gone, the drive's state for it (moving, at rest, held by the drive, put in place n times).
+//   coop: ent: body: <eid> <name>: ...                  a change of an entity's physics, looked for every frame: another
+//       main body, in or out of a physics world, its collision filter records, its group and the group's count, its
+//       body's flag word (+0x68). What this Link stands on is decided by these, and none of it shows in a place.
+//   coop: ent: link: ...                                this Link starts to fall (over 2.5 m/s down) or stops: where, and
+//       its place in the frame of the nearest entity, so a fall through a part reads as one.
 //   coop: ent: hand: ... / coop: ent: ride: ...         what this Link's Ultrahand holds, what this Link rides.
 //   coop: ent: loose: ...                               the Zonai devices here that are no entity, when that set changes.
 //   coop: MARK <n> at <hh:mm:ss> ...                    the tester pressed Home (or numpad 0): written by every game on
@@ -79,6 +84,11 @@ typedef struct {
     float lp[3], lr[9];       // as last written to the motion file
     uint8_t moved;            // since the last motion line
     int64_t jump_said;
+    // its physics as last seen (every frame): the main body, its flag word (+0x68), its world (+0x70), the two
+    // collision filter records' holders (+0x140, +0x148) and the first 16 bytes of each record, its group and count
+    uint64_t body, bflags, bworld, hold[2], rec[2][2], group;
+    int gcount;
+    uint64_t flick; int64_t flick_us; uint32_t flick_n;   // flag bits that changed and were said, since when, how often since
 } Was;
 static Was was[ENT_N];
 static const char *cls_name(int c) { return c == CLS_HOLD ? "held" : c == CLS_RIDE ? "ridden" : "idle"; }
@@ -161,10 +171,49 @@ void coop_ent_log_tick(Cpu *c, uint64_t me) {
         if (!have) { w->have = 0; continue; }
         coop_rd(e.main_body + 0xf8, v, sizeof v);
         float p[3] = {m[3], m[7], m[11]};
+        {   // its physics: a line when the body, its world, a filter record, its group or its flag word changes
+            uint64_t body = ctn_main_body(e.actor), fl = 0, world_p = 0, hold[2] = {0, 0}, rec[2][2] = {{0, 0}, {0, 0}}, grp = ctn_part_group(e.actor);
+            int gc = ctn_group_count(e.actor);
+            if (body) {
+                coop_rd(body + 0x68, &fl, 8), world_p = coop_rd_ptr(body + 0x70);
+                for (int k = 0; k < 2; k++) {
+                    hold[k] = coop_rd_ptr(body + (k ? 0x148 : 0x140));
+                    if (hold[k]) coop_rd(hold[k] + 8, rec[k], 16);
+                }
+            }
+            if (w->used && eid_eq(e.id, w->id) && w->body) {
+                char b[24], line[420];
+                int n = 0;
+#define SAYB(...) (n += n < (int)sizeof line - 1 ? snprintf(line + n, sizeof line - (size_t)n, __VA_ARGS__) : 0)
+                if (body != w->body) SAYB("main body %llx -> %llx; ", (unsigned long long)w->body, (unsigned long long)body);
+                if (!!world_p != !!w->bworld) SAYB("%s; ", world_p ? "in a physics world again" : "in no physics world");
+                for (int k = 0; k < 2; k++) {
+                    if (hold[k] != w->hold[k]) SAYB("filter record %d %llx -> %llx; ", k, (unsigned long long)w->hold[k], (unsigned long long)hold[k]);
+                    if (rec[k][0] != w->rec[k][0] || rec[k][1] != w->rec[k][1])
+                        SAYB("filter %d %016llx %016llx -> %016llx %016llx; ", k, (unsigned long long)w->rec[k][0], (unsigned long long)w->rec[k][1],
+                             (unsigned long long)rec[k][0], (unsigned long long)rec[k][1]);
+                }
+                if (grp != w->group || gc != w->gcount) SAYB("group %llx of %d -> %llx of %d; ", (unsigned long long)w->group, w->gcount, (unsigned long long)grp, gc);
+                // (some flag bits go on and off every frame: bits that changed are said once, then counted for a second)
+                uint64_t ch = body == w->body ? fl ^ w->bflags : 0;
+                if (ch && ((ch & ~w->flick) || us - w->flick_us > 1000000)) {
+                    SAYB("body flags %#llx -> %#llx (bits changed %#llx", (unsigned long long)w->bflags, (unsigned long long)fl, (unsigned long long)ch);
+                    if (w->flick_n) SAYB("; %u more changes of bits %#llx in the last second", w->flick_n, (unsigned long long)w->flick);
+                    SAYB("); ");
+                    w->flick = us - w->flick_us > 1000000 ? ch : w->flick | ch, w->flick_us = us, w->flick_n = 0;
+                } else if (ch) w->flick_n++;
+#undef SAYB
+                if (n) rt_log("coop: ent: body: %s %s (%s): %s", ent_eid_str(e.id, b), e.name, e.owner == self ? "this game's" : "a copy", line);
+            }
+            w->body = body, w->bflags = fl, w->bworld = world_p, w->group = grp, w->gcount = gc;
+            memcpy(w->hold, hold, sizeof hold), memcpy(w->rec, rec, sizeof rec);
+        }
         if (w->have && w->used && eid_eq(e.id, w->id)) {
             float d = sqrtf((p[0] - w->p[0]) * (p[0] - w->p[0]) + (p[1] - w->p[1]) * (p[1] - w->p[1]) + (p[2] - w->p[2]) * (p[2] - w->p[2]));
             float sp = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]), sp0 = sqrtf(w->v[0] * w->v[0] + w->v[1] * w->v[1] + w->v[2] * w->v[2]);
-            if (d > 0.5f + 3 * (sp > sp0 ? sp : sp0) * (float)dt_world && us - w->jump_said > 500000) {
+            // (a part just made reads 0 0 0 for a frame: no jump)
+            int from_origin = fabsf(w->p[0]) + fabsf(w->p[1]) + fabsf(w->p[2]) < 0.01f;
+            if (!from_origin && d > 0.5f + 3 * (sp > sp0 ? sp : sp0) * (float)dt_world && us - w->jump_said > 500000) {
                 char b[24];
                 w->jump_said = us;
                 rt_log("coop: ent: jump: %s %s (%s, class %s) moved %.2f m in one frame of %.0f ms: %.2f %.2f %.2f -> %.2f %.2f %.2f, velocity %.1f m/s before, %.1f after",
@@ -179,6 +228,36 @@ void coop_ent_log_tick(Cpu *c, uint64_t me) {
         memcpy(w->p, p, sizeof p), memcpy(w->v, v, sizeof v);
         w->r[0] = m[0], w->r[1] = m[1], w->r[2] = m[2], w->r[3] = m[4], w->r[4] = m[5], w->r[5] = m[6], w->r[6] = m[8], w->r[7] = m[9], w->r[8] = m[10];
         w->have = 1, w->id = e.id;
+    }
+    {   // this Link: the start and the end of a fall, by its actor's place from frame to frame
+        static float ly;
+        static int have_ly, falling;
+        float lp[3];
+        if (coop_rd(me + COOP_ACTOR_POS, lp, 12)) {
+            float vy = have_ly ? (lp[1] - ly) / (float)dt_world : 0;
+            int now_falling = falling ? vy < -1.0f : vy < -2.5f;
+            if (now_falling != falling && coop_runs_for_ms() > 500) {
+                int best = -1;
+                float bd = 36.0f, loc[3] = {0};   // (within 6 m)
+                for (int i = 0; i < ENT_N; i++) {
+                    Was *w = &was[i];
+                    if (!w->used || !w->have) continue;
+                    float d[3] = {lp[0] - w->p[0], lp[1] - w->p[1], lp[2] - w->p[2]}, d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                    if (d2 < bd) bd = d2, best = i;
+                }
+                if (best >= 0) {
+                    Was *w = &was[best];
+                    float d[3] = {lp[0] - w->p[0], lp[1] - w->p[1], lp[2] - w->p[2]};
+                    for (int k = 0; k < 3; k++) loc[k] = w->r[k] * d[0] + w->r[3 + k] * d[1] + w->r[6 + k] * d[2];   // (the rotation's transpose)
+                    char b[24];
+                    rt_log("coop: ent: link: this Link %s at %.2f %.2f %.2f (%.1f m/s down); nearest entity %s, this Link at %+.2f %+.2f %+.2f in its frame",
+                           now_falling ? "starts to fall" : "stops falling", lp[0], lp[1], lp[2], -vy, ent_eid_str(w->id, b), loc[0], loc[1], loc[2]);
+                } else rt_log("coop: ent: link: this Link %s at %.2f %.2f %.2f (%.1f m/s down); no entity within 6 m", now_falling ? "starts to fall" : "stops falling",
+                              lp[0], lp[1], lp[2], -vy);
+                falling = now_falling;
+            }
+            ly = lp[1], have_ly = 1;
+        }
     }
     // ---- ten times a second: what changed of each entity, this Link's hand and ride, the motion file
     if (ns - scan_ns < 100000000ull) return;

@@ -1251,3 +1251,28 @@ again (runtime/coop_ent_log.c; TOTK_COOP_RECORD=0: off).
 Not recorded: how a thing looks beyond the mark's picture (effects, sounds, a device's own motion), bodies other than
 an entity's main one, and what the game's physics did inside a step. The veto's lines say a pair was refused, not
 that the two overlapped.
+
+## 24. Play-test notes, session 4 (2026-11-14; the session record on)
+
+Recorded as told; not acted on until asked.
+
+1. Cosmetic: the steering stick of a build another player rides lags that player's steering. In the watching game the
+   stand-in turns at once and the stick's lever follows about a second late. Cause not read.
+2. Two players on one car: one at the stick, one standing on the deck. The player at the stick owns the car (it took
+   it by riding); the other stands on its own game's copy.
+   - In the driver's game the passenger's stand-in looked laggy and jittery on the deck. The motion file (ten lines a
+     second) has the stand-in within 3 cm of one place on the chassis during steady driving at 5.9 m/s; what happens
+     between those lines is not recorded.
+   - The passenger sank through the deck of its own game's copy: from 0.48 m above the chassis' origin to 0.92 m
+     below it in 0.9 s (session clock 26311.4 to 26312.3, mark 1), then stayed inside the body. No jump of the
+     chassis, no placement by the drive, its tilt steady, the drive's error under 0.1 m. In the same 0.1 s an energy
+     bank of the build (b841.368) left the build and died: its bond gone (bonds 9 to 8), its copy's death replayed in
+     the passenger's game. What that does to the chassis' copy there is not read.
+3. The record's own faults seen in this session: a part made by Autobuild is logged as a jump from 0 0 0; the marks
+   tool lists every entity only one game wrote in the window.
+   - Later readings of the same logs. The energy bank was a depleted battery, which the game breaks off a build by
+     itself: for about a second the passenger's copy of it asked for its own death every frame (refused, 64 times,
+     as a follower's), then the owner's death arrived and was replayed, and the passenger sank in that 0.1 s. The
+     driver's game's own per-frame figures for the passenger's stand-in (the "coop: puppet:" lines) give a jerk of
+     5 to 15 mm a frame with peaks to 190 mm, and the stand-in's body 0.36 to 0.62 m from its owner's place before
+     each frame's placement, 0.2 to 0.48 m of it level: the car moves 98 mm a frame at 5.9 m/s.

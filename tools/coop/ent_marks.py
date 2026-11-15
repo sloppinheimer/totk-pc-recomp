@@ -153,9 +153,10 @@ def show(dirs, logs, motions, label, tm, before, after):
         m = at_mark.get(k)
         now = f'{m[0]:.2f} m, {m[1]:.1f} deg apart at the moment' if m else 'not compared at the moment'
         print(f'  {k} {names.get(k, "?")} (owned by {owner[k]}): {now}; most {d:.2f} m ({g:.1f} deg) at {at:+.1f} s')
-    for g in (0, 1):
-        for k in only[g]:
-            print(f'  {k} {names.get(k, "?")}: written by game {g + 1} only (no actor in the other game, or it never moved there)')
+    for g in (0, 1):   # (those that moved in the window only: the rest are an hour's worth of things one game made and left)
+        moved = {e['id'] for ln in motions[g] if t0 <= ln['t'] <= t1 for e in ln['e']}
+        for k in [k for k in only[g] if k in moved][:12]:
+            print(f'  {k} {names.get(k, "?")}: moved in game {g + 1} in the window; the other game wrote nothing of it (no actor there, or it never moved there)')
     print('-- the drive, per copy (ftrace)')
     for g in (0, 1):
         marks_world = [w for _, _, t, w in logs[g][1] if abs(t - tm) < 0.5]
