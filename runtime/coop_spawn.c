@@ -916,6 +916,14 @@ int coop_hook(Cpu *c, uint64_t addr) {
         int coop_life_veto(Cpu *c);
         return coop_life_veto(c);
     }
+    if (COOP_HOOKED_EN(addr)) {   // the enemy sync's hooks (coop_enemy_probe.c); the node tick among them is hot
+        int coop_enemy_hook(Cpu *c, uint64_t off);
+        return coop_enemy_hook(c, addr - MOD_MAIN_BASE);
+    }
+    if (addr == MOD_MAIN_BASE + 0x41bb20 || addr == MOD_MAIN_BASE + 0x50ad74) {   // the actor's calc and the action request: seen by the enemy probe first
+        int coop_enemy_shared(Cpu *c, uint64_t off);
+        if (coop_enemy_shared(c, addr - MOD_MAIN_BASE)) return 1;
+    }
     phase_sample(addr);
     {   // the entity sync (coop_ent_id.c): where the game marks an actor created (hot: first), the synchronous create, the
         // seat claim, the glue manager's list add and the cap's kill
