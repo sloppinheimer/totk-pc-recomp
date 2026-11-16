@@ -144,6 +144,13 @@ int en_cell_state(uint64_t actor) {
     EnCell *m = actor > 1 ? en_cell_of(actor) : NULL;
     return m ? atomic_load_explicit(&m->state, memory_order_relaxed) : EM_FREE;
 }
+// For the other syncs (the element sync asks who decides for an enemy actor): 0 not an enemy this sync knows, 1 this
+// game decides for it (it runs it for all, or it is unsynced and this game's own), 2 a copy of another game's enemy
+// (or held for a moment before that is known).
+int coop_enemy_role(uint64_t actor) {
+    int st = en_cell_state(actor);
+    return st == EM_FREE ? 0 : st == EM_COPY || st == EM_NEW ? 2 : 1;
+}
 // The cell of an actor at its calc, made when the actor is of a listed kind and has none. Only the actor's own update
 // thread inserts it, so one actor is never inserted twice at once.
 static EnCell *map_touch(uint64_t actor) {
@@ -175,12 +182,13 @@ static EnCell *map_touch(uint64_t actor) {
         if (a > 1 || !atomic_compare_exchange_strong(&en_map[h].actor, &a, actor)) continue;
         m = &en_map[h];
         atomic_store(&m->gen, gen), atomic_store(&m->en, -1);
-        atomic_store(&m->run_frame, 0);
+        atomic_store(&m->run_frame, 0), atomic_store(&m->warm, 0);
+        m->born_frame = coop_sess_frame_no();
         m->kind = (uint8_t)kind, m->hash_read = 0, m->hash = 0, m->rt = 0, m->retry = 0, m->new_ns = en_now();
         m->sw_on = m->sw_saved = m->body_static = 0, m->show_on = 0;
         atomic_store(&m->turned, 0), atomic_store(&m->leaks, 0);
         for (int k = 0; k < EN_EQ_N; k++) atomic_store(&m->eq_make[k], 0);
-        m->eq_made_frame = 0;
+        m->eq_made_frame = 0, memset(m->eq_tries, 0, sizeof m->eq_tries);
         atomic_store(&m->eq_drop, 0), atomic_store(&m->hit_dmg, 0), atomic_store(&m->dying, 0), atomic_store(&m->kill_req, 0), atomic_store(&m->put_away, 0), atomic_store(&m->flinch, 0);
         m->put_done = m->dc_saved = m->req_tries = m->pinned = 0, m->hit_ns = 0, m->show_dstate = 0, m->hp_written = 0;
         for (int k = 0; k < EN_SLOT_N; k++) m->slot_try[k] = 0;
@@ -707,7 +715,7 @@ static void take_msg(const CoopCtrMsg *m) {
     }
     default: {
         void en_hit_msg(const CoopCtrMsg *m, int from);   // coop_enemy_hit.c: events, hits, deaths
-        if (!en_copy_msg(m, from)) en_hit_msg(m, from);
+        if (!en_copy_msg(m, from) && !en_shot_msg(m, from)) en_hit_msg(m, from);
     }
     }
 }
@@ -937,6 +945,7 @@ void coop_enemy_phase0(Cpu *c) {
     own_pass(now, frame);
     en_hit_phase0();
     en_copy_phase0(c);
+    en_shot_phase0();
     out_flush();
     plat_mutex_unlock(&en_lock);
 }

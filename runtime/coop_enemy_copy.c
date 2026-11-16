@@ -147,6 +147,72 @@ static void equip_read(uint64_t actor, uint32_t eq[EN_EQ_N], int learn) {
     }
 }
 
+// ---- What enemies hold ---------------------------------------------------------------------------------------------------
+// Every actor an enemy of a listed kind holds here, and what is fused to it (a held weapon's attachment: the link at
+// +0xb0 of the weapon's component [[w+0x228]+0x208]), as a set the object mirror asks (coop_players.c prop_fn): such an
+// actor belongs to its enemy and is no loose object. A Fire Wizzrobe's rod carries a ruby (Item_Ore_B) fused to it; the
+// mirror sent the ruby as an object of its own, and the other game showed a second gem floating beside the copy's rod
+// that did not vanish when the Wizzrobe did (a play session, 2026-11-16). Rebuilt by phase 0 four times a second.
+#define HELD_N 1024
+static _Atomic uint64_t held_set[2][HELD_N];
+static _Atomic int held_cur;
+static void held_put(_Atomic uint64_t *t, uint64_t a) {
+    for (uint32_t h = (uint32_t)((a >> 4) * 2654435761u) % HELD_N, k = 0; k < 32; k++, h = (h + 1) % HELD_N) {
+        uint64_t v = atomic_load_explicit(&t[h], memory_order_relaxed);
+        if (v == a) return;
+        if (!v) { atomic_store_explicit(&t[h], a, memory_order_relaxed); return; }
+    }
+}
+int coop_enemy_holds(uint64_t actor) {
+    if (!coop_enemy_new() || actor < 0x10000) return 0;
+    _Atomic uint64_t *t = held_set[atomic_load_explicit(&held_cur, memory_order_acquire)];
+    for (uint32_t h = (uint32_t)((actor >> 4) * 2654435761u) % HELD_N, k = 0; k < 32; k++, h = (h + 1) % HELD_N) {
+        uint64_t v = atomic_load_explicit(&t[h], memory_order_relaxed);
+        if (v == actor) return 1;
+        if (!v) return 0;
+    }
+    return 0;
+}
+// Whether an enemy of a listed kind that this game has had for under 3 s stands within m of p: what is made beside it
+// then is most likely its equipment on the way into its hand (the object mirror waits for it; coop_players.c prop_fn).
+int coop_enemy_young_near(const float p[3], float m) {
+    if (!coop_enemy_new()) return 0;
+    uint32_t frame = coop_sess_frame_no();
+    for (int i = 0; i < EN_MAP_N; i++) {
+        uint64_t a = atomic_load_explicit(&en_map[i].actor, memory_order_relaxed);
+        float q[3];
+        if (a <= 1 || frame - en_map[i].born_frame > 180 || !coop_rd(a + COOP_ACTOR_POS, q, 12)) continue;
+        if ((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]) < m * m) return 1;
+    }
+    return 0;
+}
+static void held_rebuild(void) {
+    int to = !atomic_load(&held_cur);
+    _Atomic uint64_t *t = held_set[to];
+    static int said;
+    for (int i = 0; i < HELD_N; i++) atomic_store_explicit(&t[i], 0, memory_order_relaxed);
+    for (int i = 0; i < EN_MAP_N; i++) {
+        uint64_t a = atomic_load(&en_map[i].actor), eu;
+        if (a <= 1 || !(eu = coop_rd_ptr(en_comps(a) + 0x230))) continue;
+        for (int s = 0; s < EN_EQ_N; s++) {
+            uint64_t ref = coop_rd_ptr(eu + 0x20 + (uint64_t)s * 0x18 + 8), w = ref ? coop_rd_ptr(ref + 0x40) : 0;
+            uint32_t id = 0, gen = 0;
+            if (!w || !coop_rd(eu + 0x20 + (uint64_t)s * 0x18 + 0x10, &id, 4) || !coop_rd(w + 0x10, &gen, 4) || id != gen) continue;
+            held_put(t, w);
+            uint64_t wc = coop_rd_ptr(en_comps(w) + 0x208), aref = wc ? coop_rd_ptr(wc + 0xb0 + 8) : 0, att = aref ? coop_rd_ptr(aref + 0x40) : 0;
+            uint32_t aid = 0, agen = 0;
+            if (!att || !coop_rd(wc + 0xb0 + 0x10, &aid, 4) || !coop_rd(att + 0x10, &agen, 4) || aid != agen) continue;
+            held_put(t, att);
+            if (said < 6) {
+                char wn[40] = "", an[40] = "", en[48] = "";
+                said++;
+                rt_log("coop: en: equip: %s holds %s with %s fused to it: both are its own, not loose objects", coop_actor_name(a, en, sizeof en), coop_actor_name(w, wn, sizeof wn), coop_actor_name(att, an, sizeof an));
+            }
+        }
+    }
+    atomic_store_explicit(&held_cur, to, memory_order_release);
+}
+
 // ---- The switch (S 5) --------------------------------------------------------------------------------------------------
 static __thread uint64_t tl_off_actor;   // the switched-off actor whose calc this thread entered last (the leak net)
 
@@ -168,6 +234,38 @@ int en_copy_hook(Cpu *c, uint64_t off) {
             rt_log("coop: en: leak: a node of %llx ticked with the switch on (from main+%#llx)", (unsigned long long)actor, (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
         return 1;
     }
+    case 0x1bf9af8: case 0x1bfbc44: case 0x1bfbaa4: case 0x1bf8f74: case 0x1bfbb28: case 0x1bfd6a8: case 0xa9c250: {
+        // The Shooter component (x0 = S, its owning actor at S+0x18; for main+0xa9c250 x0 is a shot record and w1 its new
+        // state): prepare, shoot and request entries, logged for the enemies this sync knows, with what the game that
+        // runs the enemy and a copy each do.
+        if (off == 0x1bf9af8 || off == 0x1bfbc44) {   // of an enemy this game runs: made here, captured and stated (coop_enemy_shot.c)
+            uint64_t a0 = coop_rd_ptr(c->x[0] + 0x18);
+            EnCell *m0 = a0 > 0x10000 ? en_cell_of(a0) : NULL;
+            if (m0 && en_shot_hook(c, off, m0)) return 1;
+        }
+        static int on = -1;
+        static _Atomic int said;
+        if (on < 0) on = cfg_get("TOTK_COOP_EN_TEST_SHOTS") != NULL;
+        if (!on || off == 0xa9c250) return 0;
+        uint64_t a = coop_rd_ptr(c->x[0] + 0x18);
+        EnCell *m = a > 0x10000 ? en_cell_of(a) : NULL;
+        {   // (every caller, for the first calls: which actors use these at all)
+            static _Atomic int any;
+            char an[48] = "?";
+            if (atomic_fetch_add(&any, 1) < 40) rt_log("coop: en: shot: (any) main+%#llx x0 %llx, [x0+0x18] %llx %s, from main+%#llx", (unsigned long long)off, (unsigned long long)c->x[0], (unsigned long long)a, a > 0x10000 ? coop_actor_name(a, an, sizeof an) : "-", (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
+        }
+        if (!m || atomic_fetch_add(&said, 1) >= 400) return 0;
+        uint64_t rec = c->x[1], q = off == 0x1bfbc44 ? c->x[2] : c->x[1];
+        uint32_t key = 0, idx = 0, flags = 0;
+        float v[12] = {0};
+        uint8_t st = 0;
+        if (q > 0x10000) coop_rd(q + 0x1928, &key, 4), coop_rd(q + 0x192c, &idx, 4), coop_rd(q + 0x1938, &flags, 4), coop_rd(q + 0x1930, v, sizeof v);
+        if (off == 0x1bfbc44 && rec > 0x10000) coop_rd(rec + 0xdf, &st, 1);
+        rt_log("coop: en: shot: main+%#llx on %llx (cell state %d) from main+%#llx: x1 %llx x2 %llx x3 %llx; request key %08x index %d flags %x; vectors %.2f %.2f %.2f | %.2f %.2f %.2f | %.2f %.2f %.2f | %.2f %.2f %.2f; record state %u",
+               (unsigned long long)off, (unsigned long long)a, (int)atomic_load(&m->state), (unsigned long long)(c->x[30] - MOD_MAIN_BASE), (unsigned long long)c->x[1], (unsigned long long)c->x[2], (unsigned long long)c->x[3],
+               key, (int)idx, flags, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], st);
+        return 0;
+    }
     case 0x1bddcb0: {   // a ragdoll start (x0 the component, x1 the request): logged for the enemies this sync knows
         uint64_t a = coop_rd_ptr(c->x[0] + 0x18);
         EnCell *m = a > 0x10000 ? en_cell_of(a) : NULL;
@@ -184,7 +282,7 @@ int en_copy_hook(Cpu *c, uint64_t off) {
     EnCell *m = actor > 0x10000 ? en_cell_of(actor) : NULL;
     if (!m) return 0;
     atomic_store_explicit(&m->run_frame, coop_sess_frame_no(), memory_order_relaxed);
-    if (!is_off(atomic_load_explicit(&m->state, memory_order_relaxed)) || noswitch()) {
+    if (!is_off(atomic_load_explicit(&m->state, memory_order_relaxed)) || noswitch() || !atomic_load_explicit(&m->warm, memory_order_relaxed)) {
         atomic_fetch_add_explicit(&m->passed, 1, memory_order_relaxed);
         return 0;
     }
@@ -201,7 +299,12 @@ static uint64_t inline_inst(uint64_t actor, uint64_t *ctrl_out) {
 static void four_writes(uint64_t actor, EnCell *m) {
     uint64_t ctrl, inst = inline_inst(actor, &ctrl);
     if (!ctrl || !inst) return;
-    if (!m->sw_saved) m->sw_saved = 1, coop_rd(inst + 0x90, &m->sw_qcount, 4), coop_rd(inst + 0xd8, &m->sw_bits, 2);
+    // (all four are kept: on enemies that had run for a while the root index and the pending root read -1 already,
+    // but a young actor's can still name the root its interrupt graph has to start)
+    if (!m->sw_saved) {
+        m->sw_saved = 1, m->sw_root = -1, m->sw_pend = -1;
+        coop_rd(inst + 0x90, &m->sw_qcount, 4), coop_rd(inst + 0xd8, &m->sw_bits, 2), coop_rd(ctrl + 0x19c, &m->sw_root, 4), coop_rd(inst + 0xde, &m->sw_pend, 2);
+    }
     int32_t m1 = -1;
     int16_t s1 = -1;
     uint32_t zero = 0;
@@ -287,6 +390,18 @@ static void slots_apply(Cpu *c, uint64_t actor, EnCell *m, const EnSlot *want, i
 void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     int st = atomic_load_explicit(&m->state, memory_order_relaxed);
     int off = is_off(st) && !noswitch() && atomic_load_explicit(&en_active, memory_order_relaxed);
+    if (!atomic_load_explicit(&m->warm, memory_order_relaxed)) {
+        // A new actor thinks until its interrupt graph has started (its instance has a queue count or a bit word), at
+        // most 30 frames. Switched off from its first frame, what was saved of that graph was nothing, and the nothing
+        // was put back when the actor was let think: it then never ran an interrupt action again, and a spawned
+        // Lizalfos at 0 life went on fighting with no death (a play session and its scripted repeats, 2026-11-16).
+        uint64_t ctrl, inst = inline_inst(actor, &ctrl);
+        uint32_t q = 0;
+        uint16_t bits = 0;
+        if (inst) coop_rd(inst + 0x90, &q, 4), coop_rd(inst + 0xd8, &bits, 2);
+        if ((inst && (q || bits)) || coop_sess_frame_no() - m->born_frame >= 30) atomic_store(&m->warm, 1);
+        else off = 0;
+    }
     tl_off_actor = off ? actor : 0;
     if (!off && !m->sw_on) { en_hit_precalc(c, actor, m, 0); return; }
     int32_t ast = 0;
@@ -295,7 +410,12 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     memcpy(x, c->x, sizeof x);
     if (!off) {   // it thinks again (S 4.8): the interrupt graph gets back what the writes took, the body moves again
         uint64_t ctrl, inst = inline_inst(actor, &ctrl);
-        if (inst && m->sw_saved) memcpy((void *)(uintptr_t)(inst + 0x90), &m->sw_qcount, 4), memcpy((void *)(uintptr_t)(inst + 0xd8), &m->sw_bits, 2);
+        if (inst && m->sw_saved) {
+            memcpy((void *)(uintptr_t)(inst + 0x90), &m->sw_qcount, 4), memcpy((void *)(uintptr_t)(inst + 0xd8), &m->sw_bits, 2);
+            memcpy((void *)(uintptr_t)(ctrl + 0x19c), &m->sw_root, 4), memcpy((void *)(uintptr_t)(inst + 0xde), &m->sw_pend, 2);
+            static _Atomic int said;
+            if (atomic_fetch_add(&said, 1) < 12) rt_log("coop: en: switch: %llx thinks again: its interrupt graph gets back queue count %u, bits %x, root %d, pending root %d", (unsigned long long)actor, m->sw_qcount, m->sw_bits, (int)m->sw_root, (int)m->sw_pend);
+        }
         en_hit_leave(actor, m);
         if (body && m->body_static) coop_guest_call(c, MOD_MAIN_BASE + FN_MOTION_TYPE, body, 2, 0, 0);
         m->sw_on = m->sw_saved = m->body_static = m->pinned = 0;
@@ -340,8 +460,8 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             const char *wn = want ? name_of(want) : NULL;
             uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230);
             uint32_t fr = coop_sess_frame_no();
-            if (!wn || !eu || fr - m->eq_made_frame < 120) continue;
-            m->eq_made_frame = fr;
+            if (!wn || !eu || fr - m->eq_made_frame < 120 || m->eq_tries[k] >= 2) continue;
+            m->eq_made_frame = fr, m->eq_tries[k]++;
             for (int j = 0; j < 2; j++) {
                 uint8_t *st = m->eq_str[j];
                 memset(st, 0, 0x60);
@@ -357,7 +477,7 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             uint64_t r = rt_call(c, MOD_MAIN_BASE + 0xaf100c, 8, eu, (uint64_t)k, (uint64_t)(uintptr_t)m->eq_str[0], (uint64_t)1, (uint64_t)(uint32_t)-1,
                                  (uint64_t)(uint32_t)-1, (uint64_t)(uintptr_t)m->eq_str[1], (uint64_t)1);
             c->sp = sp0;
-            rt_log("coop: en: equip: the copy %llx is given %s in slot %d, as its owner's enemy holds (the create answered %llx)", (unsigned long long)actor, wn, k, (unsigned long long)r);
+            rt_log("coop: en: equip: the copy %llx is given %s in slot %d, as its owner's enemy holds (the create answered %llx; try %d)", (unsigned long long)actor, wn, k, (unsigned long long)r, m->eq_tries[k]);
             break;
         }
         uint8_t drop = atomic_exchange_explicit(&m->eq_drop, 0, memory_order_relaxed);
@@ -374,6 +494,7 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             rt_log("coop: en: equip: the copy %llx lets go of its %s (slot %d): its owner's enemy holds nothing there (the delete answered %llu)", (unsigned long long)actor, coop_actor_name(held, hn, sizeof hn), k, (unsigned long long)(r & 1));
         }
         en_hit_precalc(c, actor, m, 1);
+        en_shot_precalc(c, actor, m);
     } else {   // held: it stands where it was when the hold began
         if (!m->pinned) en_pose_of(actor, m->pin), m->pinned = 1;
         put(c, actor, m->pin, m->pin + 3);
@@ -404,6 +525,7 @@ void en_copy_phase0(Cpu *c) {
     (void)c;
     uint64_t me = coop_ctr_me(), now = en_now(), stamp = coop_sess_frame_ns();
     uint32_t frame = coop_sess_frame_no();
+    if (!(frame % 15)) held_rebuild();
     static uint64_t rec_ns;
     int rec = now - rec_ns >= SEC;
     if (rec) rec_ns = now;
@@ -441,7 +563,7 @@ void en_copy_phase0(Cpu *c) {
                 d2 += d * d;
                 s->s.vel[k] = dt > 0.001 && dt < 0.2 ? (float)(d / dt) : 0;
             }
-            if (was_ns && d2 > 5.f * 5.f) e->teleports++, memset(s->s.vel, 0, 12);   // (a jump: not a path to follow)
+            if (was_ns && d2 > 1.5f * 1.5f) e->teleports++, memset(s->s.vel, 0, 12);   // (a jump, 1.5 m in a frame: not a path to follow; a Yiga footsoldier's blinks of 3 m were shown as a slide)
             s->s.teleports = e->teleports;
             uint32_t cmds[EN_SLOT_N];
             for (int k = 0; k < EN_SLOT_N; k++) cmds[k] = s->sl[k].cmd;
@@ -503,6 +625,7 @@ void en_copy_phase0(Cpu *c) {
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++) {
         if (newest[id]) coop_sess_clock_sample(id, newest[id]);
         have_t[id] = coop_sess_clock(id, 16666667ull, &T[id], &delay[id], &tele[id]);
+        en_shot_T(id, have_t[id] ? T[id] : 0);
     }
 
     // Pass 2: what each copy shows at T of its owner (S 6.3).
@@ -572,7 +695,10 @@ void en_copy_phase0(Cpu *c) {
                     if (drop) atomic_store(&m->eq_drop, drop);
                     for (int k = 0; k < EN_EQ_N; k++) atomic_store(&m->eq_make[k], !eq[k] && sl->eq[k] ? sl->eq[k] : 0);
                 }
-            } else e->eq_off = 0;
+            } else {
+                e->eq_off = 0;
+                for (int k = 0; k < EN_EQ_N; k++) if (eq[k]) m->eq_tries[k] = 0;   // (it holds it: a later loss may be made good again)
+            }
         }
         if (now - e->log_ns >= SEC / 10) {
             char cmd[40] = "";

@@ -45,6 +45,8 @@ typedef struct {
     _Atomic uint64_t actor;           // 0 free, 1 cleared
     _Atomic uint32_t gen, frame;      // frame: the frame number of its last calc
     _Atomic uint32_t run_frame;       // the frame a graph runner of it was last entered (let through or turned away): the game thinks it
+    uint32_t born_frame;              // the frame its cell was made
+    _Atomic uint8_t warm;             // its interrupt graph has started (or 30 frames passed): only then may the switch turn it off
     _Atomic uint8_t state;            // EM_*
     _Atomic int16_t en;               // its table row, -1 none
     uint8_t kind, hash_read, retry, rt;
@@ -52,7 +54,7 @@ typedef struct {
     uint64_t new_ns;                  // since when it is NEW
     // What pre-calc has done to the actor (its update thread only).
     uint8_t sw_on, sw_saved, body_static, pinned;
-    uint32_t sw_qcount; uint16_t sw_bits;
+    uint32_t sw_qcount; uint16_t sw_bits; int32_t sw_root; int16_t sw_pend;   // what the four writes overwrote
     float pin[7];                     // where a held actor stands
     uint32_t slot_try[EN_SLOT_N];     // the frame a slot's command was last asked for
     _Atomic uint32_t turned, leaks, passed;   // entries the switch turned away; node ticks that got through; entries let through (it thinks)
@@ -71,6 +73,7 @@ typedef struct {
     _Atomic uint8_t eq_drop;          // equipment slots (a bit each) whose held actor the copy must let go: its owner's enemy holds nothing there
     _Atomic uint32_t eq_make[EN_EQ_N];   // per equipment slot, the name hash of what the copy must be given (its owner's enemy holds it, the copy nothing)
     uint32_t eq_made_frame;           // the frame of the copy's last equipment create
+    uint8_t eq_tries[EN_EQ_N];        // creates made for a slot that stayed empty: after 2 no more (30 shields were made on one copy)
     uint8_t eq_str[2][0x60];          // the strings of that create (the game may read them after the call)
     _Atomic uint8_t dying, kill_req, put_away, flinch;   // asked of pre-calc: the copy's death, the owner's death, the actor of a dead placement put away, a flinch
     uint8_t put_done, dc_saved, dc_bits, req_tries;
@@ -117,6 +120,13 @@ int en_copy_hook(Cpu *c, uint64_t off);                        // the switch: no
 void en_copy_phase0(Cpu *c);                                   // states read and sent, states taken, what copies show
 void en_copy_burst(int id);                                    // the command names, to a peer that came
 int en_copy_msg(const CoopCtrMsg *m, int from);                // 1: the message was this file's
+
+// coop_enemy_shot.c
+int en_shot_hook(Cpu *c, uint64_t off, EnCell *m);              // a prepare or a shoot of an enemy this game runs: made here and captured
+void en_shot_T(int id, int64_t t);                             // the time this game shows a peer at, this frame
+void en_shot_phase0(void);
+int en_shot_msg(const CoopCtrMsg *m, int from);
+void en_shot_precalc(Cpu *c, uint64_t actor, EnCell *m);       // a copy makes the stated calls on its own records
 
 // coop_enemy_hit.c
 void en_hit_phase0(void);                                      // hits sent and applied, deaths seen

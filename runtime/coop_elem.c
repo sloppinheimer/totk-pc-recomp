@@ -89,7 +89,7 @@ static int want_n;
 static _Atomic uint64_t copy_rec[CELLS_MAX];   // the records written as copies in this frame's driver call
 static float copy_at[CELLS_MAX][2];       // their centres (x, z), written before copy_n says how many
 static _Atomic int copy_n;
-static _Atomic uint32_t n_not_shown, n_contact_drop, n_react_drop, n_req, n_cell_copies, n_spread_undone;
+static _Atomic uint32_t n_mirrors, n_not_shown, n_contact_drop, n_react_drop, n_req, n_cell_copies, n_spread_undone;
 static uint64_t sys_seen;                 // the chemical system of the last driver call (a new one: a new world)
 static _Atomic int world_new;             // the driver saw a new system: phase 0 empties its tables
 // Test (TOTK_COOP_ELEM_TEST_IGNITE): a place the driver hook heats as a fire contact does, for some frames
@@ -379,7 +379,17 @@ static int comp_hook(Cpu *c) {
     uint8_t before[EL_MAX] = {0};
     int n = el_read(comp, els, cur), copy = 0, ask = 0, changed = 0, what[EL_MAX] = {0};
     if (!n) return 0;
-    int in = is_inert(actor), es = in ? EM_FREE : en_cell_state(actor);
+    // (a projectile shot by an enemy another game runs is the copy's own actor, made by the same calls as the owner's
+    // (coop_enemy_shot.c): it is shown only, so it is inert here as an actor named to coop_elem_inert is)
+    int coop_enemy_shot_mirror(uint64_t proj);
+    int mirror = coop_enemy_shot_mirror(actor), in = mirror || is_inert(actor), es = in ? EM_FREE : en_cell_state(actor);
+    if (mirror) {
+        uint64_t word;
+        if (coop_rd(comp + 0x20, &word, 8) && !(word >> 32 & 1)) {
+            atomic_fetch_or((_Atomic uint64_t *)(uintptr_t)(comp + 0x20), 1ull << 32);
+            atomic_fetch_add(&n_mirrors, 1);
+        }
+    }
     plat_mutex_lock(&lk);
     Thing *t = thing_row(comp, actor, frame);
     if (t) {
@@ -706,9 +716,9 @@ void coop_elem_phase0(Cpu *c) {
     static uint32_t said;
     if (frame - said >= 30 && (cn || tn || wn || n_copy)) {
         said = frame;
-        rt_log("coop: elem: cells mine %d, copied %u, not shown %u; things mine %d, copied %d; requests %u, reactions dropped %u, contacts dropped %u, spread heat undone %u",
+        rt_log("coop: elem: cells mine %d, copied %u, not shown %u; things mine %d, copied %d; requests %u, reactions dropped %u, contacts dropped %u, spread heat undone %u, mirrored projectiles made inert %u",
                cn, atomic_load(&n_cell_copies), atomic_load(&n_not_shown), tn, n_copy, atomic_load(&n_req), atomic_load(&n_react_drop),
-               atomic_load(&n_contact_drop), atomic_load(&n_spread_undone));
+               atomic_load(&n_contact_drop), atomic_load(&n_spread_undone), atomic_load(&n_mirrors));
     }
     tests(c);
 }

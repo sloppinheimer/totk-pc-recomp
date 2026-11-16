@@ -2060,6 +2060,26 @@ void coop_tick(struct Cpu *c) {
                 if (e == at) test_spawned = 1;
             }
         }
+        {   // Test: TOTK_COOP_TEST_SPAWN_KEY=<actor>[+<actor>...]: each press of the mark key (Home or numpad 0) makes the
+            // next actor of the list beside this Link, round and round (a tester fights one enemy kind after another).
+            static const char *list;
+            static int read, at, was;
+            static char nm[64];
+            int input_mark_key(void);   // input_win.c
+            if (!read) list = cfg_get("TOTK_COOP_TEST_SPAWN_KEY"), read = 1;
+            int down = k == 1 && list && *list ? input_mark_key() : 0;
+            if (k == 1 && down && !was && !rd_ptr((uint64_t)(uintptr_t)handles[1])) {
+                const char *p = list;
+                for (int i = 0; i < at && p; i++) p = strchr(p, '+'), p = p ? p + 1 : NULL;
+                if (!p || !*p) p = list, at = 0;
+                const char *e = strchr(p, '+');
+                snprintf(nm, sizeof nm, "%.*s", (int)(e ? e - p : (long long)strlen(p)), p);
+                names[1] = nm, at++, last_status[1] = -1;
+                rt_log("coop: test spawn by key %d: %s", at, nm);
+                spawn(c, 1);
+            }
+            if (k == 1) was = down;
+        }
         if (pressed & 1 << k) spawn(c, k);
         if (!rd_ptr((uint64_t)(uintptr_t)handles[k])) continue;
         int st = handle_status(k);

@@ -2590,6 +2590,8 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
     if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
     int coop_enemy_within(const float p[3], float m);   // coop_world.c
     if (!strncmp(nm, "Weapon_", 7) && coop_enemy_within(p, 3.0f)) return;   // an enemy's (in its hand, or just let go of)
+    { int coop_enemy_holds(uint64_t actor); if (coop_enemy_holds(a)) return; }   // coop_enemy_copy.c: held by an enemy, or fused to what one holds
+    { int coop_enemy_young_near(const float p[3], float m); if (coop_enemy_young_near(p, 6.0f)) return; }   // (or about to be: beside an enemy just made)
     float d2 = (p[0] - ps->me[0]) * (p[0] - ps->me[0]) + (p[1] - ps->me[1]) * (p[1] - ps->me[1]) + (p[2] - ps->me[2]) * (p[2] - ps->me[2]);
     float dco = 1e18f;
     for (int i = 0; i < COOP_MAX_PLAYERS; i++) {
@@ -2773,6 +2775,14 @@ static int report_props(uint64_t me, CoopObj *out, int max) {
             // two games chased each other's places: plan 43, note 15). Sent again once it is a plain object.
             int coop_ctn_core(void), coop_ctn_part(uint64_t a), coop_ctn_follows(uint64_t a);
             if (coop_ctn_core() && (coop_ctn_part(props[e].actor) || coop_ctn_follows(props[e].actor))) {
+                if (!props[e].made) props[e].touched = 0;
+                continue;
+            }
+        }
+        {   // What an enemy holds, or what is fused to that, is its enemy's (coop_enemy_copy.c): not sent while it is, even
+            // when it was sent before it was taken into the hand or fused (a new enemy's gem is made a moment before).
+            int coop_enemy_holds(uint64_t actor);
+            if (coop_enemy_holds(props[e].actor)) {
                 if (!props[e].made) props[e].touched = 0;
                 continue;
             }
