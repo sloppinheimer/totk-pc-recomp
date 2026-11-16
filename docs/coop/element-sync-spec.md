@@ -229,7 +229,9 @@ projectiles; nothing calls it yet.
   29 cells, all A's; B copied all 29 (a median 165 ms behind) and lit none itself, with the blast of its own shown
   strike kept from the ground; all 29 burnt out in both. Pictures from both games show the fire at the strike.
 - **A Fire Wizzrobe after the enemy sync's merges**: 22 cells burnt out, the same in both games, copies a median
-  59 ms behind.
+  59 ms behind. A later, longer run in which the Wizzrobe also called fire from the sky and fire Keese and Chuchus
+  came: 104 cells burned and 49 burnt out, the same cells in both games; of 228 paired events the copy was a median
+  82 ms behind, at most 375 ms, and 9 had no pair within 3 s.
 
 ### Left, and known faults
 
