@@ -138,7 +138,11 @@ static double rto_s(const Peer *p) {   // RTO = 1.5 SRTT + 4 RTTVAR, clamped to 
 
 static void fill_window(int id, int ch) {   // (lock held) pending messages into the window, sent at once
     OutStream *o = &peers[id].out[ch];
-    while (o->pend_n && o->n < WIN) {
+    // Only while the slot of the next number is free: with message s lost and the ones after it acknowledged by the
+    // ACK's bits, the count alone let number s + WIN go out into s's slot, s was never sent again, and the receiver,
+    // still waiting for s, refused everything from then on (a two-game run through a relay losing 8 % of the packets,
+    // 2026-11-16: one stream dead after a minute, "refused" rising by 30 a second).
+    while (o->pend_n && o->n < WIN && !o->used[o->next % WIN]) {
         PendMsg *pm = &o->pend[o->pend_head];
         uint16_t seq = o->next++;
         OutMsg *m = &o->win[seq % WIN];

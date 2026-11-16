@@ -14,6 +14,9 @@ Packets (little-endian), all starting with the header  b'TKCO', version u8, type
 Any player may join or leave at any time; ids 1..MAX_PLAYERS are handed out on HELLO and freed on leave.
 """
 import argparse
+import heapq
+import os
+import random
 import socket
 import struct
 import sys
@@ -32,6 +35,9 @@ def header(kind, pid, to=0):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--port', type=int, default=41900)
+    ap.add_argument('--bad', default=os.environ.get('TOTK_COOP_RELAY_BAD', ''),
+                    help='a test network: "<delay ms>,<jitter ms>,<loss percent>" applied to every forwarded game packet '
+                         '(also from the environment variable TOTK_COOP_RELAY_BAD)')
     ap.add_argument('--log', help='write the lines here instead of to the console (for pythonw, which has none)')
     a = ap.parse_args()
     if a.log:
@@ -40,6 +46,12 @@ def main():
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)   # enemy poses come in bursts
     sock.bind(('0.0.0.0', a.port))
     sock.settimeout(0.5)
+    bad = [float(x) for x in a.bad.split(',')] if a.bad else None
+    held = []   # (due, n, data, addr): packets on their way through the test network
+    count = 0
+    if bad:
+        bad += [0.0] * (3 - len(bad))
+        print(f'relay: test network: {bad[0]:.0f} ms delay, up to {bad[1]:.0f} ms more, {bad[2]:.1f} % lost', flush=True)
     players = {}   # addr -> {'id', 'name', 'seen'}
     print(f'relay: listening on UDP {a.port}', flush=True)
 
@@ -58,6 +70,12 @@ def main():
             send(header(LEAVE, p['id']), other)
 
     while True:
+        if held:   # (send what is due; wake for the next one)
+            t = time.monotonic()
+            while held and held[0][0] <= t:
+                _, _, d, to_addr = heapq.heappop(held)
+                send(d, to_addr)
+            sock.settimeout(max(0.0005, min(0.5, held[0][0] - t)) if held else 0.5)
         try:
             data, addr = sock.recvfrom(8192)
         except socket.timeout:
@@ -93,7 +111,11 @@ def main():
             out = header(kind, me['id'], to) + data[HEADER.size:]
             for other, p in players.items():
                 if other != addr and (not to or p['id'] == to):
-                    send(out, other)
+                    if not bad:
+                        send(out, other)
+                    elif random.random() * 100 >= bad[2]:
+                        count += 1
+                        heapq.heappush(held, (now + (bad[0] + random.random() * bad[1]) / 1000, count, out, other))
         elif kind == BYE and addr in players:
             leave(addr, 'said bye')
 
