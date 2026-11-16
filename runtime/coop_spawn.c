@@ -984,6 +984,13 @@ int coop_hook(Cpu *c, uint64_t addr) {
     if (addr == MOD_MAIN_BASE + 0xa72b00) {
         atomic_fetch_add(&coop_frames_seen, 1);
         { void coop_sess_phase0(void); coop_sess_phase0(); }   // the frame stamp (coop_sess.c), before every sync's pass
+        {   // the enemy sync's pass (coop_enemy.c)
+            void coop_enemy_phase0(Cpu *c);
+            uint64_t x[31], sp = c->sp, pc = c->pc;
+            memcpy(x, c->x, sizeof x);
+            coop_enemy_phase0(c);
+            memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
+        }
         // contraption tests that need every actor link to resolve: GameDataMgr::calc runs each frame at actor phase 0,
         // outside the parallel actor update (TOTK_COOP_TEST_PHASES)
         static int seq = -1;
@@ -1094,7 +1101,13 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // the SwordBlur component's update (coop_world.c): a stand-in's runs with its owner's WeaponBlur event
     if (addr == MOD_MAIN_BASE + 0x275954) { int coop_blur_hook(Cpu *c, uint64_t addr); return coop_blur_hook(c, addr); }
     if (addr == MOD_MAIN_BASE + 0x31dbc0) { void coop_hit_delivered(Cpu *c); coop_hit_delivered(c); return 0; }   // coop_world.c
-    if (addr == MOD_MAIN_BASE + 0x300a30) { void coop_hit_update(Cpu *c); coop_hit_update(c); return 0; }        // coop_world.c
+    if (addr == MOD_MAIN_BASE + 0x300a30) {
+        int en_hit_step(Cpu *c, uint64_t addr);   // coop_enemy_hit.c: a copy's damage step is run inside and what it took is sent to its owner
+        if (en_hit_step(c, addr)) return 1;
+        void coop_hit_update(Cpu *c);             // coop_world.c
+        coop_hit_update(c);
+        return 0;
+    }
     if (addr == MOD_MAIN_BASE + 0x50ad74) { void coop_enemy_action(Cpu *c); coop_enemy_action(c); return 0; }    // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x96c1ac) { void coop_markers_screen(uint64_t); coop_markers_screen(c->x[0]); return 0; }   // coop_markers.c: the AppMap screen's set-up
     // main+0x1d1fc70 (x0 an actor link): the 1.4.3 copy of the function TotK Online makes return 1 for PlayerPuppet
@@ -2021,6 +2034,7 @@ void coop_tick(struct Cpu *c) {
         }
     }
     { void coop_sess_net(void); coop_sess_net(); }   // session state (coop_sess.c)
+    { void coop_enemy_net(void); coop_enemy_net(); }   // the enemy sync's net half (coop_enemy.c)
     { void coop_ent_net(void); coop_ent_net(); }   // the entity sync's net half: heartbeat flags, the pause queue (coop_ent_own.c)
     void coop_loadwatch_tick(void);   // coop_loadwatch.c
     coop_loadwatch_tick();

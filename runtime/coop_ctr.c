@@ -451,6 +451,7 @@ static void heartbeat(void) {   // (lock held)
     CoopCtrHb hb = hb_mine;
     hb.key = 0, hb.world_us = world, hb.wall_ns = plat_unix_time_ns();
     if (now - clock_moved_ns > 300000000ull) hb.flags |= COOP_CTR_HB_PAUSED;   // (the world clock stood 0.3 s)
+    { uint32_t coop_sess_caps(void); hb.flags |= coop_sess_caps(); }   // which syncs this game runs (coop_sess.c)
     CtrHdr h;
     header(&h, COOP_CTR_HB, 0, 0);
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++)

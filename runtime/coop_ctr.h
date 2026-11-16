@@ -26,7 +26,7 @@ typedef struct {
 } CoopCtrMsg;
 
 // The heartbeat each game sends 30 times a second from the co-op poll, menus and loads included.
-enum { COOP_CTR_HB_PAUSED = 1, COOP_CTR_HB_LOADING = 2 };
+enum { COOP_CTR_HB_PAUSED = 1, COOP_CTR_HB_LOADING = 2, COOP_CTR_HB_ENEMY = 4 };   // ENEMY: it runs the enemy sync of coop_enemy.c
 typedef struct {
     uint64_t key;        // 0 (its latest-only slot)
     int64_t world_us;    // this game's world clock

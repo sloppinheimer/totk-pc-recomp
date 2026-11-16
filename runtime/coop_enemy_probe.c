@@ -358,7 +358,14 @@ static void empty_inline(uint64_t actor) {
 
 // The actor's calc (main+0x41bb20, x0 the actor) and the action request (main+0x50ad74, x0 the BSA), which other code
 // hooks too: called first from coop_spawn.c coop_hook. Nonzero: the function is not run.
+int coop_enemy_calc(Cpu *c);                    // coop_enemy.c
+int en_copy_hook(Cpu *c, uint64_t off);         // coop_enemy_copy.c
+int coop_enemy_new(void);
 int coop_enemy_shared(Cpu *c, uint64_t off) {
+    if (coop_enemy_new()) {   // the enemy sync itself
+        if (off == 0x41bb20) coop_enemy_calc(c);
+        else if (en_copy_hook(c, off)) return 1;
+    }
     if (!probe_mode()) return 0;
     uint64_t t = atomic_load(&target);
     if (!t) return 0;
@@ -399,6 +406,7 @@ int coop_enemy_shared(Cpu *c, uint64_t off) {
 }
 
 int coop_enemy_hook(Cpu *c, uint64_t off) {
+    if (coop_enemy_new() && en_copy_hook(c, off)) return 1;
     if (!probe_mode()) return 0;
     uint64_t t = atomic_load(&target);
     int hook;

@@ -1,0 +1,6 @@
+# The camp save: load it, wait 6 s, run toward the camp for 5.5 s and stand there (the second player of a pair, watching the first fight).
+480 A 4
+700 A 4
+880 A 4
+1080 A 4
+@6000 LSTICK 0 32767 5500

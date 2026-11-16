@@ -195,3 +195,9 @@ int coop_sess_clock(int id, uint64_t interval_ns, int64_t *t_ns, int64_t *delay_
     if (teleports) *teleports = clocks[id].teleports;
     return 1;
 }
+
+// Which syncs this game runs, in its heartbeat's flags (S 13): two games that differ say so and neither syncs enemies.
+uint32_t coop_sess_caps(void) {
+    int coop_enemy_new(void);   // coop_enemy.c
+    return coop_enemy_new() ? COOP_CTR_HB_ENEMY : 0;
+}
