@@ -37,7 +37,8 @@
 #define FN_REACT 0x1906768        // (target element, 0, context, reaction)
 #define FN_IGNITE 0x1b34a44       // (component, 2, element index)
 #define FN_REQ_B 0xb2b804         // (component, 0 extinguish | 2 burn out, element index)
-#define FN_FREEZE 0x18dcf9c       // (element + 0x50, 1)
+#define FN_FREEZE 0x1b34e48       // (component, 4, element index): the cause the component itself asks with
+#define FN_THAW 0x1b34f10         // (component, 0, element index)
 #define FN_CHARGE 0x18dcfd4       // (element + 0x50)
 #define VT_GRASS_FIRE 0x36bdc60   // the class of a burning cell's fire element; its cell at element + 0x60
 #define S_FIRST 0xc6d8            // the live cells: first node here, the sentinel at S_FIRST - 8, the link offset below
@@ -130,8 +131,10 @@ static void cell_put(uint64_t r, const ElmCell *c) {
     if (is == 2 && state != 2) {
         // A burning cell is ended by the game's own step, which removes its fire element on the change: burnt by a
         // burn time past every limit, put out by full wetness. A state byte written over it would leave the fire.
+        // (the step dries a cell before it tests the wetness, so the water contacts of the frame are written full as
+        // well: with them it adds and stays at 1)
         if (state == 3) burn = 4000.0f, wr(r + R_BURN, &burn, 4);
-        else wet = 1.0f, wr(r + R_WET, &wet, 4), wr(r + R_HEAT, &heat, 4);
+        else { uint8_t full = 0xff; wet = 1.0f, wr(r + R_WET, &wet, 4), wr(r + R_HEAT, &heat, 4), wr(r + R_FIRE + 2, &full, 1); }
         return;
     }
     // (a cell that is being heated is kept short of igniting: the deciding game says when it burns. Written at its
@@ -152,10 +155,22 @@ static void cells_pre(Cpu *c, uint64_t s, uint64_t ctx) {
     plat_mutex_lock(&lk);
     n = want_n, memcpy(w, want, (size_t)n * sizeof *w);
     plat_mutex_unlock(&lk);
-    uint64_t now_copy[CELLS_MAX];
+    uint64_t now_copy[CELLS_MAX], live[CELLS_MAX];
+    uint8_t now_burns[CELLS_MAX];
+    int nlive = cells_walk(s, live);
     for (int i = 0; i < n && made < CELLS_MAX; i++) {
         uint32_t id = cell_id(s, w[i].c.x, w[i].c.z);
         int skip = 0;
+        if ((w[i].c.state_wet & 3) == 3) {
+            // A burnt cell is only ever the end of a cell that burns here: no record is made for it. (Made again, the
+            // record lived another 45 frames as this game's own burnt cell, was stated back, and the two games kept
+            // each other's burnt cells alive.)
+            uint64_t r = 0;
+            uint32_t rid = 0;
+            for (int k = 0; k < nlive && !r; k++) if (coop_rd(live[k] + R_ID, &rid, 4) && rid == id) r = live[k];
+            if (r && rd8(r + R_STATE) == 2) cell_put(r, &w[i].c), now_copy[made] = r, now_burns[made++] = 1;
+            continue;
+        }
         for (int k = 0; k < 64 && !skip; k++) skip = failed[k].id == id && frame - failed[k].frame < 30;
         if (skip) { miss++; continue; }
         uint64_t r = coop_guest_call(c, MOD_MAIN_BASE + FN_CELL_FIND, s + 0x18, id, 0, 0);
@@ -164,13 +179,19 @@ static void cells_pre(Cpu *c, uint64_t s, uint64_t ctx) {
         int was = 0;
         for (int k = 0; k < was_n && !was; k++) was = was_copy[k] == r;
         // (a cell this game lit too: the lower player id states it, S 4.3)
-        if (!was && cell_active(rd8(r + R_STATE), rdf(r + R_HEAT)) && me && me < w[i].from) continue;
+        int st_here = rd8(r + R_STATE);
+        if (!was && (st_here == 2 || (st_here == 1 && rdf(r + R_HEAT) > 0)) && me && me < w[i].from) continue;
         cell_put(r, &w[i].c);
-        now_copy[made++] = r;
+        // (a copy takes no heat of this game's: what touched it here since the last driver call is taken off, or a
+        // copy held short of igniting would be lit by a fire of this game's beside it)
+        uint16_t none = 0;
+        wr(r + R_FIRE, &none, 2);
+        now_copy[made] = r, now_burns[made++] = rd8(r + R_STATE) == 2;
     }
     for (int i = 0; i < made; i++) {
         atomic_store_explicit(&copy_rec[i], now_copy[i], memory_order_relaxed);
-        copy_at[i][0] = rdf(now_copy[i] + R_CENTRE), copy_at[i][1] = rdf(now_copy[i] + R_CENTRE + 8);
+        // (only a burning copy has a fire to keep from the ground: its place is far off otherwise)
+        copy_at[i][0] = now_burns[i] ? rdf(now_copy[i] + R_CENTRE) : 1e9f, copy_at[i][1] = rdf(now_copy[i] + R_CENTRE + 8);
     }
     atomic_store(&copy_n, made);
     memcpy(was_copy, now_copy, (size_t)made * sizeof *was_copy), was_n = made;
@@ -346,25 +367,31 @@ static int el_read(uint64_t comp, uint64_t *els, uint8_t *cur) {
 }
 // What a copy's element is asked to become (S 5.3): 0 nothing, else an ASK_*; and the asking, with the game's own
 // requests.
-enum { ASK_IGNITE = 1, ASK_BURN_OUT, ASK_FREEZE, ASK_PUT_OUT, ASK_CHARGE = 8 };
+enum { ASK_IGNITE = 1, ASK_BURN_OUT, ASK_FREEZE, ASK_PUT_OUT, ASK_THAW, ASK_CHARGE = 8 };
 static int ask_of(uint8_t cur, uint8_t wanted) {
     if (cur == EL_NONE || wanted == EL_NONE) return 0;
     int w = wanted & 7, is = cur & 7, what = 0;
-    if (w != is) what = w == 2 ? ASK_IGNITE : w == 3 ? ASK_BURN_OUT : w == 1 ? ASK_FREEZE : w == 0 && is == 2 ? ASK_PUT_OUT : 0;
+    if (w != is) what = w == 2 ? ASK_IGNITE : w == 3 ? ASK_BURN_OUT : w == 1 ? ASK_FREEZE : w == 0 && is == 2 ? ASK_PUT_OUT : w == 0 && is == 1 ? ASK_THAW : 0;
     if (wanted & EL_ELEC && !(cur & EL_ELEC)) what |= ASK_CHARGE;
     return what;
 }
 static void ask_do(Cpu *c, uint64_t comp, uint64_t el, int i, int what) {
     int k = what & 7;
     {
-        static const char *nm[8] = {"", "ignite", "burn out", "freeze", "go out", "", "", ""};
+        static const char *nm[8] = {"", "ignite", "burn out", "freeze", "go out", "thaw", "", ""};
         char an[48];
-        rt_log("coop: elem: asks %s (hash %llx) element %d to %s%s", coop_actor_name(coop_rd_ptr(comp + 0x18), an, sizeof an),
-               (unsigned long long)hash_of(coop_rd_ptr(comp + 0x18)), i, nm[k], what & ASK_CHARGE ? " and take a charge" : "");
+        uint16_t f90 = 0;
+        uint64_t word = 0;
+        coop_rd(el + 0x90, &f90, 2), coop_rd(comp + 0x20, &word, 8);
+        // (the game's setters drop a request when bit 0 of the element's word +0x90 is clear: said here, for a copy
+        // that does not take one)
+        rt_log("coop: elem: asks %s (hash %llx) element %d to %s%s (element flags %x, component word %llx)", coop_actor_name(coop_rd_ptr(comp + 0x18), an, sizeof an),
+               (unsigned long long)hash_of(coop_rd_ptr(comp + 0x18)), i, nm[k], what & ASK_CHARGE ? " and take a charge" : "", f90, (unsigned long long)word);
     }
     if (k == ASK_IGNITE) coop_guest_call(c, MOD_MAIN_BASE + FN_IGNITE, comp, 2, (uint64_t)i, 0);
     else if (k == ASK_BURN_OUT) coop_guest_call(c, MOD_MAIN_BASE + FN_REQ_B, comp, 2, (uint64_t)i, 0);
-    else if (k == ASK_FREEZE) coop_guest_call(c, MOD_MAIN_BASE + FN_FREEZE, el + 0x50, 1, 0, 0);
+    else if (k == ASK_FREEZE) coop_guest_call(c, MOD_MAIN_BASE + FN_FREEZE, comp, 4, (uint64_t)i, 0);
+    else if (k == ASK_THAW) coop_guest_call(c, MOD_MAIN_BASE + FN_THAW, comp, 0, (uint64_t)i, 0);
     else if (k == ASK_PUT_OUT) coop_guest_call(c, MOD_MAIN_BASE + FN_REQ_B, comp, 0, (uint64_t)i, 0);
     if (what & ASK_CHARGE) coop_guest_call(c, MOD_MAIN_BASE + FN_CHARGE, el + 0x50, 0, 0, 0);
     atomic_fetch_add(&n_req, 1);
@@ -383,6 +410,33 @@ static int comp_hook(Cpu *c) {
     // (coop_enemy_shot.c): it is shown only, so it is inert here as an actor named to coop_elem_inert is)
     int coop_enemy_shot_mirror(uint64_t proj);
     int mirror = coop_enemy_shot_mirror(actor), in = mirror || is_inert(actor), es = in ? EM_FREE : en_cell_state(actor);
+    {   // Test (TOTK_COOP_ELEM_TEST_LOG=1): each kind of actor without a placement hash whose component is updated, once,
+        // with what the enemy sync says of it as a projectile
+        static int log = -1;
+        static _Atomic uint32_t seen[64];
+        if (log < 0) log = cfg_get("TOTK_COOP_ELEM_TEST_LOG") != NULL;
+        if (log && !hash_of(actor) && coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x440)) {
+            char nm[48];
+            uint32_t h = 2166136261u;
+            for (const char *q = coop_actor_name(actor, nm, sizeof nm); *q; q++) h = (h ^ (uint8_t)*q) * 16777619u;
+            h = (h | 1) ^ (uint32_t)mirror ^ (uint32_t)(frame / 150 * 2);
+            for (int i = 0; i < 64; i++) {
+                uint32_t v = atomic_load(&seen[i]);
+                if (v == h) break;
+                if (!v) {
+                    uint64_t sc = coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x440);
+                    atomic_store(&seen[i], h);
+                    uint64_t ref = sc ? coop_rd_ptr(sc + 0x78) : 0, sh = ref ? coop_rd_ptr(ref + 0x40) : 0;
+                    char sn[48];
+                    int coop_enemy_role(uint64_t a);
+                    rt_log("coop: elem: test: component of %s updated: mirror %d, shootable component %llx, its shooter link %llx, shooter %llx (%s), cell state %d, role %d",
+                           nm, mirror, (unsigned long long)sc, (unsigned long long)ref, (unsigned long long)sh, sh ? coop_actor_name(sh, sn, sizeof sn) : "",
+                           sh ? en_cell_state(sh) : -1, sh ? coop_enemy_role(sh) : -1);
+                    break;
+                }
+            }
+        }
+    }
     if (mirror) {
         uint64_t word;
         if (coop_rd(comp + 0x20, &word, 8) && !(word >> 32 & 1)) {
@@ -404,7 +458,8 @@ static int comp_hook(Cpu *c) {
         t->n = (uint8_t)n, t->seen = frame, t->enemy = es != EM_FREE;
         memcpy(t->cur, cur, sizeof cur);
         coop_rd(actor + COOP_ACTOR_POS, t->pos, 12);
-        if (memcmp(cur, t->rest, (size_t)n)) t->differs_frame = frame;
+        // (wetness is stated but is no claim: rain in one game would make every wet thing there a copy elsewhere)
+        for (int i = 0; i < n; i++) if ((cur[i] ^ t->rest[i]) & ~EL_WET) t->differs_frame = frame;
         copy = in || es == EM_COPY || (!t->enemy && t->want_from);
         if (es == EM_COPY && !t->want_from) memset(t->wanted, 0, sizeof t->wanted);   // an enemy copy nobody states is at rest
         ask = (es == EM_COPY || t->want_from) && !in;
@@ -439,22 +494,41 @@ int coop_elem_hook(Cpu *c, uint64_t off) {
     }
     if (off == FN_COMP_UPDATE) return comp_hook(c);
     if (off == FN_CONTACT) {
-        // What touches the ground is a chemical object, not an element (classes main+0x3625660 and main+0x36295d0 in a
-        // run). A burning cell's own fire is one, centred on the cell: an object centred on a copied cell is taken
-        // for that cell's fire and does not reach the cells (S 4.5), so a copied fire lights no neighbour here.
-        float at[3] = {0, 0, 0};
-        int drop = 0, n = atomic_load_explicit(&copy_n, memory_order_relaxed);
-        if (n && coop_rd(c->x[2] + 8, at, 12))
-            for (int i = 0; i < n && i < CELLS_MAX && !drop; i++) drop = fabsf(at[0] - copy_at[i][0]) < 0.25f && fabsf(at[2] - copy_at[i][1]) < 0.25f;
-        {   // Test (TOTK_COOP_ELEM_TEST_LOG=1): the classes of the objects kept from the ground, each once
+        // What touches the ground is a chemical object an element's update makes (class main+0x3625660). Its +0x60 is
+        // its source (class main+0x3626048 in the runs), whose +0x60 is an owner object with the component at +0x10.
+        // When that leads to an actor, the actor says: a mirrored projectile, an inert actor and a copied enemy do not
+        // reach the cells (S 4.5); what the real one lights is stated by its game. A burning cell's own fire leads to
+        // no actor and is told by its place, as is the warm air over it (class main+0x36295d0): an object centred on
+        // a copied, burning cell is that cell's.
+        uint64_t obj = c->x[3], q = coop_rd_ptr(obj) == MOD_MAIN_BASE + 0x3625660 ? coop_rd_ptr(obj + 0x60) : 0, vt = q ? coop_rd_ptr(q) : 0;
+        uint64_t o = vt == MOD_MAIN_BASE + 0x3626048 ? coop_rd_ptr(q + 0x60) : 0, comp = o ? coop_rd_ptr(o + 0x10) : 0, actor = comp ? coop_rd_ptr(comp + 0x18) : 0;
+        int drop = 0, how = 3;
+        if (actor && comp_of(actor) == comp) {
+            int coop_enemy_shot_mirror(uint64_t proj);
+            drop = is_inert(actor) || coop_enemy_shot_mirror(actor) || en_cell_state(actor) == EM_COPY, how = 2;
+        } else {
+            float at[3] = {0, 0, 0};
+            int n = atomic_load_explicit(&copy_n, memory_order_relaxed);
+            actor = 0;
+            if (n && coop_rd(c->x[2] + 8, at, 12))
+                for (int i = 0; i < n && i < CELLS_MAX && !drop; i++) drop = fabsf(at[0] - copy_at[i][0]) < 0.25f && fabsf(at[2] - copy_at[i][1]) < 0.25f;
+        }
+        {   // Test (TOTK_COOP_ELEM_TEST_LOG=1): each way an object was told, once per element class and answer
             static int log = -1;
-            static _Atomic uint64_t seen[8];
-            uint64_t vt = coop_rd_ptr(c->x[3]);
+            static _Atomic uint64_t seen[16];
+            uint64_t key = ((vt ? vt : coop_rd_ptr(obj)) ^ (actor ? coop_rd_ptr(actor + COOP_ACTOR_NAME) * 31 : 0)) * 8 + (uint64_t)how * 2 + (uint64_t)drop;
             if (log < 0) log = cfg_get("TOTK_COOP_ELEM_TEST_LOG") != NULL;
-            for (int i = 0; log && drop && i < 8; i++) {
+            for (int i = 0; log && i < 16; i++) {
                 uint64_t v = atomic_load(&seen[i]);
-                if (v == vt) break;
-                if (!v) { atomic_store(&seen[i], vt); rt_log("coop: elem: test: an object of class main+%llx on a copied cell is kept from the ground", (unsigned long long)(vt - MOD_MAIN_BASE)); break; }
+                if (v == key) break;
+                if (!v) {
+                    atomic_store(&seen[i], key);
+                    char an[48];
+                    rt_log("coop: elem: test: ground contact by an object of class main+%llx, source class main+%llx: told %s (%s), %s",
+                           (unsigned long long)(coop_rd_ptr(obj) - MOD_MAIN_BASE), (unsigned long long)(vt ? vt - MOD_MAIN_BASE : 0),
+                           how == 2 ? "by its actor" : "by its place", actor ? coop_actor_name(actor, an, sizeof an) : "no actor", drop ? "kept from the ground" : "let through");
+                    break;
+                }
             }
         }
         if (drop) atomic_fetch_add_explicit(&n_contact_drop, 1, memory_order_relaxed);
@@ -571,19 +645,23 @@ void coop_elem_phase0(Cpu *c) {
     uint32_t frame = coop_sess_frame_no();
     int me = coop_net_id();
     if (!said_on++) rt_log("coop: elem: the element sync is on");
-    if (atomic_exchange(&world_new, 0) || coop_sess_loading()) {
+    if (atomic_exchange(&world_new, 0) || coop_sess_loading() || !me) {
         // (the things' rows are not emptied: a thing at rest is visited once, when it is made, which may be before the
         // first driver call of its world; a row ends when its actor has gone)
         plat_mutex_lock(&lk);
         want_n = 0, mine_n = 0;
+        for (int i = 0; i < THING_N; i++) {   // (a row whose actor went with the old world, and nothing followed)
+            Thing *t = &things[i];
+            if (t->comp && comp_of(t->actor) != t->comp) t->comp = 0;
+            t->want_from = 0;
+        }
         plat_mutex_unlock(&lk);
         for (int i = 0; i <= COOP_MAX_PLAYERS; i++) {
             if (cell_list[i]) cell_list[i]->n = 0;
             if (thing_list[i]) thing_list[i]->n = 0;
         }
-        if (coop_sess_loading()) return;
+        if (coop_sess_loading() || !me) return;
     }
-    if (!me) return;
     {   // Test (TOTK_COOP_ELEM_TEST_DEAF=<s>): until that world time this game takes no statement, as a game does that
         // arrives then
         static double deaf = -2;
@@ -599,6 +677,7 @@ void coop_elem_phase0(Cpu *c) {
     for (int i = 0; i < np; i++) {
         int id = ids[i], st = coop_sess_peer(id);
         if (id < 1 || id > COOP_MAX_PLAYERS || st == COOP_SESS_GONE) continue;
+        if (st == COOP_SESS_LOADING) continue;   // (its world is gone: what it stated ended with it)
         here[id] = 1;
         if (st != COOP_SESS_RUNS) continue;
         if (!cell_list[id]) cell_list[id] = calloc(1, sizeof **cell_list);
@@ -652,7 +731,7 @@ void coop_elem_phase0(Cpu *c) {
         // (an enemy is stated while it is not at rest; another thing while it differs from how it was first seen, and
         // for 2 s after)
         int rest = 1, mine_claim;
-        for (int k = 0; k < t->n; k++) rest &= t->cur[k] == EL_NONE || !(t->cur[k] & 0x1f);
+        for (int k = 0; k < t->n; k++) rest &= t->cur[k] == EL_NONE || !(t->cur[k] & 0xf);
         mine_claim = t->enemy ? !rest : t->differs_frame && frame - t->differs_frame < 60;
         int from = 0;
         const ElmThing *st = NULL;
@@ -670,11 +749,12 @@ void coop_elem_phase0(Cpu *c) {
             memset(t->wanted, EL_NONE, sizeof t->wanted);
             memcpy(t->wanted, st->el, st->n < EL_MAX ? st->n : EL_MAX);
             n_copy++;
-            if (frame - t->seen > 3 && nj < JOBS) {   // its component rests: read and asked here, not in its update's hook
+            if (frame - t->seen > 3) {   // its component rests: read and asked here, not in its update's hook
                 uint64_t els[EL_MAX];
                 uint8_t cur[EL_MAX];
+                if (comp_of(t->actor) != t->comp) { t->comp = 0; continue; }   // (its actor went since the last look)
                 int n = el_read(t->comp, els, cur);
-                if (n) {
+                if (n && !coop_ctn_driven(t->actor) && !coop_ctn_follows(t->actor)) {
                     t->n = (uint8_t)n, memcpy(t->cur, cur, sizeof cur);
                     for (int k = 0; k < n; k++) eset_put(els[k], frame);
                     for (int k = 0; k < n && nj < JOBS; k++) {

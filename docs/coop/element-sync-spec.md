@@ -84,11 +84,13 @@ set back to what they were before it; a cell that did not exist before gets zero
 
 ### 4.5 A copy's fire and the ground
 
-What touches the ground is a chemical object, not an element (classes main+0x3625660 and main+0x36295d0 in the
-runs), and the way from it back to its element was not read. A burning cell's own fire is such an object, centred on
-the cell. So a contact whose shape is centred within 0.25 m (x and z) of a copied cell's centre does not reach the
-cells. Not done: the contacts of an inert actor's and of a burning enemy copy's objects (they reach the cells, and the
-cell they light is then this game's own).
+What touches the ground is a chemical object an element's update makes (class main+0x3625660), not an element. Its
++0x60 is its source (class main+0x3626048), whose +0x60 is an owner object with the chemical component at +0x10 and
+so the actor (seen in a run: a fireball and Link were named this way). A contact does not reach the cells when
+
+- that actor is inert, a projectile the enemy sync calls a mirror (`coop_enemy_shot_mirror`), or an enemy copy; or
+- the chain leads to no actor (a burning cell's own fire, and the warm air over it, class main+0x36295d0) and the
+  shape is centred within 0.25 m (x and z) of a copied cell that burns.
 
 ### 4.6 The end of a cell
 
@@ -128,11 +130,13 @@ read again first (a copy at rest is not visited by the hook).
 | burning | not burning | ignite main+0x1b34a44(comp, 2, i) |
 | normal | burning | extinguish main+0xb2b804(comp, 0, i) |
 | burnt out | not burnt out | burn out main+0xb2b804(comp, 2, i) |
-| frozen | not frozen | freeze main+0x18dcf9c(element+0x50, 1) |
+| frozen | not frozen | freeze main+0x1b34e48(comp, 4, i) |
+| normal | frozen | thaw main+0x1b34f10(comp, 0, i) |
 | electrified | not electrified | full charge main+0x18dcfd4(element+0x50) |
 
-Not given: the end of a frozen state and of a charge (they end by the element's own timers, and a copy takes no
-reaction that would renew them), wetness (stated and logged only), detonation.
+Not given: the end of a charge (it ends by the element's own timer, and a copy takes no reaction that would renew
+it), wetness (stated and logged only; it is no claim either, or rain in one game would make every wet thing a copy
+elsewhere), detonation.
 
 ### 5.4 A copy takes no reaction
 
@@ -165,7 +169,7 @@ asked anything, and has bit 32 of its component's word +0x20 set (the game's "do
 - `TOTK_COOP_ELEM_TEST_LOG=1`: the classes of the objects kept from the ground, each once.
 - `build/el_pairs.py <tag>` (a local script beside the run logs) pairs each cell event of the deciding game with the
   copy's and prints the delays; the cell lines carry the machine's clock in milliseconds for that.
-- Done (the task's four points): a Fire Wizzrobe's attack and a fire arrow each burn the same ground in both games,
+- The aim (the task's four points; section 8 says which of them a run has shown): a Fire Wizzrobe's attack and a fire arrow each burn the same ground in both games,
   ending within a second of each other; a thing or an enemy burning, frozen or shocked in one game shows it in the
   other with the same end; a game that arrives late sees what burns; nothing burns in one game only after 60 s.
 
@@ -198,9 +202,21 @@ projectiles; nothing calls it yet.
 
 ### Left, and known faults
 
-- **A copy at rest does not always take a request.** The second crate, lit in A by the first, was asked to ignite in
-  B twice and did not. Not read: what makes the game update a resting component, and whether a request written into
-  one waits for that. Until then a thing far from the copying game's Link may not show its owner's state.
+- **A thing that refuses the forced ignition.** Of two crates that burned in A, the second (lit there one frame
+  after the first, not by the test's request) was asked to ignite in B in every run and never did. Its element takes
+  requests (bit 0 of its word +0x90 is set) and running its component's update by hand after the request changed
+  nothing, so the element's evaluation refuses the forced cause for it; the reading names an owner virtual (+0x58,
+  default main+0x549ec0) as the place. Until that is read, a thing that only a contact can light does not show its
+  owner's fire.
+- **A mirrored fireball is not inert yet.** The element sync asks `coop_enemy_shot_mirror` for every component's
+  actor and would make a mirror inert, but for a Fire Wizzrobe's shot the query answers no: the projectile's shooter
+  link is the ruby fused to the rod, not the enemy (reported to the enemy sync). So the copying game still lights
+  cells by the mirror, and states them as its own.
+- **From the review, not fixed**: enemies made at run time have no placement hash and are never stated (their copies
+  are held at rest); a copy cannot pass a reaction of this game's to its owner (another player's fire on an enemy copy
+  does nothing); an enemy copy is put out for a moment at each change of owner; a state that lasts (a brazier put
+  out) is stated only while it changes and for 2 s after, so a game that arrives later keeps its own; the thing
+  table and the element set have no report when they fill.
 - **Not tested**: a player's fire arrow (no input script shoots one; by the code it is a local cause like the test's
   and the Wizzrobe's), an enemy set alight, frozen or shocked (the requests of 5.3 for frozen and for a charge have
   not run once), the take-over when the deciding game leaves, three games.
@@ -212,4 +228,11 @@ projectiles; nothing calls it yet.
   out for all, which is what state sharing gives without sharing the weather).
 - **The contraption sync's burning parts** are left as they were; a part is not in the thing table while the
   contraption sync drives or follows it.
-- **The review**: the design and this specification have not had an independent adversarial review.
+- **The review** (research notes, review1.md: 4 findings to fix, 11 that should be, 15 notes) was taken after the
+  first measurements. Fixed from it: nothing is followed without a session; a burning copy is put out by wetness and
+  the water contacts together (the step dries first); a copy takes no heat of this game's; a row is checked against
+  its actor before every read and request; wetness is no claim; a burnt cell is never made anew for a statement (the
+  two games would have kept each other's burnt cells alive); only a burning copy's place keeps contacts off; a
+  loading player's fires end. After these, the Wizzrobe run gave the same 35 cells burned and 26 burnt out in both
+  games, copies a median 98 ms behind (one event 1.8 s), and a later run 28 and 26 with a median 89 ms, at most
+  159 ms.
