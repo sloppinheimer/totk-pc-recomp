@@ -4223,6 +4223,10 @@ int coop_player_pos(int net_id, float out[3]) {   // where another player's Link
     Slot *s = slot_for(SRC_NET, net_id);
     return s && s->state == LIVE && s->actor && coop_rd(s->actor + COOP_ACTOR_POS, out, 12);
 }
+uint64_t coop_player_standin(int net_id) {   // another player's stand-in actor here, 0 none (the element sync shows that Link's fire on it)
+    Slot *s = slot_for(SRC_NET, net_id);
+    return s && s->state == LIVE ? s->actor : 0;
+}
 void coop_mat_quat(const float r[9], float q[4]) { mat_quat(r, q); }
 int coop_obj_ident(uint64_t a, int *owner, uint32_t *id) {
     if (!a) return 0;
