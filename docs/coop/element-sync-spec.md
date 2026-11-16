@@ -22,7 +22,8 @@ here are registered for later steps and pass through.
 | main+0x1f10adc spread (x1 the cell) | a copied cell: the function runs and the heat it gave to other cells is taken back (4.4) |
 | main+0x1f0eb94 contact entry (x2 the shape, x3 the chemical object) | dropped when the shape is centred on a copied cell (4.5) |
 | main+0x30efa0 component update (x0 the component) | a thing is read; a copy is given its state by requests (5) |
-| main+0x1906768 reaction entry (x0 the target element) | dropped when the target is a copy's or an inert actor's element (5.4) |
+| main+0x1906768 reaction entry (x0 the target element, x3 the reaction) | dropped when the target is a copy's or a shown-only actor's element (5.4), or the reaction comes from a shown-only actor (5.6) |
+| main+0x21c43b4 lightning strike (x1 the position, x2 the level, x3 sage) | this game's own strike is told to the others (5.6) |
 
 The cell hooks run on the thread of the chemical system's update; the component hooks run on the actors' update
 threads, several at once; phase 0 (`coop_elem_phase0`, at GameDataMgr::calc) runs on the game thread and does all
@@ -35,7 +36,8 @@ Unreliable, latest-only slots of the transport (`coop_ctr_send` with no flag, re
 type and key). The key is the first 8 bytes. Types 90 to 109 are the element sync's.
 
 ```c
-enum { ELM_CELLS = 90, ELM_THINGS = 91 };
+enum { ELM_CELLS = 90, ELM_THINGS = 91, ELM_STRIKE = 92 };
+typedef struct { uint64_t slot; uint32_t serial; float pos[3]; uint8_t level, sage, pad[2]; } ElmStrike;   // 28 bytes
 typedef struct { uint64_t page; uint32_t round; uint16_t total, n; } ElmHead;            // 16 bytes
 typedef struct { float x, z; uint16_t burn; uint8_t heat, state_wet; } ElmCell;         // 12 bytes
 typedef struct { uint64_t hash; uint8_t n, el[7]; } ElmThing;                           // 16 bytes
@@ -151,6 +153,22 @@ frame number no older than 3 frames.
 `coop_elem_inert(actor, on)` keeps a list of at most 64 actors. An inert actor is treated as a copy in 5.4, is never
 asked anything, and has bit 32 of its component's word +0x20 set (the game's "does not interact with the world").
 
+### 5.6 Shown-only actors, and lightning
+
+An actor is **shown only** when it is inert (5.5), a projectile the enemy sync calls a mirror, or the blast of a
+lightning strike this game only shows. Its elements are closed as a copy's are (5.4), its objects do not reach the
+cells (4.5), and a reaction FROM it (the reaction entry's x3 is a chemical object; its actor is found as in 4.5) is
+dropped unless the target is an element of this game's own Link: each game decides the hits on its own player, and
+what the real one did to anything else is stated by its game.
+
+Lightning is an event. Every strike, whoever asks for it (the weather, a lightning arrow, a behaviour node), goes
+through main+0x21c43b4(thunder manager, position, level, sage, element or 0). The hook there notes a strike of this
+game's own; phase 0 gives it a serial and sends it as `ELM_STRIKE`, five times over a second, in the slot `serial % 8`.
+A game that takes a strike it has not made yet (by serial, younger than 2 s, the oldest first) calls the same function
+with the element 0 (thunder manager `[[[[main+0x395dc20]]+0xd0]+0x228]`); its own hook does not send that one on. The
+blast actor of a shown strike (name `LightningStrike...`, within 3 m of the place, for 150 frames) is shown only.
+Weather is not shared, so each game's storm strikes in every game.
+
 ## 6. Load, pause, join, leave
 
 - The system pointer S is taken at each driver call. When it changes, or this game is loading, the cell lists and the
@@ -167,6 +185,8 @@ asked anything, and has bit 32 of its component's word +0x20 set (the game's "do
   that far from its Link (default 3 m ahead on x) as a fire contact does, until it burns.
 - `TOTK_COOP_ELEM_TEST_THING=<s>[,<name prefix>]`: at that time the first game asks the nearest placed thing with a
   chemical component (of that name), within 150 m, to ignite.
+- `TOTK_COOP_ELEM_TEST_STRIKE=<s>[,<dx>,<dz>]`: at that time the first game makes a lightning strike that far from its
+  Link (default 8 m on x).
 - `TOTK_COOP_ELEM_TEST_DEAF=<s>`: until that world time this game takes no statement, as a game that arrives then.
 - `TOTK_COOP_ELEM_TEST_LOG=1`: the classes of the objects kept from the ground, each once.
 - `build/el_pairs.py <tag>` (a local script beside the run logs) pairs each cell event of the deciding game with the
@@ -205,14 +225,24 @@ projectiles; nothing calls it yet.
   decided 27 of 66 burn events); a cell written at its owner's heat of 30 lit one frame early in the copy and
   flickered until the owner said it burned (now a heated copy is held at 29).
 
+- **A lightning strike made by the test in A**, 8 m from its Link: B showed the strike 29 ms after A's. In A it lit
+  29 cells, all A's; B copied all 29 (a median 165 ms behind) and lit none itself, with the blast of its own shown
+  strike kept from the ground; all 29 burnt out in both. Pictures from both games show the fire at the strike.
+- **A Fire Wizzrobe after the enemy sync's merges**: 22 cells burnt out, the same in both games, copies a median
+  59 ms behind.
+
 ### Left, and known faults
 
 - **A mirrored fireball is not inert yet.** The element sync asks `coop_enemy_shot_mirror` for every component's
-  actor and would make a mirror inert, but for a Fire Wizzrobe's shot the query answers no: the projectile's shooter
-  link is the ruby fused to the rod, not the enemy (reported to the enemy sync). So the copying game still lights
-  cells by the mirror, and states them as its own.
-- **From the review, not fixed**: enemies made at run time have no placement hash and are never stated (their copies
-  are held at rest); a copy cannot pass a reaction of this game's to its owner (another player's fire on an enemy copy
+  actor and would treat a mirror as shown only, but for a Fire Wizzrobe's shot the query answers no: the projectile's
+  shooter is the ruby fused to the rod, and the enemy sync's holder lookup has no holder for that ruby (reported to
+  the enemy sync twice, with the run). So the copying game still lights cells by the mirror, and states them as its
+  own.
+- **Lightning**: only the forced strike was run, not a storm's own, an arrow's or a node's; a strike in a game whose
+  Link is far away is still made there; the thing a strike electrifies or lights in the showing game is given by its
+  owner's statement, which was not run.
+- **From the review, not fixed** (enemies made at run time are now named by the enemy sync's key, not run): a copy
+  cannot pass a reaction of this game's to its owner (another player's fire on an enemy copy
   does nothing); an enemy copy is put out for a moment at each change of owner; a state that lasts (a brazier put
   out) is stated only while it changes and for 2 s after, so a game that arrives later keeps its own; the thing
   table and the element set have no report when they fill.
@@ -222,7 +252,7 @@ projectiles; nothing calls it yet.
 - **A few repeated burn events on copies** (52 copy events in B against 47 of A's own in the last run): not looked
   into.
 - **Not built** (D 2.1): things made at run time that are not enemies (dropped and held weapons, arrows, each Link on
-  the other games' stand-ins), lightning, ice blocks and frozen water, electricity through water and metal beyond
+  the other games' stand-ins), ice blocks and frozen water, electricity through water and metal beyond
   the element flag, wetness on things, weather (rain and wind differ per game: the deciding game's rain puts a fire
   out for all, which is what state sharing gives without sharing the weather).
 - **The contraption sync's burning parts** are left as they were; a part is not in the thing table while the

@@ -40,6 +40,9 @@
 #define FN_FREEZE 0x1b34e48       // (component, 4, element index): the cause the component itself asks with
 #define FN_THAW 0x1b34f10         // (component, 0, element index)
 #define FN_CHARGE 0x18dcfd4       // (element + 0x50)
+#define FN_STRIKE 0x21c43b4       // (thunder manager, position, level, sage, element or 0): a lightning strike, every caller's
+#define VT_OBJECT 0x3625660       // a chemical object an element's update makes: what reactions and ground contacts carry
+#define VT_SOURCE 0x3626048       // its source at +0x60; the source's +0x60 an owner object, whose +0x10 is the component
 #define VT_GRASS_FIRE 0x36bdc60   // the class of a burning cell's fire element; its cell at element + 0x60
 #define S_FIRST 0xc6d8            // the live cells: first node here, the sentinel at S_FIRST - 8, the link offset below
 #define S_LINK 0xc6e4
@@ -68,7 +71,8 @@ static float rdf(uint64_t a) { float f = 0; coop_rd(a, &f, 4); return f; }
 static uint8_t rd8(uint64_t a) { uint8_t b = 0; coop_rd(a, &b, 1); return b; }
 
 // ---- messages (S 3) ----------------------------------------------------------------------------------------------
-enum { ELM_CELLS = 90, ELM_THINGS = 91 };
+enum { ELM_CELLS = 90, ELM_THINGS = 91, ELM_STRIKE = 92 };
+typedef struct { uint64_t slot; uint32_t serial; float pos[3]; uint8_t level, sage, pad[2]; } ElmStrike;   // 28 bytes; slot = serial % 8
 typedef struct { uint64_t page; uint32_t round; uint16_t total, n; } ElmHead;
 typedef struct { float x, z; uint16_t burn; uint8_t heat, state_wet; } ElmCell;
 typedef struct { uint64_t hash; uint8_t n, el[7]; } ElmThing;
@@ -287,6 +291,41 @@ static int is_inert(uint64_t actor) {
     for (int i = 0; i < INERT_N; i++) if (atomic_load_explicit(&inert[i], memory_order_relaxed) == actor) return 1;
     return 0;
 }
+// ---- lightning (D 1.4, S 5.6) ---------------------------------------------------------------------------------------
+// A strike is an event, not a state: the game it falls in says where, and the others make the same strike there with
+// the game's own function. The strike's blast is an actor from a pool ("LightningStrike") that burns and shocks what
+// is near: in a game that only shows the strike that actor is inert for a few seconds, so that what the real strike
+// lit is stated by its game and nothing is lit twice.
+#define STRIKES 8
+static struct { float pos[3]; uint8_t level, sage; } strike_out[STRIKES];   // this game's strikes not yet sent (under lk)
+static int strike_out_n;
+static struct { float pos[3]; uint32_t frame; } strike_shown[STRIKES];      // strikes of other games made here
+static _Atomic uint32_t strike_shown_frame;                                 // the frame of the last one (0: none yet)
+static _Atomic uint32_t n_strikes_mine, n_strikes_shown, n_src_drop;
+static _Atomic uint64_t my_link;                                            // this game's Link, as phase 0 last saw it
+static _Atomic uint64_t tm_seen;                                            // the thunder manager, as a strike's hook saw it
+static __thread int strike_showing;                                         // inside this file's own call of the strike
+static int strike_blast(uint64_t actor) {   // the blast actor of a strike this game only shows
+    uint32_t last = atomic_load_explicit(&strike_shown_frame, memory_order_relaxed), frame = coop_sess_frame_no();
+    char nm[48];
+    float p[3];
+    if (!last || frame - last > 150 || strncmp(coop_actor_name(actor, nm, sizeof nm), "LightningStrike", 15) || !coop_rd(actor + COOP_ACTOR_POS, p, 12)) return 0;
+    for (int i = 0; i < STRIKES; i++)
+        if (frame - strike_shown[i].frame <= 150 && fabsf(p[0] - strike_shown[i].pos[0]) < 3 && fabsf(p[2] - strike_shown[i].pos[2]) < 3) return 1;
+    return 0;
+}
+// An actor that is shown only: named to coop_elem_inert, a projectile of an enemy another game runs, a shown strike's blast.
+static int shown_only(uint64_t actor) {
+    int coop_enemy_shot_mirror(uint64_t proj);
+    return is_inert(actor) || strike_blast(actor) || coop_enemy_shot_mirror(actor);
+}
+// The actor behind a chemical object (a reaction, a ground contact), 0 none: object -> source -> owner -> component.
+static uint64_t object_actor(uint64_t obj) {
+    uint64_t q = coop_rd_ptr(obj) == MOD_MAIN_BASE + VT_OBJECT ? coop_rd_ptr(obj + 0x60) : 0;
+    uint64_t o = q && coop_rd_ptr(q) == MOD_MAIN_BASE + VT_SOURCE ? coop_rd_ptr(q + 0x60) : 0, comp = o ? coop_rd_ptr(o + 0x10) : 0;
+    uint64_t actor = comp ? coop_rd_ptr(comp + 0x18) : 0, t = actor ? coop_rd_ptr(actor + 0x228) : 0;
+    return t && coop_rd_ptr(t + 0x180) == comp ? actor : 0;
+}
 static uint64_t comp_of(uint64_t actor) {
     uint64_t t = actor ? coop_rd_ptr(actor + 0x228) : 0;
     return t ? coop_rd_ptr(t + 0x180) : 0;
@@ -452,7 +491,7 @@ static int comp_hook(Cpu *c) {
     // (a projectile shot by an enemy another game runs is the copy's own actor, made by the same calls as the owner's
     // (coop_enemy_shot.c): it is shown only, so it is inert here as an actor named to coop_elem_inert is)
     int coop_enemy_shot_mirror(uint64_t proj);
-    int mirror = coop_enemy_shot_mirror(actor), in = mirror || is_inert(actor), es = in ? EM_FREE : en_cell_state(actor);
+    int mirror = coop_enemy_shot_mirror(actor), in = mirror || is_inert(actor) || strike_blast(actor), es = in ? EM_FREE : en_cell_state(actor);
     {   // Test (TOTK_COOP_ELEM_TEST_LOG=1): each kind of actor without a placement hash whose component is updated, once,
         // with what the enemy sync says of it as a projectile
         static int log = -1;
@@ -528,9 +567,37 @@ static int comp_hook(Cpu *c) {
 int coop_elem_hook(Cpu *c, uint64_t off) {
     if (!elem_on()) return 0;
     if (off == FN_REACT) {
-        if (!eset_has(c->x[0])) return 0;
-        atomic_fetch_add_explicit(&n_react_drop, 1, memory_order_relaxed);
+        if (eset_has(c->x[0])) { atomic_fetch_add_explicit(&n_react_drop, 1, memory_order_relaxed); return 1; }
+        // A reaction FROM an actor that is shown only (a mirrored projectile, a shown strike's blast, an inert actor)
+        // reaches nothing but this game's own Link: each game decides the hits on its own player, and what the real
+        // one did to anything else is stated by its game. Asked per component at most once a frame.
+        static struct { _Atomic uint64_t comp; _Atomic uint32_t stamp; } memo[64];
+        uint64_t r = c->x[3], q = coop_rd_ptr(r) == MOD_MAIN_BASE + VT_OBJECT ? coop_rd_ptr(r + 0x60) : 0;
+        uint64_t o = q && coop_rd_ptr(q) == MOD_MAIN_BASE + VT_SOURCE ? coop_rd_ptr(q + 0x60) : 0, comp = o ? coop_rd_ptr(o + 0x10) : 0;
+        if (!comp) return 0;
+        uint32_t k = (uint32_t)((comp >> 4) * 0x9e3779b1u) & 63, frame = coop_sess_frame_no(), stamp = atomic_load_explicit(&memo[k].stamp, memory_order_relaxed);
+        int shown;
+        if (atomic_load_explicit(&memo[k].comp, memory_order_relaxed) == comp && stamp >> 1 == (frame & 0x7fffffff)) shown = (int)(stamp & 1);
+        else {
+            uint64_t actor = coop_rd_ptr(comp + 0x18);
+            shown = actor && comp_of(actor) == comp && shown_only(actor);
+            atomic_store_explicit(&memo[k].stamp, frame << 1 | (uint32_t)shown, memory_order_relaxed);
+            atomic_store_explicit(&memo[k].comp, comp, memory_order_relaxed);
+        }
+        if (!shown) return 0;
+        uint64_t to = coop_rd_ptr(c->x[0] + 0x60), tc = to ? coop_rd_ptr(to + 0x10) : 0, link = atomic_load_explicit(&my_link, memory_order_relaxed);
+        if (link && tc && coop_rd_ptr(tc + 0x18) == link) return 0;
+        atomic_fetch_add_explicit(&n_src_drop, 1, memory_order_relaxed);
         return 1;
+    }
+    if (off == FN_STRIKE) {   // a strike of this game's own (the weather's, an arrow's, a node's): told to the others
+        float p[3];
+        if (strike_showing || !coop_rd(c->x[1], p, 12)) return 0;
+        plat_mutex_lock(&lk);
+        if (strike_out_n < STRIKES) memcpy(strike_out[strike_out_n].pos, p, 12), strike_out[strike_out_n].level = (uint8_t)c->x[2], strike_out[strike_out_n++].sage = (uint8_t)(c->x[3] & 1);
+        plat_mutex_unlock(&lk);
+        atomic_store_explicit(&tm_seen, c->x[0], memory_order_relaxed);
+        return 0;
     }
     if (off == FN_COMP_UPDATE) return comp_hook(c);
     if (off == FN_CONTACT) {
@@ -540,13 +607,10 @@ int coop_elem_hook(Cpu *c, uint64_t off) {
         // reach the cells (S 4.5); what the real one lights is stated by its game. A burning cell's own fire leads to
         // no actor and is told by its place, as is the warm air over it (class main+0x36295d0): an object centred on
         // a copied, burning cell is that cell's.
-        uint64_t obj = c->x[3], q = coop_rd_ptr(obj) == MOD_MAIN_BASE + 0x3625660 ? coop_rd_ptr(obj + 0x60) : 0, vt = q ? coop_rd_ptr(q) : 0;
-        uint64_t o = vt == MOD_MAIN_BASE + 0x3626048 ? coop_rd_ptr(q + 0x60) : 0, comp = o ? coop_rd_ptr(o + 0x10) : 0, actor = comp ? coop_rd_ptr(comp + 0x18) : 0;
+        uint64_t obj = c->x[3], actor = object_actor(obj), vt = coop_rd_ptr(coop_rd_ptr(obj + 0x60));
         int drop = 0, how = 3;
-        if (actor && comp_of(actor) == comp) {
-            int coop_enemy_shot_mirror(uint64_t proj);
-            drop = is_inert(actor) || coop_enemy_shot_mirror(actor) || en_cell_state(actor) == EM_COPY, how = 2;
-        } else {
+        if (actor) drop = shown_only(actor) || en_cell_state(actor) == EM_COPY, how = 2;
+        else {
             float at[3] = {0, 0, 0};
             int n = atomic_load_explicit(&copy_n, memory_order_relaxed);
             actor = 0;
@@ -686,6 +750,85 @@ static void tests(Cpu *c) {
     }
 }
 
+static int lowest_here(void);
+static uint64_t thunder_mgr(void) {   // [[[main+0x395dc20]]+0xd0] the weather system, its +0x228 the thunder manager
+    uint64_t wm = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + 0x395dc20)), w = wm ? coop_rd_ptr(wm + 0xd0) : 0;
+    return w ? coop_rd_ptr(w + 0x228) : 0;
+}
+static void strikes_phase0(Cpu *c, const int *ids, int np, uint32_t frame) {
+    static ElmStrike sent[STRIKES];           // this game's last strikes, sent again for a second
+    static uint32_t sent_frame[STRIKES], serial, played[COOP_MAX_PLAYERS + 1];
+    static uint8_t played_any[COOP_MAX_PLAYERS + 1];
+    atomic_store(&my_link, coop_player_actor());
+    plat_mutex_lock(&lk);
+    for (int i = 0; i < strike_out_n; i++) {
+        ElmStrike *m = &sent[++serial % STRIKES];
+        memset(m, 0, sizeof *m);
+        m->slot = serial % STRIKES, m->serial = serial, memcpy(m->pos, strike_out[i].pos, 12), m->level = strike_out[i].level, m->sage = strike_out[i].sage;
+        sent_frame[serial % STRIKES] = frame ? frame : 1;
+        atomic_fetch_add(&n_strikes_mine, 1);
+        rt_log("coop: elem: lightning strikes here at %.1f %.1f %.1f (level %d%s): told to the others as strike %u, at %llu ms", m->pos[0], m->pos[1], m->pos[2], m->level,
+               m->sage ? ", a sage's" : "", serial, (unsigned long long)(plat_now_ns() / 1000000));
+    }
+    strike_out_n = 0;
+    plat_mutex_unlock(&lk);
+    for (int i = 0; i < STRIKES; i++)   // (unreliable: each strike five times over a second, in a slot of its own)
+        if (sent_frame[i] && frame - sent_frame[i] < 30 && (frame - sent_frame[i]) % 6 == 0) coop_ctr_send(0, ELM_STRIKE, 0, &sent[i], sizeof sent[i]);
+    for (int p = 0; p < np; p++) {
+        int id = ids[p];
+        if (id < 1 || id > COOP_MAX_PLAYERS) continue;
+        for (int pass = 0; pass < STRIKES; pass++) {   // the oldest one not yet made, then the next
+            ElmStrike best = {0}, m;
+            uint64_t age = 0;
+            int have = 0;
+            for (int k = 0; k < STRIKES; k++)
+                if (coop_ctr_latest(id, ELM_STRIKE, (uint64_t)k, &m, sizeof m, &age) == (int)sizeof m && age < 2000000000ull &&
+                    (!played_any[id] || (int32_t)(m.serial - played[id]) > 0) && (!have || (int32_t)(m.serial - best.serial) < 0)) best = m, have = 1;
+            if (!have) break;
+            played[id] = best.serial, played_any[id] = 1;
+            uint64_t tm = thunder_mgr();
+            if (!tm || coop_sess_loading()) continue;
+            static _Alignas(16) float pos[4];
+            memcpy(pos, best.pos, 12), pos[3] = 0;
+            int k = (int)(atomic_fetch_add(&n_strikes_shown, 1) % STRIKES);
+            memcpy(strike_shown[k].pos, best.pos, 12), strike_shown[k].frame = frame;
+            atomic_store(&strike_shown_frame, frame ? frame : 1);
+            strike_showing = 1;
+            {   // (five arguments: the element is 0, as for the weather's own strikes)
+                uint64_t x[31], sp = c->sp, pc = c->pc;
+                memcpy(x, c->x, sizeof x);
+                c->sp = (sp - 0x100) & ~0xfull;
+                rt_call(c, MOD_MAIN_BASE + FN_STRIKE, 5, tm, (uint64_t)(uintptr_t)pos, (uint64_t)best.level, (uint64_t)best.sage, (uint64_t)0);
+                memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
+            }
+            strike_showing = 0;
+            rt_log("coop: elem: player %d's lightning strike %u shown at %.1f %.1f %.1f (level %d), at %llu ms", id, best.serial, best.pos[0], best.pos[1], best.pos[2],
+                   best.level, (unsigned long long)(plat_now_ns() / 1000000));
+        }
+    }
+    {   // Test (TOTK_COOP_ELEM_TEST_STRIKE=<s>[,<dx>,<dz>]): at that world time the first game makes a strike that far from its Link
+        static double at = -2;
+        static float dx = 8, dz;
+        static int done;
+        if (at < -1) {
+            const char *e = cfg_get("TOTK_COOP_ELEM_TEST_STRIKE"), *k = e ? strchr(e, ',') : NULL;
+            at = e ? atof(e) : -1;
+            if (k) { dx = (float)atof(k + 1); k = strchr(k + 1, ','); if (k) dz = (float)atof(k + 1); }
+        }
+        uint64_t link = coop_player_actor(), tm = thunder_mgr();
+        static _Alignas(16) float pos[4];
+        if (at >= 0 && !done && frame_step_world_us() / 1e6 >= at && link && tm && lowest_here() && coop_rd(link + COOP_ACTOR_POS, pos, 12)) {
+            done = 1, pos[0] += dx, pos[2] += dz;
+            uint64_t x[31], sp = c->sp, pc = c->pc;
+            memcpy(x, c->x, sizeof x);
+            c->sp = (sp - 0x100) & ~0xfull;
+            rt_call(c, MOD_MAIN_BASE + FN_STRIKE, 5, tm, (uint64_t)(uintptr_t)pos, (uint64_t)2, (uint64_t)0, (uint64_t)0);
+            memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
+            rt_log("coop: elem: test: a strike asked at %.1f %.1f %.1f", pos[0], pos[1], pos[2]);
+        }
+    }
+}
+
 void coop_elem_phase0(Cpu *c) {
     if (!elem_on()) return;
     static uint32_t round, last_any;
@@ -744,6 +887,7 @@ void coop_elem_phase0(Cpu *c) {
     }
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++)
         if (!here[id]) { if (cell_list[id]) cell_list[id]->n = 0; if (thing_list[id]) thing_list[id]->n = 0; }
+    strikes_phase0(c, ids, np, frame);
     // The wanted cells: every list, the lower player id first; a place named twice is taken once.
     static Want w[CELLS_MAX * 2];
     int wn = 0;
@@ -848,9 +992,9 @@ void coop_elem_phase0(Cpu *c) {
     static uint32_t said;
     if (frame - said >= 30 && (cn || tn || wn || n_copy)) {
         said = frame;
-        rt_log("coop: elem: cells mine %d, copied %u, not shown %u; things mine %d, copied %d; requests %u, reactions dropped %u, contacts dropped %u, spread heat undone %u, mirrored projectiles made inert %u",
+        rt_log("coop: elem: cells mine %d, copied %u, not shown %u; things mine %d, copied %d; requests %u, reactions dropped %u, contacts dropped %u, spread heat undone %u, mirrored projectiles made inert %u; strikes mine %u, shown %u, reactions from shown-only actors dropped %u",
                cn, atomic_load(&n_cell_copies), atomic_load(&n_not_shown), tn, n_copy, atomic_load(&n_req), atomic_load(&n_react_drop),
-               atomic_load(&n_contact_drop), atomic_load(&n_spread_undone), atomic_load(&n_mirrors));
+               atomic_load(&n_contact_drop), atomic_load(&n_spread_undone), atomic_load(&n_mirrors), atomic_load(&n_strikes_mine), atomic_load(&n_strikes_shown), atomic_load(&n_src_drop));
     }
     tests(c);
 }
