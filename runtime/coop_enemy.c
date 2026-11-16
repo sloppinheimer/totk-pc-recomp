@@ -182,7 +182,8 @@ static EnCell *map_touch(uint64_t actor) {
         if (a > 1 || !atomic_compare_exchange_strong(&en_map[h].actor, &a, actor)) continue;
         m = &en_map[h];
         atomic_store(&m->gen, gen), atomic_store(&m->en, -1);
-        atomic_store(&m->run_frame, 0);
+        atomic_store(&m->run_frame, 0), atomic_store(&m->warm, 0);
+        m->born_frame = coop_sess_frame_no();
         m->kind = (uint8_t)kind, m->hash_read = 0, m->hash = 0, m->rt = 0, m->retry = 0, m->new_ns = en_now();
         m->sw_on = m->sw_saved = m->body_static = 0, m->show_on = 0;
         atomic_store(&m->turned, 0), atomic_store(&m->leaks, 0);

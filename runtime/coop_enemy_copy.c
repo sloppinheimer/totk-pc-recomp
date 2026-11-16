@@ -184,7 +184,7 @@ int en_copy_hook(Cpu *c, uint64_t off) {
     EnCell *m = actor > 0x10000 ? en_cell_of(actor) : NULL;
     if (!m) return 0;
     atomic_store_explicit(&m->run_frame, coop_sess_frame_no(), memory_order_relaxed);
-    if (!is_off(atomic_load_explicit(&m->state, memory_order_relaxed)) || noswitch()) {
+    if (!is_off(atomic_load_explicit(&m->state, memory_order_relaxed)) || noswitch() || !atomic_load_explicit(&m->warm, memory_order_relaxed)) {
         atomic_fetch_add_explicit(&m->passed, 1, memory_order_relaxed);
         return 0;
     }
@@ -201,7 +201,12 @@ static uint64_t inline_inst(uint64_t actor, uint64_t *ctrl_out) {
 static void four_writes(uint64_t actor, EnCell *m) {
     uint64_t ctrl, inst = inline_inst(actor, &ctrl);
     if (!ctrl || !inst) return;
-    if (!m->sw_saved) m->sw_saved = 1, coop_rd(inst + 0x90, &m->sw_qcount, 4), coop_rd(inst + 0xd8, &m->sw_bits, 2);
+    // (all four are kept: on enemies that had run for a while the root index and the pending root read -1 already,
+    // but a young actor's can still name the root its interrupt graph has to start)
+    if (!m->sw_saved) {
+        m->sw_saved = 1, m->sw_root = -1, m->sw_pend = -1;
+        coop_rd(inst + 0x90, &m->sw_qcount, 4), coop_rd(inst + 0xd8, &m->sw_bits, 2), coop_rd(ctrl + 0x19c, &m->sw_root, 4), coop_rd(inst + 0xde, &m->sw_pend, 2);
+    }
     int32_t m1 = -1;
     int16_t s1 = -1;
     uint32_t zero = 0;
@@ -287,6 +292,18 @@ static void slots_apply(Cpu *c, uint64_t actor, EnCell *m, const EnSlot *want, i
 void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     int st = atomic_load_explicit(&m->state, memory_order_relaxed);
     int off = is_off(st) && !noswitch() && atomic_load_explicit(&en_active, memory_order_relaxed);
+    if (!atomic_load_explicit(&m->warm, memory_order_relaxed)) {
+        // A new actor thinks until its interrupt graph has started (its instance has a queue count or a bit word), at
+        // most 30 frames. Switched off from its first frame, what was saved of that graph was nothing, and the nothing
+        // was put back when the actor was let think: it then never ran an interrupt action again, and a spawned
+        // Lizalfos at 0 life went on fighting with no death (a play session and its scripted repeats, 2026-11-16).
+        uint64_t ctrl, inst = inline_inst(actor, &ctrl);
+        uint32_t q = 0;
+        uint16_t bits = 0;
+        if (inst) coop_rd(inst + 0x90, &q, 4), coop_rd(inst + 0xd8, &bits, 2);
+        if ((inst && (q || bits)) || coop_sess_frame_no() - m->born_frame >= 30) atomic_store(&m->warm, 1);
+        else off = 0;
+    }
     tl_off_actor = off ? actor : 0;
     if (!off && !m->sw_on) { en_hit_precalc(c, actor, m, 0); return; }
     int32_t ast = 0;
@@ -295,7 +312,12 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     memcpy(x, c->x, sizeof x);
     if (!off) {   // it thinks again (S 4.8): the interrupt graph gets back what the writes took, the body moves again
         uint64_t ctrl, inst = inline_inst(actor, &ctrl);
-        if (inst && m->sw_saved) memcpy((void *)(uintptr_t)(inst + 0x90), &m->sw_qcount, 4), memcpy((void *)(uintptr_t)(inst + 0xd8), &m->sw_bits, 2);
+        if (inst && m->sw_saved) {
+            memcpy((void *)(uintptr_t)(inst + 0x90), &m->sw_qcount, 4), memcpy((void *)(uintptr_t)(inst + 0xd8), &m->sw_bits, 2);
+            memcpy((void *)(uintptr_t)(ctrl + 0x19c), &m->sw_root, 4), memcpy((void *)(uintptr_t)(inst + 0xde), &m->sw_pend, 2);
+            static _Atomic int said;
+            if (atomic_fetch_add(&said, 1) < 12) rt_log("coop: en: switch: %llx thinks again: its interrupt graph gets back queue count %u, bits %x, root %d, pending root %d", (unsigned long long)actor, m->sw_qcount, m->sw_bits, (int)m->sw_root, (int)m->sw_pend);
+        }
         en_hit_leave(actor, m);
         if (body && m->body_static) coop_guest_call(c, MOD_MAIN_BASE + FN_MOTION_TYPE, body, 2, 0, 0);
         m->sw_on = m->sw_saved = m->body_static = m->pinned = 0;

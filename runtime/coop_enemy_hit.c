@@ -201,7 +201,7 @@ void en_hit_phase0(void) {
         e->pend_dmg = 0;
         uint64_t dc = dc_of(e->actor);
         uint32_t w = 0;
-        if (dc && coop_rd(dc + 0x20, &w, 4) && (w & 1) && e->life == EN_LIVE) {   // its death began
+        if (dc && coop_rd(dc + 0x20, &w, 4) && (w & 1) && (w & 0xe) && e->life == EN_LIVE) {   // its death began (valid, and in a phase)
             MDeath d;
             memset(&d, 0, sizeof d);
             d.id = e->id, d.dstate = w, d.kill = 1;

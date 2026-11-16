@@ -45,6 +45,8 @@ typedef struct {
     _Atomic uint64_t actor;           // 0 free, 1 cleared
     _Atomic uint32_t gen, frame;      // frame: the frame number of its last calc
     _Atomic uint32_t run_frame;       // the frame a graph runner of it was last entered (let through or turned away): the game thinks it
+    uint32_t born_frame;              // the frame its cell was made
+    _Atomic uint8_t warm;             // its interrupt graph has started (or 30 frames passed): only then may the switch turn it off
     _Atomic uint8_t state;            // EM_*
     _Atomic int16_t en;               // its table row, -1 none
     uint8_t kind, hash_read, retry, rt;
@@ -52,7 +54,7 @@ typedef struct {
     uint64_t new_ns;                  // since when it is NEW
     // What pre-calc has done to the actor (its update thread only).
     uint8_t sw_on, sw_saved, body_static, pinned;
-    uint32_t sw_qcount; uint16_t sw_bits;
+    uint32_t sw_qcount; uint16_t sw_bits; int32_t sw_root; int16_t sw_pend;   // what the four writes overwrote
     float pin[7];                     // where a held actor stands
     uint32_t slot_try[EN_SLOT_N];     // the frame a slot's command was last asked for
     _Atomic uint32_t turned, leaks, passed;   // entries the switch turned away; node ticks that got through; entries let through (it thinks)
