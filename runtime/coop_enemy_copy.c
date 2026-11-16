@@ -362,8 +362,8 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             const char *wn = want ? name_of(want) : NULL;
             uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230);
             uint32_t fr = coop_sess_frame_no();
-            if (!wn || !eu || fr - m->eq_made_frame < 120) continue;
-            m->eq_made_frame = fr;
+            if (!wn || !eu || fr - m->eq_made_frame < 120 || m->eq_tries[k] >= 2) continue;
+            m->eq_made_frame = fr, m->eq_tries[k]++;
             for (int j = 0; j < 2; j++) {
                 uint8_t *st = m->eq_str[j];
                 memset(st, 0, 0x60);
@@ -379,7 +379,7 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             uint64_t r = rt_call(c, MOD_MAIN_BASE + 0xaf100c, 8, eu, (uint64_t)k, (uint64_t)(uintptr_t)m->eq_str[0], (uint64_t)1, (uint64_t)(uint32_t)-1,
                                  (uint64_t)(uint32_t)-1, (uint64_t)(uintptr_t)m->eq_str[1], (uint64_t)1);
             c->sp = sp0;
-            rt_log("coop: en: equip: the copy %llx is given %s in slot %d, as its owner's enemy holds (the create answered %llx)", (unsigned long long)actor, wn, k, (unsigned long long)r);
+            rt_log("coop: en: equip: the copy %llx is given %s in slot %d, as its owner's enemy holds (the create answered %llx; try %d)", (unsigned long long)actor, wn, k, (unsigned long long)r, m->eq_tries[k]);
             break;
         }
         uint8_t drop = atomic_exchange_explicit(&m->eq_drop, 0, memory_order_relaxed);
@@ -594,7 +594,10 @@ void en_copy_phase0(Cpu *c) {
                     if (drop) atomic_store(&m->eq_drop, drop);
                     for (int k = 0; k < EN_EQ_N; k++) atomic_store(&m->eq_make[k], !eq[k] && sl->eq[k] ? sl->eq[k] : 0);
                 }
-            } else e->eq_off = 0;
+            } else {
+                e->eq_off = 0;
+                for (int k = 0; k < EN_EQ_N; k++) if (eq[k]) m->eq_tries[k] = 0;   // (it holds it: a later loss may be made good again)
+            }
         }
         if (now - e->log_ns >= SEC / 10) {
             char cmd[40] = "";

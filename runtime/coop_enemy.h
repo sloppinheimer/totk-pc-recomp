@@ -73,6 +73,7 @@ typedef struct {
     _Atomic uint8_t eq_drop;          // equipment slots (a bit each) whose held actor the copy must let go: its owner's enemy holds nothing there
     _Atomic uint32_t eq_make[EN_EQ_N];   // per equipment slot, the name hash of what the copy must be given (its owner's enemy holds it, the copy nothing)
     uint32_t eq_made_frame;           // the frame of the copy's last equipment create
+    uint8_t eq_tries[EN_EQ_N];        // creates made for a slot that stayed empty: after 2 no more (30 shields were made on one copy)
     uint8_t eq_str[2][0x60];          // the strings of that create (the game may read them after the call)
     _Atomic uint8_t dying, kill_req, put_away, flinch;   // asked of pre-calc: the copy's death, the owner's death, the actor of a dead placement put away, a flinch
     uint8_t put_done, dc_saved, dc_bits, req_tries;
