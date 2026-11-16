@@ -22,6 +22,7 @@
 #include "coop_ctn.h"
 #include "coop_ctr.h"
 #include "coop_ent.h"
+#include "coop_msg.h"
 #include "coop_game.h"
 #include "coop_net.h"
 #include "host.h"
@@ -623,7 +624,7 @@ void coop_ent_phase0(Cpu *c) {
     {
         static CoopCtrMsg m;
         while (own_pq_take(&m)) own_receive(c, &m);
-        while (coop_ctr_recv(&m)) own_receive(c, &m);
+        while (coop_msg_recv(COOP_MSG_ENT, &m)) own_receive(c, &m);   // (coop_msg.c: the enemy sync's types go to its own queue)
         own_slots();
     }
     ent_ring_events(c);                                   // 2

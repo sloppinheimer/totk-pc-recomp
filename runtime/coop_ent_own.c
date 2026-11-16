@@ -17,6 +17,7 @@
 #include "coop_ctn.h"
 #include "coop_ctr.h"
 #include "coop_ent.h"
+#include "coop_msg.h"
 #include "coop_ent_msg.h"
 #include "coop_game.h"
 #include "host.h"
@@ -770,7 +771,7 @@ void own_slots(void) {
 void own_peer_events(void) {
     uint64_t inc;
     int id, joined;
-    while (coop_ctr_peer_event(&inc, &id, &joined)) {
+    while (coop_msg_peer_event(COOP_MSG_ENT, &inc, &id, &joined)) {
         int p = id - 1;
         if (p < 0 || p >= ENT_PEERS) continue;
         memset(&peers[p], 0, sizeof peers[p]), asm_buf[p].have = 0, asm_buf[p].counter = 0, index_end_due[p] = 0;
@@ -1079,7 +1080,7 @@ void own_net(void) {
     if (paused || loading) {
         if (!pq) pq = calloc(PQ_N, sizeof *pq);
         static int said;
-        while (pq && pq_w - pq_r < PQ_N && coop_ctr_recv(&pq[pq_w % PQ_N])) {
+        while (pq && pq_w - pq_r < PQ_N && coop_msg_recv(COOP_MSG_ENT, &pq[pq_w % PQ_N])) {
             CoopCtrMsg *m = &pq[pq_w++ % PQ_N];
             if (m->type == ENT_GRANT) grant_in(m), m->type = 0;
             else if (m->type == ENT_REFUSE) refuse_in(m), m->type = 0;
