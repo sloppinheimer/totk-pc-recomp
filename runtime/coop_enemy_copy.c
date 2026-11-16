@@ -129,6 +129,24 @@ static void slots_read(uint64_t actor, EnState *st, int learn) {
     }
 }
 
+// What each equipment slot of an actor holds, as the hash of the held actor's name (0: nothing). The equipment user
+// is [comps+0x230]; its slot links are 0x18 apart from +0x20, each an actor link (+8 the reference object, whose
+// +0x40 is the actor; +0x10 the actor's id).
+static void equip_read(uint64_t actor, uint32_t eq[EN_EQ_N], int learn) {
+    uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230);
+    for (int s = 0; s < EN_EQ_N; s++) {
+        eq[s] = 0;
+        uint64_t ref = eu ? coop_rd_ptr(eu + 0x20 + (uint64_t)s * 0x18 + 8) : 0, held = ref ? coop_rd_ptr(ref + 0x40) : 0;
+        uint32_t id = 0, gen = 0;
+        if (!held || !coop_rd(eu + 0x20 + (uint64_t)s * 0x18 + 0x10, &id, 4) || !coop_rd(held + 0x10, &gen, 4) || id != gen) continue;
+        char nm[40] = "";
+        coop_actor_name(held, nm, sizeof nm);
+        if (!nm[0]) continue;
+        eq[s] = fnv_str(nm);
+        if (learn && name_add(eq[s], nm)) { MName m; memset(&m, 0, sizeof m); m.hash = eq[s], snprintf(m.name, sizeof m.name, "%s", nm); en_send_all(ENM_PLAY, &m, sizeof m); }
+    }
+}
+
 // ---- The switch (S 5) --------------------------------------------------------------------------------------------------
 static __thread uint64_t tl_off_actor;   // the switched-off actor whose calc this thread entered last (the leak net)
 
@@ -302,6 +320,47 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         put(c, actor, pos, quat);
         memcpy(m->pin, pos, 12), memcpy(m->pin + 3, quat, 16), m->pinned = 2;
         slots_apply(c, actor, m, slot, nslot, hold, coop_sess_frame_no());
+        for (int k = 0; k < EN_EQ_N; k++) {
+            // What the owner's enemy holds and the copy does not (a weapon fetched again, one picked up) the copy is given by
+            // the game's own equipment create, called as coop_players.c give_gear calls it for a stand-in: in the hand,
+            // default life, no fused attachment. At most one create in two seconds.
+            uint32_t want = atomic_exchange_explicit(&m->eq_make[k], 0, memory_order_relaxed);
+            const char *wn = want ? name_of(want) : NULL;
+            uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230);
+            uint32_t fr = coop_sess_frame_no();
+            if (!wn || !eu || fr - m->eq_made_frame < 120) continue;
+            m->eq_made_frame = fr;
+            for (int j = 0; j < 2; j++) {
+                uint8_t *st = m->eq_str[j];
+                memset(st, 0, 0x60);
+                snprintf((char *)st + 0x10, 0x40, "%s", j ? "" : wn);
+                uint64_t tp = (uint64_t)(uintptr_t)(st + 0x10);
+                int32_t cap = 0x40;
+                memcpy(st, &tp, 8), memcpy(st + 8, &cap, 4);
+            }
+            uint64_t sp0 = c->sp, sp = (sp0 - 0x100) & ~0xfull;
+            uint64_t stack[6] = {0, 0, 0, (uint64_t)(uint32_t)-1, 0, (uint64_t)(uint32_t)-1};   // arguments 9 to 14
+            memcpy((void *)(uintptr_t)sp, stack, sizeof stack);
+            c->sp = sp;
+            uint64_t r = rt_call(c, MOD_MAIN_BASE + 0xaf100c, 8, eu, (uint64_t)k, (uint64_t)(uintptr_t)m->eq_str[0], (uint64_t)1, (uint64_t)(uint32_t)-1,
+                                 (uint64_t)(uint32_t)-1, (uint64_t)(uintptr_t)m->eq_str[1], (uint64_t)1);
+            c->sp = sp0;
+            rt_log("coop: en: equip: the copy %llx is given %s in slot %d, as its owner's enemy holds (the create answered %llx)", (unsigned long long)actor, wn, k, (unsigned long long)r);
+            break;
+        }
+        uint8_t drop = atomic_exchange_explicit(&m->eq_drop, 0, memory_order_relaxed);
+        for (int k = 0; drop && k < EN_EQ_N; k++) {
+            // What the owner's enemy no longer holds (dropped, broken, knocked away) the copy's is rid of: the held actor is
+            // deleted by request, as coop_ctn.c part_delete asks (a ready actor with its lock object). The owner's
+            // dropped thing itself is a world object and the object mirror's.
+            if (!(drop >> k & 1)) continue;
+            uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230), ref = eu ? coop_rd_ptr(eu + 0x20 + (uint64_t)k * 0x18 + 8) : 0, held = ref ? coop_rd_ptr(ref + 0x40) : 0;
+            int32_t hs = 0;
+            if (!held || !coop_rd(held + COOP_ACTOR_STATE, &hs, 4) || hs < 2 || hs > 6 || !coop_rd_ptr(held + 0x1a8)) continue;
+            char hn[40] = "";
+            uint64_t r = coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, held, 0, 0, 0);
+            rt_log("coop: en: equip: the copy %llx lets go of its %s (slot %d): its owner's enemy holds nothing there (the delete answered %llu)", (unsigned long long)actor, coop_actor_name(held, hn, sizeof hn), k, (unsigned long long)(r & 1));
+        }
         en_hit_precalc(c, actor, m, 1);
     } else {   // held: it stands where it was when the hold began
         if (!m->pinned) en_pose_of(actor, m->pin), m->pinned = 1;
@@ -332,6 +391,7 @@ static void quat_slerp(const float a[4], const float b[4], float t, float out[4]
 void en_copy_phase0(Cpu *c) {
     (void)c;
     uint64_t me = coop_ctr_me(), now = en_now(), stamp = coop_sess_frame_ns();
+    uint32_t frame = coop_sess_frame_no();
     static uint64_t rec_ns;
     int rec = now - rec_ns >= SEC;
     if (rec) rec_ns = now;
@@ -346,7 +406,7 @@ void en_copy_phase0(Cpu *c) {
     int have_t[COOP_MAX_PLAYERS + 1] = {0};
     int n_copy = 0, n_held = 0, n_owned = 0, n_think = 0;
     uint32_t turned = 0, leaks = 0, n_let = 0;
-    static uint32_t passed_sum, idle_frames;
+    static uint32_t passed_sum, idle_frames, st_bytes, st_n;
 
     // Pass 1: this game's enemies are read and stated; the others' states are taken.
     for (int i = 0; i < EN_N; i++) {
@@ -375,6 +435,7 @@ void en_copy_phase0(Cpu *c) {
             for (int k = 0; k < EN_SLOT_N; k++) cmds[k] = s->sl[k].cmd;
             slots_read(e->actor, s, 1);
             for (int k = 0; k < s->nslot; k++) if (s->sl[k].cmd != cmds[k]) e->send_burst = 3;
+            { uint32_t eq[EN_EQ_N]; equip_read(e->actor, eq, 1); if (memcmp(eq, s->eq, sizeof eq)) e->send_burst = 3; memcpy(s->eq, eq, sizeof eq); }
             { uint32_t dw = 0; uint64_t dc = coop_rd_ptr(en_comps(e->actor) + 0x1c8); if (dc) coop_rd(dc + 0x20, &dw, 4); if (dw != s->dstate) e->send_burst = 3; s->dstate = dw; }
             float near2 = 1e30f;
             for (int k = 0; k < nl; k++) {
@@ -390,6 +451,7 @@ void en_copy_phase0(Cpu *c) {
                 ms.key = key_of(e->id), ms.id = e->id, ms.epoch = e->epoch, ms.life = e->life, ms.st = *s;
                 int len = (int)(offsetof(MState, st) + offsetof(EnState, sl) + s->nslot * sizeof s->sl[0]);
                 coop_ctr_send(0, ENM_STATE, 0, &ms, len);
+                st_bytes += (uint32_t)len, st_n++;
                 e->sent_ns = now;
             }
             uint32_t let = atomic_exchange(&m->passed, 0);
@@ -477,6 +539,24 @@ void en_copy_phase0(Cpu *c) {
         m->show_on = 1;
         atomic_store_explicit(&m->seq, s0 + 2, memory_order_release);
         e->hp = sl->hp;
+        if ((frame & 15) == (uint32_t)(i & 15)) {   // what the copy holds against what its owner's enemy holds
+            uint32_t eq[EN_EQ_N];
+            equip_read(e->actor, eq, 0);
+            if (memcmp(eq, sl->eq, sizeof eq)) {
+                if (!e->eq_off++ || rec)
+                    for (int k = 0; k < EN_EQ_N; k++)
+                        if (eq[k] != sl->eq[k]) {
+                            const char *a0 = name_of(sl->eq[k]), *b0 = name_of(eq[k]);
+                            rt_log("coop: en: equip: %s %016llx slot %d: its owner's holds %s, this game's copy %s", e->name, (unsigned long long)e->id.a, k, sl->eq[k] ? a0 ? a0 : "?" : "nothing", eq[k] ? b0 ? b0 : "(a name not stated)" : "nothing");
+                        }
+                if (e->eq_off >= 3) {   // (for three looks, 0.8 s: not a weapon on its way between two states)
+                    uint8_t drop = 0;
+                    for (int k = 0; k < EN_EQ_N; k++) if (eq[k] && !sl->eq[k]) drop |= (uint8_t)(1u << k);
+                    if (drop) atomic_store(&m->eq_drop, drop);
+                    for (int k = 0; k < EN_EQ_N; k++) atomic_store(&m->eq_make[k], !eq[k] && sl->eq[k] ? sl->eq[k] : 0);
+                }
+            } else e->eq_off = 0;
+        }
         if (now - e->log_ns >= SEC / 10) {
             char cmd[40] = "";
             anim_cmd(anim_slot(anim_g(e->actor), 0), cmd, sizeof cmd);
@@ -501,4 +581,5 @@ void en_copy_phase0(Cpu *c) {
     if (rec && (n_copy || n_held || n_owned))
         rt_log("coop: en: switch: %d copies and %d held: %u runner entries turned away, %u leaks; %d run here: %u runner entries let through",
                n_copy, n_held, turned, leaks, n_owned, passed_sum), passed_sum = 0;
+    if (rec && st_n) rt_log("coop: en: sent: %u states, %u bytes in the last second (to each peer)", st_n, st_bytes), st_n = st_bytes = 0;
 }

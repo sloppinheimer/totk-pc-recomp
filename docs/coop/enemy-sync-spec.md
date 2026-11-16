@@ -70,6 +70,14 @@ Where it departs, each by a measurement or to stay simple:
   again when its actor is gone (DEATH_END, the entry is freed). A copy still dying then thinks again and ends by its
   own Die action. An actor at a tombstoned placement gets the dead call and a delete request (not yet seen in a run).
 - Two games that come together: the smaller incarnation waits half a second longer before its first claims.
+- **Equipment is state too.** STATE carries, per equipment slot (8), the name hash of the held actor. A copy that
+  holds something where its owner's enemy holds nothing for three looks (0.8 s) has that actor deleted by request; one
+  that holds nothing where the owner's holds something is given it by the game's equipment create (main+0xaf100c,
+  called as the stand-in's gear is: in the hand, default life, no fused attachment), at most once in 2 s [m: a sword
+  knocked away, fetched again and lost again followed on the copy]. The dropped thing itself is the object mirror's.
+  Not carried: the fused attachment, the weapon's remaining life.
+- Traffic [m]: a state is 232 bytes with one animation slot in use; four enemies in a fight are 240 states and 56 to
+  70 kB a second to each peer.
 - **PAUSED in a menu** [m]: phase 0 and the actors' calcs go on in the inventory menu, so 1.3's test does not see it.
   A game says PAUSED when, for 20 frames, no graph runner was entered for any enemy it runs whose far gate is open.
   In a run the other game took the paused owner's six enemies over after 5 s and the fight went on.
@@ -80,10 +88,13 @@ while running and under 1 cm standing; the same command in 97 to 100 % of sample
 non-owner's blows each taken once by the owner; a kill ended in both games; the owner's game closed mid-fight and
 the other took its enemies over. Pictures from both games show the same enemies at the same places.
 
-Not built or not seen: equipment events, run-time enemies, projectiles and loot beyond the older object mirror, the
-target, the moon message, big reactions and ragdoll bones on a copy, a kill by the hits of a non-owner alone, the
-put-away of an actor at a tombstoned placement, the orphaned death of 4.7, a load of the owner in a run, a third
-player, the test network.
+Seen with the test settings (`TOTK_COOP_EN_TEST_HIT`, `_KILL`, `_BLIND`): a kill by a non-owner's hit alone ended in
+both games; a game that took its actors into the sync 40 s late bound them as copies mid-fight, and its actor at a
+placement whose enemy had died in the other game was put away and did not come back.
+
+Not built or not seen: run-time enemies, projectiles and loot beyond the older object mirror, the target, the moon
+message, big reactions and ragdoll bones on a copy, the orphaned death of 4.7, a load of the owner in a run, a third
+player, the test network, the notice on screen when two games run different syncs.
 
 Conventions. Addresses are TotK 1.4.3, main+offset. "The world" is the game's memory; "the table" is ours. An
 incarnation is a game's 64-bit id (`coop_ctr_me`). Every timer is wall-clock time; state times are on the owner's

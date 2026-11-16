@@ -37,7 +37,8 @@ typedef struct {
     uint8_t cur, n, pad[2];
     struct { float clock, weight; } c[EN_CTRL_N];
 } EnSlot;
-typedef struct { EnSnap s; int32_t hp; uint32_t dstate; uint8_t nslot, pad[7]; EnSlot sl[EN_SLOT_N]; } EnState;   // one stated moment of an enemy
+#define EN_EQ_N 8         // equipment slots
+typedef struct { EnSnap s; int32_t hp; uint32_t dstate; uint8_t nslot, pad[7]; uint32_t eq[EN_EQ_N]; EnSlot sl[EN_SLOT_N]; } EnState;   // eq: the name hash of what each equipment slot holds   // one stated moment of an enemy
 
 typedef struct {
     _Atomic uint64_t actor;           // 0 free, 1 cleared
@@ -65,6 +66,10 @@ typedef struct {
     _Atomic int32_t hit_dmg;          // life this game's hits took from the copy since phase 0 last looked
     int32_t hit_hp; uint64_t hit_ns;  // the copy's life after this game's last hit, and when
     int32_t hp_written;               // the life pre-calc last gave the copy (0: none yet)
+    _Atomic uint8_t eq_drop;          // equipment slots (a bit each) whose held actor the copy must let go: its owner's enemy holds nothing there
+    _Atomic uint32_t eq_make[EN_EQ_N];   // per equipment slot, the name hash of what the copy must be given (its owner's enemy holds it, the copy nothing)
+    uint32_t eq_made_frame;           // the frame of the copy's last equipment create
+    uint8_t eq_str[2][0x60];          // the strings of that create (the game may read them after the call)
     _Atomic uint8_t dying, kill_req, put_away, flinch;   // asked of pre-calc: the copy's death, the owner's death, the actor of a dead placement put away, a flinch
     uint8_t put_done, dc_saved, dc_bits, req_tries;
 } EnCell;
@@ -84,7 +89,7 @@ typedef struct {
     EnState cur;                      // an owned enemy as last read
     uint64_t read_ns, sent_ns, log_ns;
     // the record
-    uint32_t st_used, st_lost, st_held; float err_sum, err_max; uint32_t err_n;
+    uint32_t st_used, st_lost, st_held, eq_off; float err_sum, err_max; uint32_t err_n;
 } En;
 
 extern PlatMutex en_lock;
