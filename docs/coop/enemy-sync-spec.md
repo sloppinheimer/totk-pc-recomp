@@ -70,7 +70,8 @@ what a game does with a placed enemy it has no actor for. **Before step 3**: run
 - **Hooks** at entries, any game thread: they read the map, turn a runner away, or post a capture. A hook that needs
   a function's result runs the function itself through `rt_dispatch` with a thread-local guard and returns nonzero;
   the inner entry falls through to the older handlers of that address.
-- **The net tick** (`coop_tick`; its rate is measured in step 0, run 22): session state, the dispatcher's pause
+- **The net tick** (`coop_tick`; [m] run 22: twice a game frame in the world, 120 a second at 60 frames, once a
+  frame at the title screen and in a load; the transport receives there): session state, the dispatcher's pause
   queue, and, under `en_lock` taken with `coop_lock_wait`: OFFER_ALL while loading, repeats, the list of enemy
   places the object mirror asks for.
 
@@ -317,8 +318,10 @@ whose form differs].
 ## 6. Motion
 
 6.1 **STATE** (unreliable, latest per (sender, enemy); section 11). Sent at phase 0 for each owned enemy, to each
-peer **whose Link is within 150 m of the enemy**, 30 times a second while it moved (over 1 mm or 0.1 degree) or a
-player is within 30 m of it, else once a second; to farther peers once a second. One `EnSnap` whose `us` is **the
+peer **whose Link is within 150 m of the enemy**, every frame while a player is within 30 m of it, every second
+frame while it otherwise moved (over 1 mm or 0.1 degree), else once a second; to farther peers once a second (the
+receiver takes messages twice a frame, [m] run 22, so a state a frame is not overwritten unread in the ordinary
+case; each STATE still carries the previous snap, 11.0). One `EnSnap` whose `us` is **the
 world clock of the frame whose end the values describe** (the frame before this phase 0), the same scale a capture
 takes inside that frame; life points; `rag`; the death state; the look point; slot 0's clocks always and the other
 slots' when a command, index or rate changed or once a second. `teleports`, `landings` and `liftoffs` are counters:
@@ -739,7 +742,8 @@ All on the camp save unless said; each needs the tester's yes.
 19. a placed enemy put away by the dead call without the save flag: the placement's bits over two passes;
 20. the game's far gate and unload radii for a Bokoblin; the range at which a placement makes its actor;
 21. two players before the camp: a stand-in in the Sight list, slot 0 written to it, whom the enemy fights;
-22. the co-op tick's rate and the transport's receive rate, by a counter (step 0);
+22. (done 2026-11-15: 120 ticks and 60 frames a second in the world in both games of a pair) the co-op tick's
+    rate;
 23. a crate dropped on a switched-off enemy and a fire lit under it: life and L+0x1780 per frame;
 24. a release during a knock-down, and after three hits taken while off: slot commands, status bytes and ragdoll
     state every frame.

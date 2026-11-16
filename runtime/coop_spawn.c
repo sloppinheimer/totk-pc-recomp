@@ -911,6 +911,7 @@ static void phase_sample(uint64_t addr) {
         }
     }
 }
+static _Atomic uint32_t coop_frames_seen;   // GameDataMgr::calc entries: one a game frame (the tick-rate test)
 int coop_hook(Cpu *c, uint64_t addr) {
     if (addr == MOD_MAIN_BASE + 0x40a240) {   // the body-pair collision predicate (hot): stand-ins off contraptions (coop_life.c)
         int coop_life_veto(Cpu *c);
@@ -981,6 +982,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // Shared world progress (coop_gamedata.c, TOTK_COOP_SHARE_WORLD=1): GameDataMgr::calc (main+0xa72b00, x0 the
     // manager) and setEventBool (main+0xc6a9f0).
     if (addr == MOD_MAIN_BASE + 0xa72b00) {
+        atomic_fetch_add(&coop_frames_seen, 1);
         // contraption tests that need every actor link to resolve: GameDataMgr::calc runs each frame at actor phase 0,
         // outside the parallel actor update (TOTK_COOP_TEST_PHASES)
         static int seq = -1;
@@ -2000,6 +2002,23 @@ void coop_tick(struct Cpu *c) {
         }
     }
     coop_ctr_tick();   // the contraption channel (coop_ctr.c): before the players, so their pass sees this poll's messages
+    {   // Test (TOTK_COOP_TEST_TICKRATE=1, enemy-sync-spec.md run 22): how often this tick, and with it the transport's
+        // receive, runs against the game's frames (counted at GameDataMgr::calc, once a frame). One line a second.
+        static int on = -1;
+        static uint64_t at;
+        static uint32_t ticks, frames_was;
+        if (on < 0) on = cfg_get("TOTK_COOP_TEST_TICKRATE") != NULL;
+        if (on) {
+            uint64_t now = plat_now_ns();
+            ticks++;
+            if (!at) at = now, frames_was = atomic_load(&coop_frames_seen);
+            if (now - at >= 1000000000ull) {
+                uint32_t f = atomic_load(&coop_frames_seen);
+                rt_log("coop: test: tick rate: %u co-op ticks and %u game frames in %.3f s", ticks, f - frames_was, (double)(now - at) / 1e9);
+                ticks = 0, at = now, frames_was = f;
+            }
+        }
+    }
     { void coop_ent_net(void); coop_ent_net(); }   // the entity sync's net half: heartbeat flags, the pause queue (coop_ent_own.c)
     void coop_loadwatch_tick(void);   // coop_loadwatch.c
     coop_loadwatch_tick();
