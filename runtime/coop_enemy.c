@@ -57,6 +57,16 @@ static int kind_of(const char *nm) {
     static const char *const pre[] = { "Enemy_Bokoblin", "Enemy_Moriblin", "Enemy_Horablin", "Enemy_Lizalfos" };
     for (unsigned i = 0; i < sizeof pre / sizeof *pre; i++)
         if (!strncmp(nm, pre[i], strlen(pre[i]))) return (int)i + 1;
+    // Test (TOTK_COOP_EN_KINDS=<prefix>[,<prefix>...]): more kinds by the start of their actor names, for trying a family.
+    static const char *more;
+    static int read;
+    if (!read) more = cfg_get("TOTK_COOP_EN_KINDS"), read = 1;
+    for (const char *p = more; p && *p;) {
+        const char *q = strchr(p, ',');
+        size_t n = q ? (size_t)(q - p) : strlen(p);
+        if (n && !strncmp(nm, p, n)) return 100;
+        p = q ? q + 1 : NULL;
+    }
     return 0;
 }
 
@@ -166,7 +176,7 @@ static EnCell *map_touch(uint64_t actor) {
         m = &en_map[h];
         atomic_store(&m->gen, gen), atomic_store(&m->en, -1);
         atomic_store(&m->run_frame, 0);
-        m->kind = (uint8_t)kind, m->hash_read = 0, m->hash = 0, m->retry = 0, m->new_ns = en_now();
+        m->kind = (uint8_t)kind, m->hash_read = 0, m->hash = 0, m->rt = 0, m->retry = 0, m->new_ns = en_now();
         m->sw_on = m->sw_saved = m->body_static = 0, m->show_on = 0;
         atomic_store(&m->turned, 0), atomic_store(&m->leaks, 0);
         for (int k = 0; k < EN_EQ_N; k++) atomic_store(&m->eq_make[k], 0);
@@ -441,13 +451,21 @@ static int runs(const En *e, uint32_t frame) {   // S 4.1, without its waiting t
 static void cell_resolve(EnCell *m, uint64_t now, uint32_t frame) {
     uint64_t actor = atomic_load(&m->actor), me = coop_ctr_me();
     int st = atomic_load(&m->state);
-    if (!m->hash_read) m->hash = en_hash_of(actor), m->hash_read = 1;
-    if (!m->hash) { atomic_store(&m->state, EM_OWN); return; }   // made at run time: step 5
+    if (!m->hash) {   // (looked at again while it has none: a run-time enemy's key comes when the spawn sync has announced it)
+        uint32_t coop_world_spawn_key(uint64_t a);   // coop_world.c
+        m->hash = en_hash_of(actor), m->rt = 0;
+        if (!m->hash) m->hash = coop_world_spawn_key(actor), m->rt = m->hash != 0;
+    }
+    if (!m->hash) {   // made at run time and not announced (yet): the game's own; a new one is held half a second for its key
+        if (st != EM_NEW || now - m->new_ns > SEC / 2) atomic_store(&m->state, EM_OWN);
+        return;
+    }
+    uint32_t idb = m->rt ? EN_RT : life_no;
     En *e = en_by_hash(m->hash);
     if (e) {
         char nm[64] = "";
         coop_actor_name(actor, nm, sizeof nm);
-        if (e->life == EN_UNSYNCED || e->id.b != life_no) { atomic_store(&m->state, EM_OWN); return; }
+        if (e->life == EN_UNSYNCED || e->id.b != idb) { atomic_store(&m->state, EM_OWN); return; }
         if (e->cell >= 0 && &en_map[e->cell] != m && en_alive(e->actor, e->gen)) { atomic_store(&m->state, EM_OWN); return; }   // (a second actor of one placement)
         if (e->have_decl && strcmp(e->name, nm)) { unsynced_set(m->hash, 1, 1); atomic_store(&m->state, EM_OWN); return; }
         if (!e->name[0]) snprintf(e->name, sizeof e->name, "%s", nm);
@@ -455,7 +473,7 @@ static void cell_resolve(EnCell *m, uint64_t now, uint32_t frame) {
         en_log_own(e, e->owner == me ? "this game's actor bound to its own entry" : "this game's actor is its copy", "the actor appeared");
         return;
     }
-    if (en_tombed(m->hash)) {   // it died this session in another game: the placement's actor here is put away (S 9.4)
+    if (!m->rt && en_tombed(m->hash)) {   // it died this session in another game: the placement's actor here is put away (S 9.4)
         atomic_store(&m->state, EM_OWN), atomic_store(&m->put_away, 1);
         return;
     }
@@ -470,7 +488,7 @@ static void cell_resolve(EnCell *m, uint64_t now, uint32_t frame) {
         if (st == EM_NEW && now - m->new_ns > 5 * SEC) atomic_store(&m->state, EM_OWN);
         return;
     }
-    Enid id = {m->hash, life_no, 0};
+    Enid id = {m->hash, idb, 0};
     EnRest *r = rest_find(id);
     uint32_t epoch = 1 + (r ? r->epoch : 0);
     if (!en_apply_owner(id, me, epoch, "nobody had it")) { atomic_store(&m->state, EM_OWN); return; }

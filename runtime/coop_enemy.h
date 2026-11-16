@@ -17,7 +17,8 @@
 #define EN_SLOT_N 6       // animation slots stated
 #define EN_CTRL_N 4       // blend controllers of a slot
 
-typedef struct { uint64_t a; uint32_t b, zero; } Enid;   // placed: (placement hash, life number)
+typedef struct { uint64_t a; uint32_t b, zero; } Enid;   // placed: (placement hash, life number); made at run time: (the spawn sync's key, EN_RT)
+#define EN_RT 0x80000001u
 static inline int enid_eq(Enid x, Enid y) { return x.a == y.a && x.b == y.b; }
 
 enum { EN_LIVE = 1, EN_DYING, EN_DEAD, EN_UNSYNCED };
@@ -46,8 +47,8 @@ typedef struct {
     _Atomic uint32_t run_frame;       // the frame a graph runner of it was last entered (let through or turned away): the game thinks it
     _Atomic uint8_t state;            // EM_*
     _Atomic int16_t en;               // its table row, -1 none
-    uint8_t kind, hash_read, retry;
-    uint64_t hash;                    // its placement hash, 0 not placed (phase 0)
+    uint8_t kind, hash_read, retry, rt;
+    uint64_t hash;                    // its placement hash, or (rt) the key coop_world.c's spawn sync gave an enemy made at run time; 0 neither yet
     uint64_t new_ns;                  // since when it is NEW
     // What pre-calc has done to the actor (its update thread only).
     uint8_t sw_on, sw_saved, body_static, pinned;

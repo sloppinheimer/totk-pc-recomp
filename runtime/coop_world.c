@@ -264,6 +264,7 @@ static uint32_t keyed_of(uint64_t a) {
             return keyed[i].nh == name_hash_of(a) ? atomic_load_explicit(&keyed[i].key, memory_order_relaxed) : 0;
     return 0;
 }
+uint32_t coop_world_spawn_key(uint64_t a) { return keyed_of(a); }   // 0: not an actor the spawn sync announced or made
 static void keyed_set(uint64_t a, uint32_t key) {
     int f = -1;
     for (int i = 0; i < KEYED_N; i++) {
@@ -312,13 +313,11 @@ int coop_enemy_old(void) {
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_ENEMY_OLD"); on = !(e && *e == '0'); }
     return on;
 }
-// (That sync takes placed enemies only: one made at run time, by a spawner or by this file for another game's, has no
-// placement hash and stays with this file.)
+// (An enemy of such a kind made at run time still goes through this file's spawn sync, which announces it and makes
+// the other games' actors for it; the key it gives is that enemy's identity in coop_enemy.c: coop_world_spawn_key.)
 static int old_off(uint64_t a, const char *nm) {
-    if (strncmp(nm, "Enemy_", 6)) return 0;
-    if (!coop_enemy_old()) return 1;
-    uint64_t pl = a ? coop_rd_ptr(a + 0x370) : 0, hash = 0;
-    return coop_enemy_new() && coop_enemy_kind(nm) && pl && coop_rd(pl + 0x88, &hash, 8) && hash && hash != ~0ull;
+    (void)a;
+    return !strncmp(nm, "Enemy_", 6) && (!coop_enemy_old() || (coop_enemy_new() && coop_enemy_kind(nm)));
 }
 // An actor the sync takes, enemy or (TOTK_COOP_MOUNTS=1) horse or animal (coop_world_kind, coop_mounts.c), with its
 // key; 0 none. The enemy model below runs them all: whose each is, the hand-over, the copies' easing and life.
@@ -3321,7 +3320,7 @@ void coop_actor_created(uint64_t a) {   // coop_spawn.c, from the getActor hook 
             rt_log("coop: test: born %llx '%s' kind %d at %.1f s", (unsigned long long)a, nm, coop_world_spawn_kind(nm), frame_step_world_us() / 1e6);
         }
     }
-    if (!coop_world_spawn_kind(nm) || old_off(a, nm)) return;
+    if (!coop_world_spawn_kind(nm) || (!coop_enemy_old() && !strncmp(nm, "Enemy_", 6))) return;
     unsigned i = atomic_fetch_add(&born_n, 1) % BORN_N;
     atomic_store_explicit(&born[i].actor, 0, memory_order_release);
     atomic_store_explicit(&born[i].at_ns, plat_now_ns(), memory_order_relaxed);
@@ -3488,7 +3487,7 @@ static void spawn_scan(void) {
         int32_t st = 0;
         char nm[48];
         if (!coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || keyed_of(a)) continue;
-        if (!coop_world_spawn_kind(coop_actor_name(a, nm, sizeof nm)) || old_off(a, nm)) continue;
+        if (!coop_world_spawn_kind(coop_actor_name(a, nm, sizeof nm)) || !coop_enemy_old()) continue;
         uint32_t key = key_of_actor(a);
         Follow *f = NULL;
         for (int k = 0; key && k < FOLLOW_N && !f; k++) if (follow[k].key == key && follow[k].owner) f = &follow[k];
@@ -3569,7 +3568,7 @@ static void spawn_take(Cpu *c, const SpawnPacket *sp, int from) {
             }
             return;   // (have it)
         }
-    if (sp->kind != SPAWN_KIND || memchr(sp->name, 0, sizeof sp->name) == NULL || !coop_world_spawn_kind(sp->name) || old_off(0, sp->name)) return;
+    if (sp->kind != SPAWN_KIND || memchr(sp->name, 0, sizeof sp->name) == NULL || !coop_world_spawn_kind(sp->name) || (!coop_enemy_old() && !strncmp(sp->name, "Enemy_", 6))) return;
     for (int k = 0; k < 32; k++) if (made[k].state && made[k].key == sp->key) return;
     // This game's own spawner made one of that name at that place (both games run the same spawners): that one
     // takes the key, no second is made.

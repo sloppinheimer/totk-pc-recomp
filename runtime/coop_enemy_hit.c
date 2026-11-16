@@ -206,7 +206,7 @@ void en_hit_phase0(void) {
             memset(&d, 0, sizeof d);
             d.id = e->id, d.dstate = w, d.kill = 1;
             e->life = EN_DYING, e->offered = 0, n_deaths++;
-            en_tomb_add(e->id.a, e->id.b, 1);
+            if (e->id.b != EN_RT) en_tomb_add(e->id.a, e->id.b, 1);   // (a placement's: one made at run time has none to keep away)
             en_send_all(ENM_DEATH, &d, sizeof d);
             en_log_own(e, "dying", "its death began in this game");
         }
@@ -235,7 +235,7 @@ void en_hit_msg(const CoopCtrMsg *m, int from) {
     case ENM_DEATH: case ENM_DEATH_END: {
         const MDeath *d = (const MDeath *)m->d;
         if (m->len != (int)sizeof *d) break;
-        if (d->id.b >= en_life_no()) en_tomb_add(d->id.a, d->id.b, 1);
+        if (d->id.b != EN_RT && d->id.b >= en_life_no()) en_tomb_add(d->id.a, d->id.b, 1);
         for (int i = 0; i < EN_N; i++) {
             En *e = &en_tab[i];
             if (!e->used || !enid_eq(e->id, d->id) || e->life == EN_UNSYNCED) continue;
