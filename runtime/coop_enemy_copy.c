@@ -168,6 +168,17 @@ int en_copy_hook(Cpu *c, uint64_t off) {
             rt_log("coop: en: leak: a node of %llx ticked with the switch on (from main+%#llx)", (unsigned long long)actor, (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
         return 1;
     }
+    case 0x1bddcb0: {   // a ragdoll start (x0 the component, x1 the request): logged for the enemies this sync knows
+        uint64_t a = coop_rd_ptr(c->x[0] + 0x18);
+        EnCell *m = a > 0x10000 ? en_cell_of(a) : NULL;
+        static _Atomic int said;
+        uint8_t rq[0x40] = {0};
+        if (!m || !coop_rd(c->x[1], rq, sizeof rq) || atomic_fetch_add(&said, 1) >= 60) return 0;
+        char hex[0x40 * 2 + 20];
+        for (int i = 0; i < 0x40; i++) snprintf(hex + i * 2 + i / 8, 4, "%02x%s", rq[i], (i & 7) == 7 ? " " : "");
+        rt_log("coop: en: rag: start asked of %llx (cell state %d) from main+%#llx: %s", (unsigned long long)a, (int)atomic_load(&m->state), (unsigned long long)(c->x[30] - MOD_MAIN_BASE), hex);
+        return 0;
+    }
     default: return 0;
     }
     EnCell *m = actor > 0x10000 ? en_cell_of(actor) : NULL;
@@ -436,6 +447,7 @@ void en_copy_phase0(Cpu *c) {
             slots_read(e->actor, s, 1);
             for (int k = 0; k < s->nslot; k++) if (s->sl[k].cmd != cmds[k]) e->send_burst = 3;
             { uint32_t eq[EN_EQ_N]; equip_read(e->actor, eq, 1); if (memcmp(eq, s->eq, sizeof eq)) e->send_burst = 3; memcpy(s->eq, eq, sizeof eq); }
+            { uint64_t rg = coop_rd_ptr(en_comps(e->actor) + 0x3e8); int32_t rs = 0; if (rg) coop_rd(rg + 0x20, &rs, 4); if ((uint8_t)rs != s->rag) { e->send_burst = 3; rt_log("coop: en: rag: %s %016llx ragdoll state %d -> %d", e->name, (unsigned long long)e->id.a, s->rag, (int)rs); } s->rag = (uint8_t)rs; }
             { uint32_t dw = 0; uint64_t dc = coop_rd_ptr(en_comps(e->actor) + 0x1c8); if (dc) coop_rd(dc + 0x20, &dw, 4); if (dw != s->dstate) e->send_burst = 3; s->dstate = dw; }
             float near2 = 1e30f;
             for (int k = 0; k < nl; k++) {
@@ -530,6 +542,10 @@ void en_copy_phase0(Cpu *c) {
         uint32_t s0 = atomic_load(&m->seq);
         atomic_store_explicit(&m->seq, s0 + 1, memory_order_release);
         memcpy(m->show_pos, pos, 12), memcpy(m->show_quat, quat, 16);
+        // The owner's enemy began a flinch (a partial ragdoll, by its own player's blow or anything else): the copy's is
+        // asked of its own ragdoll component, unless this game's player just struck it and it flinched here already.
+        if (sl->rag == 2 && m->show_rag != 2 && now - m->hit_ns > SEC) atomic_store(&m->flinch, 1);
+        m->show_rag = sl->rag;
         m->show_nslot = sl->nslot, m->show_hold = (uint8_t)hold, m->show_teleport = (uint8_t)jump, m->show_hp = sl->hp, m->show_dstate = sl->dstate;
         for (int k = 0; k < sl->nslot; k++) {
             m->show_slot[k] = sl->sl[k];

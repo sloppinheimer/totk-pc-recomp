@@ -61,6 +61,11 @@ void en_hit_leave(uint64_t actor, EnCell *m) {
 
 void en_hit_precalc(Cpu *c, uint64_t actor, EnCell *m, int off) {
     uint64_t dc = dc_of(actor);
+    if (atomic_load_explicit(&m->flinch, memory_order_relaxed)) {   // a flinch not of this game's making: asked as the damage step asks
+        uint64_t rag = coop_rd_ptr(en_comps(actor) + 0x3e8);
+        atomic_store(&m->flinch, 0);
+        if (rag) __atomic_fetch_or((uint8_t *)(uintptr_t)(rag + 0x149), 1, __ATOMIC_SEQ_CST);
+    }
     if (!off) {
         if (atomic_load_explicit(&m->kill_req, memory_order_relaxed) && dc) {   // the owner's enemy lost its last life to another game's hit
             uint32_t w = 0;
@@ -71,11 +76,6 @@ void en_hit_precalc(Cpu *c, uint64_t actor, EnCell *m, int off) {
                 memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
                 if (!m->req_tries++) rt_log("coop: en: death: asked of this game's %llx at 0 life (the request answered %llu)", (unsigned long long)actor, (unsigned long long)(r & 1));
             } else atomic_store(&m->kill_req, 0), m->req_tries = 0;
-        }
-        if (atomic_load_explicit(&m->flinch, memory_order_relaxed)) {   // another game's hit: the flinch the damage step asks for
-            uint64_t rag = coop_rd_ptr(en_comps(actor) + 0x3e8);
-            atomic_store(&m->flinch, 0);
-            if (rag) __atomic_fetch_or((uint8_t *)(uintptr_t)(rag + 0x149), 1, __ATOMIC_SEQ_CST);
         }
         if (atomic_load_explicit(&m->put_away, memory_order_relaxed) && !m->put_done) {
             uint32_t w = 0;

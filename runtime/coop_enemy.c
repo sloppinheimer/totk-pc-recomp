@@ -422,7 +422,7 @@ static void bind(En *e, EnCell *m, uint64_t actor, int state) {
     if (e->cell >= 0 && &en_map[e->cell] != m) cell_unbind(e);
     e->actor = actor, e->gen = atomic_load(&m->gen), e->cell = (int16_t)(m - en_map);
     atomic_store(&m->en, (int16_t)(e - en_tab));
-    m->show_on = 0, m->hp_written = 0;   // (nothing of an earlier owner is shown)
+    m->show_on = 0, m->hp_written = 0, m->show_rag = 0;   // (nothing of an earlier owner is shown)
     atomic_store(&m->state, (uint8_t)state);
     m->retry = 0;
 }
@@ -708,11 +708,19 @@ static void deactivate(int keep_table) {
     if (!keep_table) n_rest = n_tomb = 0, life_no = 1;
 }
 
+// The watch on the net tick: where it is (0: not in coop_enemy_net) and when it was last entered and left. An actor's
+// calc says so once when the tick has not come round for 3 s while the game runs.
+static _Atomic int tick_stage;
+static _Atomic uint64_t tick_in_ns, tick_out_ns;
+#define STAGE(n) atomic_store_explicit(&tick_stage, n, memory_order_relaxed)
+
 void coop_enemy_net(void) {
     if (!coop_enemy_new()) return;
+    atomic_store(&tick_in_ns, en_now()), STAGE(1);
     static int opened;
     if (!opened) opened = 1, coop_msg_open(COOP_MSG_ENEMY), rt_log("coop: en: the enemy sync is on (TOTK_COOP_ENEMY=1) for the kinds it lists; coop_world.c's older one keeps the others");
     coop_lock_wait(&en_lock);
+    STAGE(2);
     uint64_t now = en_now(), me = coop_ctr_me();
     int my_id = coop_net_id(), any = 0, bad = 0;
     {   // (join and leave events: read from the peers' state below; the queue is only emptied)
@@ -720,6 +728,7 @@ void coop_enemy_net(void) {
         int id, joined;
         while (coop_msg_peer_event(COOP_MSG_ENEMY, &inc, &id, &joined)) { }
     }
+    STAGE(3);
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++) {
         uint64_t inc = id != my_id && me && coop_net_live(id) ? coop_ctr_incarnation(id) : 0;
         if (peer[id].inc && peer[id].inc != inc) {   // it left (or came back as another incarnation)
@@ -752,6 +761,7 @@ void coop_enemy_net(void) {
         else if (ps == COOP_SESS_RUNS && peer[id].was_loading) peer[id].was_loading = 0, peer[id].burst_owed = 1;   // it ran again after a load
         any = 1;
     }
+    STAGE(4);
     int session = any && !bad, loading = coop_sess_loading();
     static int was_session, was_loading;
     if (!session) {
@@ -761,6 +771,7 @@ void coop_enemy_net(void) {
         CoopCtrMsg m;
         while (coop_msg_recv(COOP_MSG_ENEMY, &m)) { }
         plat_mutex_unlock(&en_lock);
+        STAGE(0), atomic_store(&tick_out_ns, en_now());
         return;
     }
     was_session = 1;
@@ -775,7 +786,9 @@ void coop_enemy_net(void) {
     atomic_store(&en_active, !loading);
 
     static CoopCtrMsg m;
+    STAGE(5);
     while (coop_msg_recv(COOP_MSG_ENEMY, &m)) take_msg(&m);
+    STAGE(6);
 
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++)
         if (peer[id].ready && peer[id].burst_owed && !loading) peer[id].burst_owed = 0, burst(id);
@@ -818,7 +831,9 @@ void coop_enemy_net(void) {
             }
         }
     }
+    STAGE(7);
     out_flush();
+    STAGE(8);
     {   // The record, once a second: the table as counts and one number two games with equal tables agree on.
         static uint64_t said_ns;
         if (now - said_ns >= SEC) {
@@ -840,6 +855,7 @@ void coop_enemy_net(void) {
         }
     }
     plat_mutex_unlock(&en_lock);
+    STAGE(0), atomic_store(&tick_out_ns, en_now());
 }
 
 // Whether p is within m of a live enemy this game runs (coop_world.c coop_near_my_enemy, for the object mirror's
@@ -894,6 +910,12 @@ void coop_enemy_phase0(Cpu *c) {
 int coop_enemy_calc(Cpu *c) {
     if (!coop_enemy_new()) return 0;
     uint64_t actor = c->x[0];
+    {
+        static _Atomic uint64_t said_ns;
+        uint64_t now = en_now(), in = atomic_load_explicit(&tick_in_ns, memory_order_relaxed), out = atomic_load_explicit(&tick_out_ns, memory_order_relaxed), said = atomic_load_explicit(&said_ns, memory_order_relaxed);
+        if (in && now > in + 3 * SEC && now > out + 3 * SEC && now > said + 10 * SEC && atomic_compare_exchange_strong(&said_ns, &said, now))
+            rt_log("coop: en: the net tick has not come round for %.1f s: it %s (stage %d)", (double)(now - in) / 1e9, out >= in ? "is not called" : "stands inside the enemy sync", atomic_load(&tick_stage));
+    }
     EnCell *m = actor ? map_touch(actor) : NULL;
     if (!m) return 0;
     atomic_store_explicit(&m->frame, coop_sess_frame_no(), memory_order_relaxed);
