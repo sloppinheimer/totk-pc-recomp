@@ -638,7 +638,8 @@ void en_copy_phase0(Cpu *c) {
             n_owned++, passed_sum += let;
             gmc_log(e->actor, "run here");
             if (e->life == EN_LIVE) { uint32_t rf = atomic_load(&m->run_frame); n_think++; if (rf && (!newest_run || (int32_t)(rf - newest_run) > 0)) newest_run = rf; }
-            if (now - e->log_ns >= SEC / 10) {
+            // (ten samples a second; every frame while it moves faster than 4 m/s, so the report can place a fast enemy)
+            if (now - e->log_ns >= SEC / 10 || s->s.vel[0] * s->s.vel[0] + s->s.vel[1] * s->s.vel[1] + s->s.vel[2] * s->s.vel[2] > 16.f) {
                 char cmd[40] = "";
                 anim_cmd(anim_slot(anim_g(e->actor), 0), cmd, sizeof cmd);
                 e->log_ns = now;
@@ -759,7 +760,7 @@ void en_copy_phase0(Cpu *c) {
                 for (int k = 0; k < EN_EQ_N; k++) if (eq[k]) m->eq_tries[k] = 0;   // (it holds it: a later loss may be made good again)
             }
         }
-        if (now - e->log_ns >= SEC / 10) {
+        if (now - e->log_ns >= SEC / 10 || sl->s.vel[0] * sl->s.vel[0] + sl->s.vel[1] * sl->s.vel[1] + sl->s.vel[2] * sl->s.vel[2] > 16.f) {
             char cmd[40] = "";
             anim_cmd(anim_slot(anim_g(e->actor), 0), cmd, sizeof cmd);
             int cur = 0;
