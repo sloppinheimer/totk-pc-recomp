@@ -441,7 +441,7 @@ void en_copy_phase0(Cpu *c) {
                 d2 += d * d;
                 s->s.vel[k] = dt > 0.001 && dt < 0.2 ? (float)(d / dt) : 0;
             }
-            if (was_ns && d2 > 5.f * 5.f) e->teleports++, memset(s->s.vel, 0, 12);   // (a jump: not a path to follow)
+            if (was_ns && d2 > 1.5f * 1.5f) e->teleports++, memset(s->s.vel, 0, 12);   // (a jump, 1.5 m in a frame: not a path to follow; a Yiga footsoldier's blinks of 3 m were shown as a slide)
             s->s.teleports = e->teleports;
             uint32_t cmds[EN_SLOT_N];
             for (int k = 0; k < EN_SLOT_N; k++) cmds[k] = s->sl[k].cmd;

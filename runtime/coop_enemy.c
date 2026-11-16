@@ -144,6 +144,13 @@ int en_cell_state(uint64_t actor) {
     EnCell *m = actor > 1 ? en_cell_of(actor) : NULL;
     return m ? atomic_load_explicit(&m->state, memory_order_relaxed) : EM_FREE;
 }
+// For the other syncs (the element sync asks who decides for an enemy actor): 0 not an enemy this sync knows, 1 this
+// game decides for it (it runs it for all, or it is unsynced and this game's own), 2 a copy of another game's enemy
+// (or held for a moment before that is known).
+int coop_enemy_role(uint64_t actor) {
+    int st = en_cell_state(actor);
+    return st == EM_FREE ? 0 : st == EM_COPY || st == EM_NEW ? 2 : 1;
+}
 // The cell of an actor at its calc, made when the actor is of a listed kind and has none. Only the actor's own update
 // thread inserts it, so one actor is never inserted twice at once.
 static EnCell *map_touch(uint64_t actor) {
