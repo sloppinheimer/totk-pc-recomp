@@ -42,7 +42,7 @@ typedef struct {
     uint32_t index_arg;           // prepare's third argument
     uint64_t actor, q_addr;       // capture: the enemy; where the block stood in the owner's game
     Enid id; int64_t ns;
-    int cell;                     // copy: the cell it is due on
+    int cell, tries;              // copy: the cell it is due on; prepares the game refused
     uint64_t taken_ns;            // copy: when it was taken from the owner
     float va[3], vb[3];
     uint8_t q[Q_SZ];
@@ -51,7 +51,8 @@ typedef struct {
 static Shot shots[SHOT_N];
 static _Atomic uint32_t n_cap, n_sent, n_big, n_taken, n_done, n_miss;
 
-typedef struct { Enid id; int64_t ns; uint32_t key; int32_t idx; uint32_t index_arg; uint8_t kind, at_shooter, flag, pad; uint64_t q_addr; float va[3], vb[3]; uint16_t len, pad2[3]; uint8_t z[1000]; } MShot;
+typedef struct { Enid id; int64_t ns; uint32_t key; int32_t idx; uint32_t index_arg; uint8_t kind, at_shooter, flag, pad; uint64_t q_addr; float va[3], vb[3]; uint16_t len, pad2[3]; uint8_t z[1080]; } MShot;
+_Static_assert(sizeof(MShot) <= COOP_CTR_PAYLOAD, "a shot fits one transport payload");
 
 static Shot *shot_take(void) {
     for (int i = 0; i < SHOT_N; i++) { int f = 0; if (atomic_compare_exchange_strong(&shots[i].state, &f, 1)) return &shots[i]; }
@@ -133,6 +134,12 @@ void en_shot_phase0(void) {
                     uint8_t *cell = h->q + 0x30 + k * 0xc8, *text = cell + 0x14;
                     size_t len = strnlen((const char *)text, 0x80);
                     memset(text + len, 0, 0xc8 - 0x14 - len);
+                    // (a cell's pointer to its own text and its capacity of 0x80 are the same in every block: left out,
+                    // and written again where the block is rebuilt)
+                    uint64_t tp;
+                    uint32_t cap;
+                    memcpy(&tp, cell + 8, 8), memcpy(&cap, cell + 0x10, 4);
+                    if (tp == h->q_addr + 0x30 + (uint64_t)k * 0xc8 + 0x14 && cap == 0x80) memset(cell + 8, 0, 12);
                 }
                 // the block with its runs of zeros squeezed: (count of zeros u16, count of bytes u16, the bytes) ...
                 int n = 0, at = 0, ok = 1;
@@ -190,7 +197,7 @@ int en_shot_msg(const CoopCtrMsg *m, int from) {
     if (!ok) { atomic_store(&h->state, 0); return 1; }
     h->actor = 0, h->id = ms->id, h->ns = ms->ns, h->key = ms->key, h->idx = ms->idx, h->index_arg = ms->index_arg, h->kind = ms->kind, h->at_shooter = ms->at_shooter, h->flag = ms->flag, h->q_addr = ms->q_addr;
     memcpy(h->va, ms->va, 12), memcpy(h->vb, ms->vb, 12);
-    h->cell = -1, h->taken_ns = en_now();
+    h->cell = -1, h->tries = 0, h->taken_ns = en_now();
     atomic_fetch_add(&n_taken, 1);
     atomic_store(&h->state, 2);
     return 1;
@@ -203,6 +210,11 @@ void en_shot_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         for (int i = 0; i < SHOT_N; i++) {
             Shot *h = &shots[i];
             if (atomic_load_explicit(&h->state, memory_order_relaxed) != 3 || h->cell != cell || h->kind != pass) continue;
+            if (pass == 2) {   // (a shoot waits for the prepare of its record that is still being tried)
+                int waits = 0;
+                for (int k = 0; k < SHOT_N; k++) waits |= k != i && atomic_load_explicit(&shots[k].state, memory_order_relaxed) == 3 && shots[k].cell == cell && shots[k].kind == 1 && shots[k].key == h->key && shots[k].idx == h->idx;
+                if (waits) continue;
+            }
             uint64_t s = coop_rd_ptr(en_comps(actor) + 0x448), r = s ? rec_at(s, h->key, h->idx) : 0;
             static __thread _Alignas(16) uint8_t q[Q_SZ];
             static __thread _Alignas(16) float va[4], vb[4];
@@ -219,18 +231,35 @@ void en_shot_precalc(Cpu *c, uint64_t actor, EnCell *m) {
                     else continue;
                     memcpy(q + k, &v, 8);
                 }
+                for (int k = 0; k < 32; k++) {   // the cells' own pointers and capacities
+                    uint8_t *cell = q + 0x30 + k * 0xc8;
+                    uint64_t tp;
+                    uint32_t cap = 0x80;
+                    memcpy(&tp, cell + 8, 8);
+                    if (!tp) tp = here + 0x30 + (uint64_t)k * 0xc8 + 0x14, memcpy(cell + 8, &tp, 8), memcpy(cell + 0x10, &cap, 4);
+                }
                 at_shooter = h->at_shooter;
                 memcpy(va, h->va, 12), memcpy(vb, h->vb, 12);
                 uint64_t x[31], sp = c->sp, pc = c->pc;
                 memcpy(x, c->x, sizeof x);
                 if (h->kind == 1) ret = rt_call(c, MOD_MAIN_BASE + FN_PREPARE, 4, s, r, (uint64_t)h->index_arg, here);
                 else ret = rt_call(c, MOD_MAIN_BASE + FN_SHOOT, 6, s, r, here, (uint64_t)(uintptr_t)va, (uint64_t)h->flag, (uint64_t)(uintptr_t)vb);
+                if (h->kind == 1 && !(ret & 1) && h->tries < 150) {
+                    // Refused: the record's projectile is not there to wake. Arrows and thrown things are made on request
+                    // (main+0x1bfd6a8(S, key, count, flag), which an archer's graph asks all the time and a copy's never):
+                    // asked here as the owner's game asks it, and the prepare is tried again for up to 150 frames (the first
+                    // arrow of a copy came after more than 45).
+                    if (!h->tries++) rt_call(c, MOD_MAIN_BASE + 0x1bfd6a8, 4, s, (uint64_t)h->key, (uint64_t)0xff, (uint64_t)1);
+                    memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
+                    continue;
+                }
                 memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
                 atomic_fetch_add(&n_done, 1);
             } else atomic_fetch_add(&n_miss, 1);
             if (atomic_load(&n_done) + atomic_load(&n_miss) <= 12)
                 rt_log("coop: en: shot: the copy %llx %s its projectile %08x/%d as its owner's did: %s (the call answered %llx)", (unsigned long long)actor, h->kind == 2 ? "shoots" : "prepares", h->key, h->idx,
                        r ? "made" : "no such record here", (unsigned long long)ret);
+            if (r && h->tries) rt_log("coop: en: shot: (the projectile was asked for first: %d frames)", h->tries);
             atomic_store(&h->state, 0);
         }
 }

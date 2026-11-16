@@ -276,7 +276,7 @@ void en_log_own(const En *e, const char *what, const char *why) {
 
 // ---- Peers and sending ------------------------------------------------------------------------------------------------
 #define OUT_N 256
-typedef struct { uint8_t type; uint16_t len; uint8_t d[1100]; } OutMsg;
+typedef struct { uint8_t type; uint16_t len; uint8_t d[COOP_CTR_PAYLOAD]; } OutMsg;
 static struct {
     uint64_t inc;
     uint8_t ready, cap_bad, sync_end, burst_owed, was_loading, index_bad, state;
