@@ -437,3 +437,45 @@ kill flags untouched). It is not repaired. Order of work:
 2. Build the enemy sync new, in co-op files (`coop_enemy*.c`), on the transport and the ownership rule the contraption
    sync uses, with the record of section 13 and the bench first.
 3. Delete the old enemy logic when the new one passes its bench; keep its probes as test tools.
+
+## 16. What the specification's review and runs 9 to 12 changed (2026-11-15)
+
+Where a section above says otherwise, this section holds.
+
+- **Ownership is per enemy, not per pack** (3.1). A camp member can exist in one game only, and a rule that hands a
+  whole camp to one owner then moves it back and forth with some member simulated nowhere. A game owns only what it
+  runs; a camp may be split between owners; what an enemy holds and makes still follows it.
+- **Claiming** (3.2): a new actor is held unthinking from its first update, claimed and declared at once, and
+  released when no greater claim came for a short time; an owner that already fought an enemy keeps it against a
+  newcomer's first claim.
+- **A paused owner** (3.3) is claimed from after 1 s only by a game whose player is in that fight, else after 5 s,
+  and the enemy is given back when the owner runs again.
+- **Identity over time** (11.1): the life number is 1 + the blood moons of the session, not a count of actors seen.
+  Every game keeps a tombstone for each placed enemy that died and a resting record for each that was let go.
+- **Placed actors** (11.2, 11.3): the mod never creates or deletes the actor of a placed enemy; a copy is the actor
+  the game's own placement made. A placement whose two saves give different actor names is unsynced until a run
+  shows it can be replaced.
+- **Kills** (11.5) come with death, not later: at a copy's death end the placement's own dead call is made on the
+  copy's actor before it goes.
+- **Hits** (8.1): taken out of a copy and appended at the owner inside the damage step (main+0x300a30), released the
+  game's way, once per swing, only by the game whose own attack it was; a hit that reaches a game that no longer
+  owns the enemy is sent on.
+- **The flinch** (8.2, 5.6): measured in a play test, a hit makes an enemy flinch with every graph off and no
+  animation started. It is physics on the bones. The owner sends bones for a short time after a hit; in the hitter's
+  own game the copy may flinch by itself.
+- **Death at a copy** (9.2): measured, a switched-off enemy whose life reaches 0 waits at the death's third phase.
+  The owner states the committed causes read from the death state; the mod gives the copy the signal the graph
+  would have given.
+- **The switch** (4): measured in melee, while hit and while dying, on placed enemies: only the scheduler, the
+  utility and the brain's first-tick call are ever reached, and turned away. No field of the BSA is held beyond the
+  four writes. An enemy released from the switch goes on with its fight.
+- **Motion** (5.2, 5.3): states at 30 a second with counters for teleports and landings; the time stamp is the frame
+  the values describe; the clock offset is a filtered minimum that never jumps forward.
+- **A copy's attack** (8.3) may hurt only this game's player and what is this game's; the test is made at the
+  victim.
+- **The target** (9.4, 2): no run has shown an enemy fighting a stand-in; the rule is written after one has.
+- **The bench** (7, 13) runs every case with a simulated network as well, and pairs the two games by the PC's
+  clock, not by the copy's own estimate of the owner's.
+- **Groundwork first**: the message transport had one reader, the old enemy sync has no off switch and shares code
+  with the mount sync and the object mirror, and the object mirror cannot be told of an object. These come before
+  anything of the sync.
