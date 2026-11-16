@@ -511,6 +511,27 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         }
         en_hit_leave(actor, m);
         if (body && m->body_static) coop_guest_call(c, MOD_MAIN_BASE + FN_MOTION_TYPE, body, 2, 0, 0);
+        {   // It is drawn again, with what it holds: the game that takes an enemy over when its owner left or paused may get
+            // it unseen, and its own graphs would not know to show it.
+            uint64_t who[1 + EN_EQ_N * 2], eu = coop_rd_ptr(en_comps(actor) + 0x230);
+            int nw = 0;
+            uint8_t zero = 0;
+            who[nw++] = actor;
+            for (int k = 0; eu && k < EN_EQ_N; k++) {
+                uint64_t ref = coop_rd_ptr(eu + 0x20 + (uint64_t)k * 0x18 + 8), w = ref ? coop_rd_ptr(ref + 0x40) : 0;
+                if (!w) continue;
+                who[nw++] = w;
+                uint64_t wc = coop_rd_ptr(en_comps(w) + 0x208), aref = wc ? coop_rd_ptr(wc + 0xb0 + 8) : 0, att = aref ? coop_rd_ptr(aref + 0x40) : 0;
+                if (att) who[nw++] = att;
+            }
+            for (int k = 0; k < nw; k++) {
+                uint64_t gmc = coop_rd_ptr(en_comps(who[k]) + 0x280);
+                uint8_t hm = 0;
+                if (!gmc || !coop_rd(gmc + 0x9d, &hm, 1) || !hm) continue;
+                memcpy((void *)(uintptr_t)(gmc + 0x9d), &zero, 1);
+                __atomic_fetch_or((uint32_t *)(uintptr_t)(gmc + 0xac), 0x200u, __ATOMIC_SEQ_CST);
+            }
+        }
         m->sw_on = m->sw_saved = m->body_static = m->pinned = 0;
         memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
         return;

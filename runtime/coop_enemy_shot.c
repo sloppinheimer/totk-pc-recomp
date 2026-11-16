@@ -86,6 +86,7 @@ static uint64_t rec_at(uint64_t s, uint32_t key, int32_t idx) {
     return 0;
 }
 
+static void watch_add(uint64_t r, uint32_t key, int copy);
 // An enemy's equipment: what slot k holds, and what is fused to it (the link at +0xb0 of the weapon's [comps+0x208]).
 static uint64_t held_of(uint64_t enemy, int k, int fused) {
     uint64_t eu = coop_rd_ptr(en_comps(enemy) + 0x230), ref = eu ? coop_rd_ptr(eu + 0x20 + (uint64_t)k * 0x18 + 8) : 0, w = ref ? coop_rd_ptr(ref + 0x40) : 0;
@@ -119,6 +120,17 @@ int en_shot_hook(Cpu *c, uint64_t off, EnCell *m) {
     deep = 1, c->pc = MOD_MAIN_BASE + off;
     rt_dispatch(c);
     deep = 0;
+    {
+        static _Atomic int said;
+        float rv[12] = {0};
+        uint8_t rb[8] = {0};
+        coop_rd(r + 0x7c, rv, sizeof rv), coop_rd(r + 0xd8, rb, 8);
+        if (atomic_fetch_add(&said, 1) < 16)
+            rt_log("coop: en: shot: this game's %s (shooter %u) answered %llx; given %.2f %.2f %.2f flag %u target %.2f %.2f %.2f; record +0x7c: %.2f %.2f %.2f | %.2f %.2f %.2f | %.2f %.2f %.2f | %.2f %.2f %.2f; +0xd8: %02x %02x %02x %02x %02x %02x %02x %02x",
+                   off == FN_SHOOT ? "shoot" : "prepare", via, (unsigned long long)c->x[0], va[0], va[1], va[2], flag, vb[0], vb[1], vb[2], rv[0], rv[1], rv[2], rv[3], rv[4], rv[5], rv[6], rv[7], rv[8], rv[9], rv[10], rv[11],
+                   rb[0], rb[1], rb[2], rb[3], rb[4], rb[5], rb[6], rb[7]);
+    }
+    if (off == FN_SHOOT) { uint32_t k0 = 0; int32_t i0 = 0; if (rec_where(s, r, &k0, &i0)) watch_add(r, k0, 0); }
     if (!h) return 1;
     if (!(off == FN_SHOOT || (c->x[0] & 1)) || !rec_where(s, r, &h->key, &h->idx)) { atomic_store(&h->state, 0); return 1; }   // (a prepare the game refused is not stated)
     h->kind = off == FN_SHOOT ? 2 : 1, h->flag = flag, h->index_arg = index_arg, h->actor = actor, h->via = via, h->q_addr = q, h->ns = (int64_t)coop_sess_frame_ns();
@@ -129,12 +141,48 @@ int en_shot_hook(Cpu *c, uint64_t off, EnCell *m) {
     return 1;
 }
 
+// The record: where a shot projectile is 1, 10, 30 and 60 frames after its shoot, in the game that shot it and on a copy
+// (the first 24 shots of each kind), so the two games' flights can be laid side by side.
+static struct { _Atomic uint64_t proj; uint64_t rec; uint32_t frame, key; uint8_t copy; } watch[8];
+static void watch_add(uint64_t r, uint32_t key, int copy) {
+    static _Atomic int n;
+    uint64_t ref = coop_rd_ptr(r + 0x28), proj = ref ? coop_rd_ptr(ref + 0x40) : 0;
+    if (!proj || atomic_fetch_add(&n, 1) >= 24) return;
+    for (int i = 0; i < 8; i++) { uint64_t z = 0; if (atomic_compare_exchange_strong(&watch[i].proj, &z, 1)) { watch[i].frame = coop_sess_frame_no(), watch[i].rec = r, watch[i].key = key, watch[i].copy = (uint8_t)copy; atomic_store(&watch[i].proj, proj); return; } }
+}
+static void watch_phase0(void) {
+    uint32_t frame = coop_sess_frame_no();
+    for (int i = 0; i < 8; i++) {
+        uint64_t p = atomic_load(&watch[i].proj);
+        uint32_t d = frame - watch[i].frame;
+        if (p <= 1) continue;
+        if (d <= 6 || d == 10 || d == 30 || d == 60) {
+            float q[3] = {0};
+            int32_t st = -1;
+            uint8_t hm = 0;
+            char nm[40] = "";
+            uint64_t gmc = coop_rd_ptr(en_comps(p) + 0x280);
+            coop_rd(p + COOP_ACTOR_POS, q, 12), coop_rd(p + COOP_ACTOR_STATE, &st, 4);
+            if (gmc) coop_rd(gmc + 0x9b, &hm, 1);
+            uint64_t sc = coop_rd_ptr(en_comps(p) + 0x440), lk[3] = {0};
+            uint32_t scst = 0, sc340 = 0;
+            uint8_t rdf = 0xff, rde = 0xff;
+            if (sc) coop_rd(sc + 0x70, lk, sizeof lk), coop_rd(sc + 0x24, &scst, 4), coop_rd(sc + 0x340, &sc340, 4);
+            coop_rd(watch[i].rec + 0xdf, &rdf, 1), coop_rd(watch[i].rec + 0xde, &rde, 1);
+            rt_log("coop: en: shot: flight of %s %08x (%s) +%u frames: at %.2f %.2f %.2f, actor state %d, hidden mask %02x; its component state %u, flags %x, shooter link %llx %llx %llx; record state %u kind %u", coop_actor_name(p, nm, sizeof nm), watch[i].key, watch[i].copy ? "copy" : "run here", d, q[0], q[1], q[2], (int)st, hm,
+                   scst, sc340, (unsigned long long)lk[0], (unsigned long long)lk[1], (unsigned long long)lk[2], rdf, rde);
+        }
+        if (d > 60) atomic_store(&watch[i].proj, 0);
+    }
+}
+
 // ---- Phase 0: captures go out; what was taken becomes due at T -----------------------------------------------------------
 static int64_t peer_T[COOP_MAX_PLAYERS + 1];
 void en_shot_T(int id, int64_t t) { if (id >= 1 && id <= COOP_MAX_PLAYERS) peer_T[id] = t; }   // from en_copy_phase0, once a frame
 
 void en_shot_phase0(void) {
     uint64_t me = coop_ctr_me();
+    watch_phase0();
     for (int i = 0; i < SHOT_N; i++) {
         Shot *h = &shots[i];
         if (atomic_load(&h->state) != 2) continue;
@@ -151,7 +199,10 @@ void en_shot_phase0(void) {
                 for (int k = 0; k < 32; k++) {
                     uint8_t *cell = h->q + 0x30 + k * 0xc8, *text = cell + 0x14;
                     size_t len = strnlen((const char *)text, 0x80);
-                    memset(text + len, 0, 0xc8 - 0x14 - len);
+                    // (the text's own 0x80 bytes only: the request's numbers at Q+0x1920 lie in the last cell's padding, and
+                    // zeroing the padding sent every shot with attack type 0 and no key: a rod's flame then ended where it began)
+                    memset(text + len, 0, 0x80 - len);
+                    memset(cell + 0x94, 0, k < 31 ? 0xc8 - 0x94 : 0x1920 - (0x30 + 31 * 0xc8 + 0x94));   // (the padding, as far as it is padding)
                     // (a cell's pointer to its own text and its capacity of 0x80 are the same in every block: left out,
                     // and written again where the block is rebuilt)
                     uint64_t tp;
@@ -277,8 +328,17 @@ void en_shot_precalc(Cpu *c, uint64_t actor, EnCell *m) {
                     continue;
                 }
                 memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
+                if (h->kind == 2) watch_add(r, h->key, 1);
                 atomic_fetch_add(&n_done, 1);
             } else atomic_fetch_add(&n_miss, 1);
+            if (r && atomic_load(&n_done) <= 16) {
+                float rv[12] = {0};
+                uint8_t rb[8] = {0};
+                coop_rd(r + 0x7c, rv, sizeof rv), coop_rd(r + 0xd8, rb, 8);
+                rt_log("coop: en: shot: the copy's %s: given %.2f %.2f %.2f flag %u target %.2f %.2f %.2f; record +0x7c: %.2f %.2f %.2f | %.2f %.2f %.2f | %.2f %.2f %.2f | %.2f %.2f %.2f; +0xd8: %02x %02x %02x %02x %02x %02x %02x %02x",
+                       h->kind == 2 ? "shoot" : "prepare", h->va[0], h->va[1], h->va[2], h->flag, h->vb[0], h->vb[1], h->vb[2], rv[0], rv[1], rv[2], rv[3], rv[4], rv[5], rv[6], rv[7], rv[8], rv[9], rv[10], rv[11],
+                       rb[0], rb[1], rb[2], rb[3], rb[4], rb[5], rb[6], rb[7]);
+            }
             if (atomic_load(&n_done) + atomic_load(&n_miss) <= 12)
                 rt_log("coop: en: shot: the copy %llx %s its projectile %08x/%d as its owner's did: %s (the call answered %llx)", (unsigned long long)actor, h->kind == 2 ? "shoots" : "prepares", h->key, h->idx,
                        r ? "made" : "no such record here", (unsigned long long)ret);

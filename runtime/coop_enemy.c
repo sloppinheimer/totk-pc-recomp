@@ -569,6 +569,9 @@ static void handover(En *e, uint64_t now) {
     uint8_t status = 0;
     uint64_t bsa = en_bsa(e->actor);
     if (bsa && coop_rd(bsa + 0x26a8, &status, 1) && (status == 1 || status == 2)) return;
+    // Nor while it is not drawn: a Wizzrobe handed over in its unseen flight stayed in it for good in the game that
+    // took it (its graphs there started from nothing in the middle of the warp; a play session, 2026-11-16).
+    if (e->cur.hide) return;
     e->offered = 1, e->offer_all = 0, e->offer_to = peer[to].inc, e->offer_ns = now, e->hit_by_ns = 0;
     row_send(to, ENM_OFFER, e, 0);
     rt_log("coop: en: own: %s %016llx/%u epoch %u offered to player %d (its Link is %.1f m from it, this game's %.1f m)", e->name, (unsigned long long)e->id.a, e->id.b, e->epoch, to, best, dm);
