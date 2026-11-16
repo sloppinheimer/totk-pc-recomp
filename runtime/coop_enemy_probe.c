@@ -25,6 +25,10 @@
 // every calc (ForceSetMatrix) along a circle of 2 m radius at 1.5 m/s, facing along it. Every second:
 //   coop: enprobe: pose: ...             how far the actor and its body were from the pose asked the frame before
 //       (mean and worst of the second). At the end the body is made dynamic again.
+// TOTK_COOP_TEST_ENPROBE=7 (a play test): the tester holds the switch. Home (or numpad 0) turns the copy switch on
+// for the enemy of the probe's name nearest this Link at that moment (it becomes the target), Home again turns it
+// off and gives the interrupt graph back what the writes overwrote; then another enemy can be taken. The state line
+// also says the target's life points and its death state word, so a hit or a kill of a switched-off enemy shows.
 // TOTK_COOP_TEST_ENPROBE=6 (run 4, design section 6.3): as 3, and animation commands are given to the target as a
 // copy would get them: 5 s into the switch "Run" by the game's play request (main+0x4dc628, slot 0), at 12 s the
 // current blend controller's clock is written to 0 with the "do not advance" flag, at 18 s "Wait", at 22 s "Run"
@@ -48,7 +52,7 @@ static const char *const h_name[H_N] = { "node tick", "runner 50b404", "runner 4
 
 static int probe_mode(void) {
     static int m = -1;
-    if (m < 0) { const char *e = cfg_get("TOTK_COOP_TEST_ENPROBE"); m = e && *e >= '1' && *e <= '6' ? *e - '0' : 0; }
+    if (m < 0) { const char *e = cfg_get("TOTK_COOP_TEST_ENPROBE"); m = e && *e >= '1' && *e <= '7' ? *e - '0' : 0; }
     return m;
 }
 
@@ -61,12 +65,19 @@ static uint32_t frames, frames_at_dump;
 static _Atomic uint32_t calc_t, calc_me;   // calcs of the target and of this Link since the last dump
 static _Atomic uint64_t me_actor;
 static uint64_t picked_ns, last_dump_ns;
+int input_mark_key(void);   // input_win.c: Home or numpad 0 is down
+static _Atomic uint64_t man_until, man_best;   // mode 7: the frame window in which the nearest enemy is looked for
+static _Atomic uint32_t man_best_d;            // its distance, mm
+static int man_prev;
 // run 3 (the pose-driven body)
 static float pose_p0[3], pose_last[3], pose_err_sum, pose_err_max, pose_berr_max;
 static int pose_n, pose_started, pose_asked;
 static uint64_t pose_t0;
 
 typedef struct { uint64_t ctrl; char label[40]; } Known;
+static int inl_saved;
+static uint32_t inl_count;
+static uint16_t inl_bits;
 static Known known[96];
 static int known_n;
 
@@ -137,6 +148,7 @@ static void pick(uint64_t actor, uint64_t sched) {
            (unsigned long long)rec, (unsigned long long)rc, label_of(rc), (unsigned long long)mc, label_of(mc), (unsigned long long)cur,
            (unsigned long long)c48, (int)idx48, (unsigned long long)c90);
     memset(rows, 0, sizeof rows);
+    inl_saved = 0;
     frames = frames_at_dump = 0;
     picked_ns = last_dump_ns = plat_now_ns();
     atomic_store(&me_actor, coop_player_actor());
@@ -182,6 +194,18 @@ static void dump(void) {
         if (cp && coop_rd(cp, cmd, sizeof cmd - 1)) { cmd[sizeof cmd - 1] = 0; for (char *q = cmd; *q; q++) if (*q < 0x20 || *q >= 0x7f) { *q = 0; break; } }
         uint8_t st = 0xff;
         coop_rd(t + COOP_ACTOR_STATE, &st, 1);
+        {
+            int32_t hp = -1;
+            uint32_t dw = 0;
+            uint16_t db = 0;
+            uint64_t lcomp = coop_rd_ptr(comps + 0x2f8), dcomp = coop_rd_ptr(comps + 0x1c8);
+            coop_rd(coop_rd_ptr(lcomp + 0x1830) + 8, &hp, 4);
+            if (dcomp) coop_rd(dcomp + 0x20, &dw, 4), coop_rd(dcomp + 0x2c, &db, 2);
+            uint8_t sb[5] = {0};
+            coop_rd(bsa + 0x26a8, sb, 5);
+            rt_log("coop: enprobe: life: %d points; death state word %08x (phase %u), switches %04x; slot status %u %u %u %u %u", (int)hp, dw, (dw >> 1) & 7, db,
+                   sb[0], sb[1], sb[2], sb[3], sb[4]);
+        }
         rt_log("coop: enprobe: state: at %.1f %.1f %.1f, %.1f m from this Link, life %d, brain verb 0x%x, slot 0 plays '%s', actor state %u; calcs: the target %u, this Link %u",
                a[0], a[1], a[2], sqrtf(dx * dx + dy * dy + dz * dz), (int)life, (unsigned)verb, cmd, st,
                atomic_exchange(&calc_t, 0), atomic_exchange(&calc_me, 0));
@@ -308,9 +332,6 @@ static void anim_drive(Cpu *c, uint64_t actor, double on_s) {   // before the ta
 }
 
 // Section 4's four writes: the runner the actor's calc holds inline finds nothing to run.
-static int inl_saved;
-static uint32_t inl_count;
-static uint16_t inl_bits;
 static void empty_inline(uint64_t actor) {
     uint64_t bsa = coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x158), rec = bsa ? coop_rd_ptr(bsa + 0x2618) : 0;
     uint64_t ctrl = rec ? coop_rd_ptr(rec + 0x18) : 0, inst = ctrl ? coop_rd_ptr(coop_rd_ptr(ctrl + 0x20)) : 0;
@@ -345,6 +366,10 @@ int coop_enemy_shared(Cpu *c, uint64_t off) {
         if (c->x[0] == atomic_load(&me_actor)) atomic_fetch_add(&calc_me, 1);
         if (c->x[0] != t) return 0;
         atomic_fetch_add(&calc_t, 1);
+        if (probe_mode() == 7) {   // the tester's key decided (coop_enemy_hook); here only the writes
+            if (atomic_load(&switch_on)) empty_inline(t);
+            return 0;
+        }
         if (probe_mode() >= 2) {
             uint64_t s = (plat_now_ns() - picked_ns) / 1000000000ull;
             int on = s >= 4 && s < 34;   // (a spawned enemy runs off within 10 s: the switch comes before)
@@ -397,7 +422,54 @@ int coop_enemy_hook(Cpu *c, uint64_t off) {
     case 0x44ff30: {
         hook = H_SCHED;
         actor = coop_rd_ptr(c->x[0] + 0xb70);
-        if (!t && actor) {   // choose the target: the scheduler runs once a frame for every enemy that thinks
+        if (probe_mode() == 7 && actor) {
+            static const char *want7;
+            if (!want7) { want7 = cfg_get("TOTK_COOP_TEST_ENPROBE_NAME"); if (!want7 || !*want7) want7 = "Enemy_Bokoblin"; }
+            uint64_t now = plat_now_ns(), until = atomic_load(&man_until);
+            static atomic_flag key_busy = ATOMIC_FLAG_INIT;
+            if (!atomic_flag_test_and_set(&key_busy)) {   // the key's edge, looked at by one thread at a time
+                int down = input_mark_key();
+                if (down && !man_prev && !until) {
+                    if (atomic_load(&switch_on)) {   // off: the interrupt graph gets its two values back, the target is let go
+                        uint64_t t0 = atomic_load(&target);
+                        uint64_t bsa0 = coop_rd_ptr(coop_rd_ptr(t0 + 0x228) + 0x158), rec = bsa0 ? coop_rd_ptr(bsa0 + 0x2618) : 0;
+                        uint64_t ctrl0 = rec ? coop_rd_ptr(rec + 0x18) : 0, inst = ctrl0 ? coop_rd_ptr(coop_rd_ptr(ctrl0 + 0x20)) : 0;
+                        atomic_store(&switch_on, 0);
+                        if (inst && inl_saved) memcpy((void *)(uintptr_t)(inst + 0x90), &inl_count, 4), memcpy((void *)(uintptr_t)(inst + 0xd8), &inl_bits, 2);
+                        rt_log("coop: enprobe: KEY: the copy switch goes off for the target %llx (queue count %u and bits %x put back)", (unsigned long long)t0, inl_count, inl_bits);
+                    } else {   // on: look for the nearest enemy over the next 50 ms
+                        atomic_store(&man_best, 0), atomic_store(&man_best_d, 0xffffffffu);
+                        atomic_store(&man_until, now + 50000000ull);
+                        rt_log("coop: enprobe: KEY: looking for the nearest %s", want7);
+                    }
+                }
+                man_prev = down;
+                if (until && now >= until) {   // the window is over: the nearest becomes the target
+                    uint64_t best = atomic_load(&man_best);
+                    atomic_store(&man_until, 0);
+                    if (best && best == actor) {
+                        atomic_store(&target, 0);
+                        pick(actor, c->x[0]), t = actor;
+                        atomic_store(&switch_on, 1);
+                        rt_log("coop: enprobe: KEY: the copy switch goes ON for %llx, %.1f m from this Link", (unsigned long long)actor, atomic_load(&man_best_d) / 1000.0);
+                    } else if (best) atomic_store(&man_until, now + 1);   // committed by the best one's own scheduler call
+                    else rt_log("coop: enprobe: KEY: no enemy of that name runs near this Link");
+                }
+                atomic_flag_clear(&key_busy);
+            }
+            if (until && now < until) {
+                char nm[64] = "";
+                coop_actor_name(actor, nm, sizeof nm);
+                uint64_t me = coop_player_actor();
+                float a[3], b[3];
+                if (me && !strncmp(nm, want7, strlen(want7)) && coop_rd(actor + COOP_ACTOR_POS, a, 12) && coop_rd(me + COOP_ACTOR_POS, b, 12)) {
+                    float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+                    uint32_t d = (uint32_t)(sqrtf(dx * dx + dy * dy + dz * dz) * 1000.f), was = atomic_load(&man_best_d);
+                    while (d < was && !atomic_compare_exchange_weak(&man_best_d, &was, d)) { }
+                    if (d < was) atomic_store(&man_best, actor);
+                }
+            }
+        } else if (!t && actor) {   // choose the target: the scheduler runs once a frame for every enemy that thinks
             static const char *want;
             if (!want) { want = cfg_get("TOTK_COOP_TEST_ENPROBE_NAME"); if (!want || !*want) want = "Enemy_Bokoblin"; }
             char nm[64] = "";
@@ -412,6 +484,32 @@ int coop_enemy_hook(Cpu *c, uint64_t off) {
         }
         if (actor && actor == t) frames++, dump();
         break;
+    }
+    case 0x4dc628: case 0x2935064: case 0x2935084: case 0x2934934: {
+        // mode 7: every animation start (and slot removal) on the target, with who asked: what plays on an enemy whose
+        // graphs are off when it is hit. main+0x4dc628 takes a request (actor +0, name +8, slot +0x10, rate +0x14); the
+        // other three take the animation player (x0), compared with the target's.
+        if (probe_mode() != 7 || !t) return 0;
+        static _Atomic int said;
+        uint64_t g = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(t + 0x228) + 0x40) + 0x18) + 0x18);
+        char nm[40] = "";
+        uint32_t slot = 0xffffffffu;
+        float rate = 0;
+        if (off == 0x4dc628) {
+            if (coop_rd_ptr(c->x[0]) != t) return 0;
+            uint64_t np = coop_rd_ptr(c->x[0] + 8);
+            if (np) coop_rd(np, nm, sizeof nm - 1);
+            coop_rd(c->x[0] + 0x10, &slot, 4), coop_rd(c->x[0] + 0x14, &rate, 4);
+        } else {
+            if (c->x[0] != g) return 0;
+            if (off != 0x2934934) { uint64_t np = coop_rd_ptr(c->x[1]); if (np) coop_rd(np, nm, sizeof nm - 1); }
+            slot = (uint32_t)c->x[off == 0x2934934 ? 1 : 2];
+        }
+        for (char *q = nm; *q; q++) if (*q < 0x20 || *q >= 0x7f) { *q = 0; break; }
+        if (atomic_fetch_add(&said, 1) < 600)
+            rt_log("coop: enprobe: play: main+%llx '%s' slot %u rate %.2f from main+%llx, the switch %s", (unsigned long long)off, nm, slot, rate,
+                   (unsigned long long)(c->x[30] - MOD_MAIN_BASE), atomic_load(&switch_on) ? "ON" : "off");
+        return 0;
     }
     default: return 0;   // registered for the sync, no test on it yet
     }
