@@ -715,7 +715,7 @@ static void take_msg(const CoopCtrMsg *m) {
     }
     default: {
         void en_hit_msg(const CoopCtrMsg *m, int from);   // coop_enemy_hit.c: events, hits, deaths
-        if (!en_copy_msg(m, from)) en_hit_msg(m, from);
+        if (!en_copy_msg(m, from) && !en_shot_msg(m, from)) en_hit_msg(m, from);
     }
     }
 }
@@ -945,6 +945,7 @@ void coop_enemy_phase0(Cpu *c) {
     own_pass(now, frame);
     en_hit_phase0();
     en_copy_phase0(c);
+    en_shot_phase0();
     out_flush();
     plat_mutex_unlock(&en_lock);
 }

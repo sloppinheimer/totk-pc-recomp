@@ -121,6 +121,13 @@ void en_copy_phase0(Cpu *c);                                   // states read an
 void en_copy_burst(int id);                                    // the command names, to a peer that came
 int en_copy_msg(const CoopCtrMsg *m, int from);                // 1: the message was this file's
 
+// coop_enemy_shot.c
+int en_shot_hook(Cpu *c, uint64_t off, EnCell *m);              // a prepare or a shoot of an enemy this game runs: made here and captured
+void en_shot_T(int id, int64_t t);                             // the time this game shows a peer at, this frame
+void en_shot_phase0(void);
+int en_shot_msg(const CoopCtrMsg *m, int from);
+void en_shot_precalc(Cpu *c, uint64_t actor, EnCell *m);       // a copy makes the stated calls on its own records
+
 // coop_enemy_hit.c
 void en_hit_phase0(void);                                      // hits sent and applied, deaths seen
 void en_hit_precalc(Cpu *c, uint64_t actor, EnCell *m, int off);   // life, death and the put-away on the actor's thread

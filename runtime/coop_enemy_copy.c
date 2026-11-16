@@ -238,6 +238,11 @@ int en_copy_hook(Cpu *c, uint64_t off) {
         // The Shooter component (x0 = S, its owning actor at S+0x18; for main+0xa9c250 x0 is a shot record and w1 its new
         // state): prepare, shoot and request entries, logged for the enemies this sync knows, with what the game that
         // runs the enemy and a copy each do.
+        if (off == 0x1bf9af8 || off == 0x1bfbc44) {   // of an enemy this game runs: made here, captured and stated (coop_enemy_shot.c)
+            uint64_t a0 = coop_rd_ptr(c->x[0] + 0x18);
+            EnCell *m0 = a0 > 0x10000 ? en_cell_of(a0) : NULL;
+            if (m0 && en_shot_hook(c, off, m0)) return 1;
+        }
         static int on = -1;
         static _Atomic int said;
         if (on < 0) on = cfg_get("TOTK_COOP_EN_TEST_SHOTS") != NULL;
@@ -489,6 +494,7 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             rt_log("coop: en: equip: the copy %llx lets go of its %s (slot %d): its owner's enemy holds nothing there (the delete answered %llu)", (unsigned long long)actor, coop_actor_name(held, hn, sizeof hn), k, (unsigned long long)(r & 1));
         }
         en_hit_precalc(c, actor, m, 1);
+        en_shot_precalc(c, actor, m);
     } else {   // held: it stands where it was when the hold began
         if (!m->pinned) en_pose_of(actor, m->pin), m->pinned = 1;
         put(c, actor, m->pin, m->pin + 3);
@@ -619,6 +625,7 @@ void en_copy_phase0(Cpu *c) {
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++) {
         if (newest[id]) coop_sess_clock_sample(id, newest[id]);
         have_t[id] = coop_sess_clock(id, 16666667ull, &T[id], &delay[id], &tele[id]);
+        en_shot_T(id, have_t[id] ? T[id] : 0);
     }
 
     // Pass 2: what each copy shows at T of its owner (S 6.3).
