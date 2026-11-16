@@ -16,7 +16,10 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include "cfg.h"
 
 #include "coop_enemy.h"
 #include "coop_sess.h"
@@ -139,6 +142,38 @@ void en_dead(En *e, const char *why) {
 
 void en_hit_phase0(void) {
     uint64_t me = coop_ctr_me(), now = en_now();
+    {   // Test (TOTK_COOP_EN_TEST_KILL=<s>): that long after this game first ran an enemy, its first one near this Link
+        // loses all its life as if to another player's hit.
+        static int at = -1, done;
+        static uint64_t first_ns;
+        if (at < 0) { const char *v = cfg_get("TOTK_COOP_EN_TEST_KILL"); at = v ? atoi(v) : 0; }
+        uint64_t link = coop_player_actor();
+        float lp[3];
+        for (int i = 0; at && !done && link && coop_rd(link + COOP_ACTOR_POS, lp, 12) && i < EN_N; i++) {
+            En *e = &en_tab[i];
+            if (!e->used || e->owner != me || e->life != EN_LIVE || e->cell < 0) continue;
+            if (!first_ns) first_ns = now;
+            if (now - first_ns < (uint64_t)at * SEC) break;
+            float dx = e->pose[0] - lp[0], dz = e->pose[2] - lp[2];
+            if (dx * dx + dz * dz > 60.f * 60.f) continue;
+            e->pend_dmg += 100000, done = 1;
+            rt_log("coop: en: test: %s %016llx is made to lose all its life", e->name, (unsigned long long)e->id.a);
+        }
+    }
+    {   // Test (TOTK_COOP_EN_TEST_HIT=<s>,<points>): that long after this game first had a copy, it sends a hit of that
+        // many points to the owner of its first live copy, as if its player had struck it.
+        static int at = -1, pts, done;
+        static uint64_t first_ns;
+        if (at < 0) { const char *v = cfg_get("TOTK_COOP_EN_TEST_HIT"); at = v ? atoi(v) : 0; const char *k = v ? strchr(v, ',') : NULL; pts = k ? atoi(k + 1) : 1000; }
+        for (int i = 0; at && !done && i < EN_N; i++) {
+            En *e = &en_tab[i];
+            if (!e->used || e->owner == me || e->life != EN_LIVE || e->cell < 0) continue;
+            if (!first_ns) first_ns = now;
+            if (now - first_ns < (uint64_t)at * SEC) break;
+            atomic_fetch_add(&en_map[e->cell].hit_dmg, pts), done = 1;
+            rt_log("coop: en: test: a hit of %d points is made up on the copy of %s %016llx", pts, e->name, (unsigned long long)e->id.a);
+        }
+    }
     for (int i = 0; i < EN_N; i++) {
         En *e = &en_tab[i];
         if (!e->used || e->life == EN_UNSYNCED || e->cell < 0) continue;

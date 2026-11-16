@@ -115,6 +115,8 @@ void en_pose_of(uint64_t a, float pose[7]) {
     if (coop_rd(a + COOP_ACTOR_ROT, r, 36)) en_quat_of_rot(r, pose + 3);
 }
 
+static uint64_t session_ns;   // when the session with a peer on this sync began (0: none)
+
 // ---- The map: actor -> cell (S 1.1) -----------------------------------------------------------------------------------
 static _Atomic uint64_t not_ours[8192];   // actors seen that are of no listed kind: (actor ^ generation << 44)
 static uint32_t map_h(uint64_t a) { return (uint32_t)((a >> 4) * 2654435761u); }
@@ -136,6 +138,12 @@ int en_cell_state(uint64_t actor) {
 // thread inserts it, so one actor is never inserted twice at once.
 static EnCell *map_touch(uint64_t actor) {
     uint32_t gen = 0;
+    {   // Test (TOTK_COOP_EN_TEST_BLIND=<s>): for that long after the session began this game takes none of its own
+        // actors into the sync, as a player does who comes to a camp after the other has fought there.
+        static int blind = -1;
+        if (blind < 0) { const char *e = cfg_get("TOTK_COOP_EN_TEST_BLIND"); blind = e ? atoi(e) : 0; }
+        if (blind && (!session_ns || en_now() - session_ns < (uint64_t)blind * SEC)) return NULL;
+    }
     if (!coop_rd(actor + 0x10, &gen, 4)) return NULL;
     EnCell *m = en_cell_of(actor);
     if (m) {
@@ -746,7 +754,7 @@ void coop_enemy_net(void) {
     static int was_session, was_loading;
     if (!session) {
         if (was_session) deactivate(0), rt_log("coop: en: no session: every enemy is this game's own, the table is empty");
-        was_session = 0;
+        was_session = 0, session_ns = 0;
         atomic_store(&en_active, 0);
         CoopCtrMsg m;
         while (coop_msg_recv(COOP_MSG_ENEMY, &m)) { }
@@ -754,6 +762,7 @@ void coop_enemy_net(void) {
         return;
     }
     was_session = 1;
+    if (!session_ns) session_ns = now;
     if (loading && !was_loading) deactivate(1), rt_log("coop: en: this game is in a load: its copies are let go and its enemies offered");
     if (!loading && was_loading) {
         load_end_ns = now;
