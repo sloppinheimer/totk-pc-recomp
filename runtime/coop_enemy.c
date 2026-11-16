@@ -151,6 +151,14 @@ int coop_enemy_role(uint64_t actor) {
     int st = en_cell_state(actor);
     return st == EM_FREE ? 0 : st == EM_COPY || st == EM_NEW ? 2 : 1;
 }
+// The sync's identity of an enemy actor (placed: its placement hash and life number; made at run time: the spawn
+// sync's key and EN_RT), for another sync that states something of it. 0: the actor is not bound to an entry.
+int coop_enemy_key(uint64_t actor, uint64_t *a, uint32_t *b) {
+    EnCell *m = actor > 1 ? en_cell_of(actor) : NULL;
+    if (!m || !m->hash) return 0;
+    *a = m->hash, *b = m->rt ? EN_RT : en_life_no();
+    return 1;
+}
 // The cell of an actor at its calc, made when the actor is of a listed kind and has none. Only the actor's own update
 // thread inserts it, so one actor is never inserted twice at once.
 static EnCell *map_touch(uint64_t actor) {

@@ -154,14 +154,25 @@ static void equip_read(uint64_t actor, uint32_t eq[EN_EQ_N], int learn) {
 // mirror sent the ruby as an object of its own, and the other game showed a second gem floating beside the copy's rod
 // that did not vanish when the Wizzrobe did (a play session, 2026-11-16). Rebuilt by phase 0 four times a second.
 #define HELD_N 1024
-static _Atomic uint64_t held_set[2][HELD_N];
+static _Atomic uint64_t held_set[2][HELD_N], held_by[2][HELD_N];   // the held actor, and the enemy that holds it
 static _Atomic int held_cur;
-static void held_put(_Atomic uint64_t *t, uint64_t a) {
+static void held_put(_Atomic uint64_t *t, _Atomic uint64_t *by, uint64_t a, uint64_t holder) {
     for (uint32_t h = (uint32_t)((a >> 4) * 2654435761u) % HELD_N, k = 0; k < 32; k++, h = (h + 1) % HELD_N) {
         uint64_t v = atomic_load_explicit(&t[h], memory_order_relaxed);
         if (v == a) return;
-        if (!v) { atomic_store_explicit(&t[h], a, memory_order_relaxed); return; }
+        if (!v) { atomic_store_explicit(&by[h], holder, memory_order_relaxed); atomic_store_explicit(&t[h], a, memory_order_relaxed); return; }
     }
+}
+// The enemy that holds an actor, or holds what it is fused to (0: none).
+uint64_t coop_enemy_holder(uint64_t actor) {
+    if (!coop_enemy_new() || actor < 0x10000) return 0;
+    int cur = atomic_load_explicit(&held_cur, memory_order_acquire);
+    for (uint32_t h = (uint32_t)((actor >> 4) * 2654435761u) % HELD_N, k = 0; k < 32; k++, h = (h + 1) % HELD_N) {
+        uint64_t v = atomic_load_explicit(&held_set[cur][h], memory_order_relaxed);
+        if (v == actor) return atomic_load_explicit(&held_by[cur][h], memory_order_relaxed);
+        if (!v) return 0;
+    }
+    return 0;
 }
 int coop_enemy_holds(uint64_t actor) {
     if (!coop_enemy_new() || actor < 0x10000) return 0;
@@ -188,7 +199,7 @@ int coop_enemy_young_near(const float p[3], float m) {
 }
 static void held_rebuild(void) {
     int to = !atomic_load(&held_cur);
-    _Atomic uint64_t *t = held_set[to];
+    _Atomic uint64_t *t = held_set[to], *by = held_by[to];
     static int said;
     for (int i = 0; i < HELD_N; i++) atomic_store_explicit(&t[i], 0, memory_order_relaxed);
     for (int i = 0; i < EN_MAP_N; i++) {
@@ -198,11 +209,11 @@ static void held_rebuild(void) {
             uint64_t ref = coop_rd_ptr(eu + 0x20 + (uint64_t)s * 0x18 + 8), w = ref ? coop_rd_ptr(ref + 0x40) : 0;
             uint32_t id = 0, gen = 0;
             if (!w || !coop_rd(eu + 0x20 + (uint64_t)s * 0x18 + 0x10, &id, 4) || !coop_rd(w + 0x10, &gen, 4) || id != gen) continue;
-            held_put(t, w);
+            held_put(t, by, w, a);
             uint64_t wc = coop_rd_ptr(en_comps(w) + 0x208), aref = wc ? coop_rd_ptr(wc + 0xb0 + 8) : 0, att = aref ? coop_rd_ptr(aref + 0x40) : 0;
             uint32_t aid = 0, agen = 0;
             if (!att || !coop_rd(wc + 0xb0 + 0x10, &aid, 4) || !coop_rd(att + 0x10, &agen, 4) || aid != agen) continue;
-            held_put(t, att);
+            held_put(t, by, att, a);
             if (said < 6) {
                 char wn[40] = "", an[40] = "", en[48] = "";
                 said++;

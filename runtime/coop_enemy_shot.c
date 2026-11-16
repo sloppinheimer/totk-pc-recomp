@@ -269,6 +269,9 @@ void en_shot_precalc(Cpu *c, uint64_t actor, EnCell *m) {
 // decides nothing: what the owner's real one lights or freezes is stated by the game that runs the enemy.
 int coop_enemy_shot_mirror(uint64_t proj) {
     int coop_enemy_role(uint64_t actor);
+    uint64_t coop_enemy_holder(uint64_t actor);   // coop_enemy_copy.c
     uint64_t sc = proj > 0x10000 ? coop_rd_ptr(en_comps(proj) + 0x440) : 0, ref = sc ? coop_rd_ptr(sc + 0x78) : 0, shooter = ref ? coop_rd_ptr(ref + 0x40) : 0;
+    // (the shooter can be what the enemy holds: a fire rod's flame is shot by the ruby fused to the rod)
+    if (shooter && !coop_enemy_role(shooter)) { uint64_t h = coop_enemy_holder(shooter); if (h) shooter = h; }
     return shooter && coop_enemy_role(shooter) == 2;
 }
