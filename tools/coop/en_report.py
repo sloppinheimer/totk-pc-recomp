@@ -72,6 +72,8 @@ def at(samples, keys, ns):
     t = (ns - a['ns']) / (b['ns'] - a['ns'])
     p = tuple(x + (y - x) * t for x, y in zip(a['p'], b['p']))
     speed = dist(a['p'], b['p']) / ((b['ns'] - a['ns']) / 1e9)
+    if speed > 15:   # a teleport between the two samples (a Yiga's blink, a Wizzrobe's warp): no place in between
+        return None
     return dict(p=p, cmd=a['cmd'], cmd2=b['cmd'], clock=a['clock'] + (b['clock'] - a['clock']) * t if a['cmd'] == b['cmd'] and b['clock'] >= a['clock'] else None, hp=a['hp'], hp2=b['hp'], speed=speed)
 
 
