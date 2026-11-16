@@ -1,0 +1,32 @@
+# The camp save: load it, run into the camp for 9 s, swing for 8 s, open the menu at 24 s for 9 s, close it and swing again
+# (the owner of a fight pauses).
+480 A 4
+700 A 4
+880 A 4
+1080 A 4
+@6000 LSTICK 0 32767 9000
+@15500 Y 150
+@16300 Y 150
+@17100 Y 150
+@17900 Y 150
+@18700 Y 150
+@19500 Y 150
+@20300 Y 150
+@21100 Y 150
+@21900 Y 150
+@22700 Y 150
+@24000 PLUS 150
+@33000 PLUS 150
+@35000 Y 150
+@35800 Y 150
+@36600 Y 150
+@37400 Y 150
+@38200 Y 150
+@39000 Y 150
+@39800 Y 150
+@40600 Y 150
+@41400 Y 150
+@42200 Y 150
+@43000 Y 150
+@43800 Y 150
+@44600 Y 150

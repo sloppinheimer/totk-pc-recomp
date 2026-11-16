@@ -295,15 +295,6 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
                 float dx = p[0] - m->pin[0], dy = p[1] - m->pin[1], dz = p[2] - m->pin[2];
                 if (dx * dx + dy * dy + dz * dz > 0.05f * 0.05f) {
                     atomic_fetch_add_explicit(&m->n_off, 1, memory_order_relaxed);
-                    static _Atomic int said;
-                    if (dx * dx + dy * dy + dz * dz > 1.f && atomic_fetch_add(&said, 1) < 12) {
-                        uint64_t ph = coop_rd_ptr(en_comps(actor) + 0x50), ctl = ph ? coop_rd_ptr(ph + 0x20) : 0, c10 = ctl ? coop_rd_ptr(ctl + 0x10) : 0, cc = c10 ? coop_rd_ptr(c10 + 8) : 0;
-                        rt_log("coop: en: test: phys %llx ctl %llx [ctl+0x10] %llx cc %llx cc's body %llx; [phys+0x90] %llx", (unsigned long long)ph, (unsigned long long)ctl, (unsigned long long)c10, (unsigned long long)cc, (unsigned long long)(cc ? coop_rd_ptr(cc + 0x18) : 0), (unsigned long long)(ph ? coop_rd_ptr(ph + 0x90) : 0));
-                        float bt[12] = {0};
-                        if (body) coop_rd(body + 0x98, bt, sizeof bt);
-                        rt_log("coop: en: test: %llx is %.3f %.3f %.3f, asked %.3f %.3f %.3f a frame ago; its body %llx (type %d, static asked %d) is at %.3f %.3f %.3f; actor state %d",
-                               (unsigned long long)actor, p[0], p[1], p[2], m->pin[0], m->pin[1], m->pin[2], (unsigned long long)body, body ? body_type(body) : -1, m->body_static, bt[3], bt[7], bt[11], (int)ast);
-                    }
                     if (body && body_type(body) != 0) coop_guest_call(c, MOD_MAIN_BASE + FN_MOTION_TYPE, body, 0, 0, 0);   // (something made it move again)
                 }
             }
@@ -341,7 +332,6 @@ static void quat_slerp(const float a[4], const float b[4], float t, float out[4]
 void en_copy_phase0(Cpu *c) {
     (void)c;
     uint64_t me = coop_ctr_me(), now = en_now(), stamp = coop_sess_frame_ns();
-    uint32_t frame = coop_sess_frame_no();
     static uint64_t rec_ns;
     int rec = now - rec_ns >= SEC;
     if (rec) rec_ns = now;
@@ -354,8 +344,9 @@ void en_copy_phase0(Cpu *c) {
     uint32_t tele[COOP_MAX_PLAYERS + 1] = {0};
     static uint32_t tele_was[COOP_MAX_PLAYERS + 1];
     int have_t[COOP_MAX_PLAYERS + 1] = {0};
-    int n_copy = 0, n_held = 0, n_owned = 0;
-    uint32_t turned = 0, leaks = 0, passed = 0;
+    int n_copy = 0, n_held = 0, n_owned = 0, n_think = 0;
+    uint32_t turned = 0, leaks = 0, n_let = 0;
+    static uint32_t passed_sum, idle_frames;
 
     // Pass 1: this game's enemies are read and stated; the others' states are taken.
     for (int i = 0; i < EN_N; i++) {
@@ -401,7 +392,9 @@ void en_copy_phase0(Cpu *c) {
                 coop_ctr_send(0, ENM_STATE, 0, &ms, len);
                 e->sent_ns = now;
             }
-            n_owned++, passed += atomic_exchange(&m->passed, 0);
+            uint32_t let = atomic_exchange(&m->passed, 0);
+            n_owned++, passed_sum += let;
+            if (e->life == EN_LIVE && en_gate_open(e->actor)) n_think++, n_let += let;
             if (now - e->log_ns >= SEC / 10) {
                 char cmd[40] = "";
                 anim_cmd(anim_slot(anim_g(e->actor), 0), cmd, sizeof cmd);
@@ -428,6 +421,10 @@ void en_copy_phase0(Cpu *c) {
             }
         }
     }
+    // This game's world stands (a menu): the calcs go on, but no graph runner of an enemy that should think is
+    // entered. The heartbeat then says PAUSED (coop_sess.c), which is what lets another game take a fight over.
+    idle_frames = n_think && !n_let ? idle_frames + 1 : 0;
+    atomic_store(&en_world_stands, idle_frames >= 20);
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++) {
         if (newest[id]) coop_sess_clock_sample(id, newest[id]);
         have_t[id] = coop_sess_clock(id, 16666667ull, &T[id], &delay[id], &tele[id]);
@@ -503,5 +500,5 @@ void en_copy_phase0(Cpu *c) {
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++) tele_was[id] = tele[id];
     if (rec && (n_copy || n_held || n_owned))
         rt_log("coop: en: switch: %d copies and %d held: %u runner entries turned away, %u leaks; %d run here: %u runner entries let through",
-               n_copy, n_held, turned, leaks, n_owned, passed);
+               n_copy, n_held, turned, leaks, n_owned, passed_sum), passed_sum = 0;
 }

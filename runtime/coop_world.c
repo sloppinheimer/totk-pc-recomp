@@ -2929,7 +2929,7 @@ static void contacts_filter(uint64_t dc) {
     {   // An enemy the enemy sync of coop_enemy.c knows (its own, a copy, or unsynced): a stand-in's hits on it are taken
         // out. The game of that stand-in's player has the same hit on its own actor of the enemy and states it; left
         // in, a watching game took the life from its copy too and sent it to the owner as its own player's hit, and
-        // every blow counted twice (two-game run, 2026-11-16).
+        // every blow counted twice (two-game run, 2026-11-15).
         int en_cell_state(uint64_t actor);   // coop_enemy.c
         if (coop_enemy_new() && en_cell_state(a)) {
             int keep = 0;

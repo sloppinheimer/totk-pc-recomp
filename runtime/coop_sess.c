@@ -199,5 +199,6 @@ int coop_sess_clock(int id, uint64_t interval_ns, int64_t *t_ns, int64_t *delay_
 // Which syncs this game runs, in its heartbeat's flags (S 13): two games that differ say so and neither syncs enemies.
 uint32_t coop_sess_caps(void) {
     int coop_enemy_new(void);   // coop_enemy.c
-    return coop_enemy_new() ? COOP_CTR_HB_ENEMY : 0;
+    int coop_enemy_world_stands(void);   // (a menu in which phase 0 still runs: seen by the enemies not thinking)
+    return (coop_enemy_new() ? COOP_CTR_HB_ENEMY : 0) | (coop_enemy_world_stands() ? COOP_CTR_HB_PAUSED : 0);
 }

@@ -1,6 +1,7 @@
 # Enemy sync: the specification
 
-Status, 2026-11-15: fourth draft, nothing of it built. It turns [enemy-sync-design.md](enemy-sync-design.md) (the
+Status, 2026-11-15: fourth draft; a first form is built and runs (section A below says what, and where it departs
+from the sections after it, which remain the plan for what is not built). It turns [enemy-sync-design.md](enemy-sync-design.md) (the
 design, D below) into data, messages and procedures for new files `runtime/coop_enemy*.c`. Where this file and D
 disagree, D is corrected first (D section 16 lists what the review changed).
 
@@ -21,6 +22,68 @@ before the claim it depended on; a change of owner could undo or double a death)
 the pair travel on the same stream as everything that depends on it, keeps resting records through a load and sends
 them to a joiner, makes a death a fact any game states and nobody takes back, puts the gate's waiting time on the
 closing side, and removes the answer rule.
+
+## A. As built (2026-11-15)
+
+Files: `runtime/coop_enemy.c` (table, identity, ownership, messages, record), `coop_enemy_copy.c` (the switch, motion,
+animation), `coop_enemy_hit.c` (life, hits, death), `coop_enemy.h`; `tools/coop/en_report.py`. On with
+`TOTK_COOP_ENEMY=1`, for the kinds `coop_enemy.c kind_of` lists (Bokoblin, Moblin, Horriblin, Lizalfos by actor name);
+`coop_world.c`'s older sync keeps every other kind and can be turned off whole with `TOTK_COOP_ENEMY_OLD=0`. A game
+says which sync it runs in a heartbeat flag; a peer without it stops the enemy sync for the session (said in the log,
+not yet on screen).
+
+What is as the sections below say: identity by placement hash and life number (3.1); ownership per enemy by the one
+rule of 4.0 with CLAIM, OFFER, GONE, resting records, tombstones and the full statement at a join and after a load
+(4.1 to 4.5, 4.10, 10.6); the far gate as "runs it"; the hold of a new actor and of a claim; the copy switch's hooks
+and four writes (5.1, 5.2); a static main body put at the stated pose before every calc (6.3); the clock of
+`coop_sess.c` (6.4); the death request and the signal on a copy (9.3); tombstones.
+
+Where it departs, each by a measurement or to stay simple:
+- **Nothing of an enemy travels as an event.** The owner states each enemy whole (STATE, the latest per enemy:
+  place, rotation, velocity, life, the death word, and per animation slot the command's name hash, rate and the
+  clocks of its blend controllers), read at phase 0. A copy plays a command by the game's play request when a slot's
+  stated command differs from its own, and keeps the clocks by bending the rate (an error under 3 thirtieths of a
+  second) or writing the clock. A command's name travels once per name and peer (reliable). So there is no PLAY or
+  EVENT stream, no play number, no capture ring and no hook on main+0x4dca24; a lost state costs a frame. A state is
+  sent every frame while a player is within 40 m or the enemy moved, at once for three frames when a command or the
+  death word changed, else once a second (a standing enemy's clips run on between states by their rate).
+- **All reliable messages are on the control stream**, the declaration too: one order per sender.
+- **The net tick reads the reliable messages** and changes the table (it runs in a menu and a load); phase 0 looks
+  at actors. There is no transport pump.
+- **The actor is written as well as its body** [m]: with the move control turned away the camp's copies' bodies were
+  at the pose asked and their actors where they had stood; the copy's actor transforms (actor+0x2b4 and +0x2f0, each
+  a place and a 3x3 rotation) are written with the same pose. Controller speed and direction are not written (run 13
+  is not needed: a held actor's body is static and it is put where it stood).
+- **Hits are life, not entries.** A copy's own damage step runs untouched, so the blow and the flinch show at once
+  in the hitter's game; the life the copy lost since it was last written (the game takes a hit's damage at the next
+  calc, not in the step [m]) is sent to the owner as HIT (points), and the copy shows the lower of the stated life
+  and its life after that hit for 1.5 s. The owner takes the points from its enemy, asks the ragdoll component for a
+  flinch (rag+0x149 bit 0) and, at 0, asks the game for the death (cause 16). A stand-in's hits on any enemy this
+  sync knows are taken out of the hit list (`coop_world.c contacts_filter`) [m: left in, a watching game sent them as
+  its own and every blow counted twice]. Not built: the hit entry sent whole and appended (8.3, 8.4), so the owner's
+  enemy does not learn who hit it and plays no big reaction to another player's blow; HITACK and resending.
+- **The hand-over** (not in the drafts; `TOTK_COOP_EN_HANDOVER=0` turns it off): an enemy fights the player of the
+  game that runs it, so the owner offers an enemy to the game of a player whose Link is within 35 m of it and 6 m
+  nearer than its own, not in its first 6 s with this game, not during an interrupt action, not again for 10 s when
+  the offer was not taken. The target of section 12 would replace it.
+- **A death** is stated by the owner when its death word becomes valid (DEATH, with a tombstone in every game) and
+  again when its actor is gone (DEATH_END, the entry is freed). A copy still dying then thinks again and ends by its
+  own Die action. An actor at a tombstoned placement gets the dead call and a delete request (not yet seen in a run).
+- Two games that come together: the smaller incarnation waits half a second longer before its first claims.
+- **PAUSED in a menu** [m]: phase 0 and the actors' calcs go on in the inventory menu, so 1.3's test does not see it.
+  A game says PAUSED when, for 20 frames, no graph runner was entered for any enemy it runs whose far gate is open.
+  In a run the other game took the paused owner's six enemies over after 5 s and the fight went on.
+
+Measured, two games on the camp save (2026-11-15, `build\en6` to `en15`): both tables equal at the end of every run;
+no change of owner in a fight but the hand-overs; no leak; a copy within 5 to 12 cm (95th percentile) of its owner
+while running and under 1 cm standing; the same command in 97 to 100 % of samples; no frame not at the pose asked; a
+non-owner's blows each taken once by the owner; a kill ended in both games; the owner's game closed mid-fight and
+the other took its enemies over. Pictures from both games show the same enemies at the same places.
+
+Not built or not seen: equipment events, run-time enemies, projectiles and loot beyond the older object mirror, the
+target, the moon message, big reactions and ragdoll bones on a copy, a kill by the hits of a non-owner alone, the
+put-away of an actor at a tombstoned placement, the orphaned death of 4.7, a load of the owner in a run, a third
+player, the test network.
 
 Conventions. Addresses are TotK 1.4.3, main+offset. "The world" is the game's memory; "the table" is ours. An
 incarnation is a game's 64-bit id (`coop_ctr_me`). Every timer is wall-clock time; state times are on the owner's

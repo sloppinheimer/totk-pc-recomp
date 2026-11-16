@@ -90,6 +90,7 @@ typedef struct {
 extern PlatMutex en_lock;
 extern En en_tab[EN_N];
 extern EnCell en_map[EN_MAP_N];
+extern _Atomic int en_world_stands;   // this game's enemies do not think though they should: it is in a menu
 extern _Atomic int en_active;        // a session with every peer on this sync, and this game not loading
 
 int coop_enemy_new(void);

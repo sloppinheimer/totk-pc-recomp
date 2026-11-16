@@ -45,7 +45,8 @@ int en_test_skip(char what) {
 PlatMutex en_lock = PLAT_MUTEX_INIT;
 En en_tab[EN_N];
 EnCell en_map[EN_MAP_N];
-_Atomic int en_active;
+_Atomic int en_active, en_world_stands;
+int coop_enemy_world_stands(void) { return coop_enemy_new() && atomic_load(&en_world_stands); }
 
 #define SEC 1000000000ull
 uint64_t en_now(void) { return plat_now_ns(); }
@@ -249,7 +250,7 @@ void en_log_own(const En *e, const char *what, const char *why) {
 typedef struct { uint8_t type; uint16_t len; uint8_t d[1100]; } OutMsg;
 static struct {
     uint64_t inc;
-    uint8_t ready, cap_bad, sync_end, burst_owed, was_loading, index_bad;
+    uint8_t ready, cap_bad, sync_end, burst_owed, was_loading, index_bad, state;
     uint64_t ready_ns, paused_ns, need_all_ns, said_ns;
     OutMsg *out; uint32_t out_r, out_w;
 } peer[COOP_MAX_PLAYERS + 1];
@@ -731,6 +732,11 @@ void coop_enemy_net(void) {
         }
         if (!peer[id].ready) peer[id].ready = 1, peer[id].ready_ns = now, peer[id].burst_owed = 1, peer[id].sync_end = 0, rt_log("coop: en: player %d runs this enemy sync", id);
         int ps = coop_sess_peer(id);
+        if (ps != peer[id].state) {
+            static const char *const word[] = { "runs", "is paused", "is in a load", "is silent", "is gone" };
+            rt_log("coop: en: player %d %s", id, word[ps]);
+            peer[id].state = (uint8_t)ps;
+        }
         if (ps == COOP_SESS_PAUSED) { if (!peer[id].paused_ns) peer[id].paused_ns = now; } else peer[id].paused_ns = 0;
         if (ps == COOP_SESS_LOADING) peer[id].was_loading = 1;
         else if (ps == COOP_SESS_RUNS && peer[id].was_loading) peer[id].was_loading = 0, peer[id].burst_owed = 1;   // it ran again after a load
