@@ -374,6 +374,8 @@ typedef struct {
     uint8_t n, cur[EL_MAX], rest[EL_MAX], wanted[EL_MAX];
     uint8_t want_from;            // the player whose statement this game follows for it (0: none)
     uint8_t enemy, skip;
+    uint8_t cond, cond_wanted;    // an enemy's condition (burn 1, shock 2, wet 4, frozen 8) as read; as its owner states it
+    uint32_t cond_asked, cond_ended;   // the frames its shock was last written, and last ended
     uint8_t ice, ice_wanted, ice_put;   // an enemy's ice look (0..255) as read; as its owner states it; whether this game wrote it
     float pos[3];
 } Thing;
@@ -453,6 +455,38 @@ static void ice_write(uint64_t actor, uint8_t amount) {
     w |= 0x1000;
     wr(gmc + 0x4c, &f, 4), wr(gmc + 0xac, &w, 4);
 }
+// An enemy's conditions: its condition component [[actor+0x228]+0x1a8] has slots (count +0x140, 0x100 bytes each from
+// [+0x148]) whose state word +0x2c says burn (bit 0), shock (1), wet (2), frozen (3). The slot update (main+0x322450)
+// takes burn, wet and frozen from the elements every frame, so a copy whose elements are given their state shows those.
+// Shock is different: it is set once, when an element's record carries the mark of an electric reaction of that frame
+// (main+0x326434), and then lasts by the slot's own timer. A copy takes no reaction, so its owner states the condition
+// and the copy's slots are written as that code writes them.
+static uint8_t cond_read(uint64_t actor) {
+    uint64_t t = coop_rd_ptr(actor + 0x228), cc = t ? coop_rd_ptr(t + 0x1a8) : 0, slots = cc ? coop_rd_ptr(cc + 0x148) : 0;
+    uint32_t n = 0, w = 0, all = 0;
+    if (!slots || !coop_rd(cc + 0x140, &n, 4)) return 0;
+    for (uint32_t i = 0; i < n && i < 8; i++) if (coop_rd(slots + i * 0x100 + 0x2c, &w, 4)) all |= w;
+    return (uint8_t)(all & 0xf);
+}
+static void shock_write(uint64_t actor, int on) {
+    uint64_t t = coop_rd_ptr(actor + 0x228), cc = t ? coop_rd_ptr(t + 0x1a8) : 0, slots = cc ? coop_rd_ptr(cc + 0x148) : 0;
+    uint32_t n = 0;
+    if (!slots || !coop_rd(cc + 0x140, &n, 4)) return;
+    for (uint32_t i = 0; i < n && i < 8; i++) {
+        uint64_t sl = slots + i * 0x100;
+        uint32_t ev = 0, st = 0, ctl = 0, timer = 0;
+        if (!coop_rd(sl + 0x28, &ev, 4) || !coop_rd(sl + 0x2c, &st, 4) || !coop_rd(sl + 0x24, &ctl, 4)) continue;
+        if (on) {   // (as main+0x326464: the state, the one-shot event, and the timer from its length)
+            coop_rd(sl + 0xa8, &timer, 4);
+            ev |= 0x40, st |= 2;
+            wr(sl + 0xac, &timer, 4), wr(sl + 0x28, &ev, 4), wr(sl + 0x2c, &st, 4);
+        } else if (st & 2) {   // (as main+0x3264f0: the state off, the control bit and the rest timer)
+            coop_rd(sl + 0xb0, &timer, 4);
+            st &= ~2u, ctl |= 8;
+            wr(sl + 0x2c, &st, 4), wr(sl + 0x24, &ctl, 4), wr(sl + 0xb4, &timer, 4);
+        }
+    }
+}
 // What a copy's element is asked to become (S 5.3): 0 nothing, else an ASK_*; and the asking, with the game's own
 // requests.
 enum { ASK_IGNITE = 1, ASK_BURN_OUT, ASK_FREEZE, ASK_PUT_OUT, ASK_THAW, ASK_CHARGE = 8 };
@@ -504,8 +538,8 @@ static int comp_hook(Cpu *c) {
     if (!actor) return 0;
     uint32_t frame = coop_sess_frame_no();
     uint8_t before[EL_MAX] = {0};
-    int n = el_read(comp, els, cur), copy = 0, ask = 0, changed = 0, what[EL_MAX] = {0}, ice_set = 0;
-    uint8_t ice_now = 0;
+    int n = el_read(comp, els, cur), copy = 0, ask = 0, changed = 0, what[EL_MAX] = {0}, ice_set = 0, shock_set = 0, cond_said = 0;
+    uint8_t ice_now = 0, cond_was = 0, cond_is = 0;
     if (!n) return 0;
     // (a projectile shot by an enemy another game runs is the copy's own actor, made by the same calls as the owner's
     // (coop_enemy_shot.c): it is shown only, so it is inert here as an actor named to coop_elem_inert is)
@@ -577,6 +611,16 @@ static int comp_hook(Cpu *c) {
         // (wetness is stated but is no claim: rain in one game would make every wet thing there a copy elsewhere)
         for (int i = 0; i < n; i++) if ((cur[i] ^ t->rest[i]) & ~EL_WET) t->differs_frame = frame;
         if (t->enemy) {
+            uint8_t cond = cond_read(actor);
+            if (cond != t->cond) cond_was = t->cond, cond_is = cond, cond_said = 1;
+            if ((t->cond & 2) && !(cond & 2)) t->cond_ended = frame ? frame : 1;
+            t->cond = cond;
+            // (a copy: shocked when its owner's is and it is not, at most once a second; let go of it when the owner's ended)
+            // (and not back into a shock that just ended here by its own timer: the statement that still says so is a
+            // moment old)
+            if (es == EM_COPY && t->want_from && ((t->cond_wanted ^ cond) & 2) && frame - t->cond_asked >= 30 &&
+                !((t->cond_wanted & 2) && t->cond_ended && frame - t->cond_ended < 30))
+                shock_set = t->cond_wanted & 2 ? 1 : -1, t->cond_asked = frame;
             t->ice = ice_read(actor);
             if (es == EM_COPY && (t->want_from ? t->ice_wanted : 0) != t->ice && (t->want_from || t->ice_put))
                 ice_now = t->want_from ? t->ice_wanted : 0, ice_set = 1, t->ice_put = ice_now != 0;
@@ -597,6 +641,12 @@ static int comp_hook(Cpu *c) {
     plat_mutex_unlock(&lk);
     if (copy) for (int i = 0; i < n; i++) eset_put(els[i], frame);
     if (ice_set) ice_write(actor, ice_now);
+    if (shock_set) shock_write(actor, shock_set > 0), atomic_fetch_add(&n_req, 1);
+    if (cond_said) {
+        char nm[48];
+        rt_log("coop: elem: enemy %s condition %x -> %x (burn 1, shock 2, wet 4, frozen 8; %s%s), at %llu ms", coop_actor_name(actor, nm, sizeof nm), cond_was, cond_is,
+               es == EM_COPY ? "a copy" : "mine", shock_set ? shock_set > 0 ? ", shock written" : ", shock taken off" : "", (unsigned long long)(plat_now_ns() / 1000000));
+    }
     for (int i = 0; i < n; i++) if (changed >> i & 1) thing_said(actor, i, before[i], cur[i], copy);
     if (!ask || coop_ctn_driven(actor) || coop_ctn_follows(actor)) return 0;
     for (int i = 0; i < n; i++) if (what[i]) ask_do(c, comp, els[i], i, what[i]);
@@ -1028,7 +1078,7 @@ void coop_elem_phase0(Cpu *c) {
         // for 2 s after)
         int rest = 1, mine_claim;
         for (int k = 0; k < t->n; k++) rest &= t->cur[k] == EL_NONE || !(t->cur[k] & 0xf);
-        mine_claim = t->enemy ? !rest || t->ice : t->differs_frame && frame - t->differs_frame < 60;
+        mine_claim = t->enemy ? !rest || t->ice || (t->cond & 2) : t->differs_frame && frame - t->differs_frame < 60;
         int from = 0;
         const ElmThing *st = NULL;
         for (int id = 1; id <= COOP_MAX_PLAYERS && !st; id++) {
@@ -1045,6 +1095,7 @@ void coop_elem_phase0(Cpu *c) {
             memset(t->wanted, EL_NONE, sizeof t->wanted);
             memcpy(t->wanted, st->el, st->n < EL_MAX ? st->n : EL_MAX);
             t->ice_wanted = t->enemy && st->n < EL_MAX ? st->el[EL_MAX - 1] : 0;
+            t->cond_wanted = t->enemy && st->n < EL_MAX - 1 ? st->el[EL_MAX - 2] : 0;
             n_copy++;
             if (frame - t->seen > 3) {   // its component rests: read and asked here, not in its update's hook
                 uint64_t els[EL_MAX];
@@ -1078,6 +1129,7 @@ void coop_elem_phase0(Cpu *c) {
         out[tn].hash = t->hash, out[tn].n = t->n;
         memset(out[tn].el, EL_NONE, sizeof out[tn].el), memcpy(out[tn].el, t->cur, t->n);
         if (t->enemy && t->n < EL_MAX) out[tn].el[EL_MAX - 1] = t->ice;   // (an enemy's ice look in the last byte, when it has fewer than 7 elements)
+        if (t->enemy && t->n < EL_MAX - 1) out[tn].el[EL_MAX - 2] = t->cond;   // (and its condition in the one before, with fewer than 6)
         tn++;
     }
     if (frame % 30 == 0)

@@ -161,6 +161,18 @@ frame number no older than 3 frames.
 `coop_elem_inert(actor, on)` keeps a list of at most 64 actors. An inert actor is treated as a copy in 5.4, is never
 asked anything, and has bit 32 of its component's word +0x20 set (the game's "does not interact with the world").
 
+### 5.5a An enemy's conditions
+
+An enemy's condition component (`[[actor+0x228]+0x1a8]`: slots of 0x100 bytes from `[+0x148]`, count `+0x140`) has
+a state word per slot at +0x2c: burn (bit 0), shock (1), wet (2), frozen (3). The slot update takes burn, wet and
+frozen from the elements every frame, so a copy shows those once its elements are given their state. Shock is set
+once, when an element's record carries the mark of an electric reaction of that frame (main+0x326434), and lasts by
+the slot's timer; a copy takes no reaction. So an enemy's condition bits ride in the statement (the element byte
+before the ice look, for an enemy with fewer than 6 elements; an enemy is stated while it is shocked), and a copy
+whose shock differs from its owner's is written as the game writes it: on, the state bit, the event bit 0x40 of
++0x28 and the timer +0xac from its length +0xa8; off, the state bit cleared, bit 3 of +0x24 and the rest timer +0xb4
+from +0xb0. At most once a second, and not back on within a second of the copy's own shock ending.
+
 ### 5.6 Shown-only actors, and lightning
 
 An actor is **shown only** when it is inert (5.5), a projectile the enemy sync calls a mirror, or the blast of a
@@ -261,6 +273,12 @@ projectiles; nothing calls it yet.
   reaches the ground there (`TOTK_COOP_ELEM_TEST_CONTACTS=1`) named only that game's own Link: its Link stands in the
   copied fire, burns, and lights the cell under it, which is that game's to decide and is stated to the other.
 
+- **An enemy shocked** (a lightning strike 2 m from a Bokoblin made beside A's Link): its shock condition lasted
+  2.02 s in A; B's copy was shocked 110 ms after A's and its shock ended 85 ms after (53 ms and 27 ms in the run
+  before, in which a statement a moment old shocked the copy a second time; that is now held off). In the pictures
+  the enemy stands in the strike's fire in both games; whether the shock's own sparks show on the copy cannot be
+  told from them. One run of three missed the enemy with the strike.
+
 ### Left, and known faults
 
 - **Lightning**: only the forced strike was run, not a storm's own, an arrow's or a node's; a strike in a game whose
@@ -271,10 +289,8 @@ projectiles; nothing calls it yet.
   does nothing); an enemy copy is put out for a moment at each change of owner; a state that lasts (a brazier put
   out) is stated only while it changes and for 2 s after, so a game that arrives later keeps its own; the thing
   table and the element set have no report when they fill.
-- **Shock on an enemy is not shared.** The full-charge request does nothing to a Bokoblin (its element does not
-  conduct), and a strike left the electrified flag on for one frame only: an enemy's shock is a condition its
-  condition component takes from a reaction, which a copy drops. What the copy shows of it is what the enemy sync
-  plays. Stating the condition slots is not built.
+- **Shock on a copy is the condition only**: what the copy does while shocked (the stagger, a dropped weapon) is
+  what the enemy sync plays from its owner; the full-charge request does nothing to an enemy that does not conduct.
 - **Not tested**: a player's fire arrow (no input script shoots one; by the code it is a local cause like the test's
   and the Wizzrobe's); an enemy lit, frozen or shocked by a real attack rather than by the game's request; the
   take-over when the deciding game leaves; three games.
