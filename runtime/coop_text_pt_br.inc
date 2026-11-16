@@ -43,6 +43,7 @@
     [UI_MENU_COOP_NOTICE_NEAR] = "%s agora está perto de %s",
     [UI_MENU_COOP_NOTICE_TRAVELLED_SOMEWHERE] = "%s viajou",
     [UI_MENU_COOP_NOTICE_ENTERED] = "%s entrou em %s",
+    [UI_MENU_COOP_NOTICE_ENEMY_SYNC] = "%s usa outra sincronização de inimigos: os inimigos não são compartilhados",
     [UI_MENU_COOP_CHARS] = "Personagens",
     [UI_MENU_COOP_CHAR_SELF] = "Você: %s",
     [UI_MENU_COOP_CHAR_MISSING] = "%s (não está neste PC)",

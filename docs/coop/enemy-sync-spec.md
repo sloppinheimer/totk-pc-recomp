@@ -66,10 +66,20 @@ Where it departs, each by a measurement or to stay simple:
 - **The hand-over** (not in the drafts; `TOTK_COOP_EN_HANDOVER=0` turns it off): an enemy fights the player of the
   game that runs it, so the owner offers an enemy to the game of a player whose Link is within 35 m of it and 6 m
   nearer than its own, not in its first 6 s with this game, not during an interrupt action, not again for 10 s when
-  the offer was not taken. The target of section 12 would replace it.
+  the offer was not taken. A player who strikes it gets it sooner: for 5 s after another player's HIT the enemy is
+  offered to that player's game when its Link is nearer at all or the owner's is over 15 m off (after 3 s with the
+  owner, within 80 m) [m]. The target of section 12 would replace both.
+- **"Runs it" needs the runners to come** [m]: the far gate as read was open for an enemy 70 m off for which no graph
+  runner was entered, and the game that "ran" it took it and then looked paused. A game runs an enemy when its calc
+  ran, its gate is open and a graph runner of it was entered (let through or turned away) in the last 1.5 s. A far,
+  idle camp member (a few runner entries a second or none) then rests, each game keeping its own, until a player
+  comes near.
 - **A death** is stated by the owner when its death word becomes valid (DEATH, with a tombstone in every game) and
   again when its actor is gone (DEATH_END, the entry is freed). A copy still dying then thinks again and ends by its
   own Die action. An actor at a tombstoned placement gets the dead call and a delete request (not yet seen in a run).
+- A copy's written life is forgotten at every change of owner [m: kept, a game that became a copy again sent the
+  difference as its player's hit, and an enemy handed back and forth lost that life each time until it died].
+  Still open: a hit in flight at a hand-over can be lost (the taker starts from the life it last showed).
 - Two games that come together: the smaller incarnation waits half a second longer before its first claims.
 - **Equipment is state too.** STATE carries, per equipment slot (8), the name hash of the held actor. A copy that
   holds something where its owner's enemy holds nothing for three looks (0.8 s) has that actor deleted by request; one
@@ -89,7 +99,7 @@ Where it departs, each by a measurement or to stay simple:
 - Traffic [m]: a state is 232 bytes with one animation slot in use; four enemies in a fight are 240 states and 56 to
   70 kB a second to each peer.
 - **PAUSED in a menu** [m]: phase 0 and the actors' calcs go on in the inventory menu, so 1.3's test does not see it.
-  A game says PAUSED when, for 20 frames, no graph runner was entered for any enemy it runs whose far gate is open.
+  A game says PAUSED when no graph runner has been entered for a second for any of the live enemies it runs.
   In a run the other game took the paused owner's six enemies over after 5 s and the fight went on.
 
 Measured, two games on the camp save (2026-11-15, `build\en6` to `en15`): both tables equal at the end of every run;
@@ -104,7 +114,7 @@ placement whose enemy had died in the other game was put away and did not come b
 
 Not built or not seen: run-time enemies, projectiles and loot beyond the older object mirror, the target, the moon
 message, big reactions and ragdoll bones on a copy, the orphaned death of 4.7, a load of the owner in a run, a third
-player, the notice on screen when two games run different syncs. One run in about thirty stopped its co-op tick in
+player, a shot of the notice on screen when two games run different syncs (the notice is made and logged). One run in about thirty stopped its co-op tick in
 both games just after they met; `coop: en: the net tick has not come round` now says where when it happens again.
 
 Conventions. Addresses are TotK 1.4.3, main+offset. "The world" is the game's memory; "the table" is ours. An

@@ -221,7 +221,6 @@ void en_hit_phase0(void) {
 // ---- Messages (the net tick) ------------------------------------------------------------------------------------------------
 void en_hit_msg(const CoopCtrMsg *m, int from) {
     uint64_t me = coop_ctr_me();
-    (void)from;
     switch (m->type) {
     case ENM_HIT: {
         const MHit *h = (const MHit *)m->d;
@@ -230,6 +229,7 @@ void en_hit_msg(const CoopCtrMsg *m, int from) {
         for (int i = 0; i < EN_N; i++) if (en_tab[i].used && enid_eq(en_tab[i].id, h->id)) e = &en_tab[i];
         if (!e || e->owner != me || e->life != EN_LIVE || h->dmg <= 0 || h->dmg > 100000) { n_hits_lost++; break; }
         e->pend_dmg += h->dmg, n_hits_taken++;
+        e->hit_by = from, e->hit_by_ns = en_now();
         break;
     }
     case ENM_DEATH: case ENM_DEATH_END: {

@@ -43,6 +43,7 @@
     [UI_MENU_COOP_NOTICE_NEAR] = "%s 现在在%s附近",
     [UI_MENU_COOP_NOTICE_TRAVELLED_SOMEWHERE] = "%s 传送了",
     [UI_MENU_COOP_NOTICE_ENTERED] = "%s 进入了%s",
+    [UI_MENU_COOP_NOTICE_ENEMY_SYNC] = "%s 使用了不同的敌人同步：敌人不共享",
     [UI_MENU_COOP_CHARS] = "角色",
     [UI_MENU_COOP_CHAR_SELF] = "你：%s",
     [UI_MENU_COOP_CHAR_MISSING] = "%s（本机没有）",

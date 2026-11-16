@@ -43,6 +43,7 @@ typedef struct { EnSnap s; int32_t hp; uint32_t dstate; uint8_t nslot, rag, pad[
 typedef struct {
     _Atomic uint64_t actor;           // 0 free, 1 cleared
     _Atomic uint32_t gen, frame;      // frame: the frame number of its last calc
+    _Atomic uint32_t run_frame;       // the frame a graph runner of it was last entered (let through or turned away): the game thinks it
     _Atomic uint8_t state;            // EM_*
     _Atomic int16_t en;               // its table row, -1 none
     uint8_t kind, hash_read, retry;
@@ -83,6 +84,7 @@ typedef struct {
     int32_t hp; float pose[7];        // as last read (owned) or stated
     uint64_t made_ns, hold_until_ns, notrun_ns, offer_ns, no_offer_until_ns, offer_seen_ns, my_hit_ns, need_ns, state_ns, owner_ns;
     uint64_t offer_to;                // the game an offer is for (0: any that runs it)
+    uint64_t hit_by_ns; int hit_by;   // when another game's player last struck this game's enemy, and that player's id
     uint32_t decl_no, changes, hit_serial; int32_t pend_dmg; uint8_t send_burst;
     // motion and animation (coop_enemy_copy.c)
     EnState st[EN_SNAP_N]; uint32_t snap_w; uint8_t teleports, tele_seen;

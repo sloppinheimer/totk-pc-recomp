@@ -464,6 +464,13 @@ static void load_places(void *arg) {
     free(dicts), dicts = NULL, dicts_n = 0;
 }
 
+// The enemy sync (coop_enemy.c): that player's game runs another enemy sync than this one, so no enemy is shared.
+void coop_notice_enemy_sync(int id) {
+    char buf[32];
+    if (!coop_notices_on() || id < 1 || id > COOP_MAX_PLAYERS) return;
+    notice(id, menu_text(UI_MENU_COOP_NOTICE_ENEMY_SYNC), name_or(roster[id].name, id, buf, sizeof buf));
+}
+
 static void places_up(void) {
     static PlatOnce once = PLAT_ONCE_INIT;
     plat_once(&once, load_places, NULL);

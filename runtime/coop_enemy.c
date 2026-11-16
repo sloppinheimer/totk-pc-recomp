@@ -165,6 +165,7 @@ static EnCell *map_touch(uint64_t actor) {
         if (a > 1 || !atomic_compare_exchange_strong(&en_map[h].actor, &a, actor)) continue;
         m = &en_map[h];
         atomic_store(&m->gen, gen), atomic_store(&m->en, -1);
+        atomic_store(&m->run_frame, 0);
         m->kind = (uint8_t)kind, m->hash_read = 0, m->hash = 0, m->retry = 0, m->new_ns = en_now();
         m->sw_on = m->sw_saved = m->body_static = 0, m->show_on = 0;
         atomic_store(&m->turned, 0), atomic_store(&m->leaks, 0);
@@ -397,7 +398,10 @@ static int en_apply_owner(Enid id, uint64_t owner, uint32_t epoch, const char *w
     e->snap_w = 0, e->tele_seen = 0;   // (the ring of states is the old owner's)
     if (e->life == EN_UNSYNCED) e->life = EN_LIVE;
     if (was && was != owner) e->changes++, n_changes++;
-    if (e->cell >= 0) en_map[e->cell].show_on = 0, atomic_store(&en_map[e->cell].state, owner == me ? EM_OWNED : EM_COPY);
+    // (nothing of the earlier owner is shown, and the life last written to the actor as a copy is forgotten: kept, a
+    // game that became a copy again took the difference to it for its own player's hit, sent it, and the enemy lost
+    // that life at every change of owner)
+    if (e->cell >= 0) en_map[e->cell].show_on = 0, en_map[e->cell].hp_written = 0, en_map[e->cell].show_rag = 0, atomic_store(&en_map[e->cell].state, owner == me ? EM_OWNED : EM_COPY);
     if (owner != me) e->need_ns = en_now();
     en_log_own(e, owner == me ? (was ? "taken over by this game" : "claimed by this game") : was == me ? "another game's now: this game's is a copy" : "another game's", why);
     return 1;
@@ -428,7 +432,9 @@ static void bind(En *e, EnCell *m, uint64_t actor, int state) {
 }
 static int runs(const En *e, uint32_t frame) {   // S 4.1, without its waiting time
     if (e->cell < 0 || !en_alive(e->actor, e->gen)) return 0;
-    return frame - atomic_load(&en_map[e->cell].frame) < 30 && en_gate_open(e->actor);
+    // (its calc ran, its far gate is open, and a graph runner of it was entered in the last second and a half: the
+    // gate as read here was open for an enemy 70 m off that no runner came for, and the game that "ran" it took it)
+    return frame - atomic_load(&en_map[e->cell].frame) < 30 && en_gate_open(e->actor) && frame - atomic_load(&en_map[e->cell].run_frame) < 90;
 }
 
 // An actor this game has and nobody has stated: what it is (S 4.2).
@@ -454,7 +460,9 @@ static void cell_resolve(EnCell *m, uint64_t now, uint32_t frame) {
         return;
     }
     int allowed = claims_allowed(now);
-    if (frame - atomic_load(&m->frame) >= 30 || !en_gate_open(actor)) {   // not run here: the game's own, looked at again
+    uint32_t rf = atomic_load(&m->run_frame);
+    if (st == EM_NEW && !rf && now - m->new_ns < SEC / 2) return;   // (a new actor: its runners have not come yet)
+    if (frame - atomic_load(&m->frame) >= 30 || !en_gate_open(actor) || !rf || frame - rf >= 90) {   // not run here: the game's own, looked at again
         atomic_store(&m->state, EM_OWN);
         return;
     }
@@ -493,7 +501,11 @@ static void gone(En *e, const char *why) {
 // The hand-over (TOTK_COOP_EN_HANDOVER=0 turns it off). An enemy fights the player of the game that runs it: no other
 // player is noticed there. So an enemy this game runs is offered to the game of another player whose Link is within
 // HAND_M of it and HAND_GAIN_M nearer to it than this game's: not in its first HAND_HOLD s with this game, not in the
-// middle of an interrupt action (S 4.6), and not again for 10 s when that game did not take it.
+// middle of an interrupt action (S 4.6), and not again for 10 s when that game did not take it. A player who strikes
+// it gets it sooner: for 5 s after another player's hit (its flinch is an interrupt action and has to end first) the enemy is offered to that player's game when its Link is
+// nearer than this game's at all, or this game's is over HAND_FAR_M away, after 3 s with this game; so an enemy turns
+// on the player who attacks it while its owner's player stands off.
+#define HAND_FAR_M 15.f
 #define HAND_M 35.f
 #define HAND_GAIN_M 6.f
 #define HAND_HOLD 6
@@ -502,7 +514,8 @@ static int hand_ids[COOP_MAX_PLAYERS], hand_n, hand_have_me;
 static void handover(En *e, uint64_t now) {
     static int on = -1;
     if (on < 0) { const char *v = cfg_get("TOTK_COOP_EN_HANDOVER"); on = !(v && *v == '0'); }
-    if (!on || !hand_have_me || !hand_n || now - e->owner_ns < HAND_HOLD * SEC || now < e->no_offer_until_ns) return;
+    int struck = e->hit_by_ns && now - e->hit_by_ns < 5 * SEC ? e->hit_by : 0;
+    if (!on || !hand_have_me || !hand_n || now - e->owner_ns < (struck ? 3 : HAND_HOLD) * SEC || (!struck && now < e->no_offer_until_ns)) return;
     float dm = 0, best = 1e30f;
     int to = 0;
     for (int k = 0; k < 3; k++) dm += (e->pose[k] - hand_me[k]) * (e->pose[k] - hand_me[k]);
@@ -511,13 +524,14 @@ static void handover(En *e, uint64_t now) {
         float d = 0;
         for (int k = 0; k < 3; k++) d += (e->pose[k] - hand_them[i][k]) * (e->pose[k] - hand_them[i][k]);
         d = sqrtf(d);
-        if (d < best) best = d, to = hand_ids[i];
+        if (struck ? hand_ids[i] == struck : d < best) best = d, to = hand_ids[i];
     }
-    if (!to || !peer[to].ready || best >= HAND_M || best + HAND_GAIN_M >= dm || coop_sess_peer(to) != COOP_SESS_RUNS) return;
+    if (!to || !peer[to].ready || best >= (struck ? 80.f : HAND_M) || coop_sess_peer(to) != COOP_SESS_RUNS) return;   // (a blow from afar counts: an arrow)
+    if (struck ? !(best < dm || dm > HAND_FAR_M) : best + HAND_GAIN_M >= dm) return;
     uint8_t status = 0;
     uint64_t bsa = en_bsa(e->actor);
     if (bsa && coop_rd(bsa + 0x26a8, &status, 1) && (status == 1 || status == 2)) return;
-    e->offered = 1, e->offer_all = 0, e->offer_to = peer[to].inc, e->offer_ns = now;
+    e->offered = 1, e->offer_all = 0, e->offer_to = peer[to].inc, e->offer_ns = now, e->hit_by_ns = 0;
     row_send(to, ENM_OFFER, e, 0);
     rt_log("coop: en: own: %s %016llx/%u epoch %u offered to player %d (its Link is %.1f m from it, this game's %.1f m)", e->name, (unsigned long long)e->id.a, e->id.b, e->epoch, to, best, dm);
 }
@@ -745,7 +759,11 @@ void coop_enemy_net(void) {
         uint64_t age = 0;
         if (!coop_ctr_hb(id, &hb, &age)) continue;   // (no heartbeat yet: what it runs is not known)
         if (!(hb.flags & COOP_CTR_HB_ENEMY)) {
-            if (!peer[id].cap_bad) rt_log("coop: en: player %d does not run this enemy sync (TOTK_COOP_ENEMY=1 is not set there): no enemy is synced while it is here", id);
+            if (!peer[id].cap_bad) {
+                void coop_notice_enemy_sync(int id);   // coop_notices.c: said on screen too
+                rt_log("coop: en: player %d does not run this enemy sync (TOTK_COOP_ENEMY=1 is not set there): no enemy is synced while it is here", id);
+                coop_notice_enemy_sync(id);
+            }
             peer[id].cap_bad = 1, peer[id].ready = 0, bad = 1;
             continue;
         }

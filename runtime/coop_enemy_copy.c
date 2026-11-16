@@ -183,6 +183,7 @@ int en_copy_hook(Cpu *c, uint64_t off) {
     }
     EnCell *m = actor > 0x10000 ? en_cell_of(actor) : NULL;
     if (!m) return 0;
+    atomic_store_explicit(&m->run_frame, coop_sess_frame_no(), memory_order_relaxed);
     if (!is_off(atomic_load_explicit(&m->state, memory_order_relaxed)) || noswitch()) {
         atomic_fetch_add_explicit(&m->passed, 1, memory_order_relaxed);
         return 0;
@@ -416,8 +417,8 @@ void en_copy_phase0(Cpu *c) {
     static uint32_t tele_was[COOP_MAX_PLAYERS + 1];
     int have_t[COOP_MAX_PLAYERS + 1] = {0};
     int n_copy = 0, n_held = 0, n_owned = 0, n_think = 0;
-    uint32_t turned = 0, leaks = 0, n_let = 0;
-    static uint32_t passed_sum, idle_frames, st_bytes, st_n;
+    uint32_t turned = 0, leaks = 0, newest_run = 0;
+    static uint32_t passed_sum, st_bytes, st_n;
 
     // Pass 1: this game's enemies are read and stated; the others' states are taken.
     for (int i = 0; i < EN_N; i++) {
@@ -468,7 +469,7 @@ void en_copy_phase0(Cpu *c) {
             }
             uint32_t let = atomic_exchange(&m->passed, 0);
             n_owned++, passed_sum += let;
-            if (e->life == EN_LIVE && en_gate_open(e->actor)) n_think++, n_let += let;
+            if (e->life == EN_LIVE) { uint32_t rf = atomic_load(&m->run_frame); n_think++; if (rf && (!newest_run || (int32_t)(rf - newest_run) > 0)) newest_run = rf; }
             if (now - e->log_ns >= SEC / 10) {
                 char cmd[40] = "";
                 anim_cmd(anim_slot(anim_g(e->actor), 0), cmd, sizeof cmd);
@@ -495,10 +496,10 @@ void en_copy_phase0(Cpu *c) {
             }
         }
     }
-    // This game's world stands (a menu): the calcs go on, but no graph runner of an enemy that should think is
-    // entered. The heartbeat then says PAUSED (coop_sess.c), which is what lets another game take a fight over.
-    idle_frames = n_think && !n_let ? idle_frames + 1 : 0;
-    atomic_store(&en_world_stands, idle_frames >= 20);
+    // This game's world stands (a menu): the calcs go on, but no graph runner is entered any more for any enemy this
+    // game runs. A far enemy's runners come a few times a second, so a second without one for all of them is the
+    // sign. The heartbeat then says PAUSED (coop_sess.c), which is what lets another game take a fight over.
+    atomic_store(&en_world_stands, n_think && newest_run && frame - newest_run > 60);
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++) {
         if (newest[id]) coop_sess_clock_sample(id, newest[id]);
         have_t[id] = coop_sess_clock(id, 16666667ull, &T[id], &delay[id], &tele[id]);

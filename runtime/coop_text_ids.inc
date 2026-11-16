@@ -24,6 +24,7 @@
     // the co-op notices (coop_notices.c): %s the player's name, then the place's
     UI_MENU_COOP_NOTICE_JOINED, UI_MENU_COOP_NOTICE_HERE, UI_MENU_COOP_NOTICE_LEFT, UI_MENU_COOP_NOTICE_TRAVELLED,
     UI_MENU_COOP_NOTICE_NEAR, UI_MENU_COOP_NOTICE_TRAVELLED_SOMEWHERE, UI_MENU_COOP_NOTICE_ENTERED,
+    UI_MENU_COOP_NOTICE_ENEMY_SYNC,   // that player's game runs another enemy sync (coop_enemy.c)
     // character mods (coop_chars.c): the section, this PC's, a player's missing one; the download prompt (%s player,
     // %s mod, %s file, %.0f MB, %s page); the lookup by link; progress (%.0f of %.0f MB), failure, done; a mod's toggle
     UI_MENU_COOP_CHARS, UI_MENU_COOP_CHAR_SELF, UI_MENU_COOP_CHAR_MISSING, UI_MENU_COOP_CHAR_ASK, UI_MENU_COOP_CHAR_LOOKING,

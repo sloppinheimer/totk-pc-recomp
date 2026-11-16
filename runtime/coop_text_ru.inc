@@ -43,6 +43,7 @@
     [UI_MENU_COOP_NOTICE_NEAR] = "%s теперь рядом: %s",
     [UI_MENU_COOP_NOTICE_TRAVELLED_SOMEWHERE] = "%s перемещается",
     [UI_MENU_COOP_NOTICE_ENTERED] = "%s входит: %s",
+    [UI_MENU_COOP_NOTICE_ENEMY_SYNC] = "%s: другая синхронизация врагов, враги не общие",
     [UI_MENU_COOP_CHARS] = "Персонажи",
     [UI_MENU_COOP_CHAR_SELF] = "Вы: %s",
     [UI_MENU_COOP_CHAR_MISSING] = "%s (нет на этом ПК)",
