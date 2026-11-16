@@ -236,10 +236,11 @@ projectiles; nothing calls it yet.
 ### Left, and known faults
 
 - **A mirrored fireball is not inert yet.** The element sync asks `coop_enemy_shot_mirror` for every component's
-  actor and would treat a mirror as shown only, but for a Fire Wizzrobe's shot the query answers no: the projectile's
-  shooter is the ruby fused to the rod, and the enemy sync's holder lookup has no holder for that ruby (reported to
-  the enemy sync twice, with the run). So the copying game still lights cells by the mirror, and states them as its
-  own.
+  actor and at every ground contact. With the Wizzrobe's kind listed for the enemy sync (`TOTK_COOP_EN_KINDS`, which
+  the runs before lacked) the query finds the enemy behind the rod's ruby in the owner's game; in the copying game the
+  mirrored projectile has no shooter link at all, so the query answers no there (reported to the enemy sync with the
+  run). The copying game still lights cells by the mirror and states them as its own: 24 of 65 burn events in that
+  run, in which both games burned the same 36 cells. A summoned fire Keese that is a copy is kept from the ground.
 - **Lightning**: only the forced strike was run, not a storm's own, an arrow's or a node's; a strike in a game whose
   Link is far away is still made there; the thing a strike electrifies or lights in the showing game is given by its
   owner's statement, which was not run.
