@@ -36,7 +36,8 @@ Unreliable, latest-only slots of the transport (`coop_ctr_send` with no flag, re
 type and key). The key is the first 8 bytes. Types 90 to 109 are the element sync's.
 
 ```c
-enum { ELM_CELLS = 90, ELM_THINGS = 91, ELM_STRIKE = 92 };
+enum { ELM_CELLS = 90, ELM_THINGS = 91, ELM_STRIKE = 92, ELM_LINK = 93 };
+typedef struct { uint64_t zero; uint8_t n, el[7], ice, cond, pad[6]; } ElmLink;                              // 24 bytes
 typedef struct { uint64_t slot; uint32_t serial; float pos[3]; uint8_t level, sage, pad[2]; } ElmStrike;   // 28 bytes
 typedef struct { uint64_t page; uint32_t round; uint16_t total, n; } ElmHead;            // 16 bytes
 typedef struct { float x, z; uint16_t burn; uint8_t heat, state_wet; } ElmCell;         // 12 bytes
@@ -189,6 +190,22 @@ with the element 0 (thunder manager `[[[[main+0x395dc20]]+0xd0]+0x228]`); its ow
 blast actor of a shown strike (name `LightningStrike...`, within 3 m of the place, for 150 frames) is shown only.
 Weather is not shared, so each game's storm strikes in every game.
 
+### 5.7 Each player's Link on the other games' stand-ins
+
+A game states its own Link (its elements as 5.1 reads them, its ice look, its condition bits) in `ELM_LINK`, every
+3rd frame while anything is on and for 2 s after. The other games show it on their stand-in of that player
+(`coop_player_standin`, coop_players.c). A stand-in's update does not run and its chemical component has no elements
+(seen in a run), so it cannot burn by its own chemistry:
+
+- **Burning**: while the statement says an element burns, the game's flame effect `Chemical_Fire` is kept on the
+  stand-in, with the calls a burning cell's fire uses: started through the effect manager (main+0x6ec950) on an empty
+  handle (two parts of 8 bytes, index -1 each), placed every frame (main+0x28e33e8, the stand-in's place 0.9 m up;
+  scale main+0x1a511e4), asked whether it plays (main+0xb9b684) and stopped (main+0x6e34e8).
+- **Frozen**: the ice look is written to the stand-in's model controller as for an enemy copy (5.3).
+- A stand-in is shown only (5.6): it lights nothing and takes no reaction.
+
+Not shown: shock and wetness on a stand-in, and what burns in a Link's hands.
+
 ## 6. Load, pause, join, leave
 
 - The system pointer S is taken at each driver call. When it changes, or this game is loading, the cell lists and the
@@ -209,6 +226,7 @@ Weather is not shared, so each game's storm strikes in every game.
   Link (default 8 m on x).
 - `TOTK_COOP_ELEM_TEST_ENEMY=<s>,<ignite|freeze|thaw|out|charge>[/<s>,<what>...]`: at each of those times the first
   game asks the nearest enemy it decides for, within 40 m, with the game's own request.
+- `TOTK_COOP_ELEM_TEST_LINK=<s>,<ignite|freeze|thaw|out>`: at that time the first game asks its own Link.
 - `TOTK_COOP_ELEM_TEST_DEAF=<s>`: until that world time this game takes no statement, as a game that arrives then.
 - `TOTK_COOP_ELEM_TEST_LOG=1`: how each object at the ground was told, once per kind; what the enemy sync answers for
   a projectile; a dump of what an element's update reads at a request.
@@ -279,6 +297,11 @@ projectiles; nothing calls it yet.
   the enemy stands in the strike's fire in both games; whether the shock's own sparks show on the copy cannot be
   told from them. One run of three missed the enemy with the strike.
 
+- **A Link set alight** (A's own, by the test): it burned 12.0 s in A; B put the flame on its stand-in of A 58 ms
+  after and took it off 58 ms after A's ended. B's own Link, standing in the grass A's lit, caught fire, and A put
+  the flame on its stand-in of B 31 ms later. A picture from B shows the flame on the stand-in.
+- **A Link frozen** (A's own, by the test, 6.0 s): a picture from B shows its stand-in of A white with the ice look.
+
 ### Left, and known faults
 
 - **Lightning**: only the forced strike was run, not a storm's own, an arrow's or a node's; a strike in a game whose
@@ -296,8 +319,7 @@ projectiles; nothing calls it yet.
   take-over when the deciding game leaves; three games.
 - **A few repeated burn events on copies** (52 copy events in B against 47 of A's own in the last run): not looked
   into.
-- **Not built** (D 2.1): things made at run time that are not enemies (dropped and held weapons, arrows, each Link on
-  the other games' stand-ins), ice blocks and frozen water, electricity through water and metal beyond
+- **Not built** (D 2.1): things made at run time that are not enemies (dropped and held weapons, arrows), ice blocks and frozen water, electricity through water and metal beyond
   the element flag, wetness on things, weather (rain and wind differ per game: the deciding game's rain puts a fire
   out for all, which is what state sharing gives without sharing the weather).
 - **The contraption sync's burning parts** are left as they were; a part is not in the thing table while the

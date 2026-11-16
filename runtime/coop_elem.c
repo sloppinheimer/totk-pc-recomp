@@ -71,7 +71,8 @@ static float rdf(uint64_t a) { float f = 0; coop_rd(a, &f, 4); return f; }
 static uint8_t rd8(uint64_t a) { uint8_t b = 0; coop_rd(a, &b, 1); return b; }
 
 // ---- messages (S 3) ----------------------------------------------------------------------------------------------
-enum { ELM_CELLS = 90, ELM_THINGS = 91, ELM_STRIKE = 92 };
+enum { ELM_CELLS = 90, ELM_THINGS = 91, ELM_STRIKE = 92, ELM_LINK = 93 };
+typedef struct { uint64_t zero; uint8_t n, el[7], ice, cond, pad[6]; } ElmLink;   // 24 bytes: this game's own Link
 typedef struct { uint64_t slot; uint32_t serial; float pos[3]; uint8_t level, sage, pad[2]; } ElmStrike;   // 28 bytes; slot = serial % 8
 typedef struct { uint64_t page; uint32_t round; uint16_t total, n; } ElmHead;
 typedef struct { float x, z; uint16_t burn; uint8_t heat, state_wet; } ElmCell;
@@ -315,9 +316,14 @@ static int strike_blast(uint64_t actor) {   // the blast actor of a strike this 
     return 0;
 }
 // An actor that is shown only: named to coop_elem_inert, a projectile of an enemy another game runs, a shown strike's blast.
+static _Atomic uint64_t standins[COOP_MAX_PLAYERS];   // the other players' stand-in Links here, as phase 0 last saw them
+static int is_standin(uint64_t actor) {
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++) if (atomic_load_explicit(&standins[i], memory_order_relaxed) == actor) return 1;
+    return 0;
+}
 static int shown_only(uint64_t actor) {
     int coop_enemy_shot_mirror(uint64_t proj);
-    return is_inert(actor) || strike_blast(actor) || coop_enemy_shot_mirror(actor);
+    return is_inert(actor) || is_standin(actor) || strike_blast(actor) || coop_enemy_shot_mirror(actor);
 }
 // The actor behind a chemical object (a reaction, a ground contact), 0 none: object -> source -> owner -> component.
 static uint64_t object_actor(uint64_t obj) {
@@ -530,6 +536,11 @@ static void thing_said(uint64_t actor, int i, uint8_t before, uint8_t now, int c
            now & EL_NONE ? "off" : kind[now & 7], now & EL_ELEC ? ", electrified" : "", now & EL_WET ? ", wet" : "",
            copy ? "a copy" : "mine", (unsigned long long)(plat_now_ns() / 1000000));
 }
+// This game's own Link as its component's update last read it (under lk): stated to the others, who show it on
+// their stand-in of this player (S 5.7).
+static int link_n;
+static uint8_t link_cur[EL_MAX], link_ice, link_cond;
+static uint32_t link_frame;
 // A component's update: the thing is read; a copy is given what its owner states and its elements are closed to
 // reactions (S 5.3, 5.4).
 static int comp_hook(Cpu *c) {
@@ -538,7 +549,7 @@ static int comp_hook(Cpu *c) {
     if (!actor) return 0;
     uint32_t frame = coop_sess_frame_no();
     uint8_t before[EL_MAX] = {0};
-    int n = el_read(comp, els, cur), copy = 0, ask = 0, changed = 0, what[EL_MAX] = {0}, ice_set = 0, shock_set = 0, cond_said = 0;
+    int n = el_read(comp, els, cur), copy = 0, ask = 0, changed = 0, what[EL_MAX] = {0}, ice_set = 0, shock_set = 0, cond_said = 0, link_changed = 0;
     uint8_t ice_now = 0, cond_was = 0, cond_is = 0;
     if (!n) return 0;
     // (a projectile shot by an enemy another game runs is the copy's own actor, made by the same calls as the owner's
@@ -605,6 +616,12 @@ static int comp_hook(Cpu *c) {
             if ((t->cur[i] & 7) && !(cur[i] & 7)) t->ended[i] = frame ? frame : 1;
         }
         if (!t->hash || t->enemy != (es != EM_FREE)) t->hash = name_of(actor, es != EM_FREE);
+        // (asked at every visit: at an actor's first one the player may not be there yet)
+        t->skip = actor == atomic_load_explicit(&my_link, memory_order_relaxed);
+        if (t->skip) {
+            for (int i = 0; i < n && link_n == n; i++) if (link_cur[i] != cur[i]) link_changed |= 1 << i, before[i] = link_cur[i];
+            link_n = n, memcpy(link_cur, cur, sizeof link_cur), link_ice = ice_read(actor), link_cond = cond_read(actor), link_frame = frame;
+        }
         t->n = (uint8_t)n, t->seen = frame, t->enemy = es != EM_FREE;
         memcpy(t->cur, cur, sizeof cur);
         coop_rd(actor + COOP_ACTOR_POS, t->pos, 12);
@@ -647,7 +664,7 @@ static int comp_hook(Cpu *c) {
         rt_log("coop: elem: enemy %s condition %x -> %x (burn 1, shock 2, wet 4, frozen 8; %s%s), at %llu ms", coop_actor_name(actor, nm, sizeof nm), cond_was, cond_is,
                es == EM_COPY ? "a copy" : "mine", shock_set ? shock_set > 0 ? ", shock written" : ", shock taken off" : "", (unsigned long long)(plat_now_ns() / 1000000));
     }
-    for (int i = 0; i < n; i++) if (changed >> i & 1) thing_said(actor, i, before[i], cur[i], copy);
+    for (int i = 0; i < n; i++) if ((changed | link_changed) >> i & 1) thing_said(actor, i, before[i], cur[i], copy);
     if (!ask || coop_ctn_driven(actor) || coop_ctn_follows(actor)) return 0;
     for (int i = 0; i < n; i++) if (what[i]) ask_do(c, comp, els[i], i, what[i]);
     return 0;
@@ -983,6 +1000,113 @@ static void strikes_phase0(Cpu *c, const int *ids, int np, uint32_t frame) {
     }
 }
 
+// Each player's own Link on the other games' stand-ins (S 5.7). A stand-in's update does not run, so its chemical
+// component is updated from here, one frame's step, while it has something to show and for 2 s after; requests and
+// the ice look as for any copy. A stand-in is shown only: it takes and gives no reaction and lights no ground.
+static void links_phase0(Cpu *c, const int *ids, int np, uint32_t frame) {
+    uint64_t coop_player_standin(int net_id);
+    static uint32_t last_any, busy_until[COOP_MAX_PLAYERS + 1], asked[COOP_MAX_PLAYERS + 1][EL_MAX];
+    static uint8_t shown[COOP_MAX_PLAYERS + 1][EL_MAX], ice_put[COOP_MAX_PLAYERS + 1];
+    ElmLink m = {0};
+    plat_mutex_lock(&lk);
+    int fresh = link_n && frame - link_frame < 30;
+    m.n = (uint8_t)(fresh ? link_n : 0), memcpy(m.el, link_cur, sizeof m.el), m.ice = link_ice, m.cond = link_cond;
+    plat_mutex_unlock(&lk);
+    int any = m.ice != 0;
+    for (int i = 0; i < m.n; i++) any |= m.el[i] != EL_NONE && (m.el[i] & 0xf);
+    if (any) last_any = frame ? frame : 1;
+    if (fresh && last_any && frame - last_any < 60 && frame % 3 == 0 && !coop_sess_paused()) coop_ctr_send(0, ELM_LINK, 0, &m, sizeof m);
+    {   // Test (TOTK_COOP_ELEM_TEST_LINK=<s>,<ignite|freeze|thaw|out>): at that world time the first game asks its own Link
+        static double at = -2;
+        static char what[12];
+        static int done;
+        if (at < -1) {
+            const char *e = cfg_get("TOTK_COOP_ELEM_TEST_LINK"), *k = e ? strchr(e, ',') : NULL;
+            at = e ? atof(e) : -1;
+            if (k) snprintf(what, sizeof what, "%s", k + 1);
+        }
+        uint64_t link = coop_player_actor(), comp = link ? comp_of(link) : 0;
+        if (at >= 0 && !done && frame_step_world_us() / 1e6 >= at && comp && lowest_here()) {
+            done = 1;
+            if (!strcmp(what, "ignite")) coop_guest_call(c, MOD_MAIN_BASE + FN_IGNITE, comp, 2, (uint64_t)-1, 0);
+            else if (!strcmp(what, "freeze")) coop_guest_call(c, MOD_MAIN_BASE + FN_FREEZE, comp, 4, (uint64_t)-1, 0);
+            else if (!strcmp(what, "thaw")) coop_guest_call(c, MOD_MAIN_BASE + FN_THAW, comp, 0, (uint64_t)-1, 0);
+            else if (!strcmp(what, "out")) coop_guest_call(c, MOD_MAIN_BASE + FN_REQ_B, comp, 0, (uint64_t)-1, 0);
+            rt_log("coop: elem: test: this game's Link asked to %s", what);
+        }
+    }
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++) atomic_store(&standins[i], i < np ? coop_player_standin(ids[i]) : 0);
+    for (int p = 0; p < np; p++) {
+        int id = ids[p];
+        uint64_t actor = id >= 1 && id <= COOP_MAX_PLAYERS ? coop_player_standin(id) : 0, comp = actor ? comp_of(actor) : 0, els[EL_MAX], age = 0;
+        uint8_t cur[EL_MAX];
+        ElmLink w = {0};
+        int n = comp ? el_read(comp, els, cur) : 0, got = coop_ctr_latest(id, ELM_LINK, 0, &w, sizeof w, &age);
+        {   // (said when what is known of a player's stand-in changes: no actor, no component, no elements, no statement)
+            static int said[COOP_MAX_PLAYERS + 1];
+            int state = 1 + (actor != 0) + (comp != 0) + (n != 0) + 8 * (got == (int)sizeof w);
+            if (said[id] != state) said[id] = state, rt_log("coop: elem: player %d's stand-in: actor %llx, chemical component %llx, %d elements; its Link's statement: %s", id,
+                                                           (unsigned long long)actor, (unsigned long long)comp, n, got == (int)sizeof w ? "taken" : "none yet");
+        }
+        if (!comp) continue;
+        if (got != (int)sizeof w || age > 1000000000ull) memset(&w, 0, sizeof w);
+        {   // A stand-in has no chemical elements (seen in a run: a component with an empty list), so it cannot burn by
+            // itself: while its player's Link burns, the game's flame effect is kept on it, started, placed and stopped
+            // with the calls a burning ground cell's fire uses (main+0x1f115f0, main+0x1f11548).
+            static struct { uint8_t h[16]; int on; } fx[COOP_MAX_PLAYERS + 1];
+            int burns = 0;
+            for (int i = 0; i < w.n && i < EL_MAX; i++) burns |= w.el[i] != EL_NONE && (w.el[i] & 7) == 2;
+            uint8_t *h = fx[id].h;
+            float at[3];
+            // (an empty handle: two parts of 8 bytes, each a pool byte, an index of -1 at +2 and a serial at +4; the
+            // game's "is it playing" test main+0xb9b684 reads both)
+            if (!fx[id].on) memset(h, 0, 16), h[0] = h[8] = 0xff, h[2] = h[3] = h[10] = h[11] = 0xff;
+            if (burns && coop_rd(actor + COOP_ACTOR_POS, at, 12)) {
+                uint64_t mgr = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + 0x395f110));
+                if (mgr && !(coop_guest_call(c, MOD_MAIN_BASE + 0xb9b684, (uint64_t)(uintptr_t)h, 0, 0, 0) & 1)) {
+                    coop_guest_call(c, MOD_MAIN_BASE + 0x6e34e8, (uint64_t)(uintptr_t)h, (uint64_t)-1, 0, 0);
+                    coop_guest_call(c, MOD_MAIN_BASE + 0x6ec950, mgr, MOD_MAIN_BASE + 0x2cc09f3, (uint64_t)(uintptr_t)h, 2);   // "Chemical_Fire"
+                    if (!fx[id].on) rt_log("coop: elem: player %d's Link burns: the flame is put on its stand-in, at %llu ms", id, (unsigned long long)(plat_now_ns() / 1000000));
+                    fx[id].on = 1;
+                }
+                if (coop_guest_call(c, MOD_MAIN_BASE + 0xb9b684, (uint64_t)(uintptr_t)h, 0, 0, 0) & 1) {
+                    static _Alignas(16) float m[12], sc[4];
+                    memset(m, 0, sizeof m);
+                    m[0] = m[5] = m[10] = 1.0f, m[3] = at[0], m[7] = at[1] + 0.9f, m[11] = at[2];
+                    sc[0] = sc[1] = sc[2] = 1.0f, sc[3] = 0;
+                    coop_guest_call(c, MOD_MAIN_BASE + 0x28e33e8, (uint64_t)(uintptr_t)h, (uint64_t)(uintptr_t)m, 0, 0);
+                    coop_guest_call(c, MOD_MAIN_BASE + 0x1a511e4, (uint64_t)(uintptr_t)h, (uint64_t)(uintptr_t)sc, 0, 0);
+                }
+            } else if (fx[id].on) {
+                coop_guest_call(c, MOD_MAIN_BASE + 0x6e34e8, (uint64_t)(uintptr_t)h, (uint64_t)-1, 0, 0);
+                fx[id].on = 0;
+                rt_log("coop: elem: player %d's Link burns no more: the flame is taken off its stand-in, at %llu ms", id, (unsigned long long)(plat_now_ns() / 1000000));
+            }
+        }
+        int want_any = w.ice != 0, did = 0;
+        for (int i = 0; i < n; i++) {
+            uint8_t want = i < w.n ? w.el[i] : 0;
+            want_any |= want != EL_NONE && (want & 0xf);
+            if (cur[i] != shown[id][i]) {
+                thing_said(actor, i, shown[id][i], cur[i], 1);
+                shown[id][i] = cur[i];
+            }
+            eset_put(els[i], frame);
+            int what = ask_of(cur[i], want);
+            if (!what || frame - asked[id][i] < 30) continue;
+            asked[id][i] = frame, did = 1;
+            ask_do(c, comp, els[i], i, what);
+        }
+        if (want_any || did) busy_until[id] = frame + 60;
+        if ((w.ice != 0) != (ice_put[id] != 0) || (w.ice && ice_read(actor) != w.ice)) ice_write(actor, w.ice), ice_put[id] = w.ice;
+        if (busy_until[id] && (int32_t)(busy_until[id] - frame) > 0) {
+            static _Alignas(16) float step[4];
+            step[0] = 1.0f, step[1] = step[2] = step[3] = 0;
+            coop_guest_call(c, MOD_MAIN_BASE + FN_COMP_UPDATE, comp, (uint64_t)(uintptr_t)step, 0, 0);
+        }
+    }
+}
+
 void coop_elem_phase0(Cpu *c) {
     if (!elem_on()) return;
     static uint32_t round, last_any;
@@ -1042,6 +1166,7 @@ void coop_elem_phase0(Cpu *c) {
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++)
         if (!here[id]) { if (cell_list[id]) cell_list[id]->n = 0; if (thing_list[id]) thing_list[id]->n = 0; }
     strikes_phase0(c, ids, np, frame);
+    links_phase0(c, ids, np, frame);
     // The wanted cells: every list, the lower player id first; a place named twice is taken once.
     static Want w[CELLS_MAX * 2];
     int wn = 0;
