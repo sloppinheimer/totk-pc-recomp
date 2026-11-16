@@ -921,6 +921,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
         int coop_enemy_hook(Cpu *c, uint64_t off);
         return coop_enemy_hook(c, addr - MOD_MAIN_BASE);
     }
+    if (COOP_HOOKED_EL(addr)) { int coop_elem_hook(Cpu *c, uint64_t off); return coop_elem_hook(c, addr - MOD_MAIN_BASE); }   // the element sync (coop_elem.c)
     if (addr == MOD_MAIN_BASE + 0x41bb20 || addr == MOD_MAIN_BASE + 0x50ad74) {   // the actor's calc and the action request: seen by the enemy probe first
         int coop_enemy_shared(Cpu *c, uint64_t off);
         if (coop_enemy_shared(c, addr - MOD_MAIN_BASE)) return 1;
@@ -991,6 +992,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
             coop_enemy_phase0(c);
             memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
         }
+        { void coop_elem_phase0(Cpu *c); coop_elem_phase0(c); }   // the element sync's pass (coop_elem.c)
         // contraption tests that need every actor link to resolve: GameDataMgr::calc runs each frame at actor phase 0,
         // outside the parallel actor update (TOTK_COOP_TEST_PHASES)
         static int seq = -1;
