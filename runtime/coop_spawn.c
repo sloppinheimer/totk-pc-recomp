@@ -1101,13 +1101,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // the SwordBlur component's update (coop_world.c): a stand-in's runs with its owner's WeaponBlur event
     if (addr == MOD_MAIN_BASE + 0x275954) { int coop_blur_hook(Cpu *c, uint64_t addr); return coop_blur_hook(c, addr); }
     if (addr == MOD_MAIN_BASE + 0x31dbc0) { void coop_hit_delivered(Cpu *c); coop_hit_delivered(c); return 0; }   // coop_world.c
-    if (addr == MOD_MAIN_BASE + 0x300a30) {
-        int en_hit_step(Cpu *c, uint64_t addr);   // coop_enemy_hit.c: a copy's damage step is run inside and what it took is sent to its owner
-        if (en_hit_step(c, addr)) return 1;
-        void coop_hit_update(Cpu *c);             // coop_world.c
-        coop_hit_update(c);
-        return 0;
-    }
+    if (addr == MOD_MAIN_BASE + 0x300a30) { void coop_hit_update(Cpu *c); coop_hit_update(c); return 0; }        // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x50ad74) { void coop_enemy_action(Cpu *c); coop_enemy_action(c); return 0; }    // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x96c1ac) { void coop_markers_screen(uint64_t); coop_markers_screen(c->x[0]); return 0; }   // coop_markers.c: the AppMap screen's set-up
     // main+0x1d1fc70 (x0 an actor link): the 1.4.3 copy of the function TotK Online makes return 1 for PlayerPuppet

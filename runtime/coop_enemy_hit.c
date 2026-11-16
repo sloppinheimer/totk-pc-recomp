@@ -2,9 +2,9 @@
 //
 // Life. An enemy's life points are its owner's: a copy's are written from the owner's states before every calc.
 // A hit is decided in the game that saw it: the copy's damage step runs there as the game wrote it (so the blow, the
-// flinch and the numbers show at once), the life it took is sent to the owner (HIT, reliable), and for a second and a
-// half the copy shows the lower of the stated life and the life after that hit, so the life does not rise again while
-// the hit travels. The owner takes the same points from its enemy; at 0 it asks the game for the death.
+// flinch and the numbers show at once); what the copy's life lost since it was last written is that game's hits, sent
+// to the owner (HIT, reliable), and for a second and a half the copy shows the lower of the stated life and the life
+// after that hit, so the life does not rise again while the hit travels. The owner takes the same points from its enemy; at 0 it asks the game for the death.
 //
 // Death. It is the owner's enemy that dies (its drops, its kill record). The owner states its death word in every
 // STATE and DEATH once, reliably, when the word becomes valid; every game then keeps a tombstone for the placement. A
@@ -15,6 +15,7 @@
 // put away by the placement's own dead call and a delete request.
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "coop_enemy.h"
@@ -25,7 +26,6 @@
 #define SEC 1000000000ull
 #define FN_DEATH_REQ 0x1b4b738      // (death component, cause, second cause, flag)
 #define FN_SET_DEAD 0x195321c       // (actor, flag): the placement stays away; flag bit 0 writes the save
-void rt_dispatch(Cpu *c);
 
 typedef struct { Enid id; uint32_t epoch, serial; int32_t dmg; uint32_t pad; } MHit;
 typedef struct { Enid id; uint32_t dstate; uint8_t kill, end, pad[2]; } MDeath;
@@ -41,25 +41,6 @@ static void hp_write(uint64_t actor, int32_t v) {
     uint64_t p = hp_word(actor);
     int32_t was = 0;
     if (p && coop_rd(p, &was, 4) && was != v) memcpy((void *)(uintptr_t)p, &v, 4);
-}
-
-// ---- The damage step (main+0x300a30, x0 the life component) of a copy ---------------------------------------------------
-int en_hit_step(Cpu *c, uint64_t addr) {
-    static __thread int deep;
-    if (deep || !atomic_load_explicit(&en_active, memory_order_relaxed)) return 0;
-    uint64_t actor = coop_rd_ptr(c->x[0] + 0x198);
-    EnCell *m = actor > 0x10000 ? en_cell_of(actor) : NULL;
-    if (!m || atomic_load_explicit(&m->state, memory_order_relaxed) != EM_COPY || !m->sw_on) return 0;
-    int32_t hp0 = en_hp_of(actor);
-    deep = 1, c->pc = addr;
-    rt_dispatch(c);   // (the older handlers of this address run inside: the stand-in rule of the contacts filter)
-    deep = 0;
-    int32_t hp1 = en_hp_of(actor);
-    if (hp0 > 0 && hp1 >= 0 && hp1 < hp0) {
-        atomic_fetch_add(&m->hit_dmg, hp0 - hp1);
-        m->hit_hp = hp1, m->hit_ns = en_now();
-    }
-    return 1;
 }
 
 // ---- The actor's own thread ---------------------------------------------------------------------------------------------
@@ -110,15 +91,21 @@ void en_hit_precalc(Cpu *c, uint64_t actor, EnCell *m, int off) {
         return;
     }
     // A copy: its life is its owner's.
-    int32_t hp = m->show_hp;
+    // What the copy lost since its life was last written is this game's hits: the game takes a hit's damage from the
+    // life in the calc after the damage step that found it (two-game run: the life did not change inside the step).
+    int32_t hp = m->show_hp, cur = en_hp_of(actor);
+    if (m->hp_written > 0 && cur >= 0 && cur < m->hp_written) {
+        atomic_fetch_add(&m->hit_dmg, m->hp_written - cur);
+        m->hit_hp = cur, m->hit_ns = en_now();
+    }
     if (en_now() - m->hit_ns < 3 * SEC / 2 && m->hit_hp < hp) hp = m->hit_hp;
-    if (hp >= 0) hp_write(actor, hp);
+    if (hp >= 0 && !en_test_skip('h')) hp_write(actor, hp), m->hp_written = hp;
     if (!dc) return;
     uint32_t w = 0, want = m->show_dstate;
     uint16_t sw = 0;
     if (!coop_rd(dc + 0x20, &w, 4) || !coop_rd(dc + 0x2c, &sw, 2)) return;
     if (!m->dc_saved) m->dc_saved = 1, m->dc_bits = (uint8_t)(sw & 0x81);
-    if (!(w & 1) && (sw & 0x81) != 0x81) sw |= 0x81, memcpy((void *)(uintptr_t)(dc + 0x2c), &sw, 2);   // no drops, no request but this file's
+    if (!(w & 1) && (sw & 0x81) != 0x81 && !en_test_skip('d')) sw |= 0x81, memcpy((void *)(uintptr_t)(dc + 0x2c), &sw, 2);   // no drops, no request but this file's
     int dying = atomic_load_explicit(&m->dying, memory_order_relaxed) || (want & 1);
     if (dying && !(w & 1) && m->req_tries < 60) {
         uint32_t cause = want & 1 ? (want >> 4) & 0x1f : 0x10, second = want & 1 ? (want >> 9) & 0x1f : 1, flag = want & 1 ? !((want >> 15) & 1) : 0;

@@ -274,7 +274,7 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     }
     m->sw_on = 1;
     four_writes(actor, m);
-    if (body && !m->body_static) coop_guest_call(c, MOD_MAIN_BASE + FN_MOTION_TYPE, body, 0, 0, 0), m->body_static = 1;
+    if (body && !m->body_static && !en_test_skip('s')) coop_guest_call(c, MOD_MAIN_BASE + FN_MOTION_TYPE, body, 0, 0, 0), m->body_static = 1;
     // What to show: phase 0 wrote it whole under the sequence.
     float pos[3], quat[4];
     static __thread EnSlot slot[EN_SLOT_N];

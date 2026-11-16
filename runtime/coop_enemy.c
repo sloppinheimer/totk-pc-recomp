@@ -35,6 +35,13 @@ int coop_enemy_new(void) {
     return on;
 }
 
+int en_test_skip(char what) {
+    static const char *s;
+    static int read;
+    if (!read) s = cfg_get("TOTK_COOP_EN_TEST_SKIP"), read = 1;
+    return s && strchr(s, what) != NULL;
+}
+
 PlatMutex en_lock = PLAT_MUTEX_INIT;
 En en_tab[EN_N];
 EnCell en_map[EN_MAP_N];
@@ -153,7 +160,7 @@ static EnCell *map_touch(uint64_t actor) {
         m->sw_on = m->sw_saved = m->body_static = 0, m->show_on = 0;
         atomic_store(&m->turned, 0), atomic_store(&m->leaks, 0);
         atomic_store(&m->hit_dmg, 0), atomic_store(&m->dying, 0), atomic_store(&m->kill_req, 0), atomic_store(&m->put_away, 0), atomic_store(&m->flinch, 0);
-        m->put_done = m->dc_saved = m->req_tries = m->pinned = 0, m->hit_ns = 0, m->show_dstate = 0;
+        m->put_done = m->dc_saved = m->req_tries = m->pinned = 0, m->hit_ns = 0, m->show_dstate = 0, m->hp_written = 0;
         for (int k = 0; k < EN_SLOT_N; k++) m->slot_try[k] = 0;
         // held from its first frame while a session is on (S 4.2); phase 0 says what it is
         atomic_store(&m->state, atomic_load(&en_active) ? EM_NEW : EM_OWN);
@@ -404,7 +411,7 @@ static void bind(En *e, EnCell *m, uint64_t actor, int state) {
     if (e->cell >= 0 && &en_map[e->cell] != m) cell_unbind(e);
     e->actor = actor, e->gen = atomic_load(&m->gen), e->cell = (int16_t)(m - en_map);
     atomic_store(&m->en, (int16_t)(e - en_tab));
-    m->show_on = 0;   // (nothing of an earlier owner is shown)
+    m->show_on = 0, m->hp_written = 0;   // (nothing of an earlier owner is shown)
     atomic_store(&m->state, (uint8_t)state);
     m->retry = 0;
 }

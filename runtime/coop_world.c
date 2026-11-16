@@ -2926,6 +2926,23 @@ static void contacts_filter(uint64_t dc) {
         if (atomic_fetch_add(&said_s, 1) < 10) rt_log("coop: contact on a stand-in: %d taken out (its owner's game counts them)", cnt);
         return;
     }
+    {   // An enemy the enemy sync of coop_enemy.c knows (its own, a copy, or unsynced): a stand-in's hits on it are taken
+        // out. The game of that stand-in's player has the same hit on its own actor of the enemy and states it; left
+        // in, a watching game took the life from its copy too and sent it to the owner as its own player's hit, and
+        // every blow counted twice (two-game run, 2026-11-16).
+        int en_cell_state(uint64_t actor);   // coop_enemy.c
+        if (coop_enemy_new() && en_cell_state(a)) {
+            int keep = 0;
+            for (int k = 0; k < cnt; k++) {
+                uint64_t e = base + (uint64_t)k * CONTACT_SZ, r2 = coop_rd_ptr(e + 0x80), by = r2 ? coop_rd_ptr(r2 + 0x40) : 0;
+                if (ct_is_link(by) == 2) continue;
+                if (keep != k) memmove((void *)(uintptr_t)(base + (uint64_t)keep * CONTACT_SZ), (void *)(uintptr_t)e, CONTACT_SZ);
+                keep++;
+            }
+            if (keep != cnt) memcpy((void *)(uintptr_t)(l + 0x18), &keep, 4);
+            return;
+        }
+    }
     if (!ct_is_copy(a)) return;
     int out = 0, keep = 0;
     ContactPacket ce_out, ce_arrows;

@@ -64,6 +64,7 @@ typedef struct {
     // Hits and death (coop_enemy_hit.c).
     _Atomic int32_t hit_dmg;          // life this game's hits took from the copy since phase 0 last looked
     int32_t hit_hp; uint64_t hit_ns;  // the copy's life after this game's last hit, and when
+    int32_t hp_written;               // the life pre-calc last gave the copy (0: none yet)
     _Atomic uint8_t dying, kill_req, put_away, flinch;   // asked of pre-calc: the copy's death, the owner's death, the actor of a dead placement put away, a flinch
     uint8_t put_done, dc_saved, dc_bits, req_tries;
 } EnCell;
@@ -92,6 +93,7 @@ extern EnCell en_map[EN_MAP_N];
 extern _Atomic int en_active;        // a session with every peer on this sync, and this game not loading
 
 int coop_enemy_new(void);
+int en_test_skip(char what);                        // TOTK_COOP_EN_TEST_SKIP=<letters>: a part of the copy left out, for finding a fault
 EnCell *en_cell_of(uint64_t actor);                 // any thread; NULL when the actor is not of a listed kind
 int en_cell_state(uint64_t actor);                  // EM_* (EM_FREE: not ours)
 uint64_t en_now(void);
