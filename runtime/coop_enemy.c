@@ -54,7 +54,11 @@ uint64_t en_now(void) { return plat_now_ns(); }
 // ---- Kinds -----------------------------------------------------------------------------------------------------------
 // The Bokoblin shape (S 0): one actor with a character controller and the graph units the switch turns away.
 static int kind_of(const char *nm) {
-    static const char *const pre[] = { "Enemy_Bokoblin", "Enemy_Moriblin", "Enemy_Horablin", "Enemy_Lizalfos" };
+    // (the first four are one shape; the others were each tried by spawning one beside a Link with a second game
+    // watching, and in a tester's session: made in the other game, followed, no leak. A swarm is not one actor.)
+    static const char *const pre[] = { "Enemy_Bokoblin", "Enemy_Moriblin", "Enemy_Horablin", "Enemy_Lizalfos", "Enemy_Chuchu", "Enemy_Keese",
+                                       "Enemy_Octarock", "Enemy_Wizzrobe", "Enemy_Zonau_Robot", "Enemy_Zonau_Golem", "Enemy_Assassin" };
+    if (strstr(nm, "Swarm")) return 0;
     for (unsigned i = 0; i < sizeof pre / sizeof *pre; i++)
         if (!strncmp(nm, pre[i], strlen(pre[i]))) return (int)i + 1;
     // Test (TOTK_COOP_EN_KINDS=<prefix>[,<prefix>...]): more kinds by the start of their actor names, for trying a family.

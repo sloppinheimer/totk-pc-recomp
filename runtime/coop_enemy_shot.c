@@ -272,6 +272,12 @@ int coop_enemy_shot_mirror(uint64_t proj) {
     uint64_t coop_enemy_holder(uint64_t actor);   // coop_enemy_copy.c
     uint64_t sc = proj > 0x10000 ? coop_rd_ptr(en_comps(proj) + 0x440) : 0, ref = sc ? coop_rd_ptr(sc + 0x78) : 0, shooter = ref ? coop_rd_ptr(ref + 0x40) : 0;
     // (the shooter can be what the enemy holds: a fire rod's flame is shot by the ruby fused to the rod)
+    {   // (test) the first shooters asked about that are no enemy: who they are and whether a holder is known
+        static _Atomic int said;
+        char pn[40] = "", sn[40] = "";
+        if (shooter && !coop_enemy_role(shooter) && atomic_fetch_add(&said, 1) < 8)
+            rt_log("coop: en: shot: mirror asked of %s (%llx): its shooter %llx %s, holder %llx", coop_actor_name(proj, pn, sizeof pn), (unsigned long long)proj, (unsigned long long)shooter, coop_actor_name(shooter, sn, sizeof sn), (unsigned long long)coop_enemy_holder(shooter));
+    }
     if (shooter && !coop_enemy_role(shooter)) { uint64_t h = coop_enemy_holder(shooter); if (h) shooter = h; }
     return shooter && coop_enemy_role(shooter) == 2;
 }

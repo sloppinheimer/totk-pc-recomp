@@ -197,7 +197,14 @@ int coop_enemy_young_near(const float p[3], float m) {
     }
     return 0;
 }
+static void test_flame(uint64_t a, void *arg) {   // (test) every live FireRodLv1Fire is asked about
+    int coop_enemy_shot_mirror(uint64_t proj);
+    char nm[40] = "";
+    (void)arg;
+    if (!strcmp(coop_actor_name(a, nm, sizeof nm), "FireRodLv1Fire")) coop_enemy_shot_mirror(a);
+}
 static void held_rebuild(void) {
+    if (cfg_get("TOTK_COOP_EN_TEST_GMC")) coop_actors_live(test_flame, NULL);
     int to = !atomic_load(&held_cur);
     _Atomic uint64_t *t = held_set[to], *by = held_by[to];
     static int said;
@@ -239,6 +246,19 @@ static void held_rebuild(void) {
             }
             uint64_t wc = coop_rd_ptr(en_comps(w) + 0x208), aref = wc ? coop_rd_ptr(wc + 0xb0 + 8) : 0, att = aref ? coop_rd_ptr(aref + 0x40) : 0;
             int32_t as = 0;
+            {   // (test) each weapon's attachment once: the actor the link gives, its name and state
+                static uint64_t seen[64];
+                static int nseen;
+                int was = 0;
+                for (int k = 0; k < nseen; k++) was |= seen[k] == w;
+                if (!was && nseen < 64) {
+                    char an[40] = "", wn[40] = "";
+                    int32_t st = -1;
+                    seen[nseen++] = w;
+                    if (att) coop_rd(att + COOP_ACTOR_STATE, &st, 4);
+                    rt_log("coop: en: equip: %s (%llx): its attachment link gives %llx %s, state %d", coop_actor_name(w, wn, sizeof wn), (unsigned long long)w, (unsigned long long)att, att ? coop_actor_name(att, an, sizeof an) : "-", (int)st);
+                }
+            }
             if (!att || !coop_rd(att + COOP_ACTOR_STATE, &as, 4) || as < 2 || as > 6) continue;
             held_put(t, by, att, a);
             if (said < 6) {
