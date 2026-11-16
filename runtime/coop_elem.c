@@ -365,12 +365,35 @@ static int el_read(uint64_t comp, uint64_t *els, uint8_t *cur) {
     }
     return n;
 }
+// Test (TOTK_COOP_ELEM_TEST_LOG=1): what the element's update reads when it decides on a request.
+static void el_dump(const char *when, uint64_t comp, uint64_t el) {
+    static int log = -1;
+    if (log < 0) log = cfg_get("TOTK_COOP_ELEM_TEST_LOG") != NULL;
+    if (!log) return;
+    uint8_t b[16] = {0}, ob[8] = {0};
+    uint16_t f90 = 0, f92 = 0;
+    uint32_t f94 = 0, f8 = 0;
+    uint64_t word = 0, o = coop_rd_ptr(el + 0x60), o28 = 0;
+    int8_t idx = 0;
+    coop_rd(el + 0x7c, b, 16), coop_rd(el + 0x90, &f90, 2), coop_rd(el + 0x92, &f92, 2), coop_rd(el + 0x94, &f94, 4), coop_rd(el + 8, &f8, 4);
+    coop_rd(comp + 0x20, &word, 8), coop_rd(o + 0x28, &o28, 8), coop_rd(o + 0x50, ob, 8), coop_rd(el + 0x251, &idx, 1);
+    uint64_t rec = el + 0xc0 + (idx == 1 ? 200 : 0);
+    char an[48];
+    rt_log("coop: elem: dump %s: %s hash %llx el %llx class %llx: bytes 7c.. %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x; "
+           "+8 %x, +90 %x, +92 %x, +94 %x; comp word %llx; owner %llx class %llx +28 %llx +50 %02x %02x %02x %02x; record flags %x, burn %.1f, wet %.2f, +94 %.1f, +98 %.1f",
+           when, coop_actor_name(coop_rd_ptr(comp + 0x18), an, sizeof an), (unsigned long long)hash_of(coop_rd_ptr(comp + 0x18)), (unsigned long long)el,
+           (unsigned long long)(coop_rd_ptr(el) - MOD_MAIN_BASE), b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15],
+           f8, f90, f92, f94, (unsigned long long)word, (unsigned long long)o, (unsigned long long)(o ? coop_rd_ptr(o) - MOD_MAIN_BASE : 0), (unsigned long long)o28,
+           ob[0], ob[1], ob[2], ob[3], (unsigned)coop_rd_ptr(rec + 8) & 0xffffffffu, rdf(rec + 0xbc), rdf(rec + 0x68), rdf(rec + 0x94), rdf(rec + 0x98));
+}
 // What a copy's element is asked to become (S 5.3): 0 nothing, else an ASK_*; and the asking, with the game's own
 // requests.
 enum { ASK_IGNITE = 1, ASK_BURN_OUT, ASK_FREEZE, ASK_PUT_OUT, ASK_THAW, ASK_CHARGE = 8 };
 static int ask_of(uint8_t cur, uint8_t wanted) {
     if (cur == EL_NONE || wanted == EL_NONE) return 0;
     int w = wanted & 7, is = cur & 7, what = 0;
+    // (a burnt-out or detonated element is at its end: a statement a moment old that still says it burns asks nothing)
+    if (is == 3 || is == 4) return 0;
     if (w != is) what = w == 2 ? ASK_IGNITE : w == 3 ? ASK_BURN_OUT : w == 1 ? ASK_FREEZE : w == 0 && is == 2 ? ASK_PUT_OUT : w == 0 && is == 1 ? ASK_THAW : 0;
     if (wanted & EL_ELEC && !(cur & EL_ELEC)) what |= ASK_CHARGE;
     return what;
@@ -395,6 +418,16 @@ static void ask_do(Cpu *c, uint64_t comp, uint64_t el, int i, int what) {
     else if (k == ASK_PUT_OUT) coop_guest_call(c, MOD_MAIN_BASE + FN_REQ_B, comp, 0, (uint64_t)i, 0);
     if (what & ASK_CHARGE) coop_guest_call(c, MOD_MAIN_BASE + FN_CHARGE, el + 0x50, 0, 0, 0);
     atomic_fetch_add(&n_req, 1);
+    el_dump("after the request", comp, el);
+}
+static void thing_said(uint64_t actor, int i, uint8_t before, uint8_t now, int copy) {
+    static const char *kind[8] = {"normal", "frozen", "burning", "burnt out", "detonated", "?", "?", "?"};
+    char nm[48];
+    if (before & EL_NONE) return;
+    rt_log("coop: elem: thing %s (hash %llx) element %d: %s%s%s -> %s%s%s (%s), at %llu ms", coop_actor_name(actor, nm, sizeof nm),
+           (unsigned long long)hash_of(actor), i, kind[before & 7], before & EL_ELEC ? ", electrified" : "", before & EL_WET ? ", wet" : "",
+           now & EL_NONE ? "off" : kind[now & 7], now & EL_ELEC ? ", electrified" : "", now & EL_WET ? ", wet" : "",
+           copy ? "a copy" : "mine", (unsigned long long)(plat_now_ns() / 1000000));
 }
 // A component's update: the thing is read; a copy is given what its owner states and its elements are closed to
 // reactions (S 5.3, 5.4).
@@ -472,14 +505,7 @@ static int comp_hook(Cpu *c) {
     }
     plat_mutex_unlock(&lk);
     if (copy) for (int i = 0; i < n; i++) eset_put(els[i], frame);
-    for (int i = 0; i < n; i++) if (changed >> i & 1 && !(before[i] & EL_NONE)) {
-        static const char *kind[8] = {"normal", "frozen", "burning", "burnt out", "detonated", "?", "?", "?"};
-        char nm[48];
-        rt_log("coop: elem: thing %s element %d: %s%s%s -> %s%s%s (%s), at %llu ms", coop_actor_name(actor, nm, sizeof nm), i,
-               before[i] & EL_NONE ? "off" : kind[before[i] & 7], before[i] & EL_ELEC ? ", electrified" : "", before[i] & EL_WET ? ", wet" : "",
-               cur[i] & EL_NONE ? "off" : kind[cur[i] & 7], cur[i] & EL_ELEC ? ", electrified" : "", cur[i] & EL_WET ? ", wet" : "",
-               copy ? "a copy" : "mine", (unsigned long long)(plat_now_ns() / 1000000));
-    }
+    for (int i = 0; i < n; i++) if (changed >> i & 1) thing_said(actor, i, before[i], cur[i], copy);
     if (!ask || coop_ctn_driven(actor) || coop_ctn_follows(actor)) return 0;
     for (int i = 0; i < n; i++) if (what[i]) ask_do(c, comp, els[i], i, what[i]);
     return 0;
@@ -632,6 +658,14 @@ static void tests(Cpu *c) {
         uint64_t a = best ? best->actor : 0, comp = best ? best->comp : 0;
         plat_mutex_unlock(&lk);
         if (comp) coop_guest_call(c, MOD_MAIN_BASE + FN_IGNITE, comp, 2, (uint64_t)-1, 0);
+        for (int i = 0; i < THING_N; i++) {
+            Thing *th = &things[i];
+            uint64_t els[EL_MAX];
+            uint8_t cur[EL_MAX];
+            char tn[48];
+            if (!th->comp || !th->hash || !*prefix || strncmp(coop_actor_name(th->actor, tn, sizeof tn), prefix, strlen(prefix))) continue;
+            if (el_read(th->comp, els, cur)) el_dump(th->comp == comp ? "the test lights this one" : "its like, not lit by the test", th->comp, els[0]);
+        }
         char nm[48];
         rt_log("coop: elem: test: the nearest placed thing is %s, %.1f m away (%d rows, %d with a placement hash)",
                a ? coop_actor_name(a, nm, sizeof nm) : "none within 150 m", a ? sqrtf(bd) : 0.0f, rows, named);
@@ -755,8 +789,12 @@ void coop_elem_phase0(Cpu *c) {
                 if (comp_of(t->actor) != t->comp) { t->comp = 0; continue; }   // (its actor went since the last look)
                 int n = el_read(t->comp, els, cur);
                 if (n && !coop_ctn_driven(t->actor) && !coop_ctn_follows(t->actor)) {
+                    // (read here, a change is said here: the hook, which says it for a thing whose component is
+                    // updated, then finds nothing new)
+                    for (int k = 0; k < n && t->n == n; k++) if (t->cur[k] != cur[k]) thing_said(t->actor, k, t->cur[k], cur[k], 1);
                     t->n = (uint8_t)n, memcpy(t->cur, cur, sizeof cur);
                     for (int k = 0; k < n; k++) eset_put(els[k], frame);
+                    for (int k = 0; k < n; k++) if (t->asked[k] && (frame - t->asked[k] == 3 || frame - t->asked[k] == 20)) el_dump("some frames later", t->comp, els[k]);
                     for (int k = 0; k < n && nj < JOBS; k++) {
                         int what = ask_of(cur[k], t->wanted[k]);
                         if (!what || frame - t->asked[k] < 30) continue;

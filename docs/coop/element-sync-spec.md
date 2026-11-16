@@ -132,6 +132,8 @@ read again first (a copy at rest is not visited by the hook).
 | burnt out | not burnt out | burn out main+0xb2b804(comp, 2, i) |
 | frozen | not frozen | freeze main+0x1b34e48(comp, 4, i) |
 | normal | frozen | thaw main+0x1b34f10(comp, 0, i) |
+
+An element that is burnt out or detonated is asked nothing.
 | electrified | not electrified | full charge main+0x18dcfd4(element+0x50) |
 
 Not given: the end of a charge (it ends by the element's own timer, and a copy takes no reaction that would renew
@@ -193,21 +195,18 @@ projectiles; nothing calls it yet.
   work; until those are mirrored and made inert, both games light cells and each states its own.
 - **A game that arrives late** (B deaf for the first 29 s of its world, A's cell lit at 24 s): B showed the cell
   burning with 233 of its 300 frames gone and ended it 0.6 s after A.
-- **A wooden crate asked to ignite in A** (99 m away): A's crate burned and burnt out; B's copy burned 146 ms after
-  A's and was burnt out 0.44 s after A's; the grass the crate lit (3 cells) was copied. 61 reactions into the copy
-  were dropped.
+- **A wooden crate asked to ignite in A** (99 m away; it lights the crate beside it a frame later): both crates
+  burned and burnt out in both games. B's copies began to burn 26 ms and 111 ms after A's and were burnt out 26 ms
+  and 425 ms after A's (the second by B's own request, the first by its own burning, 3 s long as in A); the grass the
+  crates lit (3 cells) was copied; 61 reactions into the copies were dropped. An earlier report here that the
+  second crate did not take the request was a fault of the log: a copy at rest is read in phase 0, and only the hook
+  said changes.
 - Before the fixes of this step: a copied fire lit its neighbours in the copying game through the contact entry (B
   decided 27 of 66 burn events); a cell written at its owner's heat of 30 lit one frame early in the copy and
   flickered until the owner said it burned (now a heated copy is held at 29).
 
 ### Left, and known faults
 
-- **A thing that refuses the forced ignition.** Of two crates that burned in A, the second (lit there one frame
-  after the first, not by the test's request) was asked to ignite in B in every run and never did. Its element takes
-  requests (bit 0 of its word +0x90 is set) and running its component's update by hand after the request changed
-  nothing, so the element's evaluation refuses the forced cause for it; the reading names an owner virtual (+0x58,
-  default main+0x549ec0) as the place. Until that is read, a thing that only a contact can light does not show its
-  owner's fire.
 - **A mirrored fireball is not inert yet.** The element sync asks `coop_enemy_shot_mirror` for every component's
   actor and would make a mirror inert, but for a Fire Wizzrobe's shot the query answers no: the projectile's shooter
   link is the ruby fused to the rod, not the enemy (reported to the enemy sync). So the copying game still lights
