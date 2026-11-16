@@ -674,6 +674,24 @@ int coop_elem_hook(Cpu *c, uint64_t off) {
                 }
             }
         }
+        {   // Test (TOTK_COOP_ELEM_TEST_CONTACTS=1): what reaches the ground, by actor, at most once a second each
+            static int log = -1;
+            static struct { _Atomic uint64_t actor; _Atomic uint32_t frame; } said[32];
+            if (log < 0) log = cfg_get("TOTK_COOP_ELEM_TEST_CONTACTS") != NULL;
+            if (log && !drop) {
+                uint64_t key = actor ? actor : obj;
+                uint32_t k = (uint32_t)((key >> 4) * 0x9e3779b1u) & 31, frame = coop_sess_frame_no();
+                if (atomic_load(&said[k].actor) != key || frame - atomic_load(&said[k].frame) >= 30) {
+                    char an[48];
+                    float at[3] = {0, 0, 0};
+                    coop_rd(c->x[2] + 8, at, 12);
+                    atomic_store(&said[k].actor, key), atomic_store(&said[k].frame, frame);
+                    rt_log("coop: elem: test: reaches the ground at %.1f %.1f %.1f: %s (object class main+%llx), at %llu ms", at[0], at[1], at[2],
+                           actor ? coop_actor_name(actor, an, sizeof an) : "no actor", (unsigned long long)(coop_rd_ptr(obj) - MOD_MAIN_BASE),
+                           (unsigned long long)(plat_now_ns() / 1000000));
+                }
+            }
+        }
         if (drop) atomic_fetch_add_explicit(&n_contact_drop, 1, memory_order_relaxed);
         return drop;
     }

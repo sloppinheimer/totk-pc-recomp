@@ -198,7 +198,9 @@ Weather is not shared, so each game's storm strikes in every game.
 - `TOTK_COOP_ELEM_TEST_ENEMY=<s>,<ignite|freeze|thaw|out|charge>[/<s>,<what>...]`: at each of those times the first
   game asks the nearest enemy it decides for, within 40 m, with the game's own request.
 - `TOTK_COOP_ELEM_TEST_DEAF=<s>`: until that world time this game takes no statement, as a game that arrives then.
-- `TOTK_COOP_ELEM_TEST_LOG=1`: the classes of the objects kept from the ground, each once.
+- `TOTK_COOP_ELEM_TEST_LOG=1`: how each object at the ground was told, once per kind; what the enemy sync answers for
+  a projectile; a dump of what an element's update reads at a request.
+- `TOTK_COOP_ELEM_TEST_CONTACTS=1`: what reaches the ground, by actor, at most once a second each.
 - `build/el_pairs.py <tag>` (a local script beside the run logs) pairs each cell event of the deciding game with the
   copy's and prints the delays; the cell lines carry the machine's clock in milliseconds for that.
 - The aim (the task's four points; section 8 says which of them a run has shown): a Fire Wizzrobe's attack and a fire arrow each burn the same ground in both games,
@@ -251,16 +253,16 @@ projectiles; nothing calls it yet.
 - **A lightning strike 2 m from that enemy**: its element was electrified for one frame in A and it died of the
   blast (the enemy sync's death); B showed the strike 11 ms after A; A lit 34 cells and B copied all 34.
 
+- **A mirrored fireball is inert** (the enemy sync's replay names its projectiles as mirrors from their prepare call;
+  a mirror's component gets the game's "does not interact with the world" bit, taken off again when the actor is no
+  mirror any more, since the projectiles are used again and the enemy's owner can change). Fire Wizzrobe runs: 14 to
+  18 mirrors made inert in the copying game; the same cells burned in both games, 5 to 12 where 36 and more burned
+  before; copies a median 57 to 79 ms behind. The copying game still decides a few burn events, and a trace of what
+  reaches the ground there (`TOTK_COOP_ELEM_TEST_CONTACTS=1`) named only that game's own Link: its Link stands in the
+  copied fire, burns, and lights the cell under it, which is that game's to decide and is stated to the other.
+
 ### Left, and known faults
 
-- **A mirrored fireball is nearly inert.** With the enemy sync's replay of what an enemy holds, the mirror query
-  answers yes in the copying game, and a mirror's component gets the game's "does not interact with the world" bit
-  (taken off again when the actor is no mirror any more: the projectiles are made once and used again, and the
-  enemy's owner can change). Two runs with a Fire Wizzrobe: 14 and 15 mirrors made inert in the copying game; the same
-  12 and 5 cells burned in both games (36 and more before), copies a median 79 and 57 ms behind. The copying game
-  still decided 8 of 25 and 3 of 16 burn events; in the first run the enemy changed owner, in the second it did not,
-  so some mirrors still light a cell: the enemy sync's set of projectiles is rebuilt four times a second, and a
-  projectile younger than that is not yet known as a mirror. Not looked into further.
 - **Lightning**: only the forced strike was run, not a storm's own, an arrow's or a node's; a strike in a game whose
   Link is far away is still made there; the thing a strike electrifies or lights in the showing game is given by its
   owner's statement, which was not run.
