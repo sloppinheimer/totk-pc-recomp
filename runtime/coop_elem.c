@@ -315,6 +315,16 @@ static uint64_t hash_of(uint64_t actor) {
     uint64_t p = coop_rd_ptr(actor + 0x370), h = 0;
     return p && coop_rd(p + 0x88, &h, 8) && h != ~0ull ? h : 0;
 }
+// A thing's name across games: an enemy the enemy sync knows has that sync's key (the placement hash and a life
+// number, or for one made at run time the spawn sync's key), folded into one number; another placed actor its
+// placement hash. 0: none yet (an enemy made at run time has no key for its first 2 s).
+static uint64_t name_of(uint64_t actor, int enemy) {
+    int coop_enemy_key(uint64_t actor, uint64_t *a, uint32_t *b);
+    uint64_t a = 0;
+    uint32_t b = 0;
+    if (enemy) return coop_enemy_key(actor, &a, &b) ? (a ^ (uint64_t)b * 0x9e3779b97f4a7c15ull) | 1 : 0;
+    return hash_of(actor);
+}
 // ---- things (S 5) ------------------------------------------------------------------------------------------------
 #define THING_N 1024
 #define EL_MAX 7
@@ -462,9 +472,13 @@ static int comp_hook(Cpu *c) {
                     uint64_t ref = sc ? coop_rd_ptr(sc + 0x78) : 0, sh = ref ? coop_rd_ptr(ref + 0x40) : 0;
                     char sn[48];
                     int coop_enemy_role(uint64_t a);
-                    rt_log("coop: elem: test: component of %s updated: mirror %d, shootable component %llx, its shooter link %llx, shooter %llx (%s), cell state %d, role %d",
-                           nm, mirror, (unsigned long long)sc, (unsigned long long)ref, (unsigned long long)sh, sh ? coop_actor_name(sh, sn, sizeof sn) : "",
-                           sh ? en_cell_state(sh) : -1, sh ? coop_enemy_role(sh) : -1);
+                    uint64_t coop_enemy_holder(uint64_t a);
+                    uint64_t hd = sh ? coop_enemy_holder(sh) : 0;
+                    char hn[48];
+                    rt_log("coop: elem: test: component of %s updated: mirror %d, shooter %llx (%s), role %d; the shooter's holder %llx (%s), cell state %d, role %d",
+                           nm, mirror, (unsigned long long)sh, sh ? coop_actor_name(sh, sn, sizeof sn) : "", sh ? coop_enemy_role(sh) : -1,
+                           (unsigned long long)hd, hd ? coop_actor_name(hd, hn, sizeof hn) : "", hd ? en_cell_state(hd) : -1, hd ? coop_enemy_role(hd) : -1);
+                    (void)sc, (void)ref;
                     break;
                 }
             }
@@ -481,13 +495,13 @@ static int comp_hook(Cpu *c) {
     Thing *t = thing_row(comp, actor, frame);
     if (t) {
         if (t->n == 0xff) {   // first sight: its name across games, and its state as the rest state
-            t->hash = hash_of(actor);
             memcpy(t->rest, cur, sizeof cur);
             t->skip = actor == coop_player_actor(), t->first = frame;
         }
         // (its first second settles what its rest state is: a brazier lit by its own data starts unlit)
         if (frame - t->first < 30 && !t->want_from) memcpy(t->rest, cur, sizeof cur);
         for (int i = 0; i < n && t->n == n && t->hash; i++) if (t->cur[i] != cur[i]) changed |= 1 << i, before[i] = t->cur[i];
+        if (!t->hash || t->enemy != (es != EM_FREE)) t->hash = name_of(actor, es != EM_FREE);
         t->n = (uint8_t)n, t->seen = frame, t->enemy = es != EM_FREE;
         memcpy(t->cur, cur, sizeof cur);
         coop_rd(actor + COOP_ACTOR_POS, t->pos, 12);
@@ -758,7 +772,7 @@ void coop_elem_phase0(Cpu *c) {
         // time since its last visit says nothing)
         if ((frame + (uint32_t)i) % 30 == 0) {
             if (comp_of(t->actor) != t->comp) { t->comp = 0; continue; }
-            if (!t->hash) t->hash = hash_of(t->actor);   // (an actor's first update may come before its placement is linked)
+            if (!t->hash) t->hash = name_of(t->actor, t->enemy);   // (an actor's first update may come before it has its name)
             coop_rd(t->actor + COOP_ACTOR_POS, t->pos, 12);
         }
         if (!t->hash || t->skip) continue;
