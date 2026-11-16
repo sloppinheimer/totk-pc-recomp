@@ -163,6 +163,12 @@ static void held_put(_Atomic uint64_t *t, _Atomic uint64_t *by, uint64_t a, uint
         if (!v) { atomic_store_explicit(&by[h], holder, memory_order_relaxed); atomic_store_explicit(&t[h], a, memory_order_relaxed); return; }
     }
 }
+// An actor known this moment to be an enemy's (a projectile a copy is about to shoot): into the set now, not at the
+// next rebuild a quarter of a second on. (Both tables: a rebuild in between keeps it.)
+void en_held_add(uint64_t actor, uint64_t holder) {
+    if (actor < 0x10000) return;
+    held_put(held_set[0], held_by[0], actor, holder), held_put(held_set[1], held_by[1], actor, holder);
+}
 // The enemy that holds an actor, or holds what it is fused to (0: none).
 uint64_t coop_enemy_holder(uint64_t actor) {
     if (!coop_enemy_new() || actor < 0x10000) return 0;

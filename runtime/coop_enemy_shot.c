@@ -239,6 +239,11 @@ void en_shot_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             static __thread uint8_t at_shooter;
             uint64_t ret = 0;
             if (r) {
+                {   // (the record's projectile is this copy's from now, for whoever asks: coop_enemy_shot_mirror)
+                    void en_held_add(uint64_t actor, uint64_t holder);
+                    uint64_t pref = coop_rd_ptr(r + 0x28);
+                    en_held_add(pref ? coop_rd_ptr(pref + 0x40) : 0, actor);
+                }
                 memcpy(q, h->q, Q_SZ);
                 uint64_t here = (uint64_t)(uintptr_t)q;
                 for (int k = 0; k + 8 <= Q_SZ; k += 8) {   // pointers into the block go where the block is now
