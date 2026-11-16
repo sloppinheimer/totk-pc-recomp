@@ -369,10 +369,12 @@ static uint64_t name_of(uint64_t actor, int enemy) {
 #define EL_MAX 7
 typedef struct {
     uint64_t comp, actor, hash;
+    uint32_t ended[EL_MAX];       // the frame a copy's element last stopped burning or thawed
     uint32_t seen, first, differs_frame, asked[EL_MAX];   // frames: last visit, first visit, last frame an element differed from rest, last request
     uint8_t n, cur[EL_MAX], rest[EL_MAX], wanted[EL_MAX];
     uint8_t want_from;            // the player whose statement this game follows for it (0: none)
     uint8_t enemy, skip;
+    uint8_t ice, ice_wanted, ice_put;   // an enemy's ice look (0..255) as read; as its owner states it; whether this game wrote it
     float pos[3];
 } Thing;
 static Thing things[THING_N];
@@ -435,6 +437,22 @@ static void el_dump(const char *when, uint64_t comp, uint64_t el) {
            f8, f90, f92, f94, (unsigned long long)word, (unsigned long long)o, (unsigned long long)(o ? coop_rd_ptr(o) - MOD_MAIN_BASE : 0), (unsigned long long)o28,
            ob[0], ob[1], ob[2], ob[3], (unsigned)coop_rd_ptr(rec + 8) & 0xffffffffu, rdf(rec + 0xbc), rdf(rec + 0x68), rdf(rec + 0x94), rdf(rec + 0x98));
 }
+// An enemy's ice look: a float of its model controller [[actor+0x228]+0x280] at +0x4c, set by the behaviour nodes of
+// a frozen enemy through main+0x1b87a9c (which also sets bit 0x1000 of the controller's word +0xac). A copy runs no
+// such node, so its owner states the amount and the copy is written.
+static uint8_t ice_read(uint64_t actor) {
+    uint64_t t = coop_rd_ptr(actor + 0x228), gmc = t ? coop_rd_ptr(t + 0x280) : 0;
+    float f = gmc ? rdf(gmc + 0x4c) : 0;
+    return (uint8_t)(f <= 0 ? 0 : f >= 1 ? 255 : f * 255);
+}
+static void ice_write(uint64_t actor, uint8_t amount) {
+    uint64_t t = coop_rd_ptr(actor + 0x228), gmc = t ? coop_rd_ptr(t + 0x280) : 0;
+    float f = amount / 255.0f;
+    uint32_t w = 0;
+    if (!gmc || !coop_rd(gmc + 0xac, &w, 4)) return;
+    w |= 0x1000;
+    wr(gmc + 0x4c, &f, 4), wr(gmc + 0xac, &w, 4);
+}
 // What a copy's element is asked to become (S 5.3): 0 nothing, else an ASK_*; and the asking, with the game's own
 // requests.
 enum { ASK_IGNITE = 1, ASK_BURN_OUT, ASK_FREEZE, ASK_PUT_OUT, ASK_THAW, ASK_CHARGE = 8 };
@@ -486,7 +504,8 @@ static int comp_hook(Cpu *c) {
     if (!actor) return 0;
     uint32_t frame = coop_sess_frame_no();
     uint8_t before[EL_MAX] = {0};
-    int n = el_read(comp, els, cur), copy = 0, ask = 0, changed = 0, what[EL_MAX] = {0};
+    int n = el_read(comp, els, cur), copy = 0, ask = 0, changed = 0, what[EL_MAX] = {0}, ice_set = 0;
+    uint8_t ice_now = 0;
     if (!n) return 0;
     // (a projectile shot by an enemy another game runs is the copy's own actor, made by the same calls as the owner's
     // (coop_enemy_shot.c): it is shown only, so it is inert here as an actor named to coop_elem_inert is)
@@ -539,25 +558,37 @@ static int comp_hook(Cpu *c) {
         }
         // (its first second settles what its rest state is: a brazier lit by its own data starts unlit)
         if (frame - t->first < 30 && !t->want_from) memcpy(t->rest, cur, sizeof cur);
-        for (int i = 0; i < n && t->n == n && t->hash; i++) if (t->cur[i] != cur[i]) changed |= 1 << i, before[i] = t->cur[i];
+        for (int i = 0; i < n && t->n == n && t->hash; i++) if (t->cur[i] != cur[i]) {
+            changed |= 1 << i, before[i] = t->cur[i];
+            if ((t->cur[i] & 7) && !(cur[i] & 7)) t->ended[i] = frame ? frame : 1;
+        }
         if (!t->hash || t->enemy != (es != EM_FREE)) t->hash = name_of(actor, es != EM_FREE);
         t->n = (uint8_t)n, t->seen = frame, t->enemy = es != EM_FREE;
         memcpy(t->cur, cur, sizeof cur);
         coop_rd(actor + COOP_ACTOR_POS, t->pos, 12);
         // (wetness is stated but is no claim: rain in one game would make every wet thing there a copy elsewhere)
         for (int i = 0; i < n; i++) if ((cur[i] ^ t->rest[i]) & ~EL_WET) t->differs_frame = frame;
+        if (t->enemy) {
+            t->ice = ice_read(actor);
+            if (es == EM_COPY && (t->want_from ? t->ice_wanted : 0) != t->ice && (t->want_from || t->ice_put))
+                ice_now = t->want_from ? t->ice_wanted : 0, ice_set = 1, t->ice_put = ice_now != 0;
+        }
         copy = in || es == EM_COPY || (!t->enemy && t->want_from);
         if (es == EM_COPY && !t->want_from) memset(t->wanted, 0, sizeof t->wanted);   // an enemy copy nobody states is at rest
         ask = (es == EM_COPY || t->want_from) && !in;
         memcpy(wanted, t->wanted, sizeof wanted);
         if (ask) for (int i = 0; i < n; i++) {
             what[i] = ask_of(cur[i], wanted[i]);
+            // (an element that just stopped burning or thawed by itself is not asked back into it for a second: the
+            // statement that still says so is a moment old, and the copy would burn again until the next one)
+            if ((what[i] & 7) == ASK_IGNITE || (what[i] & 7) == ASK_FREEZE) if (t->ended[i] && frame - t->ended[i] < 30) what[i] &= ~7;
             if (what[i] && frame - t->asked[i] < 30) what[i] = 0;
             if (what[i]) t->asked[i] = frame;
         }
     }
     plat_mutex_unlock(&lk);
     if (copy) for (int i = 0; i < n; i++) eset_put(els[i], frame);
+    if (ice_set) ice_write(actor, ice_now);
     for (int i = 0; i < n; i++) if (changed >> i & 1) thing_said(actor, i, before[i], cur[i], copy);
     if (!ask || coop_ctn_driven(actor) || coop_ctn_follows(actor)) return 0;
     for (int i = 0; i < n; i++) if (what[i]) ask_do(c, comp, els[i], i, what[i]);
@@ -701,7 +732,54 @@ static int lowest_here(void) {
     for (int i = 0; i < n; i++) if (ids[i] < me) return 0;
     return me > 0;
 }
+// Test (TOTK_COOP_ELEM_TEST_ENEMY=<s>,<ignite|freeze|charge|thaw|out>[/<s>,<what>...]): at each of those world times
+// the first game asks the nearest enemy it decides for, within 40 m of its Link, with the game's own request.
+static void test_enemy(Cpu *c) {
+    static struct { double at; char what[12]; int done; } step[6];
+    static int n = -1;
+    if (n < 0) {
+        const char *e = cfg_get("TOTK_COOP_ELEM_TEST_ENEMY");
+        for (n = 0; e && *e && n < 6; n++) {
+            step[n].at = atof(e);
+            const char *k = strchr(e, ','), *end = strchr(e, '/');
+            if (!k) break;
+            snprintf(step[n].what, sizeof step[n].what, "%.*s", (int)((end ? end : k + strlen(k)) - k - 1), k + 1);
+            e = end ? end + 1 : "";
+        }
+    }
+    double t = frame_step_world_us() / 1e6;
+    uint64_t link = coop_player_actor();
+    float p[3];
+    for (int i = 0; i < n; i++) {
+        if (step[i].done || t < step[i].at || !link || !lowest_here() || !coop_rd(link + COOP_ACTOR_POS, p, 12)) continue;
+        step[i].done = 1;
+        uint64_t comp = 0, actor = 0;
+        float bd = 40.0f * 40.0f;
+        plat_mutex_lock(&lk);
+        for (int k = 0; k < THING_N; k++) {
+            Thing *th = &things[k];
+            if (!th->comp || !th->enemy || th->n == 0xff || en_cell_state(th->actor) == EM_COPY || comp_of(th->actor) != th->comp) continue;
+            coop_rd(th->actor + COOP_ACTOR_POS, th->pos, 12);
+            float d = (th->pos[0] - p[0]) * (th->pos[0] - p[0]) + (th->pos[1] - p[1]) * (th->pos[1] - p[1]) + (th->pos[2] - p[2]) * (th->pos[2] - p[2]);
+            if (d < bd) bd = d, comp = th->comp, actor = th->actor;
+        }
+        plat_mutex_unlock(&lk);
+        char nm[48];
+        rt_log("coop: elem: test: enemy %s, %.1f m away, asked to %s", actor ? coop_actor_name(actor, nm, sizeof nm) : "none within 40 m", actor ? sqrtf(bd) : 0.0f, step[i].what);
+        if (!comp) continue;
+        uint64_t els[EL_MAX];
+        uint8_t cur[EL_MAX];
+        int ne = el_read(comp, els, cur);
+        if (!strcmp(step[i].what, "ignite")) coop_guest_call(c, MOD_MAIN_BASE + FN_IGNITE, comp, 2, (uint64_t)-1, 0);
+        else if (!strcmp(step[i].what, "out")) coop_guest_call(c, MOD_MAIN_BASE + FN_REQ_B, comp, 0, (uint64_t)-1, 0);
+        else if (!strcmp(step[i].what, "freeze")) coop_guest_call(c, MOD_MAIN_BASE + FN_FREEZE, comp, 4, (uint64_t)-1, 0);
+        else if (!strcmp(step[i].what, "thaw")) coop_guest_call(c, MOD_MAIN_BASE + FN_THAW, comp, 0, (uint64_t)-1, 0);
+        else if (!strcmp(step[i].what, "charge")) for (int k = 0; k < ne; k++) coop_guest_call(c, MOD_MAIN_BASE + FN_CHARGE, els[k] + 0x50, 0, 0, 0);
+        for (int k = 0; k < ne; k++) el_dump("the test's enemy, after the request", comp, els[k]);
+    }
+}
 static void tests(Cpu *c) {
+    test_enemy(c);
     static double at_cell = -2, at_thing = -2;
     static float dx = 3, dz;
     static char prefix[32];
@@ -924,7 +1002,7 @@ void coop_elem_phase0(Cpu *c) {
         // for 2 s after)
         int rest = 1, mine_claim;
         for (int k = 0; k < t->n; k++) rest &= t->cur[k] == EL_NONE || !(t->cur[k] & 0xf);
-        mine_claim = t->enemy ? !rest : t->differs_frame && frame - t->differs_frame < 60;
+        mine_claim = t->enemy ? !rest || t->ice : t->differs_frame && frame - t->differs_frame < 60;
         int from = 0;
         const ElmThing *st = NULL;
         for (int id = 1; id <= COOP_MAX_PLAYERS && !st; id++) {
@@ -940,6 +1018,7 @@ void coop_elem_phase0(Cpu *c) {
             t->want_from = (uint8_t)from;
             memset(t->wanted, EL_NONE, sizeof t->wanted);
             memcpy(t->wanted, st->el, st->n < EL_MAX ? st->n : EL_MAX);
+            t->ice_wanted = t->enemy && st->n < EL_MAX ? st->el[EL_MAX - 1] : 0;
             n_copy++;
             if (frame - t->seen > 3) {   // its component rests: read and asked here, not in its update's hook
                 uint64_t els[EL_MAX];
@@ -949,12 +1028,16 @@ void coop_elem_phase0(Cpu *c) {
                 if (n && !coop_ctn_driven(t->actor) && !coop_ctn_follows(t->actor)) {
                     // (read here, a change is said here: the hook, which says it for a thing whose component is
                     // updated, then finds nothing new)
-                    for (int k = 0; k < n && t->n == n; k++) if (t->cur[k] != cur[k]) thing_said(t->actor, k, t->cur[k], cur[k], 1);
+                    for (int k = 0; k < n && t->n == n; k++) if (t->cur[k] != cur[k]) {
+                        thing_said(t->actor, k, t->cur[k], cur[k], 1);
+                        if ((t->cur[k] & 7) && !(cur[k] & 7)) t->ended[k] = frame ? frame : 1;
+                    }
                     t->n = (uint8_t)n, memcpy(t->cur, cur, sizeof cur);
                     for (int k = 0; k < n; k++) eset_put(els[k], frame);
                     for (int k = 0; k < n; k++) if (t->asked[k] && (frame - t->asked[k] == 3 || frame - t->asked[k] == 20)) el_dump("some frames later", t->comp, els[k]);
                     for (int k = 0; k < n && nj < JOBS; k++) {
                         int what = ask_of(cur[k], t->wanted[k]);
+                        if (((what & 7) == ASK_IGNITE || (what & 7) == ASK_FREEZE) && t->ended[k] && frame - t->ended[k] < 30) what &= ~7;
                         if (!what || frame - t->asked[k] < 30) continue;
                         t->asked[k] = frame;
                         job[nj].comp = t->comp, job[nj].el = els[k], job[nj].i = k, job[nj++].what = what;
@@ -968,6 +1051,7 @@ void coop_elem_phase0(Cpu *c) {
         if (!mine_claim || tn >= THINGS_PAGE * PAGES) continue;
         out[tn].hash = t->hash, out[tn].n = t->n;
         memset(out[tn].el, EL_NONE, sizeof out[tn].el), memcpy(out[tn].el, t->cur, t->n);
+        if (t->enemy && t->n < EL_MAX) out[tn].el[EL_MAX - 1] = t->ice;   // (an enemy's ice look in the last byte, when it has fewer than 7 elements)
         tn++;
     }
     if (frame % 30 == 0)

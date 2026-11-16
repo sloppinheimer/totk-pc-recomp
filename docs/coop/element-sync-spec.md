@@ -135,7 +135,15 @@ read again first (a copy at rest is not visited by the hook).
 | frozen | not frozen | freeze main+0x1b34e48(comp, 4, i) |
 | normal | frozen | thaw main+0x1b34f10(comp, 0, i) |
 
-An element that is burnt out or detonated is asked nothing.
+An element that is burnt out or detonated is asked nothing. An element that stopped burning or thawed by itself is
+not asked back into it for a second: the statement that still says so is a moment old (a copy burned again for 0.6 s
+before this).
+
+An enemy's ice look is not an element state: it is a float of its model controller (`[[actor+0x228]+0x280]` +0x4c,
+set through main+0x1b87a9c by the behaviour nodes of a frozen enemy, with bit 0x1000 of the controller's word +0xac).
+A copy runs no such node, so the amount rides in the statement (the last element byte, for an enemy with fewer than 7
+elements; an enemy is stated while it is on) and the copy's controller is written, and written back to 0 when its
+owner states none.
 | electrified | not electrified | full charge main+0x18dcfd4(element+0x50) |
 
 Not given: the end of a charge (it ends by the element's own timer, and a copy takes no reaction that would renew
@@ -187,6 +195,8 @@ Weather is not shared, so each game's storm strikes in every game.
   chemical component (of that name), within 150 m, to ignite.
 - `TOTK_COOP_ELEM_TEST_STRIKE=<s>[,<dx>,<dz>]`: at that time the first game makes a lightning strike that far from its
   Link (default 8 m on x).
+- `TOTK_COOP_ELEM_TEST_ENEMY=<s>,<ignite|freeze|thaw|out|charge>[/<s>,<what>...]`: at each of those times the first
+  game asks the nearest enemy it decides for, within 40 m, with the game's own request.
 - `TOTK_COOP_ELEM_TEST_DEAF=<s>`: until that world time this game takes no statement, as a game that arrives then.
 - `TOTK_COOP_ELEM_TEST_LOG=1`: the classes of the objects kept from the ground, each once.
 - `build/el_pairs.py <tag>` (a local script beside the run logs) pairs each cell event of the deciding game with the
@@ -233,6 +243,14 @@ projectiles; nothing calls it yet.
   came: 104 cells burned and 49 burnt out, the same cells in both games; of 228 paired events the copy was a median
   82 ms behind, at most 375 ms, and 9 had no pair within 3 s.
 
+- **An enemy set alight** (a Bokoblin made beside A's Link, asked to ignite in A): it burned 2.0 s in A; B's copy
+  began 90 ms after A's and ended 75 ms after.
+- **An enemy frozen and thawed** (the same, asked to freeze, 14 s later to thaw): B's copy froze 133 ms and thawed
+  135 ms after A's (59 ms each in the run before). Pictures: the copy shows the ice look while frozen and its own
+  colours after, once the ice look was stated; before that the copy was frozen without looking it.
+- **A lightning strike 2 m from that enemy**: its element was electrified for one frame in A and it died of the
+  blast (the enemy sync's death); B showed the strike 11 ms after A; A lit 34 cells and B copied all 34.
+
 ### Left, and known faults
 
 - **A mirrored fireball is not inert yet.** The element sync asks `coop_enemy_shot_mirror` for every component's
@@ -249,9 +267,13 @@ projectiles; nothing calls it yet.
   does nothing); an enemy copy is put out for a moment at each change of owner; a state that lasts (a brazier put
   out) is stated only while it changes and for 2 s after, so a game that arrives later keeps its own; the thing
   table and the element set have no report when they fill.
+- **Shock on an enemy is not shared.** The full-charge request does nothing to a Bokoblin (its element does not
+  conduct), and a strike left the electrified flag on for one frame only: an enemy's shock is a condition its
+  condition component takes from a reaction, which a copy drops. What the copy shows of it is what the enemy sync
+  plays. Stating the condition slots is not built.
 - **Not tested**: a player's fire arrow (no input script shoots one; by the code it is a local cause like the test's
-  and the Wizzrobe's), an enemy set alight, frozen or shocked (the requests of 5.3 for frozen and for a charge have
-  not run once), the take-over when the deciding game leaves, three games.
+  and the Wizzrobe's); an enemy lit, frozen or shocked by a real attack rather than by the game's request; the
+  take-over when the deciding game leaves; three games.
 - **A few repeated burn events on copies** (52 copy events in B against 47 of A's own in the last run): not looked
   into.
 - **Not built** (D 2.1): things made at run time that are not enemies (dropped and held weapons, arrows, each Link on
