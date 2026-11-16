@@ -168,6 +168,33 @@ int en_copy_hook(Cpu *c, uint64_t off) {
             rt_log("coop: en: leak: a node of %llx ticked with the switch on (from main+%#llx)", (unsigned long long)actor, (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
         return 1;
     }
+    case 0x1bf9af8: case 0x1bfbc44: case 0x1bfbaa4: case 0x1bf8f74: case 0x1bfbb28: case 0x1bfd6a8: case 0xa9c250: {
+        // The Shooter component (x0 = S, its owning actor at S+0x18; for main+0xa9c250 x0 is a shot record and w1 its new
+        // state): prepare, shoot and request entries, logged for the enemies this sync knows, with what the game that
+        // runs the enemy and a copy each do.
+        static int on = -1;
+        static _Atomic int said;
+        if (on < 0) on = cfg_get("TOTK_COOP_EN_TEST_SHOTS") != NULL;
+        if (!on || off == 0xa9c250) return 0;
+        uint64_t a = coop_rd_ptr(c->x[0] + 0x18);
+        EnCell *m = a > 0x10000 ? en_cell_of(a) : NULL;
+        {   // (every caller, for the first calls: which actors use these at all)
+            static _Atomic int any;
+            char an[48] = "?";
+            if (atomic_fetch_add(&any, 1) < 40) rt_log("coop: en: shot: (any) main+%#llx x0 %llx, [x0+0x18] %llx %s, from main+%#llx", (unsigned long long)off, (unsigned long long)c->x[0], (unsigned long long)a, a > 0x10000 ? coop_actor_name(a, an, sizeof an) : "-", (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
+        }
+        if (!m || atomic_fetch_add(&said, 1) >= 400) return 0;
+        uint64_t rec = c->x[1], q = off == 0x1bfbc44 ? c->x[2] : c->x[1];
+        uint32_t key = 0, idx = 0, flags = 0;
+        float v[12] = {0};
+        uint8_t st = 0;
+        if (q > 0x10000) coop_rd(q + 0x1928, &key, 4), coop_rd(q + 0x192c, &idx, 4), coop_rd(q + 0x1938, &flags, 4), coop_rd(q + 0x1930, v, sizeof v);
+        if (off == 0x1bfbc44 && rec > 0x10000) coop_rd(rec + 0xdf, &st, 1);
+        rt_log("coop: en: shot: main+%#llx on %llx (cell state %d) from main+%#llx: x1 %llx x2 %llx x3 %llx; request key %08x index %d flags %x; vectors %.2f %.2f %.2f | %.2f %.2f %.2f | %.2f %.2f %.2f | %.2f %.2f %.2f; record state %u",
+               (unsigned long long)off, (unsigned long long)a, (int)atomic_load(&m->state), (unsigned long long)(c->x[30] - MOD_MAIN_BASE), (unsigned long long)c->x[1], (unsigned long long)c->x[2], (unsigned long long)c->x[3],
+               key, (int)idx, flags, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], st);
+        return 0;
+    }
     case 0x1bddcb0: {   // a ragdoll start (x0 the component, x1 the request): logged for the enemies this sync knows
         uint64_t a = coop_rd_ptr(c->x[0] + 0x18);
         EnCell *m = a > 0x10000 ? en_cell_of(a) : NULL;
