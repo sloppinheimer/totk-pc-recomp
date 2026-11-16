@@ -154,14 +154,25 @@ static void equip_read(uint64_t actor, uint32_t eq[EN_EQ_N], int learn) {
 // mirror sent the ruby as an object of its own, and the other game showed a second gem floating beside the copy's rod
 // that did not vanish when the Wizzrobe did (a play session, 2026-11-16). Rebuilt by phase 0 four times a second.
 #define HELD_N 1024
-static _Atomic uint64_t held_set[2][HELD_N];
+static _Atomic uint64_t held_set[2][HELD_N], held_by[2][HELD_N];   // the held actor, and the enemy that holds it
 static _Atomic int held_cur;
-static void held_put(_Atomic uint64_t *t, uint64_t a) {
+static void held_put(_Atomic uint64_t *t, _Atomic uint64_t *by, uint64_t a, uint64_t holder) {
     for (uint32_t h = (uint32_t)((a >> 4) * 2654435761u) % HELD_N, k = 0; k < 32; k++, h = (h + 1) % HELD_N) {
         uint64_t v = atomic_load_explicit(&t[h], memory_order_relaxed);
         if (v == a) return;
-        if (!v) { atomic_store_explicit(&t[h], a, memory_order_relaxed); return; }
+        if (!v) { atomic_store_explicit(&by[h], holder, memory_order_relaxed); atomic_store_explicit(&t[h], a, memory_order_relaxed); return; }
     }
+}
+// The enemy that holds an actor, or holds what it is fused to (0: none).
+uint64_t coop_enemy_holder(uint64_t actor) {
+    if (!coop_enemy_new() || actor < 0x10000) return 0;
+    int cur = atomic_load_explicit(&held_cur, memory_order_acquire);
+    for (uint32_t h = (uint32_t)((actor >> 4) * 2654435761u) % HELD_N, k = 0; k < 32; k++, h = (h + 1) % HELD_N) {
+        uint64_t v = atomic_load_explicit(&held_set[cur][h], memory_order_relaxed);
+        if (v == actor) return atomic_load_explicit(&held_by[cur][h], memory_order_relaxed);
+        if (!v) return 0;
+    }
+    return 0;
 }
 int coop_enemy_holds(uint64_t actor) {
     if (!coop_enemy_new() || actor < 0x10000) return 0;
@@ -188,7 +199,7 @@ int coop_enemy_young_near(const float p[3], float m) {
 }
 static void held_rebuild(void) {
     int to = !atomic_load(&held_cur);
-    _Atomic uint64_t *t = held_set[to];
+    _Atomic uint64_t *t = held_set[to], *by = held_by[to];
     static int said;
     for (int i = 0; i < HELD_N; i++) atomic_store_explicit(&t[i], 0, memory_order_relaxed);
     for (int i = 0; i < EN_MAP_N; i++) {
@@ -198,11 +209,11 @@ static void held_rebuild(void) {
             uint64_t ref = coop_rd_ptr(eu + 0x20 + (uint64_t)s * 0x18 + 8), w = ref ? coop_rd_ptr(ref + 0x40) : 0;
             uint32_t id = 0, gen = 0;
             if (!w || !coop_rd(eu + 0x20 + (uint64_t)s * 0x18 + 0x10, &id, 4) || !coop_rd(w + 0x10, &gen, 4) || id != gen) continue;
-            held_put(t, w);
+            held_put(t, by, w, a);
             uint64_t wc = coop_rd_ptr(en_comps(w) + 0x208), aref = wc ? coop_rd_ptr(wc + 0xb0 + 8) : 0, att = aref ? coop_rd_ptr(aref + 0x40) : 0;
             uint32_t aid = 0, agen = 0;
             if (!att || !coop_rd(wc + 0xb0 + 0x10, &aid, 4) || !coop_rd(att + 0x10, &agen, 4) || aid != agen) continue;
-            held_put(t, att);
+            held_put(t, by, att, a);
             if (said < 6) {
                 char wn[40] = "", an[40] = "", en[48] = "";
                 said++;
@@ -264,6 +275,14 @@ int en_copy_hook(Cpu *c, uint64_t off) {
         rt_log("coop: en: shot: main+%#llx on %llx (cell state %d) from main+%#llx: x1 %llx x2 %llx x3 %llx; request key %08x index %d flags %x; vectors %.2f %.2f %.2f | %.2f %.2f %.2f | %.2f %.2f %.2f | %.2f %.2f %.2f; record state %u",
                (unsigned long long)off, (unsigned long long)a, (int)atomic_load(&m->state), (unsigned long long)(c->x[30] - MOD_MAIN_BASE), (unsigned long long)c->x[1], (unsigned long long)c->x[2], (unsigned long long)c->x[3],
                key, (int)idx, flags, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], st);
+        return 0;
+    }
+    case 0xbb0dd0: {   // the model controller's show/hide (x0 the controller, w1 visible, w2 the reason): logged for known enemies
+        static _Atomic int said;
+        uint64_t a = coop_rd_ptr(c->x[0] + 0x18);
+        EnCell *m = a > 0x10000 ? en_cell_of(a) : NULL;
+        if (m && atomic_fetch_add(&said, 1) < 60)
+            rt_log("coop: en: hide: main+0xbb0dd0 on %llx (cell state %d): visible %llu, reason %llu, from main+%#llx", (unsigned long long)a, (int)atomic_load(&m->state), (unsigned long long)(c->x[1] & 1), (unsigned long long)c->x[2], (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
         return 0;
     }
     case 0x1bddcb0: {   // a ragdoll start (x0 the component, x1 the request): logged for the enemies this sync knows
@@ -502,6 +521,33 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
 }
 
+// Test (TOTK_COOP_EN_TEST_GMC=<name prefix>): the model controller of an enemy of that name, 0x90 bytes from +0x40, at
+// each change of its first slot's command and 40 frames after it; in both games, to find what differs when one game
+// shows the enemy and the other does not.
+static void gmc_log(uint64_t actor, const char *role) {
+    static const char *want;
+    static int read;
+    static struct { uint64_t a; uint32_t cmd, at; } t[8];
+    if (!read) want = cfg_get("TOTK_COOP_EN_TEST_GMC"), read = 1;
+    char nm[48] = "", cmd[40] = "";
+    if (!want || strncmp(coop_actor_name(actor, nm, sizeof nm), want, strlen(want))) return;
+    anim_cmd(anim_slot(anim_g(actor), 0), cmd, sizeof cmd);
+    uint32_t h = fnv_str(cmd), frame = coop_sess_frame_no();
+    int k = -1;
+    for (int i = 0; i < 8; i++) if (t[i].a == actor) k = i;
+    if (k < 0) { for (int i = 0; i < 8 && k < 0; i++) if (!t[i].a) k = i; if (k < 0) return; t[k].a = actor, t[k].cmd = 0; }
+    int now = t[k].cmd != h, later = t[k].at && frame - t[k].at == 40;
+    if (now) t[k].cmd = h, t[k].at = frame;
+    if (!now && !later) return;
+    uint64_t gmc = coop_rd_ptr(en_comps(actor) + 0x280);
+    uint8_t b[0x90] = {0};
+    char hex[0x90 * 2 + 0x90 / 4 + 4];
+    int n = 0;
+    if (gmc) coop_rd(gmc + 0x40, b, sizeof b);
+    for (int i = 0; i < 0x90; i++) n += snprintf(hex + n, sizeof hex - (size_t)n, "%02x%s", b[i], (i & 3) == 3 ? " " : "");
+    rt_log("coop: en: gmc: %s (%s) '%s' %s: %s", nm, role, cmd, now ? "starts" : "+40 frames", hex);
+}
+
 // ---- STATE --------------------------------------------------------------------------------------------------------------
 typedef struct { uint64_t key; Enid id; uint32_t epoch; uint8_t life, pad[3]; EnState st; } MState;
 _Static_assert(sizeof(MState) <= 1100, "a state fits one transport payload");
@@ -571,6 +617,16 @@ void en_copy_phase0(Cpu *c) {
             for (int k = 0; k < s->nslot; k++) if (s->sl[k].cmd != cmds[k]) e->send_burst = 3;
             { uint32_t eq[EN_EQ_N]; equip_read(e->actor, eq, 1); if (memcmp(eq, s->eq, sizeof eq)) e->send_burst = 3; memcpy(s->eq, eq, sizeof eq); }
             { uint64_t rg = coop_rd_ptr(en_comps(e->actor) + 0x3e8); int32_t rs = 0; if (rg) coop_rd(rg + 0x20, &rs, 4); if ((uint8_t)rs != s->rag) { e->send_burst = 3; rt_log("coop: en: rag: %s %016llx ragdoll state %d -> %d", e->name, (unsigned long long)e->id.a, s->rag, (int)rs); } s->rag = (uint8_t)rs; }
+            {   // the model's hidden mask and the actor's fallback bit (test: logged when they change)
+                uint64_t gmc = coop_rd_ptr(en_comps(e->actor) + 0x280);
+                uint8_t hm = 0;
+                uint32_t fl = 0;
+                if (gmc) coop_rd(gmc + 0x9d, &hm, 1);
+                coop_rd(e->actor + 0x444, &fl, 4);
+                uint8_t vb = (uint8_t)(fl >> 23 & 1);
+                if (hm != s->hide || vb != s->vis) { e->send_burst = 3; rt_log("coop: en: hide: %s %016llx (run here) mask %02x -> %02x, bit %u -> %u, slot 0 plays %08x", e->name, (unsigned long long)e->id.a, s->hide, hm, s->vis, vb, s->nslot ? s->sl[0].cmd : 0); }
+                s->hide = hm, s->vis = vb;
+            }
             { uint32_t dw = 0; uint64_t dc = coop_rd_ptr(en_comps(e->actor) + 0x1c8); if (dc) coop_rd(dc + 0x20, &dw, 4); if (dw != s->dstate) e->send_burst = 3; s->dstate = dw; }
             float near2 = 1e30f;
             for (int k = 0; k < nl; k++) {
@@ -591,8 +647,10 @@ void en_copy_phase0(Cpu *c) {
             }
             uint32_t let = atomic_exchange(&m->passed, 0);
             n_owned++, passed_sum += let;
+            gmc_log(e->actor, "run here");
             if (e->life == EN_LIVE) { uint32_t rf = atomic_load(&m->run_frame); n_think++; if (rf && (!newest_run || (int32_t)(rf - newest_run) > 0)) newest_run = rf; }
-            if (now - e->log_ns >= SEC / 10) {
+            // (ten samples a second; every frame while it moves faster than 4 m/s, so the report can place a fast enemy)
+            if (now - e->log_ns >= SEC / 10 || s->s.vel[0] * s->s.vel[0] + s->s.vel[1] * s->s.vel[1] + s->s.vel[2] * s->s.vel[2] > 16.f) {
                 char cmd[40] = "";
                 anim_cmd(anim_slot(anim_g(e->actor), 0), cmd, sizeof cmd);
                 e->log_ns = now;
@@ -669,7 +727,7 @@ void en_copy_phase0(Cpu *c) {
         // The owner's enemy began a flinch (a partial ragdoll, by its own player's blow or anything else): the copy's is
         // asked of its own ragdoll component, unless this game's player just struck it and it flinched here already.
         if (sl->rag == 2 && m->show_rag != 2 && now - m->hit_ns > SEC) atomic_store(&m->flinch, 1);
-        m->show_rag = sl->rag;
+        m->show_rag = sl->rag, m->show_hide = sl->hide;
         m->show_nslot = sl->nslot, m->show_hold = (uint8_t)hold, m->show_teleport = (uint8_t)jump, m->show_hp = sl->hp, m->show_dstate = sl->dstate;
         for (int k = 0; k < sl->nslot; k++) {
             m->show_slot[k] = sl->sl[k];
@@ -679,6 +737,19 @@ void en_copy_phase0(Cpu *c) {
         m->show_on = 1;
         atomic_store_explicit(&m->seq, s0 + 2, memory_order_release);
         e->hp = sl->hp;
+        gmc_log(e->actor, "copy");
+        {   // (test) the copy's own hidden mask and bit against its owner's
+            uint64_t gmc = coop_rd_ptr(en_comps(e->actor) + 0x280);
+            uint8_t hm = 0;
+            uint32_t fl = 0;
+            static uint8_t was[EN_N][4];
+            if (gmc) coop_rd(gmc + 0x9d, &hm, 1);
+            coop_rd(e->actor + 0x444, &fl, 4);
+            uint8_t vb = (uint8_t)(fl >> 23 & 1);
+            if (was[i][0] != hm || was[i][1] != vb || was[i][2] != sl->hide || was[i][3] != sl->vis)
+                rt_log("coop: en: hide: %s %016llx (copy) own mask %02x bit %u; its owner's mask %02x bit %u", e->name, (unsigned long long)e->id.a, hm, vb, sl->hide, sl->vis);
+            was[i][0] = hm, was[i][1] = vb, was[i][2] = sl->hide, was[i][3] = sl->vis;
+        }
         if ((frame & 15) == (uint32_t)(i & 15)) {   // what the copy holds against what its owner's enemy holds
             uint32_t eq[EN_EQ_N];
             equip_read(e->actor, eq, 0);
@@ -700,7 +771,7 @@ void en_copy_phase0(Cpu *c) {
                 for (int k = 0; k < EN_EQ_N; k++) if (eq[k]) m->eq_tries[k] = 0;   // (it holds it: a later loss may be made good again)
             }
         }
-        if (now - e->log_ns >= SEC / 10) {
+        if (now - e->log_ns >= SEC / 10 || sl->s.vel[0] * sl->s.vel[0] + sl->s.vel[1] * sl->s.vel[1] + sl->s.vel[2] * sl->s.vel[2] > 16.f) {
             char cmd[40] = "";
             anim_cmd(anim_slot(anim_g(e->actor), 0), cmd, sizeof cmd);
             int cur = 0;

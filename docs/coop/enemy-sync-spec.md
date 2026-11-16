@@ -96,6 +96,30 @@ Where it departs, each by a measurement or to stay simple:
   180 ms with 8 % loss [m]: tables equal, copies within 6 cm of their owner while running, every hit taken, kills
   ended in both games; the delay rose to 63 and 92 ms. The harsher run first found a fault in the transport
   (`coop_ctr.c fill_window` overwrote a lost message's slot and the stream died), fixed with it.
+- **Shots** (`coop_enemy_shot.c`; research R6, R6b). An enemy makes no projectile at the shot: its Shooter
+  component ([comps+0x448]) makes them in advance and a shot is PREPARE main+0x1bf9af8 then SHOOT main+0x1bfbc44 on
+  a record; the projectile's own component polls the record and launches, flies and ends by itself. A copy's graphs
+  never call either [m]. The owner's hooks run the call and state it with the request block it was made with (its
+  runs of zeros squeezed out, 240 to 960 bytes); a copy makes the same call on its own record of the same key and
+  index at T. A prepare the copy's game refuses (arrows are made on request, which a copy never asks) is preceded by
+  the request main+0x1bfd6a8 and tried again for up to 150 frames. Seen [m]: a Fire Wizzrobe's fireballs and the
+  camp archers' arrows shot on copies in both directions, every call answered 1 after the first arrow's wait; the
+  other game shows the fireball land and light the grass. The older object mirror no longer sends these enemies'
+  arrows. Open: what a mirrored projectile hurts and lights (the element sync asks `coop_enemy_shot_mirror`);
+  the path of a mirrored projectile is its own physics from the same launch, not compared yet; an Octorok's rock and
+  a Lizalfos's spit not run.
+- **Run-time enemies** [m]: an enemy with no placement is known by the key the older spawn sync gives it when it
+  announces it and makes the other games' actors (`Enid.b` = `EN_RT`); owner, motion, life, shots and death are
+  this sync's. No tombstone is kept for one.
+- **A young actor** [m]: the four writes keep and put back all four values (the root index is two 16-bit halves;
+  a new actor's second half is 0), and a new actor thinks until its interrupt graph has started before it may be
+  held. Switched off from its first frame, a spawned Lizalfos went on fighting at 0 life with no death.
+- **What an enemy holds is not a loose object** [m]: held equipment and what is fused to it are kept out of the
+  object mirror (a Wizzrobe's rod carries a ruby; the mirror showed a second gem floating beside the copy).
+- **Families tried by spawning** [m] (`TOTK_COOP_EN_KINDS`, `TOTK_COOP_TEST_SPAWN`, `TOTK_COOP_TEST_SPAWN_KEY`):
+  Lizalfos, Moblin, Horriblin, Chuchu, Keese, Octorok, Fire Wizzrobe, the two Zonai constructs: made in the other
+  game, bound, followed with no leak, also in a tester's half-hour session. A Yiga footsoldier's blinks are not
+  followed well. The default list is still the four Bokoblin-shaped families.
 - Traffic [m]: a state is 232 bytes with one animation slot in use; four enemies in a fight are 240 states and 56 to
   70 kB a second to each peer.
 - **PAUSED in a menu** [m]: phase 0 and the actors' calcs go on in the inventory menu, so 1.3's test does not see it.

@@ -1701,7 +1701,8 @@ static struct { uint32_t key; float home[3]; int64_t died_us; } killed[KILLED_N]
 // Whether p is within m of a live enemy this game runs that another Link may see (mine_known): an arrow made there is
 // that enemy's shot (coop_players.c, arrow_track_fn).
 int coop_near_my_enemy(const float p[3], float m) {
-    { int coop_enemy_near_owned(const float p[3], float m); if (coop_enemy_new() && coop_enemy_near_owned(p, m)) return 1; }   // coop_enemy.c
+    // (An enemy the sync of coop_enemy.c runs is not asked: its arrows are not sent as objects, its copies shoot their
+    // own when it does: coop_enemy_shot.c.)
     for (int i = 0; i < KNOWN_N; i++) {
         if (!mine_known[i].key || !mine_known[i].actor || mine_known[i].life <= 0) continue;
         float q[3];
