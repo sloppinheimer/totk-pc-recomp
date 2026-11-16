@@ -28,7 +28,8 @@ closing side, and removes the answer rule.
 Files: `runtime/coop_enemy.c` (table, identity, ownership, messages, record), `coop_enemy_copy.c` (the switch, motion,
 animation), `coop_enemy_hit.c` (life, hits, death), `coop_enemy.h`; `tools/coop/en_report.py`. On with
 `TOTK_COOP_ENEMY=1`, for the kinds `coop_enemy.c kind_of` lists (Bokoblin, Moblin, Horriblin, Lizalfos by actor name);
-`coop_world.c`'s older sync keeps every other kind and can be turned off whole with `TOTK_COOP_ENEMY_OLD=0`. A game
+`coop_world.c`'s older sync keeps every other kind, and every enemy made at run time (no placement hash), and can be
+turned off whole with `TOTK_COOP_ENEMY_OLD=0`. A game
 says which sync it runs in a heartbeat flag; a peer without it stops the enemy sync for the session (said in the log,
 not yet on screen).
 
@@ -76,6 +77,15 @@ Where it departs, each by a measurement or to stay simple:
   called as the stand-in's gear is: in the hand, default life, no fused attachment), at most once in 2 s [m: a sword
   knocked away, fetched again and lost again followed on the copy]. The dropped thing itself is the object mirror's.
   Not carried: the fused attachment, the weapon's remaining life.
+- **The owner's flinch on its copies** [m]: the ragdoll component's state travels in STATE; a copy whose owner's
+  enemy went into a partial ragdoll asks its own component for one (rag+0x149 bit 0), unless this game's player
+  struck it within the last second (it flinched here already). Eight of eight in a run. Full ragdoll was only seen at
+  death, where each game's actor plays its own.
+- **The test network** is in the relay (`server/coop_relay.py --bad "<delay ms>,<jitter ms>,<loss %>"`, or the
+  environment variable `TOTK_COOP_RELAY_BAD`), on every forwarded packet. At 40 to 60 ms with 2 % loss and at 120 to
+  180 ms with 8 % loss [m]: tables equal, copies within 6 cm of their owner while running, every hit taken, kills
+  ended in both games; the delay rose to 63 and 92 ms. The harsher run first found a fault in the transport
+  (`coop_ctr.c fill_window` overwrote a lost message's slot and the stream died), fixed with it.
 - Traffic [m]: a state is 232 bytes with one animation slot in use; four enemies in a fight are 240 states and 56 to
   70 kB a second to each peer.
 - **PAUSED in a menu** [m]: phase 0 and the actors' calcs go on in the inventory menu, so 1.3's test does not see it.
@@ -94,7 +104,8 @@ placement whose enemy had died in the other game was put away and did not come b
 
 Not built or not seen: run-time enemies, projectiles and loot beyond the older object mirror, the target, the moon
 message, big reactions and ragdoll bones on a copy, the orphaned death of 4.7, a load of the owner in a run, a third
-player, the test network, the notice on screen when two games run different syncs.
+player, the notice on screen when two games run different syncs. One run in about thirty stopped its co-op tick in
+both games just after they met; `coop: en: the net tick has not come round` now says where when it happens again.
 
 Conventions. Addresses are TotK 1.4.3, main+offset. "The world" is the game's memory; "the table" is ours. An
 incarnation is a game's 64-bit id (`coop_ctr_me`). Every timer is wall-clock time; state times are on the owner's
