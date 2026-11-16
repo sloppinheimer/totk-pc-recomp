@@ -5,7 +5,7 @@
 
 #include "cpu.h"
 
-int coop_ctn_core(void);                     // TOTK_COOP_CONTRAPTION=1
+int coop_ctn_core(void);                     // on unless TOTK_COOP_CONTRAPTION=0
 
 // The entity sync's three entry points (coop_ent.c) and the mirror's answers (coop_ent_id.c).
 void coop_ent_phase0(Cpu *c);                // from GameDataMgr::calc, actor phase 0

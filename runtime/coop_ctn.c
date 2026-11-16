@@ -1,5 +1,5 @@
 // Co-op: contraptions, what was kept of the v3 code (docs/coop/contraption-sync-v4-spec.md sections 9, 11 and 12; the v3
-// plan is docs/coop/contraption-sync-v3.md, an archive). TOTK_COOP_CONTRAPTION=1. TotK 1.4.3 main offsets.
+// plan is docs/coop/contraption-sync-v3.md, an archive). TOTK_COOP_CONTRAPTION=0 turns it off. TotK 1.4.3 main offsets.
 //
 // The table of entities, who owns what and what is said between the games are in coop_ent*.c. This file holds the
 // code that touches the game for them and that the v3 runs showed to work: the rigid-field drive of a copy, the
@@ -51,7 +51,8 @@ static int gauge_blocked(void);
 static int ctn_on(void) {
     static int on = -1;
     if (on < 0) {
-        on = cfg_get("TOTK_COOP_CONTRAPTION") && *cfg_get("TOTK_COOP_CONTRAPTION") == '1';
+        const char *set = cfg_get("TOTK_COOP_CONTRAPTION");   // on unless set to 0
+        on = !(set && *set == '0');
         // Devices' on and off are this file's then, lone ones too: the older flip path of coop_bonds.c stands down. And
         // glue and bonds: anything glued is a build of this file's, whoever owned the parts; the older glue sync made a
         // maker's bond again every second and refused its break (plan 37 note 11 and section 38). They are switched off

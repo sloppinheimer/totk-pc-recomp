@@ -165,7 +165,7 @@ extern Recipe recipes[REC_N];
 extern Grp grps[GRP_N]; extern PlatMutex grp_lock;
 extern Peer peers[ENT_PEERS];
 int64_t ent_ms(void);                      // wall clock, ms
-int ent_on(void);                          // TOTK_COOP_CONTRAPTION=1
+int ent_on(void);                          // on unless TOTK_COOP_CONTRAPTION=0
 Ent *ent_by_id(Eid id);
 Ent *ent_by_actor(uint64_t actor);         // checked against gen
 Ent *ent_new(Eid id);                      // NULL: the table is full (counted, logged)

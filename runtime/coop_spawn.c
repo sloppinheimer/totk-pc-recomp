@@ -995,7 +995,8 @@ int coop_hook(Cpu *c, uint64_t addr) {
         // contraption tests that need every actor link to resolve: GameDataMgr::calc runs each frame at actor phase 0,
         // outside the parallel actor update (TOTK_COOP_TEST_PHASES)
         static int seq = -1;
-        if (seq < 0) seq = cfg_get("TOTK_COOP_TEST_REBUILDGOIN") || cfg_get("TOTK_COOP_CONTRAPTION");
+        int coop_ctn_core(void);   // coop_ctn.c: on unless TOTK_COOP_CONTRAPTION=0
+        if (seq < 0) seq = cfg_get("TOTK_COOP_TEST_REBUILDGOIN") || coop_ctn_core();
         if (seq) {
             void coop_autobuild_seq_calc(Cpu *c);
             uint64_t x[31], sp = c->sp, pc = c->pc;

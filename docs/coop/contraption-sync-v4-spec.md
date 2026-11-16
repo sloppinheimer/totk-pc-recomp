@@ -1333,3 +1333,10 @@ Recorded as told; not acted on until asked.
      Whether the body then makes its owner's way through the step is to be read from "moved by its physics since
      placed" in the next session.
    The tester has nothing more to try on contraptions for now.
+
+## 25. On by default (2026-11-15)
+
+The entity sync is on unless TOTK_COOP_CONTRAPTION is set to 0 (coop_ctn.c ctn_on; coop_autobuild.c and coop_spawn.c ask
+coop_ctn_core instead of reading the key themselves). Until now it ran only with the key set to 1, which the test
+scripts did and the launchers did not, so a normal co-op game ran the older glue, bond and device paths instead. With it
+on those three are switched off as before. Not yet run: a game on its own (no other player) with the sync on.

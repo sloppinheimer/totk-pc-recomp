@@ -1343,9 +1343,8 @@ static void rebuild_go_log(void) {
 }
 // The contraption sync itself is coop_ctn.c (docs/coop/contraption-sync-v3.md section 27).
 static int contraption_on(void) {
-    static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_COOP_CONTRAPTION") && *cfg_get("TOTK_COOP_CONTRAPTION") == '1';
-    return on;
+    int coop_ctn_core(void);   // coop_ctn.c: on unless TOTK_COOP_CONTRAPTION=0
+    return coop_ctn_core();
 }
 // TOTK_COOP_TEST_REBUILDGOIN=gamedata: the rebuild's confirm (and the history writer, TOTK_COOP_TEST_SERIAL) run from
 // GameDataMgr::calc instead, at actor phase 0 (coop_spawn.c coop_hook)

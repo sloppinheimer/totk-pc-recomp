@@ -1819,7 +1819,7 @@ static void arrow_copies(Cpu *c, Slot *s) {
             continue;
         }
         // A part of a contraption this game makes with its own Autobuild from the owner's record (coop_autobuild.c,
-        // TOTK_COOP_CONTRAPTION=1): no copy of its own; one made before the record came is deleted
+        // on unless TOTK_COOP_CONTRAPTION=0): no copy of its own; one made before the record came is deleted
         void coop_deleted_here(uint64_t a);
         if (s->mir[k].state != 0 && coop_contraption_owns(s->net_id, s->mir[k].id)) {
             if (s->mir[k].state == 3 && s->mir[k].actor) {
