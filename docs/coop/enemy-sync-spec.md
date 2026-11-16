@@ -106,8 +106,26 @@ Where it departs, each by a measurement or to stay simple:
   camp archers' arrows shot on copies in both directions, every call answered 1 after the first arrow's wait; the
   other game shows the fireball land and light the grass. The older object mirror no longer sends these enemies'
   arrows. Open: what a mirrored projectile hurts and lights (the element sync asks `coop_enemy_shot_mirror`);
-  the path of a mirrored projectile is its own physics from the same launch, not compared yet; an Octorok's rock and
-  a Lizalfos's spit not run.
+  an Octorok's rock and a Lizalfos's spit not run.
+  - **The request block** has two layouts. Both hold a list of named parameters: a header (capacity u32, pointer
+    to the cells, count i32) and 32 cells of 0xc8 bytes (type u32 +0, pointer to the name +8, the name's capacity
+    0x80 +0x10, the name +0x14, the value +0x98). A shoot's block has its vtable at +0, the header at +8, the cells
+    from +0x20 and its numbers from +0x1920 (attack type +0x1924, key +0x1928, flag bytes +0x1938..); its
+    parameters are `Range`, `InitPos`, `Velocity`, `MotionProperty`, `Level`. A prepare's block has the key at +0, a
+    pointer at +8 (kept by the record at +0x50; into the game's image, so the same in every game), the header at
+    +0x18 and the cells from +0x30. Cells past the count and a name's bytes after its end are stack leftovers and
+    are sent as zeros; a cell's pointer to its own name is written again where the block is rebuilt.
+  - **A held thing's shots** [m]. A fire rod's flame is shot by the ruby fused to the rod, not by the Wizzrobe: the
+    owner states with each prepare and shoot whose Shooter it is for (`via`: 0 the enemy, 1 + k what its equipment
+    slot k holds, 0x80 | (1 + k) what is fused to that) and the copy makes the call on its own actor of that place.
+    Every ready projectile of an enemy and of what it holds counts as that enemy's for the mirror query.
+  - **The flight** [m] is the copy's own physics from the same launch. The launch speed and direction of a rod's
+    flame are the shoot's `Velocity` parameter; the projectile's aim point ([proj comps+0x440]+0x100) is set to its
+    own start by the game in both games and gives no direction. Five flames of a rod: the copy's within 3 cm of
+    the owner's at 6 and at 30 frames. Arrows: the same path, one frame apart in the samples.
+  - Open [m]: the two id pairs a shoot takes from its shooter (record +0xe4..0xf3, by main+0x482760: a fresh pair
+    per swing of the owner's rod, from the weapon's [comps+0x428]) are 0 on a copy, whose rod starts no attack.
+    The flight does not need them; what reads them (who a flame may hurt, once per swing) is not read yet.
 - **Run-time enemies** [m]: an enemy with no placement is known by the key the older spawn sync gives it when it
   announces it and makes the other games' actors (`Enid.b` = `EN_RT`); owner, motion, life, shots and death are
   this sync's. No tombstone is kept for one.
@@ -115,11 +133,19 @@ Where it departs, each by a measurement or to stay simple:
   a new actor's second half is 0), and a new actor thinks until its interrupt graph has started before it may be
   held. Switched off from its first frame, a spawned Lizalfos went on fighting at 0 life with no death.
 - **What an enemy holds is not a loose object** [m]: held equipment and what is fused to it are kept out of the
-  object mirror (a Wizzrobe's rod carries a ruby; the mirror showed a second gem floating beside the copy).
+  object mirror (a Wizzrobe's rod carries a ruby; the mirror showed a second gem floating beside the copy). A held
+  actor is told by its live state, not by the slot link's id word, which a Wizzrobe's rod does not pass.
+- **Not drawn** [m] (research R7, R7b). A Wizzrobe's unseen flight is the model controller's request byte
+  ([comps+0x280]+0x9d, "depth and shadow only") with its dirty bit 0x200 at +0xac, as the game's setter
+  main+0x1b87b74 writes them; the controller's apply main+0x306e54 does the rest. The byte travels in STATE and a
+  copy, what it holds and what is fused to that get it with the dirty bit. It is neither an animation nor the
+  hidden mask at +0x9b. No hand-over is offered while an enemy is not drawn, and a copy that thinks again is drawn
+  again: a Wizzrobe handed over mid-flight stayed unseen and still for good in a play session.
 - **Families tried by spawning** [m] (`TOTK_COOP_EN_KINDS`, `TOTK_COOP_TEST_SPAWN`, `TOTK_COOP_TEST_SPAWN_KEY`):
   Lizalfos, Moblin, Horriblin, Chuchu, Keese, Octorok, Fire Wizzrobe, the two Zonai constructs: made in the other
   game, bound, followed with no leak, also in a tester's half-hour session. A Yiga footsoldier's blinks are not
-  followed well. The default list is still the four Bokoblin-shaped families.
+  followed well. The default list is these families (`kind_of`): Bokoblin, Moblin, Horriblin, Lizalfos, Chuchu,
+  Keese, Octorok, Wizzrobe, the two Zonai constructs and the Yiga footsoldier; swarms are left out.
 - Traffic [m]: a state is 232 bytes with one animation slot in use; four enemies in a fight are 240 states and 56 to
   70 kB a second to each peer.
 - **PAUSED in a menu** [m]: phase 0 and the actors' calcs go on in the inventory menu, so 1.3's test does not see it.
@@ -136,7 +162,7 @@ Seen with the test settings (`TOTK_COOP_EN_TEST_HIT`, `_KILL`, `_BLIND`): a kill
 both games; a game that took its actors into the sync 40 s late bound them as copies mid-fight, and its actor at a
 placement whose enemy had died in the other game was put away and did not come back.
 
-Not built or not seen: run-time enemies, projectiles and loot beyond the older object mirror, the target, the moon
+Not built or not seen: loot beyond the older object mirror, the target, the moon
 message, big reactions and ragdoll bones on a copy, the orphaned death of 4.7, a load of the owner in a run, a third
 player, a shot of the notice on screen when two games run different syncs (the notice is made and logged). One run in about thirty stopped its co-op tick in
 both games just after they met; `coop: en: the net tick has not come round` now says where when it happens again.
