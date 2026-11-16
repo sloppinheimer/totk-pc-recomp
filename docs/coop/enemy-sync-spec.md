@@ -1,6 +1,6 @@
 # Enemy sync: the specification
 
-Status, 2026-11-15: third draft, nothing of it built. It turns [enemy-sync-design.md](enemy-sync-design.md) (the
+Status, 2026-11-15: fourth draft, nothing of it built. It turns [enemy-sync-design.md](enemy-sync-design.md) (the
 design, D below) into data, messages and procedures for new files `runtime/coop_enemy*.c`. Where this file and D
 disagree, D is corrected first (D section 16 lists what the review changed).
 
@@ -15,6 +15,12 @@ a new actor unbuildable as written, the clock on a time base that loses time, th
 wrong in several details, and no rule for an enemy that exists in one game only. This draft makes the ownership
 section smaller, puts the measurements that decide structure before the steps that depend on them, and specifies in
 full only steps 0 and 1; sections 5 to 10 say what is known and what their runs must show before they are built.
+Section 4 of the third draft was walked once more by scenarios (R3C): the earlier counter-examples were closed, and
+three new walks ended badly (a game that loaded or joined did not know the others' epochs; a message could arrive
+before the claim it depended on; a change of owner could undo or double a death). The fourth draft's section 4 has
+the pair travel on the same stream as everything that depends on it, keeps resting records through a load and sends
+them to a joiner, makes a death a fact any game states and nobody takes back, puts the gate's waiting time on the
+closing side, and removes the answer rule.
 
 Conventions. Addresses are TotK 1.4.3, main+offset. "The world" is the game's memory; "the table" is ours. An
 incarnation is a game's 64-bit id (`coop_ctr_me`). Every timer is wall-clock time; state times are on the owner's
@@ -172,73 +178,93 @@ thinks. [run 19: whether a placed actor can be put away and replaced; until then
 ## 4. Ownership
 
 Ownership is **per enemy**. What an enemy holds, and its children, limbs and projectiles, follow it. A camp can be
-split between owners by which game runs each member; what the camp's node relays to its members is then sent between
-the owners (4.11).
+split between owners by which game runs each member (4.11).
 
-4.0 **One rule.** `en_apply_owner(e, owner, epoch)` is the only code that changes owner or epoch from a message; it
-takes the pair only if greater than the entry's by (epoch, then incarnation). On a change it clears the ring and the
-backlog toward the actor; captures already made are kept and routed by the new pair. Every message names its ids and
-the pair its sender believed (`epoch8`); a PLAY, EVENT, DEATH, OFFER row or GONE row is dropped unless its sender is
-the entry's owner at that epoch.
+4.0 **One rule.** `en_apply_owner(id, owner, epoch)` is the only code that changes an owner or an epoch from a
+message. It takes the pair only if greater, by (epoch, then incarnation), than the greater of the entry's pair and
+the resting record's pair for that id; taking a pair deletes the resting record. On a change it clears the ring and
+the backlog toward the actor; captures already made are kept and routed by the new pair. **The pair travels as
+CLAIM on the control stream** (ids with their epochs), so one sender's CLAIM, PLAY, EVENT, DEATH, OFFER and GONE
+arrive in the order sent; the declaration (bulk) only describes the enemy and changes no pair. A PLAY, EVENT, OFFER
+row or GONE row is taken only when its sender is the entry's owner at the epoch it names; otherwise dropped and
+counted. Messages are read in arrival order and each is judged against the table as it then is.
+**Life only moves forward**: no pair, declaration or state turns DYING or DEAD into LIVE (9.2).
 
-4.1 **"Runs it."** A game runs an enemy when it has the live actor, the actor's calc ran this frame, and the game's
-own far gate for it has been open for 0.5 s. The gate is the calc's own test: with A = [[[BSA+0x25f0]+0x18]+0x150]
-and X = [A+0x38]: open when BSA+0x26ad bit 5 is set, or [A+0x41] bit 0 or [X+0x2d2] bit 0 is clear, or
-f32 [X+0x264] is negative, or [[comps+0xb0]+0x84] <= [X+0x264]^2; read at phase 0 [run 20: the values]. Only a game
-that runs an enemy claims it, in any of the ways below.
+4.1 **"Runs it."** A game runs an enemy, whether it thinks it or shows it as a copy, when it has the live actor,
+the actor's calc ran this frame, and its own far gate for it is open. The gate is the calc's own test: with
+A = [[[BSA+0x25f0]+0x18]+0x150] and X = [A+0x38]: open when BSA+0x26ad bit 5 is set, or [A+0x41] bit 0 or
+[X+0x2d2] bit 0 is clear, or f32 [X+0x264] is negative, or [[comps+0xb0]+0x84] <= [X+0x264]^2; read at phase 0
+[run 20: the values]. "No longer runs it" means: the gate has been closed for 0.5 s without a break, or the calc
+has not run for 0.5 s while the game runs, or the unload was requested. Only a game that runs an enemy claims it;
+4.7 is the one exception.
 
 4.2 **A new actor** has a held cell from its first pre-calc (1.1): the switch on and its controller's speed taken
-away ([m] run 11: a switched-off enemy with a dynamic body walks on with its last speed; [run 13]: the write). At
-the next phase 0, in this order:
-- a tombstone for its hash and life number, or an entry for it that is DYING or DEAD: 9.4;
-- an entry owned by another game, LIVE: it becomes that game's copy (10.1);
-- an entry UNSYNCED, or the kind is not listed: **own**;
-- this game does not run it (its gate is closed): **own**, with no entry; looked at again when its gate opens;
-- else **claimed**: owner this game, epoch = 1 + the epoch of any entry or resting record for the id, declared at
-  once to all. It stays held until no greater pair has come for max(0.15 s, twice the measured round trip to each
-  peer whose heartbeat runs), **at most 0.4 s**; alone in the session, and for an id this game minted, there is no
-  hold. While held it is a copy for 8.2: hits on it are captured and kept for whoever owns it after the hold.
-[run 14: an actor held from its first frame and released: do its brain and its interrupt graph start; if not it is
-let think for its first two frames before the hold.]
+away ([m] run 11: a switched-off enemy with a dynamic body walks on; [run 13]: the write). At the next phase 0, the
+first case that applies:
+1. a tombstone for its hash and life number, or an entry for it that is DYING or DEAD: 9.4;
+2. an entry this game owns: the actor is bound to it; an offer under way is withdrawn if this game runs it;
+3. an entry another game owns, LIVE: the actor becomes that game's copy (10.1);
+4. an entry UNSYNCED, or the kind is not listed, or there is no session: **own**;
+5. this game's gate for it is closed: **own**, with no entry; it comes back to this list in the phase 0 its gate
+   opens (it then has thought, and is held in the middle of what it does: accepted);
+6. else it is **claimed**: CLAIM with epoch = 1 + the greater of the entry's and the resting record's epoch for the
+   id (0 when neither), then its declaration; it starts from the resting record's life and verb, and from its pose
+   only within 20 m of where the placement made the actor. It stays **held** for H = the greatest, over peers whose
+   heartbeat arrives without PAUSED or LOADING, of (smoothed round trip + 4 x its variance) + 0.1 s, a peer with no
+   sample counting 0.2 s, at most 0.4 s; counted from the claim. Alone in the session, and for an id this game
+   minted, there is no hold. While held it is a copy for 8.2.
+[run 14: an actor held from its first frame and released: do its brain and interrupt graph start; if not, it is let
+think for two frames before the hold.]
 
-4.3 **Two claims** are settled by 4.0; the loser never thought. An owner whose enemy has left its hold answers a
-first rival claim at its own epoch by claiming at epoch + 1 (tested before 4.0 applies the rival's pair); a game
-still in its hold never answers; a game that joined later never answers a host's declaration.
+4.3 **Two claims** are settled by 4.0. A claimer still in its hold never thought; one whose hold had ended, or that
+claimed without one (4.4, 4.5), is converted by 4.9: both thought for one crossing of the messages, which is
+accepted and counted (a change taken back within 0.5 s is one change for the bars). A game that joined claims
+nothing until every peer's answer to its join has ended (10.6), and for at least 2 s.
 
-4.4 **Hand-over**, per enemy, each a level looked at every phase 0:
-- the owner no longer runs it: OFFER (4.5). When the cause is its gate, the offer waits for 4.6's states at most
-  1 s; when its calc stopped or the unload was requested it does not wait;
-- the owner's heartbeat says LOADING, or is silent for 3 s (it left): a game that runs the enemy claims at epoch + 1;
-- the owner's heartbeat says PAUSED, or is silent for 1 s: a game that runs the enemy claims after 1 s **if it is in
-  that fight** (its player hit the enemy within 5 s, or was hurt or made to guard by its copy within 5 s), else
-  after 5 s. The enemy then stays with the claimer; there is no giving back.
-A game that claimed from an OFFER does not offer the same enemy for 2 s.
+4.4 **Hand-over**, per enemy, each a level looked at every phase 0; a claim under this paragraph has no hold:
+- the owner no longer runs it (4.1): OFFER (4.5). For the gate's cause the offer also waits, at most 1 s, while
+  4.6's states last;
+- the owner's heartbeat says LOADING, or none has arrived for 3 s (it left): a game that runs the enemy claims at
+  epoch + 1;
+- the owner's heartbeat has said PAUSED for 1 s, or none has arrived for 1 s: a game that runs the enemy claims if
+  it is in that fight (its player hit the enemy within 5 s, or was hurt or made to guard by its copy within 5 s);
+  after 5 s any game that runs it claims. The enemy stays with the claimer.
 
-4.5 **OFFER** (reliable; rows of (id, epoch, resting state, a dying mark)). A row is taken only when (sender, row
-epoch) equals the entry's pair. The owner goes on simulating for up to 2 s; a game that runs the enemy claims at
-epoch + 1; the offerer becomes a copy when it takes the claim. With no claim in 2 s: GONE with the resting record;
-the offerer's actor is **own**. A GONE row is taken under the same test and never causes a claim by itself: a game
-that runs the actor of an entry it has taken as GONE claims it as a new actor by 4.2. An index answer never ends an
-entry: an entry not named asks NEED(id) once.
+4.5 **OFFER** (control; rows of (id, epoch, resting state, a dying mark)). The owner goes on simulating. Any game
+that runs the enemy may claim at epoch + 1 from the moment it takes the row until it takes the GONE; the offerer
+becomes a copy when it takes the claim. The offer is **withdrawn** (nothing is sent, its clock stops) when the
+owner runs the enemy again before a claim came; a claim that crosses is still taken. With no claim 2 s after the
+offer: GONE (control) with the resting record; every game's actor for the id is then **own**, and every game keeps
+the record. A game that claimed from an OFFER does not offer the same enemy by the gate for 10 s, unless a HIT from
+another game's player arrives for it. A game that later runs the actor of a resting id claims it by 4.2.
 
 4.6 **Not in the middle.** An offer by the gate waits (4.4) while the enemy is in an interrupt action (main slot
 status byte BSA+0x26a8 is 1 or 2) or in ragdoll. In a forced hand-over the new owner gives the body the last stated
-velocity; with `rag` 2 or 3 it starts its own ragdoll from the bones it shows; an enemy lying in a reaction clip
-gets its forced verb when that clip ends [run 16: all three; in no log yet].
+velocity; with `rag` 3 it starts its own ragdoll from the bones it shows; an enemy lying in a reaction clip gets
+its forced verb when that clip ends [run 16, run 24: all three; in no log yet].
 
-4.7 **A death is its owner's.** A DYING enemy changes owner only when its owner left, loads, or unloaded it (the
-OFFER row's dying mark; never when the owner is merely paused: the copy waits). Then a game with a copy claims at
-epoch + 1; 4.0 settles two claimers; the claimer ends the death (9.3) after its hold passed with no greater pair.
+4.7 **An orphaned death.** A DYING enemy whose owner left, loads, or unloaded it (the OFFER row's dying mark; not
+when the owner is merely paused: the copy waits) is claimed at epoch + 1 by any game that has a copy of it, whatever
+its gate. Each game that takes such a CLAIM answers it on the control stream (ORPHAN_ACK; a game that made a claim
+of its own for the id has sent that first, so the order shows it). The claimer ends the death (9.3) when every peer
+whose heartbeat arrives has answered and none sent a greater pair; nothing that cannot be undone rests on a timer.
+A GONE row with the dying mark makes no resting record: a tombstone if the death was a kill, else the entry is
+freed.
 
-4.8 **A copy becomes the owner**, in its next pre-calc: the body dynamic again, velocity as last stated, the switch
-off with the saved queue count and bit word put back ([m] on enemies that had been thinking), the brain verb as last
-stated with force, target slot 0 from the cell [run 14 for an actor that never thought; the game's own reset
-main+0xa12a48 is the fallback]. Phase 0 reads it from the next frame and sends STATE and a declaration then.
+4.8 **A copy becomes the owner**, in its next pre-calc. LIVE: the body dynamic again, velocity as last stated, the
+switch off with the saved queue count and bit word put back ([m] on enemies that had been thinking), the brain verb
+as last stated with force, target slot 0 from the cell [run 14 for an actor that never thought; the game's own
+reset main+0xa12a48 is the fallback]. DYING: only DC+0x2c bits 0 and 7 are cleared. Phase 0 reads it from the next
+frame and sends STATE and a declaration then.
 
-4.9 **An owner becomes a copy**, when it takes the pair: the switch on, speed taken away, the body static, the ring
-empty.
+4.9 **An owner becomes a copy**, when it takes the pair: if its actor's death word is valid it states DEATH (and
+KILL) first (9.2); then the switch on, speed taken away, the body static, the ring empty. For every HIT it applied
+within the last (round trip to the new owner + 0.1 s) it answers "not mine" again, and it sends its own player's
+blows of that time as HITs; the new owner drops a (hitter, swing) it has seen.
 
 4.10 **A peer that left**: its entries with no actor here become resting records (placed) or are freed (run-time).
+A link that stalls without a leave gives two simulations of what both games then claim, and two sets of drops if a
+death falls in it; nothing prevents that, and the record counts it.
 
 4.11 **A camp across two owners** [open: the camp node's relay, messages 0x3ddc0006 to 0x3ddc000a; rule until read:
 its members of different owners do not hear each other, and the bench case `arrive` shows what that looks like].
@@ -444,7 +470,12 @@ and becomes one shared object (16.5).
 9.1 **Life points** are [[L+0x1830]+8] (maximum [[L+0x1838]+8]). A copy's are written from STATE at phase 0. What
 draws the health bar is not read: the bench of step 3 compares the bars in the pictures.
 
-9.2 **Death at the owner.** Phase 0 reads the death state word DC+0x20 of every owned enemy (bit 0 valid, bits 1 to
+9.2 **A death is a fact.** DEATH, DEATH_SIGNAL, DEATH_END and KILL are taken from any game for an entry of that id
+and life number that is not already further along, whoever owns it; an owner that takes DEATH for its own LIVE
+enemy makes the request on its actor with bit 0 set (the sender made the drops). A game that holds DYING or DEAD for
+an id and takes a CLAIM or declaration that says LIVE sends DEATH (and KILL if it has the tombstone) to that owner.
+The kill hook captures for copies too, into the entry, so a 4.7 claimer can state KILL.
+**At the owner**, phase 0 reads the death state word DC+0x20 of every owned enemy (bit 0 valid, bits 1 to
 3 the phase, 4 to 8 the cause, 9 to 13 the second cause, 14 and 15 flags). When it becomes valid: DEATH (reliable,
 all peers) with the committed causes and flags; the entry is DYING. The game records the kill at the death's start
 for an ordinary placement ([m] run 11: DC+0x2c bit 1 set while the enemy still stood): the hook that runs
@@ -511,16 +542,17 @@ progress (world +0x60 bit 20). Each game ends its own. On MOON: tombstones and r
 and DYING entries freed, the session's life number raised.
 
 10.6 **After this game's load ends**: its tombstones are applied to the actors of the loaded world as they appear
-(the session wins over the save); its resting records are dropped; it asks every peer for all (NEED) and for the
-tombstones. **A join of two running worlds**: the host's world stands (the entity sync's rule): the joiner claims
-nothing for 2 s, takes the declarations and tombstones, and holds every actor of a listed kind until then.
+(the session wins over the save); **its resting records are kept**; it asks every peer for all (NEED), the
+tombstones and the resting records. **A join**: the joiner asks the same of every peer, claims nothing until each
+answer has ended (INDEX_END) and for at least 2 s, and holds every actor of a listed kind until then (the one hold
+that outlasts 1.1's 0.5 s).
 
 ## 11. Messages
 
 Through the dispatcher (16.1), types 60 to 89. Reliable messages are per peer and in order on a stream; control and
 bulk are two streams with no order between them: **everything of an enemy but its declaration is on control**; a
-declaration carries the owner-clock time it was read at, and an event older than the last declaration applied for
-that id is dropped. A message larger than 1100 bytes is cut into pieces with (number, piece, pieces), as the entity
+declaration carries the frame stamp it was read at, and an event older than the last declaration applied for that
+id is dropped. A message larger than 1100 bytes is cut into pieces with (number, piece, pieces), as the entity
 sync's statements are. Every struct below is checked against the payload at compile time.
 
 ```c
@@ -536,9 +568,9 @@ typedef struct { uint32_t serial; uint8_t result; } EnHitAck;                   
 typedef struct { Enid id; uint32_t play_no; uint8_t arm_i, cls; float dir[3], power; uint8_t guard[0x20]; } EnOutcome;   // 67
 typedef struct { Enid id; int64_t us; uint32_t cause, second; uint8_t flag, at_once; } EnDeath;                // 68; 69: its end
 typedef struct { uint64_t hash; uint32_t life_no; uint8_t flag; } EnKill;                                      // 70; 71: tombstones, in pieces
-typedef struct { uint32_t req; Enid id; uint32_t epoch_seen; uint8_t reason; } EnTake;                         // 72
-typedef struct { uint64_t asker; uint32_t req; uint64_t owner; uint8_t n; struct { Enid id; uint32_t epoch; } m[]; } EnGrant;   // 73
-typedef struct { uint32_t req; uint8_t reason; uint64_t owner; uint32_t epoch; } EnRefuse;                     // 74
+typedef struct { uint8_t n; struct { Enid id; uint32_t epoch; uint8_t life, dying; } m[]; } EnClaim;           // 72, control
+typedef struct { Enid id; uint32_t epoch; } EnOrphanAck;                                                       // 73, control
+                                                                                                               // 74: resting records, in pieces
 typedef struct { uint8_t all, n; struct { Enid id; uint32_t epoch; int32_t hp; uint32_t verb; float pose[7]; } m[]; } EnOffer;   // 75; 76 GONE: the same rows
 typedef struct { Enid id; uint32_t number; } EnNeed;                                                           // 77; id (0,0): everything
 typedef struct { uint64_t key; uint32_t count, hash, number; } EnIndex;                                        // 78; 79: its end (bulk), with count and hash
@@ -579,8 +611,11 @@ per-entry hashes over (id, epoch) of every LIVE enemy the sender has declared to
 declarations sent to it. Compared only by a receiver that has taken that many; a mismatch on two in a row: NEED(0,
 0) with a number, at most once in 10 s; the answer ends with INDEX_END (the number, count, hash) on the bulk stream
 after the last declaration; an entry of that sender not named by then asks NEED(id) once (4.5).
-11.4 An id a receiver does not know in PLAY, EVENT, DEATH, EQUIP, PROJ, OUTCOME or a GRANT's list is kept 2 s (64
-messages) for its declaration.
+11.4 A CLAIM makes the entry when the id is not known (owner and epoch only; name and state come with the
+declaration, asked by NEED after 0.5 s). PLAY, EVENT, EQUIP, PROJ and OUTCOME for an entry that has no declaration
+yet are kept 2 s (64 messages) for it. NEED(id) is always answered: the declaration by the owner of a LIVE or
+DYING entry; a GONE row with its record by a game that holds it resting; else "not mine" with the pair known. It
+is asked again every 3 s while its cause stands.
 
 ## 12. The target (step 4)
 
