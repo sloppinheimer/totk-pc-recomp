@@ -204,15 +204,42 @@ static void held_rebuild(void) {
     for (int i = 0; i < HELD_N; i++) atomic_store_explicit(&t[i], 0, memory_order_relaxed);
     for (int i = 0; i < EN_MAP_N; i++) {
         uint64_t a = atomic_load(&en_map[i].actor), eu;
+        if (a > 1) {   // (test) an enemy whose name starts with TOTK_COOP_EN_TEST_GMC: its equipment user's first slot links, once
+            static uint64_t did;
+            const char *want = cfg_get("TOTK_COOP_EN_TEST_GMC");
+            char nm[48] = "";
+            if (want && did != a && !strncmp(coop_actor_name(a, nm, sizeof nm), want, strlen(want))) {
+                uint64_t e0 = coop_rd_ptr(en_comps(a) + 0x230), w[9] = {0};
+                did = a;
+                if (e0) coop_rd(e0 + 0x20, w, sizeof w);
+                rt_log("coop: en: equip: %s equipment user %llx; +0x20: %llx %llx %llx | %llx %llx %llx | %llx %llx %llx", nm, (unsigned long long)e0, (unsigned long long)w[0], (unsigned long long)w[1], (unsigned long long)w[2],
+                       (unsigned long long)w[3], (unsigned long long)w[4], (unsigned long long)w[5], (unsigned long long)w[6], (unsigned long long)w[7], (unsigned long long)w[8]);
+            }
+        }
         if (a <= 1 || !(eu = coop_rd_ptr(en_comps(a) + 0x230))) continue;
         for (int s = 0; s < EN_EQ_N; s++) {
             uint64_t ref = coop_rd_ptr(eu + 0x20 + (uint64_t)s * 0x18 + 8), w = ref ? coop_rd_ptr(ref + 0x40) : 0;
-            uint32_t id = 0, gen = 0;
-            if (!w || !coop_rd(eu + 0x20 + (uint64_t)s * 0x18 + 0x10, &id, 4) || !coop_rd(w + 0x10, &gen, 4) || id != gen) continue;
+            int32_t ws = 0;
+            // (a live actor; the link's id word is not compared: a Wizzrobe's rod did not pass that test and its ruby was
+            // then nobody's)
+            if (!w || !coop_rd(w + COOP_ACTOR_STATE, &ws, 4) || ws < 2 || ws > 6) continue;
             held_put(t, by, w, a);
+            {   // (test) each held actor once: what it is and what its attachment link reads
+                static uint64_t seen[64];
+                static int nseen;
+                int was = 0;
+                for (int k = 0; k < nseen; k++) was |= seen[k] == w;
+                if (!was && nseen < 64) {
+                    uint64_t wc0 = coop_rd_ptr(en_comps(w) + 0x208);
+                    char wn[40] = "", en[48] = "";
+                    seen[nseen++] = w;
+                    rt_log("coop: en: equip: %s slot %d holds %s (%llx); its component +0x208 is %llx, link at +0xb0: %llx %llx %llx", coop_actor_name(a, en, sizeof en), s, coop_actor_name(w, wn, sizeof wn),
+                           (unsigned long long)w, (unsigned long long)wc0, (unsigned long long)(wc0 ? coop_rd_ptr(wc0 + 0xb0) : 0), (unsigned long long)(wc0 ? coop_rd_ptr(wc0 + 0xb8) : 0), (unsigned long long)(wc0 ? coop_rd_ptr(wc0 + 0xc0) : 0));
+                }
+            }
             uint64_t wc = coop_rd_ptr(en_comps(w) + 0x208), aref = wc ? coop_rd_ptr(wc + 0xb0 + 8) : 0, att = aref ? coop_rd_ptr(aref + 0x40) : 0;
-            uint32_t aid = 0, agen = 0;
-            if (!att || !coop_rd(wc + 0xb0 + 0x10, &aid, 4) || !coop_rd(att + 0x10, &agen, 4) || aid != agen) continue;
+            int32_t as = 0;
+            if (!att || !coop_rd(att + COOP_ACTOR_STATE, &as, 4) || as < 2 || as > 6) continue;
             held_put(t, by, att, a);
             if (said < 6) {
                 char wn[40] = "", an[40] = "", en[48] = "";
@@ -514,6 +541,30 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         }
         en_hit_precalc(c, actor, m, 1);
         en_shot_precalc(c, actor, m);
+        {   // Not drawn while its owner's is not (a Wizzrobe flies unseen between its Disappear and Appear clips). The
+            // model controller ([comps+0x280]) holds the request at +0x9d; its setter main+0x1b87b74 writes the byte and
+            // sets dirty bit 0x200 of the word at +0xac, and the controller's apply then tells the models (research
+            // R7b). Written the same way here, on the copy and on what it holds and what is fused to that: they are
+            // actors of their own with controllers of their own. [m: the byte alone, without the dirty bit, hid nothing.]
+            uint8_t want = m->show_hide;
+            uint64_t who[1 + EN_EQ_N * 2], eu = coop_rd_ptr(en_comps(actor) + 0x230);
+            int nw = 0;
+            who[nw++] = actor;
+            for (int k = 0; eu && k < EN_EQ_N; k++) {
+                uint64_t ref = coop_rd_ptr(eu + 0x20 + (uint64_t)k * 0x18 + 8), w = ref ? coop_rd_ptr(ref + 0x40) : 0;
+                if (!w) continue;
+                who[nw++] = w;
+                uint64_t wc = coop_rd_ptr(en_comps(w) + 0x208), aref = wc ? coop_rd_ptr(wc + 0xb0 + 8) : 0, att = aref ? coop_rd_ptr(aref + 0x40) : 0;
+                if (att) who[nw++] = att;
+            }
+            for (int k = 0; k < nw; k++) {
+                uint64_t gmc = coop_rd_ptr(en_comps(who[k]) + 0x280);
+                uint8_t hm = 0;
+                if (!gmc || !coop_rd(gmc + 0x9d, &hm, 1) || hm == want) continue;
+                memcpy((void *)(uintptr_t)(gmc + 0x9d), &want, 1);
+                __atomic_fetch_or((uint32_t *)(uintptr_t)(gmc + 0xac), 0x200u, __ATOMIC_SEQ_CST);
+            }
+        }
     } else {   // held: it stands where it was when the hold began
         if (!m->pinned) en_pose_of(actor, m->pin), m->pinned = 1;
         put(c, actor, m->pin, m->pin + 3);
