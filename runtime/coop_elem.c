@@ -542,11 +542,19 @@ static int comp_hook(Cpu *c) {
             }
         }
     }
-    if (mirror) {
+    {   // The game's own "does not interact with the world" bit on a mirror's component, and off again when the actor is
+        // no mirror any more: an enemy's projectiles are made once and used again, and its owner may become this game.
+        static _Atomic uint64_t marked[64];
         uint64_t word;
-        if (coop_rd(comp + 0x20, &word, 8) && !(word >> 32 & 1)) {
+        uint32_t k = (uint32_t)((comp >> 4) * 0x9e3779b1u) & 63;
+        int mine = atomic_load_explicit(&marked[k], memory_order_relaxed) == comp;
+        if (mirror && coop_rd(comp + 0x20, &word, 8) && !(word >> 32 & 1)) {
             atomic_fetch_or((_Atomic uint64_t *)(uintptr_t)(comp + 0x20), 1ull << 32);
+            atomic_store_explicit(&marked[k], comp, memory_order_relaxed);
             atomic_fetch_add(&n_mirrors, 1);
+        } else if (!mirror && mine && !is_inert(actor)) {
+            atomic_fetch_and((_Atomic uint64_t *)(uintptr_t)(comp + 0x20), ~(1ull << 32));
+            atomic_store_explicit(&marked[k], 0, memory_order_relaxed);
         }
     }
     plat_mutex_lock(&lk);
