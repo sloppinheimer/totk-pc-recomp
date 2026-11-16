@@ -479,3 +479,24 @@ Where a section above says otherwise, this section holds.
 - **Groundwork first**: the message transport had one reader, the old enemy sync has no off switch and shares code
   with the mount sync and the object mirror, and the object mirror cannot be told of an object. These come before
   anything of the sync.
+
+Added after the specification's second review (same day):
+
+- **"Runs it"** is the test for every claim: the actor is here, its update ran, and this game's own far gate for it
+  is open. Without it two players passing a camp at a distance hand each enemy back and forth many times a second.
+- **No giving back** after a pause and **no ownership by request**: a fight claimed from a paused owner stays where
+  it went.
+- **A dying enemy** changes owner only when its owner is gone, and the new owner ends the death; the kill is
+  recorded at the death's start, as the game does it.
+- **The flinch** is read: the damage step asks the ragdoll component for a brief partial ragdoll. The owner states
+  that request and each copy's own physics plays it; the hitter's game makes it at the blow. Bones travel only for a
+  full ragdoll and a death.
+- **A switched-off enemy with a moving body walks on** with its last speed (measured in the play test: 116 m in 27
+  s). A held or copied enemy has its speed taken away at once.
+- **Time** is the PC's performance counter, read once a frame, not the game's world clock, which loses time at a
+  hitch.
+- **An enemy that one game has no actor for** (dead in that save, another tier, its placement not loaded there) is
+  the ordinary difference between two saves. Two runs decide what is done about it before any copy is built, and the
+  record counts such enemies in every session.
+- **Captures and the per-frame hand-off** to an enemy's own update, the map of actors, the message dispatcher and
+  the hooks still to register are specified as the code needs them (specification sections 1 and 16).
