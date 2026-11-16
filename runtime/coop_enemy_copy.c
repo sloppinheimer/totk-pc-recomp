@@ -197,7 +197,31 @@ int coop_enemy_young_near(const float p[3], float m) {
     }
     return 0;
 }
+// The projectiles an actor's Shooter component keeps ready ([comps+0x448]: slots of 0x38 at +0x20, count +0x2c, each
+// with a count at +8 and records of 0xf8 at +0x10; a record's projectile is the link at +0x20) belong to the enemy
+// that actor is or is held by: a flame from a rod's ruby has no link back to anyone in a copy's game.
+static void held_shooter(_Atomic uint64_t *t, _Atomic uint64_t *by, uint64_t of, uint64_t holder) {
+    uint64_t s = coop_rd_ptr(en_comps(of) + 0x448), tab = s ? coop_rd_ptr(s + 0x20) : 0;
+    int32_t n = 0;
+    if (!tab || !coop_rd(s + 0x2c, &n, 4) || n <= 0 || n > 32) return;
+    for (int i = 0; i < n; i++) {
+        uint64_t arr = coop_rd_ptr(tab + (uint64_t)i * 0x38 + 0x10);
+        int32_t cnt = 0;
+        if (!arr || !coop_rd(tab + (uint64_t)i * 0x38 + 8, &cnt, 4) || cnt <= 0 || cnt > 32) continue;
+        for (int k = 0; k < cnt; k++) {
+            uint64_t ref = coop_rd_ptr(arr + (uint64_t)k * 0xf8 + 0x28), proj = ref ? coop_rd_ptr(ref + 0x40) : 0;
+            if (proj > 0x10000) held_put(t, by, proj, holder);
+        }
+    }
+}
+static void test_flame(uint64_t a, void *arg) {   // (test) every live FireRodLv1Fire is asked about
+    int coop_enemy_shot_mirror(uint64_t proj);
+    char nm[40] = "";
+    (void)arg;
+    if (!strcmp(coop_actor_name(a, nm, sizeof nm), "FireRodLv1Fire")) coop_enemy_shot_mirror(a);
+}
 static void held_rebuild(void) {
+    if (cfg_get("TOTK_COOP_EN_TEST_GMC")) coop_actors_live(test_flame, NULL);
     int to = !atomic_load(&held_cur);
     _Atomic uint64_t *t = held_set[to], *by = held_by[to];
     static int said;
@@ -216,6 +240,7 @@ static void held_rebuild(void) {
                        (unsigned long long)w[3], (unsigned long long)w[4], (unsigned long long)w[5], (unsigned long long)w[6], (unsigned long long)w[7], (unsigned long long)w[8]);
             }
         }
+        if (a > 1) held_shooter(t, by, a, a);
         if (a <= 1 || !(eu = coop_rd_ptr(en_comps(a) + 0x230))) continue;
         for (int s = 0; s < EN_EQ_N; s++) {
             uint64_t ref = coop_rd_ptr(eu + 0x20 + (uint64_t)s * 0x18 + 8), w = ref ? coop_rd_ptr(ref + 0x40) : 0;
@@ -224,6 +249,7 @@ static void held_rebuild(void) {
             // then nobody's)
             if (!w || !coop_rd(w + COOP_ACTOR_STATE, &ws, 4) || ws < 2 || ws > 6) continue;
             held_put(t, by, w, a);
+            held_shooter(t, by, w, a);
             {   // (test) each held actor once: what it is and what its attachment link reads
                 static uint64_t seen[64];
                 static int nseen;
@@ -239,8 +265,22 @@ static void held_rebuild(void) {
             }
             uint64_t wc = coop_rd_ptr(en_comps(w) + 0x208), aref = wc ? coop_rd_ptr(wc + 0xb0 + 8) : 0, att = aref ? coop_rd_ptr(aref + 0x40) : 0;
             int32_t as = 0;
+            {   // (test) each weapon's attachment once: the actor the link gives, its name and state
+                static uint64_t seen[64];
+                static int nseen;
+                int was = 0;
+                for (int k = 0; k < nseen; k++) was |= seen[k] == w;
+                if (!was && nseen < 64) {
+                    char an[40] = "", wn[40] = "";
+                    int32_t st = -1;
+                    seen[nseen++] = w;
+                    if (att) coop_rd(att + COOP_ACTOR_STATE, &st, 4);
+                    rt_log("coop: en: equip: %s (%llx): its attachment link gives %llx %s, state %d", coop_actor_name(w, wn, sizeof wn), (unsigned long long)w, (unsigned long long)att, att ? coop_actor_name(att, an, sizeof an) : "-", (int)st);
+                }
+            }
             if (!att || !coop_rd(att + COOP_ACTOR_STATE, &as, 4) || as < 2 || as > 6) continue;
             held_put(t, by, att, a);
+            held_shooter(t, by, att, a);
             if (said < 6) {
                 char wn[40] = "", an[40] = "", en[48] = "";
                 said++;
@@ -279,6 +319,7 @@ int en_copy_hook(Cpu *c, uint64_t off) {
         if (off == 0x1bf9af8 || off == 0x1bfbc44) {   // of an enemy this game runs: made here, captured and stated (coop_enemy_shot.c)
             uint64_t a0 = coop_rd_ptr(c->x[0] + 0x18);
             EnCell *m0 = a0 > 0x10000 ? en_cell_of(a0) : NULL;
+            if (!m0 && a0 > 0x10000) { uint64_t h0 = coop_enemy_holder(a0); m0 = h0 ? en_cell_of(h0) : NULL; }   // (the Shooter of a thing an enemy holds)
             if (m0 && en_shot_hook(c, off, m0)) return 1;
         }
         static int on = -1;

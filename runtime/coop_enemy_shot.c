@@ -38,6 +38,7 @@ typedef struct {
     _Atomic int state;            // 0 free, 1 being filled, 2 waiting (captured here, or taken from the owner), 3 due on the copy
     uint8_t kind;                 // 1 prepare, 2 shoot
     uint8_t at_shooter, flag;     // the byte Q+8 points to; the shoot's flag argument
+    uint8_t via;                  // whose Shooter: 0 the enemy's own; 1 + k what its equipment slot k holds; 0x80 | (1 + k) what is fused to that
     uint32_t key; int32_t idx;    // the record: its slot's key hash and its index in the slot
     uint32_t index_arg;           // prepare's third argument
     uint64_t actor, q_addr;       // capture: the enemy; where the block stood in the owner's game
@@ -51,7 +52,7 @@ typedef struct {
 static Shot shots[SHOT_N];
 static _Atomic uint32_t n_cap, n_sent, n_big, n_taken, n_done, n_miss;
 
-typedef struct { Enid id; int64_t ns; uint32_t key; int32_t idx; uint32_t index_arg; uint8_t kind, at_shooter, flag, pad; uint64_t q_addr; float va[3], vb[3]; uint16_t len, pad2[3]; uint8_t z[1080]; } MShot;
+typedef struct { Enid id; int64_t ns; uint32_t key; int32_t idx; uint32_t index_arg; uint8_t kind, at_shooter, flag, via; uint64_t q_addr; float va[3], vb[3]; uint16_t len, pad2[3]; uint8_t z[1080]; } MShot;
 _Static_assert(sizeof(MShot) <= COOP_CTR_PAYLOAD, "a shot fits one transport payload");
 
 static Shot *shot_take(void) {
@@ -85,12 +86,29 @@ static uint64_t rec_at(uint64_t s, uint32_t key, int32_t idx) {
     return 0;
 }
 
+// An enemy's equipment: what slot k holds, and what is fused to it (the link at +0xb0 of the weapon's [comps+0x208]).
+static uint64_t held_of(uint64_t enemy, int k, int fused) {
+    uint64_t eu = coop_rd_ptr(en_comps(enemy) + 0x230), ref = eu ? coop_rd_ptr(eu + 0x20 + (uint64_t)k * 0x18 + 8) : 0, w = ref ? coop_rd_ptr(ref + 0x40) : 0;
+    if (!fused || !w) return w;
+    uint64_t wc = coop_rd_ptr(en_comps(w) + 0x208), aref = wc ? coop_rd_ptr(wc + 0xb0 + 8) : 0;
+    return aref ? coop_rd_ptr(aref + 0x40) : 0;
+}
+// The actor whose Shooter a stated shot is for, on this game's actor of that enemy (0: it holds no such thing here).
+static uint64_t via_actor(uint64_t enemy, uint8_t via) {
+    if (!via) return enemy;
+    int k = (via & 0x7f) - 1;
+    return k >= 0 && k < EN_EQ_N ? held_of(enemy, k, via & 0x80) : 0;
+}
+
 // ---- The owner: a prepare or a shoot of an enemy this game runs is made, then captured ---------------------------------
 // From en_copy_hook, at the function's entry. 1: the function was run here.
 int en_shot_hook(Cpu *c, uint64_t off, EnCell *m) {
     static __thread int deep;
     if (deep || atomic_load_explicit(&m->state, memory_order_relaxed) != EM_OWNED) return 0;
-    uint64_t s = c->x[0], r = c->x[1], q = off == FN_SHOOT ? c->x[2] : c->x[3], actor = coop_rd_ptr(s + 0x18);
+    uint64_t s = c->x[0], r = c->x[1], q = off == FN_SHOOT ? c->x[2] : c->x[3], shooter = coop_rd_ptr(s + 0x18), actor = atomic_load(&m->actor);
+    uint8_t via = 0;   // (the Shooter of the enemy itself, or of something it holds: a fire rod's flame is its ruby's shot)
+    for (int k = 0; shooter != actor && !via && k < EN_EQ_N; k++) via = held_of(actor, k, 0) == shooter ? (uint8_t)(1 + k) : held_of(actor, k, 1) == shooter ? (uint8_t)(0x80 | (1 + k)) : 0;
+    if (shooter != actor && !via) return 0;
     uint32_t index_arg = (uint32_t)c->x[2];
     float va[3] = {0}, vb[3] = {0};
     uint8_t flag = (uint8_t)c->x[4];
@@ -103,7 +121,7 @@ int en_shot_hook(Cpu *c, uint64_t off, EnCell *m) {
     deep = 0;
     if (!h) return 1;
     if (!(off == FN_SHOOT || (c->x[0] & 1)) || !rec_where(s, r, &h->key, &h->idx)) { atomic_store(&h->state, 0); return 1; }   // (a prepare the game refused is not stated)
-    h->kind = off == FN_SHOOT ? 2 : 1, h->flag = flag, h->index_arg = index_arg, h->actor = actor, h->q_addr = q, h->ns = (int64_t)coop_sess_frame_ns();
+    h->kind = off == FN_SHOOT ? 2 : 1, h->flag = flag, h->index_arg = index_arg, h->actor = actor, h->via = via, h->q_addr = q, h->ns = (int64_t)coop_sess_frame_ns();
     memcpy(h->va, va, 12), memcpy(h->vb, vb, 12);
     h->cell = -1;
     atomic_fetch_add(&n_cap, 1);
@@ -126,7 +144,7 @@ void en_shot_phase0(void) {
             if (ei >= 0 && en_tab[ei].used && en_tab[ei].owner == me) {
                 static MShot ms;
                 memset(&ms, 0, offsetof(MShot, z));
-                ms.id = en_tab[ei].id, ms.ns = h->ns, ms.key = h->key, ms.idx = h->idx, ms.index_arg = h->index_arg, ms.kind = h->kind, ms.at_shooter = h->at_shooter, ms.flag = h->flag, ms.q_addr = h->q_addr;
+                ms.id = en_tab[ei].id, ms.ns = h->ns, ms.key = h->key, ms.idx = h->idx, ms.index_arg = h->index_arg, ms.kind = h->kind, ms.at_shooter = h->at_shooter, ms.flag = h->flag, ms.via = h->via, ms.q_addr = h->q_addr;
                 memcpy(ms.va, h->va, 12), memcpy(ms.vb, h->vb, 12);
                 // The 32 string parameters (0xc8 bytes each from Q+0x30: a value, a pointer to its text, a capacity, 0x80
                 // bytes of text) hold stack leftovers after each text's end: zeroed, or nothing squeezes.
@@ -156,7 +174,7 @@ void en_shot_phase0(void) {
                 if (ok) ms.len = (uint16_t)n, en_send_all(ENM_PROJ, &ms, (int)offsetof(MShot, z) + n), atomic_fetch_add(&n_sent, 1);
                 else if (atomic_fetch_add(&n_big, 1) < 5) rt_log("coop: en: shot: a request block of %s does not fit a message: not stated", en_tab[ei].name);
                 if (ok && atomic_load(&n_sent) <= 12)
-                    rt_log("coop: en: shot: %s %016llx %s its projectile %08x/%d: stated (%d bytes)", en_tab[ei].name, (unsigned long long)en_tab[ei].id.a, h->kind == 2 ? "shoots" : "prepares", h->key, h->idx, n);
+                    rt_log("coop: en: shot: %s %016llx %s its projectile %08x/%d (shooter %u): stated (%d bytes)", en_tab[ei].name, (unsigned long long)en_tab[ei].id.a, h->kind == 2 ? "shoots" : "prepares", h->key, h->idx, h->via, n);
             }
             atomic_store(&h->state, 0);
             continue;
@@ -195,7 +213,7 @@ int en_shot_msg(const CoopCtrMsg *m, int from) {
         at += z + lit, n += 4 + lit;
     }
     if (!ok) { atomic_store(&h->state, 0); return 1; }
-    h->actor = 0, h->id = ms->id, h->ns = ms->ns, h->key = ms->key, h->idx = ms->idx, h->index_arg = ms->index_arg, h->kind = ms->kind, h->at_shooter = ms->at_shooter, h->flag = ms->flag, h->q_addr = ms->q_addr;
+    h->actor = 0, h->id = ms->id, h->ns = ms->ns, h->key = ms->key, h->idx = ms->idx, h->index_arg = ms->index_arg, h->kind = ms->kind, h->at_shooter = ms->at_shooter, h->flag = ms->flag, h->via = ms->via, h->q_addr = ms->q_addr;
     memcpy(h->va, ms->va, 12), memcpy(h->vb, ms->vb, 12);
     h->cell = -1, h->tries = 0, h->taken_ns = en_now();
     atomic_fetch_add(&n_taken, 1);
@@ -215,7 +233,7 @@ void en_shot_precalc(Cpu *c, uint64_t actor, EnCell *m) {
                 for (int k = 0; k < SHOT_N; k++) waits |= k != i && atomic_load_explicit(&shots[k].state, memory_order_relaxed) == 3 && shots[k].cell == cell && shots[k].kind == 1 && shots[k].key == h->key && shots[k].idx == h->idx;
                 if (waits) continue;
             }
-            uint64_t s = coop_rd_ptr(en_comps(actor) + 0x448), r = s ? rec_at(s, h->key, h->idx) : 0;
+            uint64_t of = via_actor(actor, h->via), s = of ? coop_rd_ptr(en_comps(of) + 0x448) : 0, r = s ? rec_at(s, h->key, h->idx) : 0;
             static __thread _Alignas(16) uint8_t q[Q_SZ];
             static __thread _Alignas(16) float va[4], vb[4];
             static __thread uint8_t at_shooter;
@@ -270,8 +288,22 @@ void en_shot_precalc(Cpu *c, uint64_t actor, EnCell *m) {
 int coop_enemy_shot_mirror(uint64_t proj) {
     int coop_enemy_role(uint64_t actor);
     uint64_t coop_enemy_holder(uint64_t actor);   // coop_enemy_copy.c
+    // (first by the set of ready projectiles: one a copy's rod shoots by itself has no shooter link at all)
+    {
+        uint64_t h0 = coop_enemy_holder(proj);
+        static _Atomic int said0;
+        char pn[40] = "";
+        if (h0 && atomic_fetch_add(&said0, 1) < 6) rt_log("coop: en: shot: mirror asked of %s (%llx): it is a ready projectile of %llx (role %d)", coop_actor_name(proj, pn, sizeof pn), (unsigned long long)proj, (unsigned long long)h0, coop_enemy_role(h0));
+        if (h0) return coop_enemy_role(h0) == 2;
+    }
     uint64_t sc = proj > 0x10000 ? coop_rd_ptr(en_comps(proj) + 0x440) : 0, ref = sc ? coop_rd_ptr(sc + 0x78) : 0, shooter = ref ? coop_rd_ptr(ref + 0x40) : 0;
     // (the shooter can be what the enemy holds: a fire rod's flame is shot by the ruby fused to the rod)
+    {   // (test) the first shooters asked about that are no enemy: who they are and whether a holder is known
+        static _Atomic int said;
+        char pn[40] = "", sn[40] = "";
+        if (atomic_fetch_add(&said, 1) < 8)
+            rt_log("coop: en: shot: mirror asked of %s (%llx): its shooter %llx %s, holder %llx", coop_actor_name(proj, pn, sizeof pn), (unsigned long long)proj, (unsigned long long)shooter, coop_actor_name(shooter, sn, sizeof sn), (unsigned long long)coop_enemy_holder(shooter));
+    }
     if (shooter && !coop_enemy_role(shooter)) { uint64_t h = coop_enemy_holder(shooter); if (h) shooter = h; }
     return shooter && coop_enemy_role(shooter) == 2;
 }
