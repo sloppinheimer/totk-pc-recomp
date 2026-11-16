@@ -147,6 +147,72 @@ static void equip_read(uint64_t actor, uint32_t eq[EN_EQ_N], int learn) {
     }
 }
 
+// ---- What enemies hold ---------------------------------------------------------------------------------------------------
+// Every actor an enemy of a listed kind holds here, and what is fused to it (a held weapon's attachment: the link at
+// +0xb0 of the weapon's component [[w+0x228]+0x208]), as a set the object mirror asks (coop_players.c prop_fn): such an
+// actor belongs to its enemy and is no loose object. A Fire Wizzrobe's rod carries a ruby (Item_Ore_B) fused to it; the
+// mirror sent the ruby as an object of its own, and the other game showed a second gem floating beside the copy's rod
+// that did not vanish when the Wizzrobe did (a play session, 2026-11-16). Rebuilt by phase 0 four times a second.
+#define HELD_N 1024
+static _Atomic uint64_t held_set[2][HELD_N];
+static _Atomic int held_cur;
+static void held_put(_Atomic uint64_t *t, uint64_t a) {
+    for (uint32_t h = (uint32_t)((a >> 4) * 2654435761u) % HELD_N, k = 0; k < 32; k++, h = (h + 1) % HELD_N) {
+        uint64_t v = atomic_load_explicit(&t[h], memory_order_relaxed);
+        if (v == a) return;
+        if (!v) { atomic_store_explicit(&t[h], a, memory_order_relaxed); return; }
+    }
+}
+int coop_enemy_holds(uint64_t actor) {
+    if (!coop_enemy_new() || actor < 0x10000) return 0;
+    _Atomic uint64_t *t = held_set[atomic_load_explicit(&held_cur, memory_order_acquire)];
+    for (uint32_t h = (uint32_t)((actor >> 4) * 2654435761u) % HELD_N, k = 0; k < 32; k++, h = (h + 1) % HELD_N) {
+        uint64_t v = atomic_load_explicit(&t[h], memory_order_relaxed);
+        if (v == actor) return 1;
+        if (!v) return 0;
+    }
+    return 0;
+}
+// Whether an enemy of a listed kind that this game has had for under 3 s stands within m of p: what is made beside it
+// then is most likely its equipment on the way into its hand (the object mirror waits for it; coop_players.c prop_fn).
+int coop_enemy_young_near(const float p[3], float m) {
+    if (!coop_enemy_new()) return 0;
+    uint32_t frame = coop_sess_frame_no();
+    for (int i = 0; i < EN_MAP_N; i++) {
+        uint64_t a = atomic_load_explicit(&en_map[i].actor, memory_order_relaxed);
+        float q[3];
+        if (a <= 1 || frame - en_map[i].born_frame > 180 || !coop_rd(a + COOP_ACTOR_POS, q, 12)) continue;
+        if ((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]) < m * m) return 1;
+    }
+    return 0;
+}
+static void held_rebuild(void) {
+    int to = !atomic_load(&held_cur);
+    _Atomic uint64_t *t = held_set[to];
+    static int said;
+    for (int i = 0; i < HELD_N; i++) atomic_store_explicit(&t[i], 0, memory_order_relaxed);
+    for (int i = 0; i < EN_MAP_N; i++) {
+        uint64_t a = atomic_load(&en_map[i].actor), eu;
+        if (a <= 1 || !(eu = coop_rd_ptr(en_comps(a) + 0x230))) continue;
+        for (int s = 0; s < EN_EQ_N; s++) {
+            uint64_t ref = coop_rd_ptr(eu + 0x20 + (uint64_t)s * 0x18 + 8), w = ref ? coop_rd_ptr(ref + 0x40) : 0;
+            uint32_t id = 0, gen = 0;
+            if (!w || !coop_rd(eu + 0x20 + (uint64_t)s * 0x18 + 0x10, &id, 4) || !coop_rd(w + 0x10, &gen, 4) || id != gen) continue;
+            held_put(t, w);
+            uint64_t wc = coop_rd_ptr(en_comps(w) + 0x208), aref = wc ? coop_rd_ptr(wc + 0xb0 + 8) : 0, att = aref ? coop_rd_ptr(aref + 0x40) : 0;
+            uint32_t aid = 0, agen = 0;
+            if (!att || !coop_rd(wc + 0xb0 + 0x10, &aid, 4) || !coop_rd(att + 0x10, &agen, 4) || aid != agen) continue;
+            held_put(t, att);
+            if (said < 6) {
+                char wn[40] = "", an[40] = "", en[48] = "";
+                said++;
+                rt_log("coop: en: equip: %s holds %s with %s fused to it: both are its own, not loose objects", coop_actor_name(a, en, sizeof en), coop_actor_name(w, wn, sizeof wn), coop_actor_name(att, an, sizeof an));
+            }
+        }
+    }
+    atomic_store_explicit(&held_cur, to, memory_order_release);
+}
+
 // ---- The switch (S 5) --------------------------------------------------------------------------------------------------
 static __thread uint64_t tl_off_actor;   // the switched-off actor whose calc this thread entered last (the leak net)
 
@@ -453,6 +519,7 @@ void en_copy_phase0(Cpu *c) {
     (void)c;
     uint64_t me = coop_ctr_me(), now = en_now(), stamp = coop_sess_frame_ns();
     uint32_t frame = coop_sess_frame_no();
+    if (!(frame % 15)) held_rebuild();
     static uint64_t rec_ns;
     int rec = now - rec_ns >= SEC;
     if (rec) rec_ns = now;
