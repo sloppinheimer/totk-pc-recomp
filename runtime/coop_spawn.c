@@ -983,6 +983,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // manager) and setEventBool (main+0xc6a9f0).
     if (addr == MOD_MAIN_BASE + 0xa72b00) {
         atomic_fetch_add(&coop_frames_seen, 1);
+        { void coop_sess_phase0(void); coop_sess_phase0(); }   // the frame stamp (coop_sess.c), before every sync's pass
         // contraption tests that need every actor link to resolve: GameDataMgr::calc runs each frame at actor phase 0,
         // outside the parallel actor update (TOTK_COOP_TEST_PHASES)
         static int seq = -1;
@@ -2019,6 +2020,7 @@ void coop_tick(struct Cpu *c) {
             }
         }
     }
+    { void coop_sess_net(void); coop_sess_net(); }   // session state (coop_sess.c)
     { void coop_ent_net(void); coop_ent_net(); }   // the entity sync's net half: heartbeat flags, the pause queue (coop_ent_own.c)
     void coop_loadwatch_tick(void);   // coop_loadwatch.c
     coop_loadwatch_tick();

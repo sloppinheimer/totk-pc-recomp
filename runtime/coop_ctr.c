@@ -280,6 +280,16 @@ void coop_ctr_hb_set(const CoopCtrHb *hb) {
     plat_mutex_unlock(&lock);
 }
 
+// A peer's smoothed round trip and its variance, seconds (0: no sample yet): what a claim's hold is taken from.
+int coop_ctr_rtt(int id, double *srtt, double *rttvar) {
+    if (id < 1 || id > COOP_MAX_PLAYERS) return 0;
+    plat_mutex_lock(&lock);
+    double s = peers[id].srtt, v = peers[id].rttvar;
+    plat_mutex_unlock(&lock);
+    if (s <= 0) return 0;
+    *srtt = s, *rttvar = v;
+    return 1;
+}
 int coop_ctr_hb(int from_id, CoopCtrHb *out, uint64_t *age_ns) {
     uint8_t b[PAYLOAD];
     int n = coop_ctr_latest(from_id, COOP_CTR_HB, 0, b, sizeof b, age_ns);

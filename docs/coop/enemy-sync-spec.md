@@ -348,8 +348,11 @@ ground actor's pose **as this game shows it now**. The first pose of a newly bou
 
 6.4 **The clock** (`coop_sess.c`, one estimator per peer, for both syncs). Stamps are frame stamps (section 1). A
 sample is (this game's frame stamp when a state was taken) - (the state's stamp); the estimate follows the smallest
-sample of the last 10 s, **moving at most 2 ms a frame in either direction**; when it is off by more than 250 ms it
-is set at once and every copy of that owner takes its next pose as a teleport. It is cleared, with the same
+sample of the last 3 s, **moving at most 2 ms a frame in either direction**; when it has been off by more than
+250 ms for a second it is set at once and every copy of that owner takes its next pose as a teleport (built in
+`coop_sess.c` with a self-test, `TOTK_COOP_TEST_SESSCLOCK=1`: steady, a latency step of 100 ms up and down, a jump
+of 400 ms, a pause: T never ran backwards but at the one flagged jump, and was ahead of the newest state for under
+a second after a step up). It is cleared, with the same
 teleport, when this game was PAUSED, when the owner's heartbeat goes from PAUSED or LOADING to running, and on a
 change of owner. T = this game's frame stamp - estimate - delay; delay = clamp(95th percentile of the last 2 s of
 (sample - estimate) + two state intervals, 50 ms, 150 ms), changing at most 1 ms a frame; one interval when the
