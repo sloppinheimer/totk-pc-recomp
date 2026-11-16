@@ -48,8 +48,10 @@ kinds of thing.
   world's wind (direction and speed, plus the wind an element blew on the cell). Every tenth burning frame it also
   sends a record (centre, radius, strength) to listeners through main+0x1f14f9c (**not read**: who listens; by the
   strings the grass that is burnt away and the navigation mesh's `NavMeshGrassFire`). **read**
-- Everything that touches the ground reaches the cells through one function, main+0x1f0eb94(S, ctx, shape, element):
-  by the element's material type it heats cells (fire, main+0x1f0effc, which also draws a random number), blows on
+- Everything that touches the ground reaches the cells through one function, main+0x1f0eb94(S, ctx, shape, object):
+  the object is a chemical object (two classes seen in runs, main+0x3625660 and main+0x36295d0), not an element, and
+  a burning cell's own fire is one: this, more than the spread function, is how a fire grows in a run. By the
+  object's material type it heats cells (fire, main+0x1f0effc, which also draws a random number), blows on
   them (wind, main+0x1f0f71c), or wets them (main+0x1f0fb78, main+0x1f0fd6c). **read**
 - Random or different per game: the spread's random draw, the random draw of a fire contact, the wind, the rain. Two
   games that both simulate a fire spread it differently. **read**

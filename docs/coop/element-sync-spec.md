@@ -20,7 +20,7 @@ here are registered for later steps and pass through.
 | --- | --- |
 | main+0x2dd070 driver (x0 the system S, x1 the cell context, x2 the step record) | before it runs: copies written (4.3). After it: the cells read (4.1). The hook runs the function itself. |
 | main+0x1f10adc spread (x1 the cell) | a copied cell: the function runs and the heat it gave to other cells is taken back (4.4) |
-| main+0x1f0eb94 contact entry (x3 the element) | dropped when the element is the fire of a copied cell or an inert actor's (4.5) |
+| main+0x1f0eb94 contact entry (x2 the shape, x3 the chemical object) | dropped when the shape is centred on a copied cell (4.5) |
 | main+0x30efa0 component update (x0 the component) | a thing is read; a copy is given its state by requests (5) |
 | main+0x1906768 reaction entry (x0 the target element) | dropped when the target is a copy's or an inert actor's element (5.4) |
 
@@ -46,8 +46,8 @@ typedef struct { uint64_t hash; uint8_t n, el[7]; } ElmThing;                   
   it holds and that are younger than 1 s; a round is complete when its pages hold `total` entries.
 - `ElmCell`: the cell's centre (R+0x2c, R+0x34), `burn` = burn time * 32 (saturating), `heat` = heat * 8,
   `state_wet` = state (2 bits) | wetness * 63 (6 bits, shifted left 2).
-- `ElmThing.el[i]` for element i: kind (3 bits) | electrified (bit 3) | wet above one half (bit 4) | rest state:
-  this entry ends the claim (bit 7).
+- `ElmThing.el[i]` for element i: kind (3 bits) | electrified (bit 3) | wet above one half (bit 4); 0x40 for an
+  element that is switched off, of which nothing is said or asked.
 - Sent every 6th frame while this game has anything to state, and for 2 s after the last entry went (an empty round
   tells the others that everything of this game's ended). Nothing is sent while this game is paused or loading.
 
@@ -84,8 +84,11 @@ set back to what they were before it; a cell that did not exist before gets zero
 
 ### 4.5 A copy's fire and the ground
 
-A contact whose element is a `GrassFire` (vtable main+0x36bdc60) of a copied cell (its record is `[element+0x60]`)
-does not reach the cells. Nor does a contact by an element of an inert actor.
+What touches the ground is a chemical object, not an element (classes main+0x3625660 and main+0x36295d0 in the
+runs), and the way from it back to its element was not read. A burning cell's own fire is such an object, centred on
+the cell. So a contact whose shape is centred within 0.25 m (x and z) of a copied cell's centre does not reach the
+cells. Not done: the contacts of an inert actor's and of a burning enemy copy's objects (they reach the cells, and the
+cell they light is then this game's own).
 
 ### 4.6 The end of a cell
 
@@ -99,21 +102,26 @@ that showed it states it, and the lower id is used.
 ### 5.1 The table
 
 Filled by the component hook: component, actor, placement hash, the number of elements (at most 7), their state as
-read this frame, their state when first seen (the **rest state**), and what is wanted. A row not visited for 2 s is
-dropped. Actors without a placement hash, this game's Link, and actors the contraption sync drives or follows
+last read, their rest state (as read during the first second after the first visit), and what is wanted. The game
+updates a component only while something happens to it, so a thing at rest is visited once, when it is made: a row
+lives until its actor no longer has the component (looked at every 30 frames), and the hash, which may not be there at
+the first visit, is read again until it is. Actors without a placement hash, this game's Link, and actors the contraption sync drives or follows
 (`coop_ctn_driven`, `coop_ctn_follows`) are not in the table.
 
 ### 5.2 Mine and copies
 
 - An enemy the enemy sync knows (`en_cell_state`): a copy when its state is `EM_COPY`, else mine.
 - Another thing: a copy while a list of another player names its hash (lower id first); else mine.
-- A thing that is mine is stated while any element differs from its rest state, and for 2 s after, the last 2 s with
-  the rest bit set. An enemy that is mine is stated while any element is not in state 0 with no flag.
+- A thing that is mine is stated while any element differs from its rest state, and for 2 s after, so that its
+  copies are given the rest state before they are let go. A copy that is no longer stated goes on as it is, and how
+  it then stands is its rest state. An enemy that is mine is stated while any element is not in state 0 with no flag;
+  an enemy copy that nobody states is given state 0.
 
 ### 5.3 Giving a copy its state
 
-In the component hook, before the update runs, per element whose state differs from what is wanted, at most once a
-second per element:
+Per element whose state differs from what is wanted, at most once a second per element: in the component hook,
+before the update runs, when the component was updated in the last 3 frames; else from phase 0, where the thing is
+read again first (a copy at rest is not visited by the hook).
 
 | Wanted | Is | Request |
 | --- | --- | --- |
@@ -134,8 +142,8 @@ frame number no older than 3 frames.
 
 ### 5.5 Inert actors
 
-`coop_elem_inert(actor, on)` keeps a list of at most 64 actors. An inert actor is treated as a copy in 5.4 and 4.5,
-is never stated, and has bit 32 of its component's word +0x20 set (the game's "does not interact with the world").
+`coop_elem_inert(actor, on)` keeps a list of at most 64 actors. An inert actor is treated as a copy in 5.4, is never
+asked anything, and has bit 32 of its component's word +0x20 set (the game's "does not interact with the world").
 
 ## 6. Load, pause, join, leave
 
@@ -151,12 +159,57 @@ is never stated, and has bit 32 of its component's word +0x20 set (the game's "d
   burning here, with its place, whose it is, and the frame stamp.
 - `TOTK_COOP_ELEM_TEST_IGNITE=<s>[,<dx>,<dz>]`: at that many seconds, the game that joined first heats the cell
   that far from its Link (default 3 m ahead on x) as a fire contact does, until it burns.
-- `TOTK_COOP_ELEM_TEST_THING=<s>`: at that time the first game asks the nearest placed thing with a chemical
-  component, within 15 m, to ignite.
+- `TOTK_COOP_ELEM_TEST_THING=<s>[,<name prefix>]`: at that time the first game asks the nearest placed thing with a
+  chemical component (of that name), within 150 m, to ignite.
+- `TOTK_COOP_ELEM_TEST_DEAF=<s>`: until that world time this game takes no statement, as a game that arrives then.
+- `TOTK_COOP_ELEM_TEST_LOG=1`: the classes of the objects kept from the ground, each once.
+- `build/el_pairs.py <tag>` (a local script beside the run logs) pairs each cell event of the deciding game with the
+  copy's and prints the delays; the cell lines carry the machine's clock in milliseconds for that.
 - Done (the task's four points): a Fire Wizzrobe's attack and a fire arrow each burn the same ground in both games,
   ending within a second of each other; a thing or an enemy burning, frozen or shocked in one game shows it in the
   other with the same end; a game that arrives late sees what burns; nothing burns in one game only after 60 s.
 
 ## 8. Built, measured, left
 
-(Filled in as the steps are built and run.)
+### Built
+
+Sections 2 to 7 as written, in `runtime/coop_elem.c`, with one-line hooks in `coop_hooks.h` (`COOP_HOOKED_EL`) and
+`coop_spawn.c` (the dispatch and the phase 0 call). `coop_elem_inert` is there for the enemy sync's mirrored
+projectiles; nothing calls it yet.
+
+### Measured (two games on one PC through the local relay, a save in tall grass 60 to 100 m from a Bokoblin camp)
+
+- **One cell lit by the test in game A**: it burned 300 frames (10.0 s) in A; B's copy began 39 ms and ended 37 ms
+  after A's. Pictures from both games show the flame and the burnt patch at the same place.
+- **A Fire Wizzrobe spawned beside A's Link, both Links standing, 70 s of its attacks**: 30 cells burned and 26 burnt
+  out, the same cells in both games (the sets of places are equal); of 100 paired cell events the copy followed the
+  deciding game by a median of 59 ms, at most 125 ms, and 3 events had no pair within 3 s (the run's end). About 600
+  contacts in A and 5,500 in B were kept from the ground (a copied fire touching its neighbours). Game B decided 8 of
+  the burn events itself: its copy of the Wizzrobe makes real fireballs there, which is the enemy sync's projectile
+  work; until those are mirrored and made inert, both games light cells and each states its own.
+- **A game that arrives late** (B deaf for the first 29 s of its world, A's cell lit at 24 s): B showed the cell
+  burning with 233 of its 300 frames gone and ended it 0.6 s after A.
+- **A wooden crate asked to ignite in A** (99 m away): A's crate burned and burnt out; B's copy burned 146 ms after
+  A's and was burnt out 0.44 s after A's; the grass the crate lit (3 cells) was copied. 61 reactions into the copy
+  were dropped.
+- Before the fixes of this step: a copied fire lit its neighbours in the copying game through the contact entry (B
+  decided 27 of 66 burn events); a cell written at its owner's heat of 30 lit one frame early in the copy and
+  flickered until the owner said it burned (now a heated copy is held at 29).
+
+### Left, and known faults
+
+- **A copy at rest does not always take a request.** The second crate, lit in A by the first, was asked to ignite in
+  B twice and did not. Not read: what makes the game update a resting component, and whether a request written into
+  one waits for that. Until then a thing far from the copying game's Link may not show its owner's state.
+- **Not tested**: a player's fire arrow (no input script shoots one; by the code it is a local cause like the test's
+  and the Wizzrobe's), an enemy set alight, frozen or shocked (the requests of 5.3 for frozen and for a charge have
+  not run once), the take-over when the deciding game leaves, three games.
+- **A few repeated burn events on copies** (52 copy events in B against 47 of A's own in the last run): not looked
+  into.
+- **Not built** (D 2.1): things made at run time that are not enemies (dropped and held weapons, arrows, each Link on
+  the other games' stand-ins), lightning, ice blocks and frozen water, electricity through water and metal beyond
+  the element flag, wetness on things, weather (rain and wind differ per game: the deciding game's rain puts a fire
+  out for all, which is what state sharing gives without sharing the weather).
+- **The contraption sync's burning parts** are left as they were; a part is not in the thing table while the
+  contraption sync drives or follows it.
+- **The review**: the design and this specification have not had an independent adversarial review.

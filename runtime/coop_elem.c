@@ -12,6 +12,7 @@
 #include <math.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -86,6 +87,7 @@ static int mine_n;
 static Want want[CELLS_MAX * 2];          // what the other games state (phase 0 writes, the driver hook reads)
 static int want_n;
 static _Atomic uint64_t copy_rec[CELLS_MAX];   // the records written as copies in this frame's driver call
+static float copy_at[CELLS_MAX][2];       // their centres (x, z), written before copy_n says how many
 static _Atomic int copy_n;
 static _Atomic uint32_t n_not_shown, n_contact_drop, n_react_drop, n_req, n_cell_copies, n_spread_undone;
 static uint64_t sys_seen;                 // the chemical system of the last driver call (a new one: a new world)
@@ -132,6 +134,9 @@ static void cell_put(uint64_t r, const ElmCell *c) {
         else wet = 1.0f, wr(r + R_WET, &wet, 4), wr(r + R_HEAT, &heat, 4);
         return;
     }
+    // (a cell that is being heated is kept short of igniting: the deciding game says when it burns. Written at its
+    // owner's 30, it lit here a frame early, was put out by the next statement and lit again)
+    if (state == 1 && heat > 29.0f) heat = 29.0f;
     uint8_t st = (uint8_t)state;
     wr(r + R_STATE, &st, 1), wr(r + R_HEAT, &heat, 4), wr(r + R_WET, &wet, 4);
     if (state == 2) wr(r + R_BURN, &burn, 4);
@@ -163,7 +168,10 @@ static void cells_pre(Cpu *c, uint64_t s, uint64_t ctx) {
         cell_put(r, &w[i].c);
         now_copy[made++] = r;
     }
-    for (int i = 0; i < made; i++) atomic_store_explicit(&copy_rec[i], now_copy[i], memory_order_relaxed);
+    for (int i = 0; i < made; i++) {
+        atomic_store_explicit(&copy_rec[i], now_copy[i], memory_order_relaxed);
+        copy_at[i][0] = rdf(now_copy[i] + R_CENTRE), copy_at[i][1] = rdf(now_copy[i] + R_CENTRE + 8);
+    }
     atomic_store(&copy_n, made);
     memcpy(was_copy, now_copy, (size_t)made * sizeof *was_copy), was_n = made;
     atomic_store(&n_not_shown, miss), atomic_store(&n_cell_copies, (uint32_t)made);
@@ -281,6 +289,11 @@ void coop_elem_inert(uint64_t actor, int on) {
     }
 }
 
+// A placed actor's name across games: its placement hash (0: it has none, or not yet).
+static uint64_t hash_of(uint64_t actor) {
+    uint64_t p = coop_rd_ptr(actor + 0x370), h = 0;
+    return p && coop_rd(p + 0x88, &h, 8) && h != ~0ull ? h : 0;
+}
 // ---- things (S 5) ------------------------------------------------------------------------------------------------
 #define THING_N 1024
 #define EL_MAX 7
@@ -289,7 +302,7 @@ typedef struct {
     uint32_t seen, first, differs_frame, asked[EL_MAX];   // frames: last visit, first visit, last frame an element differed from rest, last request
     uint8_t n, cur[EL_MAX], rest[EL_MAX], wanted[EL_MAX];
     uint8_t want_from;            // the player whose statement this game follows for it (0: none)
-    uint8_t enemy, skip, test_ignite;
+    uint8_t enemy, skip;
     float pos[3];
 } Thing;
 static Thing things[THING_N];
@@ -301,7 +314,7 @@ static Thing *thing_row(uint64_t comp, uint64_t actor, uint32_t frame) {
     for (int i = 0; i < 8; i++) {
         Thing *t = &things[(h + (uint32_t)i) & (THING_N - 1)];
         if (t->comp == comp && t->actor == actor) return t;
-        if (!old && (!t->comp || frame - t->seen > 60)) old = t;
+        if (!old && !t->comp) old = t;
     }
     if (!old) return NULL;
     memset(old, 0, sizeof *old);
@@ -331,6 +344,31 @@ static int el_read(uint64_t comp, uint64_t *els, uint8_t *cur) {
     }
     return n;
 }
+// What a copy's element is asked to become (S 5.3): 0 nothing, else an ASK_*; and the asking, with the game's own
+// requests.
+enum { ASK_IGNITE = 1, ASK_BURN_OUT, ASK_FREEZE, ASK_PUT_OUT, ASK_CHARGE = 8 };
+static int ask_of(uint8_t cur, uint8_t wanted) {
+    if (cur == EL_NONE || wanted == EL_NONE) return 0;
+    int w = wanted & 7, is = cur & 7, what = 0;
+    if (w != is) what = w == 2 ? ASK_IGNITE : w == 3 ? ASK_BURN_OUT : w == 1 ? ASK_FREEZE : w == 0 && is == 2 ? ASK_PUT_OUT : 0;
+    if (wanted & EL_ELEC && !(cur & EL_ELEC)) what |= ASK_CHARGE;
+    return what;
+}
+static void ask_do(Cpu *c, uint64_t comp, uint64_t el, int i, int what) {
+    int k = what & 7;
+    {
+        static const char *nm[8] = {"", "ignite", "burn out", "freeze", "go out", "", "", ""};
+        char an[48];
+        rt_log("coop: elem: asks %s (hash %llx) element %d to %s%s", coop_actor_name(coop_rd_ptr(comp + 0x18), an, sizeof an),
+               (unsigned long long)hash_of(coop_rd_ptr(comp + 0x18)), i, nm[k], what & ASK_CHARGE ? " and take a charge" : "");
+    }
+    if (k == ASK_IGNITE) coop_guest_call(c, MOD_MAIN_BASE + FN_IGNITE, comp, 2, (uint64_t)i, 0);
+    else if (k == ASK_BURN_OUT) coop_guest_call(c, MOD_MAIN_BASE + FN_REQ_B, comp, 2, (uint64_t)i, 0);
+    else if (k == ASK_FREEZE) coop_guest_call(c, MOD_MAIN_BASE + FN_FREEZE, el + 0x50, 1, 0, 0);
+    else if (k == ASK_PUT_OUT) coop_guest_call(c, MOD_MAIN_BASE + FN_REQ_B, comp, 0, (uint64_t)i, 0);
+    if (what & ASK_CHARGE) coop_guest_call(c, MOD_MAIN_BASE + FN_CHARGE, el + 0x50, 0, 0, 0);
+    atomic_fetch_add(&n_req, 1);
+}
 // A component's update: the thing is read; a copy is given what its owner states and its elements are closed to
 // reactions (S 5.3, 5.4).
 static int comp_hook(Cpu *c) {
@@ -338,20 +376,21 @@ static int comp_hook(Cpu *c) {
     uint8_t cur[EL_MAX], wanted[EL_MAX];
     if (!actor) return 0;
     uint32_t frame = coop_sess_frame_no();
-    int n = el_read(comp, els, cur), copy = 0, ask = 0, test = 0;
+    uint8_t before[EL_MAX] = {0};
+    int n = el_read(comp, els, cur), copy = 0, ask = 0, changed = 0, what[EL_MAX] = {0};
     if (!n) return 0;
     int in = is_inert(actor), es = in ? EM_FREE : en_cell_state(actor);
     plat_mutex_lock(&lk);
     Thing *t = thing_row(comp, actor, frame);
     if (t) {
         if (t->n == 0xff) {   // first sight: its name across games, and its state as the rest state
-            uint64_t p = coop_rd_ptr(actor + 0x370), h = 0;
-            if (p && coop_rd(p + 0x88, &h, 8) && h != ~0ull) t->hash = h;
+            t->hash = hash_of(actor);
             memcpy(t->rest, cur, sizeof cur);
             t->skip = actor == coop_player_actor(), t->first = frame;
         }
         // (its first second settles what its rest state is: a brazier lit by its own data starts unlit)
         if (frame - t->first < 30 && !t->want_from) memcpy(t->rest, cur, sizeof cur);
+        for (int i = 0; i < n && t->n == n && t->hash; i++) if (t->cur[i] != cur[i]) changed |= 1 << i, before[i] = t->cur[i];
         t->n = (uint8_t)n, t->seen = frame, t->enemy = es != EM_FREE;
         memcpy(t->cur, cur, sizeof cur);
         coop_rd(actor + COOP_ACTOR_POS, t->pos, 12);
@@ -360,30 +399,24 @@ static int comp_hook(Cpu *c) {
         if (es == EM_COPY && !t->want_from) memset(t->wanted, 0, sizeof t->wanted);   // an enemy copy nobody states is at rest
         ask = (es == EM_COPY || t->want_from) && !in;
         memcpy(wanted, t->wanted, sizeof wanted);
-        test = t->test_ignite, t->test_ignite = 0;
         if (ask) for (int i = 0; i < n; i++) {
-            int differs = cur[i] != EL_NONE && wanted[i] != EL_NONE && ((cur[i] ^ wanted[i]) & 7 || (wanted[i] & EL_ELEC && !(cur[i] & EL_ELEC)));
-            if (!differs || frame - t->asked[i] < 30) wanted[i] = EL_NONE;
-            else t->asked[i] = frame;
+            what[i] = ask_of(cur[i], wanted[i]);
+            if (what[i] && frame - t->asked[i] < 30) what[i] = 0;
+            if (what[i]) t->asked[i] = frame;
         }
     }
     plat_mutex_unlock(&lk);
     if (copy) for (int i = 0; i < n; i++) eset_put(els[i], frame);
-    if (test) coop_guest_call(c, MOD_MAIN_BASE + FN_IGNITE, comp, 2, (uint64_t)-1, 0), rt_log("coop: elem: test: asked a thing to ignite");
-    if (!ask || coop_ctn_driven(actor) || coop_ctn_follows(actor)) return 0;
-    for (int i = 0; i < n; i++) {
-        if (wanted[i] == EL_NONE) continue;
-        int w = wanted[i] & 7, is = cur[i] & 7;
-        if (w != is) {
-            if (w == 2) coop_guest_call(c, MOD_MAIN_BASE + FN_IGNITE, comp, 2, (uint64_t)i, 0);
-            else if (w == 3) coop_guest_call(c, MOD_MAIN_BASE + FN_REQ_B, comp, 2, (uint64_t)i, 0);
-            else if (w == 1) coop_guest_call(c, MOD_MAIN_BASE + FN_FREEZE, els[i] + 0x50, 1, 0, 0);
-            else if (w == 0 && is == 2) coop_guest_call(c, MOD_MAIN_BASE + FN_REQ_B, comp, 0, (uint64_t)i, 0);
-            else continue;
-            atomic_fetch_add(&n_req, 1);
-        }
-        if (wanted[i] & EL_ELEC && !(cur[i] & EL_ELEC)) coop_guest_call(c, MOD_MAIN_BASE + FN_CHARGE, els[i] + 0x50, 0, 0, 0), atomic_fetch_add(&n_req, 1);
+    for (int i = 0; i < n; i++) if (changed >> i & 1 && !(before[i] & EL_NONE)) {
+        static const char *kind[8] = {"normal", "frozen", "burning", "burnt out", "detonated", "?", "?", "?"};
+        char nm[48];
+        rt_log("coop: elem: thing %s element %d: %s%s%s -> %s%s%s (%s), at %llu ms", coop_actor_name(actor, nm, sizeof nm), i,
+               before[i] & EL_NONE ? "off" : kind[before[i] & 7], before[i] & EL_ELEC ? ", electrified" : "", before[i] & EL_WET ? ", wet" : "",
+               cur[i] & EL_NONE ? "off" : kind[cur[i] & 7], cur[i] & EL_ELEC ? ", electrified" : "", cur[i] & EL_WET ? ", wet" : "",
+               copy ? "a copy" : "mine", (unsigned long long)(plat_now_ns() / 1000000));
     }
+    if (!ask || coop_ctn_driven(actor) || coop_ctn_follows(actor)) return 0;
+    for (int i = 0; i < n; i++) if (what[i]) ask_do(c, comp, els[i], i, what[i]);
     return 0;
 }
 
@@ -396,9 +429,24 @@ int coop_elem_hook(Cpu *c, uint64_t off) {
     }
     if (off == FN_COMP_UPDATE) return comp_hook(c);
     if (off == FN_CONTACT) {
-        uint64_t el = c->x[3];
-        int drop = eset_has(el);
-        if (!drop && coop_rd_ptr(el) == MOD_MAIN_BASE + VT_GRASS_FIRE) drop = is_copy_rec(coop_rd_ptr(el + 0x60));
+        // What touches the ground is a chemical object, not an element (classes main+0x3625660 and main+0x36295d0 in a
+        // run). A burning cell's own fire is one, centred on the cell: an object centred on a copied cell is taken
+        // for that cell's fire and does not reach the cells (S 4.5), so a copied fire lights no neighbour here.
+        float at[3] = {0, 0, 0};
+        int drop = 0, n = atomic_load_explicit(&copy_n, memory_order_relaxed);
+        if (n && coop_rd(c->x[2] + 8, at, 12))
+            for (int i = 0; i < n && i < CELLS_MAX && !drop; i++) drop = fabsf(at[0] - copy_at[i][0]) < 0.25f && fabsf(at[2] - copy_at[i][1]) < 0.25f;
+        {   // Test (TOTK_COOP_ELEM_TEST_LOG=1): the classes of the objects kept from the ground, each once
+            static int log = -1;
+            static _Atomic uint64_t seen[8];
+            uint64_t vt = coop_rd_ptr(c->x[3]);
+            if (log < 0) log = cfg_get("TOTK_COOP_ELEM_TEST_LOG") != NULL;
+            for (int i = 0; log && drop && i < 8; i++) {
+                uint64_t v = atomic_load(&seen[i]);
+                if (v == vt) break;
+                if (!v) { atomic_store(&seen[i], vt); rt_log("coop: elem: test: an object of class main+%llx on a copied cell is kept from the ground", (unsigned long long)(vt - MOD_MAIN_BASE)); break; }
+            }
+        }
         if (drop) atomic_fetch_add_explicit(&n_contact_drop, 1, memory_order_relaxed);
         return drop;
     }
@@ -465,13 +513,15 @@ static int lowest_here(void) {
     for (int i = 0; i < n; i++) if (ids[i] < me) return 0;
     return me > 0;
 }
-static void tests(void) {
+static void tests(Cpu *c) {
     static double at_cell = -2, at_thing = -2;
     static float dx = 3, dz;
+    static char prefix[32];
     static int done_cell, done_thing;
     if (at_cell < -1) {
         const char *e = cfg_get("TOTK_COOP_ELEM_TEST_IGNITE"), *f = cfg_get("TOTK_COOP_ELEM_TEST_THING");
         at_cell = e ? atof(e) : -1, at_thing = f ? atof(f) : -1;
+        if (f && strchr(f, ',')) snprintf(prefix, sizeof prefix, "%s", strchr(f, ',') + 1);
         const char *k = e ? strchr(e, ',') : NULL;
         if (k) { dx = (float)atof(k + 1); k = strchr(k + 1, ','); if (k) dz = (float)atof(k + 1); }
     }
@@ -483,25 +533,28 @@ static void tests(void) {
     if (at_thing >= 0 && t >= at_thing && !done_thing) {
         done_thing = 1;
         Thing *best = NULL;
-        float bd = 15.0f * 15.0f;
-        uint32_t frame = coop_sess_frame_no();
+        int rows = 0, named = 0;
+        float bd = 150.0f * 150.0f;
         plat_mutex_lock(&lk);
         for (int i = 0; i < THING_N; i++) {
             Thing *th = &things[i];
-            if (!th->comp || !th->hash || th->enemy || th->skip || frame - th->seen > 30 || th->n == 0xff) continue;
+            if (th->comp) rows++, named += th->hash != 0;
+            if (!th->comp || !th->hash || th->enemy || th->skip || th->n == 0xff) continue;
+            char tn[48];
+            if (*prefix && strncmp(coop_actor_name(th->actor, tn, sizeof tn), prefix, strlen(prefix))) continue;
             float d = (th->pos[0] - p[0]) * (th->pos[0] - p[0]) + (th->pos[1] - p[1]) * (th->pos[1] - p[1]) + (th->pos[2] - p[2]) * (th->pos[2] - p[2]);
             if (d < bd) bd = d, best = th;
         }
-        if (best) best->test_ignite = 1;
-        uint64_t a = best ? best->actor : 0;
+        uint64_t a = best ? best->actor : 0, comp = best ? best->comp : 0;
         plat_mutex_unlock(&lk);
+        if (comp) coop_guest_call(c, MOD_MAIN_BASE + FN_IGNITE, comp, 2, (uint64_t)-1, 0);
         char nm[48];
-        rt_log("coop: elem: test: the nearest placed thing is %s, %.1f m away", a ? coop_actor_name(a, nm, sizeof nm) : "none within 15 m", a ? sqrtf(bd) : 0.0f);
+        rt_log("coop: elem: test: the nearest placed thing is %s, %.1f m away (%d rows, %d with a placement hash)",
+               a ? coop_actor_name(a, nm, sizeof nm) : "none within 150 m", a ? sqrtf(bd) : 0.0f, rows, named);
     }
 }
 
 void coop_elem_phase0(Cpu *c) {
-    (void)c;
     if (!elem_on()) return;
     static uint32_t round, last_any;
     static int said_on;
@@ -509,8 +562,10 @@ void coop_elem_phase0(Cpu *c) {
     int me = coop_net_id();
     if (!said_on++) rt_log("coop: elem: the element sync is on");
     if (atomic_exchange(&world_new, 0) || coop_sess_loading()) {
+        // (the things' rows are not emptied: a thing at rest is visited once, when it is made, which may be before the
+        // first driver call of its world; a row ends when its actor has gone)
         plat_mutex_lock(&lk);
-        want_n = 0, mine_n = 0, memset(things, 0, sizeof things);
+        want_n = 0, mine_n = 0;
         plat_mutex_unlock(&lk);
         for (int i = 0; i <= COOP_MAX_PLAYERS; i++) {
             if (cell_list[i]) cell_list[i]->n = 0;
@@ -519,6 +574,12 @@ void coop_elem_phase0(Cpu *c) {
         if (coop_sess_loading()) return;
     }
     if (!me) return;
+    {   // Test (TOTK_COOP_ELEM_TEST_DEAF=<s>): until that world time this game takes no statement, as a game does that
+        // arrives then
+        static double deaf = -2;
+        if (deaf < -1) { const char *e = cfg_get("TOTK_COOP_ELEM_TEST_DEAF"); deaf = e ? atof(e) : -1; }
+        if (deaf > 0 && frame_step_world_us() / 1e6 < deaf) { tests(c); return; }
+    }
     // Taking: each other player's newest complete round; a player gone states nothing; one paused or loading keeps
     // what it last stated (S 4.2).
     int ids[COOP_MAX_PLAYERS];
@@ -561,14 +622,22 @@ void coop_elem_phase0(Cpu *c) {
     // Things: what each row is to be, and this game's own statement.
     static ElmThing out[THINGS_PAGE * PAGES];
     static ElmCell cells[CELLS_MAX];
-    int tn = 0, cn, n_copy = 0;
+    enum { JOBS = 32 };
+    struct { uint64_t comp, el; int i, what; } job[JOBS];
+    int tn = 0, cn, n_copy = 0, nj = 0;
     plat_mutex_lock(&lk);
     memcpy(want, w, (size_t)wn * sizeof *w), want_n = wn;
     cn = mine_n, memcpy(cells, mine, (size_t)cn * sizeof *cells);
     for (int i = 0; i < THING_N; i++) {
         Thing *t = &things[i];
         if (!t->comp || t->n == 0xff) continue;
-        if (frame - t->seen > 60) { t->comp = 0; continue; }
+        // (a row lives while its actor has this component: a component at rest is not updated by the game, so the
+        // time since its last visit says nothing)
+        if ((frame + (uint32_t)i) % 30 == 0) {
+            if (comp_of(t->actor) != t->comp) { t->comp = 0; continue; }
+            if (!t->hash) t->hash = hash_of(t->actor);   // (an actor's first update may come before its placement is linked)
+            coop_rd(t->actor + COOP_ACTOR_POS, t->pos, 12);
+        }
         if (!t->hash || t->skip) continue;
         // (an enemy is stated while it is not at rest; another thing while it differs from how it was first seen, and
         // for 2 s after)
@@ -591,16 +660,42 @@ void coop_elem_phase0(Cpu *c) {
             memset(t->wanted, EL_NONE, sizeof t->wanted);
             memcpy(t->wanted, st->el, st->n < EL_MAX ? st->n : EL_MAX);
             n_copy++;
+            if (frame - t->seen > 3 && nj < JOBS) {   // its component rests: read and asked here, not in its update's hook
+                uint64_t els[EL_MAX];
+                uint8_t cur[EL_MAX];
+                int n = el_read(t->comp, els, cur);
+                if (n) {
+                    t->n = (uint8_t)n, memcpy(t->cur, cur, sizeof cur);
+                    for (int k = 0; k < n; k++) eset_put(els[k], frame);
+                    for (int k = 0; k < n && nj < JOBS; k++) {
+                        int what = ask_of(cur[k], t->wanted[k]);
+                        if (!what || frame - t->asked[k] < 30) continue;
+                        t->asked[k] = frame;
+                        job[nj].comp = t->comp, job[nj].el = els[k], job[nj].i = k, job[nj++].what = what;
+                    }
+                }
+            }
             continue;
         }
         if (t->want_from) t->want_from = 0, t->differs_frame = 0, memcpy(t->rest, t->cur, sizeof t->rest);   // let go: as it stands is its rest
         if (t->enemy && en_cell_state(t->actor) == EM_COPY) continue;
-        if (!mine_claim || frame - t->seen > 30 || tn >= THINGS_PAGE * PAGES) continue;
+        if (!mine_claim || tn >= THINGS_PAGE * PAGES) continue;
         out[tn].hash = t->hash, out[tn].n = t->n;
         memset(out[tn].el, EL_NONE, sizeof out[tn].el), memcpy(out[tn].el, t->cur, t->n);
         tn++;
     }
+    if (frame % 30 == 0)
+        for (int id = 1; id <= COOP_MAX_PLAYERS; id++) {
+            if (id == me || !thing_list[id]) continue;
+            for (int k = 0; k < thing_list[id]->n; k++) {
+                int rows = 0;
+                for (int i = 0; i < THING_N; i++) rows += things[i].comp && things[i].hash == thing_list[id]->t[k].hash;
+                if (rows != 1) rt_log("coop: elem: player %d states a thing (hash %llx, element 0: %x) that %d things here answer to", id,
+                                      (unsigned long long)thing_list[id]->t[k].hash, thing_list[id]->t[k].el[0], rows);
+            }
+        }
     plat_mutex_unlock(&lk);
+    for (int k = 0; k < nj; k++) ask_do(c, job[k].comp, job[k].el, job[k].i, job[k].what);
     // Sending: every 6th frame while there is something, and 2 s after (the empty rounds end what the others follow).
     if (cn || tn) last_any = frame;
     if (frame % 6 == 0 && !coop_sess_paused() && last_any && frame - last_any < 60) {
@@ -615,5 +710,5 @@ void coop_elem_phase0(Cpu *c) {
                cn, atomic_load(&n_cell_copies), atomic_load(&n_not_shown), tn, n_copy, atomic_load(&n_req), atomic_load(&n_react_drop),
                atomic_load(&n_contact_drop), atomic_load(&n_spread_undone));
     }
-    tests();
+    tests(c);
 }
