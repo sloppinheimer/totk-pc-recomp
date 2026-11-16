@@ -101,6 +101,16 @@ static uint64_t via_actor(uint64_t enemy, uint8_t via) {
     return k >= 0 && k < EN_EQ_N ? held_of(enemy, k, via & 0x80) : 0;
 }
 
+// Where a request block's 32 parameter cells start (0: the block is not laid out as known). The list header sits at Q+8 in
+// a shoot's block and at Q+0x18 in a prepare's; its pointer to the cells points just past itself.
+static int cells_at(const uint8_t *q, uint64_t q_addr, int kind) {
+    int hdr = kind == 2 ? 8 : 0x18;
+    uint64_t cp;
+    int32_t cnt;
+    memcpy(&cp, q + hdr + 8, 8), memcpy(&cnt, q + hdr + 0x10, 4);
+    return cp == q_addr + (uint64_t)hdr + 0x18 && cnt >= 0 && cnt <= 32 ? hdr + 0x18 : 0;
+}
+
 // ---- The owner: a prepare or a shoot of an enemy this game runs is made, then captured ---------------------------------
 // From en_copy_hook, at the function's entry. 1: the function was run here.
 int en_shot_hook(Cpu *c, uint64_t off, EnCell *m) {
@@ -116,7 +126,7 @@ int en_shot_hook(Cpu *c, uint64_t off, EnCell *m) {
     if (off == FN_SHOOT) coop_rd(c->x[3], va, 12), coop_rd(c->x[5], vb, 12);
     Shot *h = q > 0x10000 ? shot_take() : NULL;
     if (h && !coop_rd(q, h->q, Q_SZ)) atomic_store(&h->state, 0), h = NULL;   // (the block as the caller built it: the call may change it)
-    if (h) { uint64_t fp = 0; memcpy(&fp, h->q + 8, 8); h->at_shooter = 0; if (fp) coop_rd(fp, &h->at_shooter, 1); }
+    if (h) { uint64_t fp = 0; h->at_shooter = 0; if (off != FN_SHOOT) { memcpy(&fp, h->q + 8, 8); if (fp) coop_rd(fp, &h->at_shooter, 1); } }
     deep = 1, c->pc = MOD_MAIN_BASE + off;
     rt_dispatch(c);
     deep = 0;
@@ -143,6 +153,7 @@ int en_shot_hook(Cpu *c, uint64_t off, EnCell *m) {
 
 // The record: where a shot projectile is 1, 10, 30 and 60 frames after its shoot, in the game that shot it and on a copy
 // (the first 24 shots of each kind), so the two games' flights can be laid side by side.
+uint64_t coop_enemy_holder(uint64_t actor);   // coop_enemy_copy.c
 static struct { _Atomic uint64_t proj; uint64_t rec; uint32_t frame, key; uint8_t copy; } watch[8];
 static void watch_add(uint64_t r, uint32_t key, int copy) {
     static _Atomic int n;
@@ -167,10 +178,11 @@ static void watch_phase0(void) {
             uint64_t sc = coop_rd_ptr(en_comps(p) + 0x440), lk[3] = {0};
             uint32_t scst = 0, sc340 = 0;
             uint8_t rdf = 0xff, rde = 0xff;
-            if (sc) coop_rd(sc + 0x70, lk, sizeof lk), coop_rd(sc + 0x24, &scst, 4), coop_rd(sc + 0x340, &sc340, 4);
+            float aim[3] = {0};
+            if (sc) coop_rd(sc + 0x70, lk, sizeof lk), coop_rd(sc + 0x24, &scst, 4), coop_rd(sc + 0x340, &sc340, 4), coop_rd(sc + 0x100, aim, 12);
             coop_rd(watch[i].rec + 0xdf, &rdf, 1), coop_rd(watch[i].rec + 0xde, &rde, 1);
-            rt_log("coop: en: shot: flight of %s %08x (%s) +%u frames: at %.2f %.2f %.2f, actor state %d, hidden mask %02x; its component state %u, flags %x, shooter link %llx %llx %llx; record state %u kind %u", coop_actor_name(p, nm, sizeof nm), watch[i].key, watch[i].copy ? "copy" : "run here", d, q[0], q[1], q[2], (int)st, hm,
-                   scst, sc340, (unsigned long long)lk[0], (unsigned long long)lk[1], (unsigned long long)lk[2], rdf, rde);
+            rt_log("coop: en: shot: flight of %s %08x (%s) +%u frames: at %.2f %.2f %.2f, actor state %d, hidden mask %02x; its component state %u, flags %x, shooter link %llx %llx %llx; record state %u kind %u; aim %.2f %.2f %.2f", coop_actor_name(p, nm, sizeof nm), watch[i].key, watch[i].copy ? "copy" : "run here", d, q[0], q[1], q[2], (int)st, hm,
+                   scst, sc340, (unsigned long long)lk[0], (unsigned long long)lk[1], (unsigned long long)lk[2], rdf, rde, aim[0], aim[1], aim[2]);
         }
         if (d > 60) atomic_store(&watch[i].proj, 0);
     }
@@ -194,21 +206,26 @@ void en_shot_phase0(void) {
                 memset(&ms, 0, offsetof(MShot, z));
                 ms.id = en_tab[ei].id, ms.ns = h->ns, ms.key = h->key, ms.idx = h->idx, ms.index_arg = h->index_arg, ms.kind = h->kind, ms.at_shooter = h->at_shooter, ms.flag = h->flag, ms.via = h->via, ms.q_addr = h->q_addr;
                 memcpy(ms.va, h->va, 12), memcpy(ms.vb, h->vb, 12);
-                // The 32 string parameters (0xc8 bytes each from Q+0x30: a value, a pointer to its text, a capacity, 0x80
-                // bytes of text) hold stack leftovers after each text's end: zeroed, or nothing squeezes.
-                for (int k = 0; k < 32; k++) {
-                    uint8_t *cell = h->q + 0x30 + k * 0xc8, *text = cell + 0x14;
+                // The block's named parameters: a list header (capacity u32, pointer to the cells, count i32) at Q+8 in a
+                // shoot's block and at Q+0x18 in a prepare's, then 32 cells of 0xc8 bytes (type u32 +0, pointer to the name
+                // +8, the name's capacity 0x80 +0x10, the name +0x14, the value +0x98..0xc8). A shoot's are its InitPos,
+                // Velocity, Range, MotionProperty and Level. Cells past the count and each name's bytes after its end are
+                // stack leftovers: zeroed, or nothing squeezes. A cell's pointer to its own name and its capacity are
+                // the same in every block: left out, and written again where the block is rebuilt. (The first version
+                // took a shoot's cells to start at Q+0x30 as a prepare's do and zeroed each next cell's type and name
+                // pointer: a copy's rod got its flame's Range and no Velocity, and the flame ended where it began.)
+                int co = cells_at(h->q, h->q_addr, h->kind), cnt = 0;
+                if (co) memcpy(&cnt, h->q + co - 8, 4);
+                for (int k = 0; co && k < 32; k++) {
+                    uint8_t *cell = h->q + co + k * 0xc8, *text = cell + 0x14;
+                    if (k >= cnt) { memset(cell, 0, 0xc8); continue; }
                     size_t len = strnlen((const char *)text, 0x80);
-                    // (the text's own 0x80 bytes only: the request's numbers at Q+0x1920 lie in the last cell's padding, and
-                    // zeroing the padding sent every shot with attack type 0 and no key: a rod's flame then ended where it began)
                     memset(text + len, 0, 0x80 - len);
-                    memset(cell + 0x94, 0, k < 31 ? 0xc8 - 0x94 : 0x1920 - (0x30 + 31 * 0xc8 + 0x94));   // (the padding, as far as it is padding)
-                    // (a cell's pointer to its own text and its capacity of 0x80 are the same in every block: left out,
-                    // and written again where the block is rebuilt)
+                    memset(cell + 4, 0, 4), memset(cell + 0x94, 0, 4);   // (padding)
                     uint64_t tp;
                     uint32_t cap;
                     memcpy(&tp, cell + 8, 8), memcpy(&cap, cell + 0x10, 4);
-                    if (tp == h->q_addr + 0x30 + (uint64_t)k * 0xc8 + 0x14 && cap == 0x80) memset(cell + 8, 0, 12);
+                    if (tp == h->q_addr + (uint64_t)co + (uint64_t)k * 0xc8 + 0x14 && cap == 0x80) memset(cell + 8, 0, 12);
                 }
                 // the block with its runs of zeros squeezed: (count of zeros u16, count of bytes u16, the bytes) ...
                 int n = 0, at = 0, ok = 1;
@@ -300,17 +317,20 @@ void en_shot_precalc(Cpu *c, uint64_t actor, EnCell *m) {
                 for (int k = 0; k + 8 <= Q_SZ; k += 8) {   // pointers into the block go where the block is now
                     uint64_t v;
                     memcpy(&v, q + k, 8);
-                    if (k == 8) v = (uint64_t)(uintptr_t)&at_shooter;
+                    // (a prepare's block has a pointer at +8, which the record keeps at +0x50: into the game's image it is
+                    // the same in every game; any other is given this game's byte of the same value)
+                    if (k == 8 && h->kind == 1 && v && !(v >= MOD_MAIN_BASE && v < MOD_MAIN_BASE + 0x8000000ull) && !(v >= h->q_addr && v < h->q_addr + Q_SZ)) v = (uint64_t)(uintptr_t)&at_shooter;
                     else if (v >= h->q_addr && v < h->q_addr + Q_SZ) v = v - h->q_addr + here;
                     else continue;
                     memcpy(q + k, &v, 8);
                 }
-                for (int k = 0; k < 32; k++) {   // the cells' own pointers and capacities
-                    uint8_t *cell = q + 0x30 + k * 0xc8;
+                int co = cells_at(h->q, h->q_addr, h->kind);
+                for (int k = 0; co && k < 32; k++) {   // the cells' own pointers and capacities
+                    uint8_t *cell = q + co + k * 0xc8;
                     uint64_t tp;
                     uint32_t cap = 0x80;
                     memcpy(&tp, cell + 8, 8);
-                    if (!tp) tp = here + 0x30 + (uint64_t)k * 0xc8 + 0x14, memcpy(cell + 8, &tp, 8), memcpy(cell + 0x10, &cap, 4);
+                    if (!tp) tp = here + (uint64_t)co + (uint64_t)k * 0xc8 + 0x14, memcpy(cell + 8, &tp, 8), memcpy(cell + 0x10, &cap, 4);
                 }
                 at_shooter = h->at_shooter;
                 memcpy(va, h->va, 12), memcpy(vb, h->vb, 12);
