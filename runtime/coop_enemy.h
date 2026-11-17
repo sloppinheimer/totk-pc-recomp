@@ -47,6 +47,7 @@ typedef struct {
     _Atomic uint32_t gen, frame;      // frame: the frame number of its last calc
     _Atomic uint32_t run_frame;       // the frame a graph runner of it was last entered (let through or turned away): the game thinks it
     uint32_t born_frame;              // the frame its cell was made
+    uint8_t graph_started;            // its interrupt graph had started when it was first switched off; without it nothing is asked of its brain (B.37)
     _Atomic uint8_t warm;             // its interrupt graph has started (or 30 frames passed): only then may the switch turn it off
     _Atomic uint8_t state;            // EM_*
     _Atomic int16_t en;               // its table row, -1 none

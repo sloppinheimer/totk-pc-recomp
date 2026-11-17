@@ -589,6 +589,26 @@ hand ends in the shoot call, which B.3 carries already.
 - Read and judged not worth carrying until a fault is seen: the sweep-out table ([comps+0x4a0]): its states only move
   the enemy's own bodies to another collision layer, and a copy's body is static.
 
+**B.37 A new enemy: its maker keeps it, and its brain is asked nothing before its graph has started** (from a play
+session, 2026-11-17: the game died twice in a node's tick, main+0x1920 reading 0x1f, each time right after a new
+Yiga was made a copy and asked for its owner's brain verb).
+- The mechanism (research R21): a graph's nodes are made the first time each is entered, by the controller's tick
+  main+0x50b404, which the copy switch turns away. A verb asked with force (main+0xad9844 sets the verb's fields and
+  tests nothing) of a brain that never entered then has a node tick a child that was never made.
+- The game that makes an enemy at run time keeps it. This game's actor of another game's announcement (the spawn
+  sync made it) is not claimed here for five seconds; its maker claims it and this one becomes its copy. Both
+  claiming, the maker's own new enemy could become a copy a second after it was made.
+- `brain_hold` asks nothing (no verb, no target slot) of an actor whose interrupt graph had not started when it was
+  switched off (the 30-frame limit of section 5 reached first), and looks again each time until it has.
+- [m] the two actors that crashed and a bee swarm, spawned beside a Link, 75 s each: no crash; the maker claimed
+  each and the other game bound its copy; tables equal; same command 97.1, 98.0 and 98.7 %.
+- Tried and taken out: testing the brain's own graph (the controller [[[[BSA+0x1e0]+8]+0x28]+0x18], its root
+  instance's queue with an entry in state 3), as the reading recommends. In a run it was never true for any copy, a
+  camp's placed Bokoblins among them: no copy's verb was held and the copies followed worse (same command 72.5 and
+  85.7 %). Either the path read is not the brain's, or no copy's brain is in that state, which would mean the verbs
+  held since B.21 are asked of brains that never entered. [open: which; the guard watches the interrupt graph, and
+  the crash is not proven impossible.]
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is

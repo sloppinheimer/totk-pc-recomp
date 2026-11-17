@@ -376,7 +376,20 @@ static uint64_t brain_ref_of(uint64_t actor) {
     }
     return 0;
 }
+static uint64_t inline_inst(uint64_t actor, uint64_t *ctrl_out);
 static void brain_hold(Cpu *c, uint64_t actor, EnCell *m, const char *when) {
+    // Nothing is asked of a brain whose graph has not started (B.37). A verb asked with force of an actor made a moment
+    // before ran a node of a graph that was not there: the game died in the node's tick (main+0x1920, reading 0x1f),
+    // twice in a play session, each time right after this call on a new Yiga (2026-11-17). The graph is looked at
+    // again here, so an actor that was slow to start is held once it has.
+    if (!m->graph_started) {
+        uint64_t ctrl, inst = inline_inst(actor, &ctrl);
+        uint32_t q = 0;
+        uint16_t bits = 0;
+        if (inst) coop_rd(inst + 0x90, &q, 4), coop_rd(inst + 0xd8, &bits, 2);
+        if (!inst || !(q || bits)) return;
+        m->graph_started = 1;
+    }
     uint64_t bsa = brain_bsa(actor), slot0 = brain_slot(actor, 0), holder = coop_rd_ptr(en_comps(actor) + 0x4b0);
     uint64_t want = !m->grace_tgt || m->grace_tgt == 0xff ? 0 : m->grace_tgt - 1 == coop_net_id() ? coop_player_actor() : coop_player_standin(m->grace_tgt - 1);
     uint32_t v = 0;
@@ -796,8 +809,16 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         uint32_t q = 0;
         uint16_t bits = 0;
         if (inst) coop_rd(inst + 0x90, &q, 4), coop_rd(inst + 0xd8, &bits, 2);
-        if ((inst && (q || bits)) || coop_sess_frame_no() - m->born_frame >= 30) atomic_store(&m->warm, 1);
-        else off = 0;
+        if ((inst && (q || bits)) || coop_sess_frame_no() - m->born_frame >= 30) {
+            // (Whether its graph had started is kept: a brain whose graph has not is asked nothing, B.37.)
+            m->graph_started = inst && (q || bits);
+            if (!m->graph_started) {
+                static _Atomic int said;
+                char nm[48];
+                if (atomic_fetch_add(&said, 1) < 20) rt_log("coop: en: brain: %s %llx is switched off before its graph started (30 frames): its brain is asked nothing until it has", coop_actor_name(actor, nm, sizeof nm), (unsigned long long)actor);
+            }
+            atomic_store(&m->warm, 1);
+        } else off = 0;
     }
     tl_off_actor = off ? actor : 0;
     tl_grace_bsa = 0, tl_grace_narrow = 0, tl_grace_cell = NULL;

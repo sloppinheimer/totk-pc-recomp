@@ -592,6 +592,14 @@ static void cell_resolve(EnCell *m, uint64_t now, uint32_t frame) {
         if (st == EM_NEW && now - m->new_ns > 5 * SEC) atomic_store(&m->state, EM_OWN);
         return;
     }
+    {   // The game that made an enemy at run time keeps it (B.37). This game's actor of another game's announcement
+        // (the spawn sync made it here) is not claimed here: its maker claims it, and this one becomes its copy when
+        // that claim comes. Both claiming, the maker's own new enemy became a copy a second after it was made, and
+        // its brain was asked for its owner's verb before its graph had started. Five seconds without a claim (its
+        // maker is gone, or does not run it) and it is claimed here after all.
+        int coop_spawn_made_for_other(uint64_t actor);   // coop_spawn_sync.c
+        if (m->rt && coop_spawn_made_for_other(actor) && now - m->new_ns < 5 * SEC) return;
+    }
     Enid id = {m->hash, idb, 0};
     EnRest *r = rest_find(id);
     uint32_t epoch = 1 + (r ? r->epoch : 0);

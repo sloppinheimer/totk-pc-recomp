@@ -97,6 +97,11 @@ static struct { uint32_t key; uint64_t actor; } spawned_mine[64];   // enemies t
 // The copies made here for another game, after made[] let go of them: deleted once far from every player (coop_far.c),
 // as TotK Online's server disposes of an actor 1000 m from every player and its client deletes a runtime-made one.
 static struct { uint32_t key; uint64_t actor; int from; char name[48]; } made_held[64];
+// Whether this game made that actor for another game's announcement (coop_enemy.c: its maker claims it, not this game).
+int coop_spawn_made_for_other(uint64_t actor) {
+    for (int k = 0; actor && k < 64; k++) if (made_held[k].actor == actor) return 1;
+    return 0;
+}
 static void made_held_add(uint32_t key, uint64_t a, int from, const char *name) {
     int f = -1;
     for (int k = 0; k < 64; k++) {
