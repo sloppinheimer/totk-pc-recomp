@@ -225,6 +225,13 @@ static void equip_read_more(uint64_t actor, uint32_t att[EN_EQ_N], uint8_t eqs[E
         uint64_t ref = eu ? coop_rd_ptr(eu + 0x20 + (uint64_t)s * 0x18 + 8) : 0, held = ref ? coop_rd_ptr(ref + 0x40) : 0;
         if (!held) continue;
         coop_rd(eu + 0x4620 + (uint64_t)s, &eqs[s], 1);
+        eqs[s] &= 0x3f;
+        {   // whether what the slot holds is shown (B.34): the slot's visible byte (+0x570 + slot * 0x100 + 0xf4), which the
+            // nodes EquipmentUserRequestSetVisible set through main+0xced8c0 with bit 0x200 of the slot's command word
+            // (+0xf0); in the top two bits: 0x40 stated, 0x80 shown
+            uint8_t vb = 0;
+            if (coop_rd(eu + 0x570 + (uint64_t)s * 0x100 + 0xf4, &vb, 1)) eqs[s] |= (uint8_t)(0x40 | (vb ? 0x80 : 0));
+        }
         uint64_t wc = coop_rd_ptr(en_comps(held) + 0x208), aref = wc ? coop_rd_ptr(wc + 0xb0 + 8) : 0, a = aref ? coop_rd_ptr(aref + 0x40) : 0;
         int32_t ast = 0;
         char nm[40] = "";
@@ -948,13 +955,27 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230);
             uint32_t fr = coop_sess_frame_no();
             for (int k = 0; eu && k < EN_EQ_N && fr - m->eq_state_frame >= 30; k++) {
-                uint8_t own = 0, want = m->eq_state[k];
+                uint8_t own = 0, want = m->eq_state[k] & 0x3f;
                 if ((want != 2 && want != 4) || !coop_rd(eu + 0x4620 + (uint64_t)k, &own, 1) || own == want || (own != 2 && own != 4)) continue;
                 m->eq_state_frame = fr;
                 coop_guest_call(c, MOD_MAIN_BASE + 0x4f59ec, eu, (uint64_t)k, want == 2 ? 1 : 2, 0);
                 static _Atomic int said;
                 if (atomic_fetch_add(&said, 1) < 30) rt_log("coop: en: equip: the copy %llx %s what its slot %d holds, as its owner's (state %u -> %u)", (unsigned long long)actor, want == 2 ? "draws" : "puts away", k, own, want);
                 break;
+            }
+        }
+        {   // What a slot holds is shown or not as its owner's (B.34), written as the game's setter does: the byte and the
+            // command bit, which the equipment user's own calc then acts on.
+            uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230);
+            for (int k = 0; eu && k < EN_EQ_N; k++) {
+                uint8_t want = m->eq_state[k], own = 0;
+                uint64_t sl = eu + 0x570 + (uint64_t)k * 0x100, ref = coop_rd_ptr(eu + 0x20 + (uint64_t)k * 0x18 + 8);
+                if (!(want & 0x40) || !ref || !coop_rd_ptr(ref + 0x40) || !coop_rd(sl + 0xf4, &own, 1) || !own == !(want & 0x80)) continue;
+                uint8_t v = want & 0x80 ? 1 : 0;
+                memcpy((void *)(uintptr_t)(sl + 0xf4), &v, 1);
+                __atomic_fetch_or((uint32_t *)(uintptr_t)(sl + 0xf0), 0x200u, __ATOMIC_SEQ_CST);
+                static _Atomic int said;
+                if (atomic_fetch_add(&said, 1) < 30) rt_log("coop: en: equip: the copy %llx %s what its slot %d holds, as its owner's", (unsigned long long)actor, v ? "shows" : "hides", k);
             }
         }
         if (m->throw_due) {   // its owner's enemy threw what this slot holds: the same throw, by the game's own call (main+0x1b73be4)

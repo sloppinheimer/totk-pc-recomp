@@ -539,6 +539,16 @@ the rule at all: the census's System actors (the army managers, the dragons).
 - [open] the buried skeleton of B.31 is not explained by these: one spawned by the test plays a clip at once and
   has every look at its default. The buried state belongs to the game's own spawner's skeleton and is not read.
 
+**B.34 What a slot holds is shown or not** (research R19: the nodes EquipmentUserRequestSetVisible and
+RequestAllEquipmentVisible). The equipment user ([comps+0x230]) keeps a visible byte for each slot at +0x570 + slot *
+0x100 + 0xf4; the game's setter main+0xced8c0 writes it and sets bit 0x200 of the slot's command word (+0xf0), which the
+component's own calc acts on. STATE carries the byte in the top bits of the slot's state byte (0x40 stated, 0x80
+shown); where the copy's differs for a slot that holds something, the byte and the command bit are written as the
+setter does. [m] a camp fight: the case passes (tables equal, no leak, same command 98.2 %) and nothing was written,
+the bytes being equal throughout; built, not seen to act. Not carried: the other commands of that word (damage
+0x100, extinguish 0x20000, re-fit 0x10000, change state, the attachment's activate and detach), which are requests
+the calc consumes, and the flag word +0x4600 (jump-fall attack bit 0x80000, arrow attachment bit 33).
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is
