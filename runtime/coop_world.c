@@ -6147,12 +6147,46 @@ int coop_enemy_bones_put(Cpu *c, uint64_t a, const uint8_t *pa, const uint8_t *p
             for (int k = 0; k < 3; k++) m[r * 4 + k] = rot[r * 3 + k];
             m[r * 4 + 3] = pos[r];
         }
-        memcpy((void *)(uintptr_t)(a + COOP_ACTOR_POS), pos, 12), memcpy((void *)(uintptr_t)(a + COOP_ACTOR_ROT), rot, 36);
-        if (model) memcpy((void *)(uintptr_t)(model + 0x1f8), m, sizeof m);
+        // NOT written (TOTK_COOP_EN_TEST_POSEROOT=1 writes them): with the actor and the model's matrix written from
+        // the packet, the other player saw a ragdolled copy soar into the sky (a play test, 2026-11-16), while the
+        // bones from bone 0 agreed to 0.2 cm: the model's matrix is not simply the actor's place and turn here. The
+        // copy's root stays the stated one; what the model's matrix holds against the packet is logged.
+        static int root = -1;
+        if (root < 0) root = cfg_get("TOTK_COOP_EN_TEST_POSEROOT") != NULL;
+        if (!root && model) {   // the model's matrix is this copy's own actor's, as it stands now (it was found stale: 5.5 m from the actor)
+            float ap[3] = {0}, ar[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+            _Alignas(16) float am[12];
+            coop_rd(a + COOP_ACTOR_POS, ap, 12), coop_rd(a + COOP_ACTOR_ROT, ar, 36);
+            for (int r = 0; r < 3; r++) {
+                for (int k = 0; k < 3; k++) am[r * 4 + k] = ar[r * 3 + k];
+                am[r * 4 + 3] = ap[r];
+            }
+            memcpy((void *)(uintptr_t)(model + 0x1f8), am, sizeof am);
+        }
+        float own[12] = {0};
+        if (model) coop_rd(model + 0x1f8, own, sizeof own);
+        static _Atomic int said;
+        if (model && atomic_fetch_add(&said, 1) % 30 == 0 && atomic_load(&said) < 1200)
+            rt_log("coop: en: pose: root: the copy's model matrix holds %.2f %.2f %.2f (rows %.2f %.2f %.2f | %.2f %.2f %.2f), its owner's actor was at %.2f %.2f %.2f (rows %.2f %.2f %.2f | %.2f %.2f %.2f)",
+                   own[3], own[7], own[11], own[0], own[1], own[2], own[4], own[5], own[6], pos[0], pos[1], pos[2], m[0], m[1], m[2], m[4], m[5], m[6]);
+        if (root) {
+            memcpy((void *)(uintptr_t)(a + COOP_ACTOR_POS), pos, 12), memcpy((void *)(uintptr_t)(a + COOP_ACTOR_ROT), rot, 36);
+            if (model) memcpy((void *)(uintptr_t)(model + 0x1f8), m, sizeof m);
+        }
     }
     // (the push builds the final matrices only for a model marked changed: bit 0 of model+0x240, which the actor's own
     // phase has just cleared; without it the copy kept its own animation's finals. Research R12b 3.A.)
+    float f0[16] = {0}, f1[16] = {0};   // (bone 0's final matrix before and after: how far the put moved the whole model)
+    uint64_t wmx = coop_rd_ptr(sk + 0x20);
+    if (wmx) coop_rd(wmx, f0, sizeof f0);
     if (model) ST8(model + 0x240, LD8(model + 0x240) | 1), coop_guest_call(c, MOD_MAIN_BASE + 0x24cc30, model, 0, 0, 0);
+    if (wmx) coop_rd(wmx, f1, sizeof f1);
+    {
+        static _Atomic int said;
+        float d = sqrtf((f1[12] - f0[12]) * (f1[12] - f0[12]) + (f1[13] - f0[13]) * (f1[13] - f0[13]) + (f1[14] - f0[14]) * (f1[14] - f0[14]));
+        if ((d > 2.0f || atomic_load(&said) % 20 == 0) && atomic_fetch_add(&said, 1) < 400) rt_log("coop: en: pose: put: bone 0 moved %.2f m by the put (from %.2f %.2f %.2f to %.2f %.2f %.2f)", d, f0[12], f0[13], f0[14], f1[12], f1[13], f1[14]);
+        else atomic_fetch_add(&said, 0);
+    }
     return 1;
 }
 // (test: where a bone is, from the actor's place, by the skeleton's world matrices; coop_enemy_pose.c lays the two games' side by side)

@@ -157,6 +157,12 @@ static uint32_t en_key32(Enid id) {
     return h ? h : 1;
 }
 int coop_enemy_contact_route(uint64_t actor, uint32_t *key) {
+    // OFF unless TOTK_COOP_EN_FWD=1: with it, the enemy struck by the other player flew into the sky in the game that
+    // runs it (a play test with pictures, 2026-11-16). What of the sent contact entry launches it is not found; until
+    // then a blow goes as lost life (HIT), as before.
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_EN_FWD"); on = e && *e == '1'; }
+    if (!on) return 0;
     EnCell *m = actor > 1 ? en_cell_of(actor) : NULL;
     int16_t ei = m ? atomic_load(&m->en) : -1;
     if (!m || ei < 0 || atomic_load(&m->state) != EM_COPY || !en_tab[ei].used || en_tab[ei].life != EN_LIVE) return 0;

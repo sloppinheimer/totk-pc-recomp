@@ -264,7 +264,11 @@ builds the final matrices from them (main+0x24cc30, only for a model marked chan
 enemy is in state 3 or 1 the owner's game sends, after that phase and every other frame, the records (12 bytes a
 bone) with the actor's place and turn of the same instant; the copy's game, after its own model phase, writes the
 actor, the model's matrix and the records, marks the model changed and pushes. Measured: 6 ragdolls, 21 poses laid
-side by side by three bones' places from bone 0: 0.1 cm median, 0.2 cm at worst. Not seen in pictures up close.
+side by side by three bones' places from bone 0: 0.1 cm median, 0.2 cm at worst with the actor's place and turn
+written from the packet. That write is not made: the model's matrix (model+0x1f8) on a copy was found stale, 5.5 m
+from the actor, and is set from the copy's own actor before the push instead; bone 0 then moves 7 cm by the put (the
+whole model stays where the copy stands) and the three bones agree to 2.3 cm median, 50 cm at worst, the copy's
+stated turn being a little behind the pose's. Not seen in pictures up close.
 
 **B.9 Loot, a weapon let go, the kill counters** [m] (research R13; `coop_enemy_loot.c`). A copy makes no drops (its
 death's reserve and release sit under the death component's "no drops" bit). The owner's game notes each item its
@@ -276,13 +280,16 @@ counters' writer (main+0xb28394) as the owner's does; on a copy the record's don
 shared counters go up once [built; the counter's value not read in a run]. Open: the save flags for a game with no
 actor at the placement; a camp's cleared record.
 
-**B.10 A player's blow on a copy goes to its owner whole** [m] (`coop_world.c`, the older sync's contact packets). The
-points-only HIT gave the owner's enemy a flinch and no more. The contact entry of this game's Link on a copy is kept
-there (the copy shows the blow at once) and sent whole to the owner's game, which adds it to its enemy's contact list
-at its next hit update with the stand-in as attacker: the owner's enemy takes the blow itself and its own selector
-chooses the reaction. Life lost on the copy within three frames of such a contact is not sent as points too. Seen: 9
-of one player's sword blows added to the other game's Bokoblin, which flinched four times and was knocked into a full
-ragdoll twice. [open: a shield's block and a parry of a copy's swing reaching the owner the same way: not run.]
+**B.10 A player's blow on a copy, sent to its owner whole** (`coop_world.c`, the older sync's contact packets; OFF
+unless `TOTK_COOP_EN_FWD=1`). The points-only HIT gives the owner's enemy a flinch and no more: the reaction is
+chosen by the struck enemy's own selector from the contact entry, which only its owner's game runs. Built: the
+contact entry of this game's Link on a copy is kept there and sent whole to the owner's game, which adds it to its
+enemy's contact list at its next hit update with the stand-in as attacker; life lost on the copy within three frames
+is then not sent as points too. Measured [m]: the blows arrive and the owner's enemy reacts by itself (flinches, full
+ragdolls). But in the game that runs it the struck enemy flew into the sky at every blow it survived (a play test
+with pictures): something in the sent entry launches it. Which field is not found, so it is off and a blow goes as
+lost life, as before. [open: the entry's fields that must be made again in the owner's game; then a shield's block
+and a parry reaching the owner the same way.]
 
 **B.11 Equipment** (research R13 section 3). STATE also carries, per slot, what is fused to the held thing and the
 slot's drawn or put-away state. A copy lets go of a held thing of another name than its owner's (a swap), makes a
