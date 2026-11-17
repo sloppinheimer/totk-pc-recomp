@@ -98,7 +98,7 @@ static int same_addr(const struct sockaddr_storage *a, socklen_t alen, const str
 // of +Inf hung the game in coop_players.c set_day_seconds; NaN places went into the stand-in's matrix). 0: drop it.
 static int state_clean(NetState *st) {
     for (int i = 0; i < 3; i++) if (!isfinite(st->pos[i]) || fabsf(st->pos[i]) > 1e5f) return 0;
-    for (int i = 0; i < 9; i++) if (!isfinite(st->rot[i]) || fabsf(st->rot[i]) > 1.01f) return 0;
+    for (int i = 0; i < 9; i++) if (!isfinite(st->rot[i]) || fabsf(st->rot[i]) > 1e3f) return 0;   // (an actor's matrix may carry its scale)
     if (!isfinite(st->day_seconds) || st->day_seconds < 0 || st->day_seconds > 86400.0f) st->day_seconds = -1;
     int ok = 1;
     for (int i = 0; i < 3; i++) ok &= isfinite(st->shield_pos[i]) && fabsf(st->shield_pos[i]) < 100.0f;

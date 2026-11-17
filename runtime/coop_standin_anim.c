@@ -67,8 +67,22 @@ static uint16_t anim_bind_off(uint64_t g, uint64_t b) {
     if (off) atomic_fetch_or_explicit(&bind_ok[off / 8 / 64], 1ull << (off / 8 % 64), memory_order_relaxed);
     return off;
 }
+// A layer object of the kind the known mask layers are (its first word, the class's table, equals one of theirs):
+// a mask the other game's Link uses and this one has not used yet is still taken.
+static int layer_kind_ok(uint64_t g, uint64_t layer) {
+    uint64_t vt = coop_rd_ptr(layer);
+    if (!vt) return 0;
+    static const uint16_t known[] = {0x1a8, 0x1f0, 0x2c8};
+    for (int i = 0; i < 3; i++) {
+        uint64_t l = coop_rd_ptr(g + known[i]);
+        if (l && coop_rd_ptr(l) == vt) return 1;
+    }
+    return 0;
+}
 static uint64_t anim_bind_at(uint64_t g, uint16_t off) {
-    uint64_t layer = g && bind_allowed(off) ? coop_rd_ptr(g + off) : 0;
+    if (!g || !off || off >= 0x800 || (off & 7)) return 0;
+    uint64_t layer = coop_rd_ptr(g + off);
+    if (layer && !bind_allowed(off) && !layer_kind_ok(g, layer)) layer = 0;
     return layer ? coop_rd_ptr(layer + 0xc0) : 0;
 }
 // bind: the mask (0 none): passed as a record whose +8 is it, as the play reads it.
