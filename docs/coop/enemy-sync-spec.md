@@ -434,6 +434,29 @@ and the attack pause set, but no repelled clip was played: the test tells the ou
 enemy's blows. The added entry's handles are not made (the slot's old bytes), and one reader of the list follows a
 handle, so it is off until the reaction is seen with a real guard and the handle is made properly.
 
+**B.28 The world file is taken apart** (2026-11-17; the older enemy sync lives in `runtime/coop_world.c` with five
+other things, and it can only go once they are out). Moved as they were, no behaviour changed:
+- the bone helpers of the ragdoll pose, into `coop_enemy_pose.c` (the new sync no longer reaches into the world file
+  for a pose);
+- the stand-in's animation, masks and sword trail, into `coop_standin_anim.c`;
+- the players' body poses and the stand-in that shows them, into `coop_standin_pose.c`;
+- the rotating ground's sync, into `coop_ground.c` (its packets still come in through the world file's reader of the
+  HIT channel, which hands them to `ground_take`).
+`coop_world_int.h` declares what the split files and the world file share. Still in the world file, in the order they
+are to leave: the actor registry and keys, the contact packets and the hit-update dispatcher (which the new sync's
+blows travel by), the HIT channel's reader, the sync of actors made at run time (which gives the new sync its key for
+a night enemy or a spawner's), and then the older enemy sync itself, which is deleted last.
+
+**B.29 More families, and a weapon picked up from the ground.**
+- Taken by default now [m] (the standing test of B.19, command the same in that share of samples): a Gleeok
+  (`Enemy_Drake`, 99.8 %), a block construct (`Enemy_Zonau_BlockMaster`, 99.7 %), and the boss variants of families
+  already taken, which a name rule used to leave out: a boss Bokoblin 99.7 %, an armoured Lynel 99.7 %, a Gibdo boss
+  with its parts 98.8 %. Not fought. A baby Frox stays out (91.4 %).
+- `TOTK_COOP_EN_KINDS` is asked before the name exclusions, so a left-out name can be tried.
+- A pick-up (B.17's ENM_PICK) of a weapon that lies placed in the world, not one a game dropped: the message carries
+  the weapon's place, and the copy's game finds its own actor of that name within 2.5 m of it among all its actors
+  (`coop_actors_all`) and takes it off its ground, as it does a dropped one. Built, not seen.
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is

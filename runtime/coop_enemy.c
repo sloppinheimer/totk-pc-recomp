@@ -63,11 +63,13 @@ static int kind_of(const char *nm) {
                                        // Not fought yet. A baby Frox was 94 % and 25 cm off its pose and is left out.)
                                        "Enemy_LikeLike", "Enemy_Lynel", "Enemy_Treant", "Enemy_Zombie_", "Enemy_Toby",
                                        // (the same test: a Hinox, a Talus with its arms, a Frox, a cave boss: 96.5 to 98.6 %, no leak)
-                                       "Enemy_Giant", "Enemy_Golem", "Enemy_Mogurudo", "Enemy_CaveMaster" };
-    if (strstr(nm, "Swarm") || strstr(nm, "WeakPoint") || strstr(nm, "Dummy") || strstr(nm, "Bullet") || strstr(nm, "Boss") || strstr(nm, "Baby")) return 0;   // (not one whole enemy, or a boss)
-    for (unsigned i = 0; i < sizeof pre / sizeof *pre; i++)
-        if (!strncmp(nm, pre[i], strlen(pre[i]))) return (int)i + 1;
-    // Test (TOTK_COOP_EN_KINDS=<prefix>[,<prefix>...]): more kinds by the start of their actor names, for trying a family.
+                                       "Enemy_Giant", "Enemy_Golem", "Enemy_Mogurudo", "Enemy_CaveMaster",
+                                       // (the same test: a Fire Gleeok 99.8 %, a block construct 99.7 %; and the boss variants of
+                                       // families above are no longer left out: a boss Bokoblin 99.7 %, an armoured Lynel 99.7 %,
+                                       // a Gibdo boss with its parts 98.8 %)
+                                       "Enemy_Drake", "Enemy_Zonau_BlockMaster" };
+    // Test (TOTK_COOP_EN_KINDS=<prefix>[,<prefix>...]): more kinds by the start of their actor names, for trying a family
+    // (asked first: a name the default list leaves out, a boss's, can be tried this way).
     static const char *more;
     static int read;
     if (!read) more = cfg_get("TOTK_COOP_EN_KINDS"), read = 1;
@@ -77,6 +79,9 @@ static int kind_of(const char *nm) {
         if (n && !strncmp(nm, p, n)) return 100;
         p = q ? q + 1 : NULL;
     }
+    if (strstr(nm, "Swarm") || strstr(nm, "WeakPoint") || strstr(nm, "Dummy") || strstr(nm, "Bullet") || strstr(nm, "Baby")) return 0;   // (not one whole enemy, or a boss)
+    for (unsigned i = 0; i < sizeof pre / sizeof *pre; i++)
+        if (!strncmp(nm, pre[i], strlen(pre[i]))) return (int)i + 1;
     return 0;
 }
 

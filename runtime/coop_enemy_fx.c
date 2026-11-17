@@ -17,7 +17,8 @@
 // 3. A weapon picked up from the ground (main+0x1d71dfc(weapon link, picker, 1)): the copy is given the weapon by the
 //    held-things rule, and the one lying on the ground in its game stayed. The owner's game states which object the
 //    weapon was, by the object mirror's name for it, and the copy's game deletes its own actor of that object. A
-//    weapon the mirror does not know (one placed on the map that nobody has moved) is not told: it stays [open].
+//    weapon the mirror does not know (one placed on the map that nobody has moved) is told by its name and where it
+//    lay, and found among every actor of the copy's game within 2.5 m of there.
 #include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
@@ -34,14 +35,16 @@ int coop_obj_ident(uint64_t a, int *owner, uint32_t *id);                // coop
 uint64_t coop_obj_find(int owner, uint32_t id, const char *name);       // coop_players.c
 
 typedef struct { Enid id; uint8_t elink, slink, mode, pad[5]; char key[48]; } MFx;   // mode: 0 a one-shot, 1 a held one starts, 2 it stops
-typedef struct { Enid id; int32_t obj_owner; uint32_t obj_id; char name[48]; } MPick;
+typedef struct { Enid id; int32_t obj_owner; uint32_t obj_id; float pos[3]; char name[48]; } MPick;   // obj_owner -1: no object of the mirror's: the weapon lay at pos
+void coop_actors_all(void (*fn)(uint64_t actor, const char *name, uint32_t key, void *arg), void *arg);   // coop_world.c
+uint64_t coop_enemy_holder(uint64_t actor);                                                               // coop_enemy_copy.c
 
 #define FXQ 32
 // A held effect on a copy (a Yiga footsoldier's Sign, Vehicle_Magic): the two handles its emits gave, kept until its
 // owner's node leaves, when they are stopped by the node's own stop (main+0x6e34e8(the pair, -1: the resource's fade)).
 static struct { int cell; char key[48]; _Alignas(16) uint8_t pair[16]; } held[8];   // (the copy's own thread only: its pre-calc)
 static struct { _Atomic int cell; uint8_t elink, slink, mode; char key[48]; uint32_t frame; } fxq[FXQ];       // emits waiting for their copy's pre-calc (cell + 1; 0 free)
-static struct { _Atomic uint32_t frame; int32_t owner; uint32_t id; char name[48]; } pickq[8];         // ground weapons to delete here
+static struct { _Atomic uint32_t frame; int32_t owner; uint32_t id; float pos[3]; char name[48]; } pickq[8];         // ground weapons to delete here
 static _Atomic uint32_t n_fx_sent, n_fx_made, n_wx, n_pick_sent, n_pick_done;
 
 static int fx_on(void) {
@@ -131,7 +134,11 @@ int en_fx_hook(Cpu *c, uint64_t off) {
         EnCell *m = picker > 0x10000 ? en_cell_of(picker) : NULL;
         MPick p;
         memset(&p, 0, sizeof p);
-        if (!m || !w || atomic_load_explicit(&m->state, memory_order_relaxed) != EM_OWNED || !coop_obj_ident(w, &p.obj_owner, &p.obj_id)) return 0;
+        if (!m || !w || atomic_load_explicit(&m->state, memory_order_relaxed) != EM_OWNED) return 0;
+        // (a weapon the object mirror knows goes by its name there; one placed on the map that nobody has moved is the
+        // same actor at the same place in every game, and goes by its actor's name and where it lay)
+        if (!coop_obj_ident(w, &p.obj_owner, &p.obj_id)) p.obj_owner = -1, p.obj_id = 0;
+        coop_rd(w + COOP_ACTOR_POS, p.pos, 12);
         coop_actor_name(w, p.name, sizeof p.name);
         coop_lock_wait(&en_lock);
         int16_t ei = atomic_load(&m->en);
@@ -171,7 +178,7 @@ int en_fx_msg(const CoopCtrMsg *m) {
         if (m->len != (int)sizeof *p || !memchr(p->name, 0, sizeof p->name)) return 1;
         for (int k = 0; k < 8; k++) {
             if (atomic_load(&pickq[k].frame)) continue;
-            pickq[k].owner = p->obj_owner, pickq[k].id = p->obj_id, memcpy(pickq[k].name, p->name, sizeof p->name);
+            pickq[k].owner = p->obj_owner, pickq[k].id = p->obj_id, memcpy(pickq[k].pos, p->pos, 12), memcpy(pickq[k].name, p->name, sizeof p->name);
             atomic_store(&pickq[k].frame, coop_sess_frame_no() | 1);
             break;
         }
@@ -219,13 +226,26 @@ void en_fx_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     }
 }
 
+static void pick_find(uint64_t actor, const char *name, uint32_t key, void *arg) {
+    struct { const char *name; const float *pos; uint64_t hit; } *q = arg;
+    float p[3];
+    (void)key;
+    if (q->hit || strcmp(name, q->name) || coop_enemy_holder(actor) || !coop_rd(actor + COOP_ACTOR_POS, p, 12)) return;
+    float dx = p[0] - q->pos[0], dy = p[1] - q->pos[1], dz = p[2] - q->pos[2];
+    if (dx * dx + dy * dy + dz * dz < 2.5f * 2.5f) q->hit = actor;
+}
 // Phase 0: a weapon another game's enemy picked up is taken off this game's ground.
 void en_fx_phase0(Cpu *c) {
     uint32_t frame = coop_sess_frame_no();
     for (int k = 0; k < 8; k++) {
         uint32_t f = atomic_load(&pickq[k].frame);
         if (!f) continue;
-        uint64_t a = coop_obj_find(pickq[k].owner, pickq[k].id, pickq[k].name);
+        uint64_t a = pickq[k].owner >= 0 ? coop_obj_find(pickq[k].owner, pickq[k].id, pickq[k].name) : 0;
+        if (pickq[k].owner < 0) {   // by name and place, among every actor of the game
+            struct { const char *name; const float *pos; uint64_t hit; } q = {pickq[k].name, pickq[k].pos, 0};
+            coop_actors_all(pick_find, &q);
+            a = q.hit;
+        }
         int32_t st = 0;
         if (a && coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6) {
             uint64_t r = coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, a, 0, 0, 0);
