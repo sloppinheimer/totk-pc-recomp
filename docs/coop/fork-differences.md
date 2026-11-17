@@ -31,7 +31,7 @@ Checked against upstream's `main` at the last merge base (6151ac4f, 2026-11-15) 
 | Upstream file | What it carries | Why |
 |---|---|---|
 | `runtime/cpu.h` | `#include "coop_hooks.h"` | the co-op entry hooks replace `FN_ENTER` (above) |
-| `runtime/cfg.c` | `#include "coop_cfg_names.inc"` in the list of known setting names | `totk.ini` keys of co-op settings are not logged as unknown. The list holds 7 names (`COOP_EDGES`, `COOP_HIDE_CONSOLE`, `COOP_JOIN`, `COOP_NAME`, `COOP_RELAY`, `COOP_TAGS`, `PAD_INDEX`); any other co-op key still works from `totk.ini`, with an "unknown key" log line |
+| `runtime/cfg.c` | `#include "coop_cfg_names.inc"` in the list of known setting names | `totk.ini` keys of co-op settings are not logged as unknown. It holds the co-op settings a player may set (25, each described in `docs/settings.md`); a test setting still works from `totk.ini`, with an "unknown key" log line |
 | `tests/settings_doc_check.py` | reads the `.inc` files `cfg.c` includes | so the names in `coop_cfg_names.inc` are checked against `docs/settings.md` too |
 | `runtime/ui_text.h`, `runtime/ui_text.c` | `#include "coop_text_ids.inc"` and one `coop_text_<lang>.inc` per language (en, ru, pt_br, zh_hans) | the Co-op tab's and the notices' texts |
 | `runtime/ui/menu.cpp` | `#include "ui/coop_menu.h"`; `TAB_COOP` and `tab_coop()`; `coop_notices_glyphs()` in the CJK glyph ranges; `coop_menu_font()` after the font upload; `coop_overlay_wanted()`, `coop_overlay_draw()` and `coop_overlay_shot()` in `menu_overlay_frame` | the Co-op tab; place names in the notices in Chinese; the name tags' copy of the font atlas; name tags, map markers and notices drawn over the game with the menu closed; the co-op tests' screenshots of the overlay |
@@ -80,8 +80,8 @@ Not co-op code, but made for it. Candidates for upstream pull requests.
   a page's own popup holding B and the tab keys (`menu_page_modal`), and Esc leaving a text box before the menu.
 - `runtime/boot.c`: `TOTK_SHOTS_CROP=x,y,w,h` saves only part of each test screenshot.
 - `runtime/ov_input.c`: logs the controller ids the game supports.
-- `docs/settings.md`: `pad_index` and a "Co-op" table (`coop_name`, `coop_join`, `coop_relay`, `coop_tags`,
-  `coop_hide_console`, `coop_edges`); `docs/controls.md`: one line.
+- `docs/settings.md`: `pad_index` and a "Co-op" table of the settings in `coop_cfg_names.inc`; `docs/controls.md`: one
+  line.
 
 ## Leftovers to tidy
 

@@ -100,6 +100,24 @@ Online co-op (`docs/coop/playing.md`). The co-op tab of the menu writes `coop_na
 | `coop_tags` (default `on`) | `off` hides the other players' names over their Links. | Only what this game draws. | Safe |
 | `coop_hide_console` | `1` hides the console window at start, for sessions with several game windows (`tools/coop/play_two.ps1`). | The log still goes to `logs/totk.log`. | Safe |
 | `coop_edges` | `all` copies every update link of this Link onto a stand-in when it is made, not only the links to resident actors. | A diagnostic; links to non-resident actors may tie the stand-in to objects that go away. | Caution |
+| `coop_enemy` | `0` turns the enemy sync off; every game in the session must agree (`docs/coop/enemy-sync.md`). | Enemies are no longer shared. | Caution |
+| `coop_contraption` | `0` turns the contraption (entity) sync off (`docs/coop/entity-sync.md`). | Zonai devices and builds are no longer shared. | Caution |
+| `coop_spawn_sync` | `0`: enemies made at run time are not made in the other games. | Such enemies exist in one game only. | Caution |
+| `coop_en_handover` | `0`: an enemy is not handed to a nearer player's game. | The first game to run an enemy keeps it. | Safe |
+| `coop_contact_filter` | `0`: every contact of a blow counts in every game. | Blows may count twice. | Caution |
+| `coop_en_fx` | `0`: effects, weather and pick-ups an enemy's AI starts are not shown on its copies. | Copies show less. | Safe |
+| `coop_en_arm` | `0`: attacks an enemy's AI arms are not made on its copies. | Some copies' blows do not hurt. | Safe |
+| `coop_en_pose` | `0`: ragdoll poses are not sent. | Copies do not fall as their owner's enemy does. | Safe |
+| `coop_en_shs` | `0`: a Shooter put to sleep is not replayed on copies. | Some copies' shots differ. | Safe |
+| `coop_en_act` | `1` turns the action layer on (off by default; PLAN.md). | Experimental. | Caution |
+| `coop_mounts` | `1` shares horses and land animals (off by default). | Experimental. | Caution |
+| `coop_far` | `0`: copies made for another game are kept however far from every player. | More actors stay loaded. | Safe |
+| `coop_far_m` | The distance in metres beyond which those copies go (default 1000). | Smaller: copies go sooner. | Safe |
+| `coop_debug` | `1` writes the co-op records and periodic measurements the reports in `tools/coop` read. | Larger logs. | Safe |
+| `coop_notices` | `0` hides the lines that say a player joined, left or travelled. | Only what this game draws. | Safe |
+| `coop_markers` | `0` hides the other players on the map and minimap. | Only what this game draws. | Safe |
+| `coop_tags_inframe` | `0`: name tags are drawn over everything by the overlay instead of into the frame before the HUD. | Only what this game draws. | Safe |
+| `coop_share_world` | `1` shares world progress (opened chests, flags) between the games; off by default, not yet for play. | Reaches the save. | Caution |
 
 ## Paths and files
 

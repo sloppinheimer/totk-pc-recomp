@@ -122,7 +122,7 @@ Left, and where it goes:
   and 0x1b70a04 have no handler; step 2 is to use them and replaces 0x1bb16a0 and 0x1ba7710.
 - Small, when the files are next touched: duplicated helpers (quaternion conversions, FNV hashes, main-body lookups,
   the equipment-slot walk, the "paused" tests, the report's consolidation table); comments that still name removed files or tests (fewer than the 40 listed before);
-  `coop_cfg_names.inc` holds 7 co-op names; 48 input scripts in
+  48 input scripts in
   `tools/coop/` that no file names; the untracked `map_hold.txt` and `menu_hold.txt`; the
   parked branches `claude/coop-arrow-tail-wip` and `claude/quizzical-poincare-8711f5`.
 
