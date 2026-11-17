@@ -4,16 +4,17 @@
 // driven by physics bodies in the game that runs the enemy. The copy's own ragdoll is not started (it would fight the
 // static body and the written root, and two games' ragdolls part at the first bounce). While the owner's enemy is a
 // full ragdoll or getting up (its ragdoll component's state [[comps+0x3e8]+0x20]: 3 full, 1 recovering), the owner's
-// game sends the skeleton's local records as they stand at the start of the enemy's calc, every other frame, latest
+// game sends the skeleton's local records as they stand after the enemy's model phase, every other frame, latest
 // only; the copy's game writes the two newest, blended, over its own skeleton right after the actor's model phase
 // (main+0x245030) and pushes the model, as the stand-ins' poses are put. A copy with no pose newer than 0.3 s shows
 // its own animation again.
 //
-// NOT RIGHT YET, so off unless TOTK_COOP_EN_POSE=1. Measured in two games (TOTK_COOP_EN_TEST_POSE=1, three bones'
-// places in both): the poses go out and are put (71 sent, 71 taken, 143 puts in one fight), but what the copy's
-// skeleton holds at its next calc is 1.3 m (median) from what the owner sent, and of another shape. The final matrices
-// during a ragdoll are in a space that moves with the ragdoll, not with the actor's root; where the game writes a
-// ragdoll's bones, and what a copy must write for the frame's picture, are not read (research R12, unknowns a to d).
+// The records are read after the owner's own model phase (the phase reads the ragdoll's bodies back into the pose,
+// main+0x2752c8, and turns the pose into the records, main+0x289620), with the actor's place and turn of the same
+// instant: bone 0's record is from the actor's matrix. The copy writes actor, model matrix and records, marks the
+// model changed (bit 0 of model+0x240: without it the push keeps the old final matrices) and pushes (research R12b).
+// Measured in two games (TOTK_COOP_EN_TEST_POSE=1: three bones' places from bone 0, per pose, in both): 6 ragdolls,
+// 21 poses laid side by side, 0.1 cm median and 0.2 cm at worst. TOTK_COOP_EN_POSE=0 turns it off.
 #include <math.h>
 #include <stdatomic.h>
 #include <stddef.h>
@@ -39,11 +40,13 @@ static int pose_test(void) {
     if (v < 0) v = cfg_get("TOTK_COOP_EN_TEST_POSE") != NULL;
     return v;
 }
-static void pose_say(const char *who, uint64_t actor, uint32_t seq) {
+static void pose_say(const char *who, uint64_t actor, uint32_t seq, EnCell *m) {
     static _Atomic int said;
     float b[3][3] = {{0}};
     if (!pose_test() || atomic_fetch_add(&said, 1) >= 400) return;
     coop_enemy_bone_world(actor, 5, b[0]), coop_enemy_bone_world(actor, 20, b[1]), coop_enemy_bone_world(actor, 40, b[2]);
+    int16_t ei = atomic_load(&m->en);
+    seq = (seq & 0xffff) | (uint32_t)(ei >= 0 ? (uint32_t)(en_tab[ei].id.a * 2654435761u) & 0x7fff0000u : 0);   // (the pose's number with its enemy's name in the high half)
     rt_log("coop: en: pose: test: %s pose %u: bone 5 at %.3f %.3f %.3f, bone 20 at %.3f %.3f %.3f, bone 40 at %.3f %.3f %.3f", who, seq, b[0][0], b[0][1], b[0][2], b[1][0], b[1][1], b[1][2], b[2][0], b[2][1], b[2][2]);
 }
 static _Atomic uint32_t put_seq[4096];   // per cell: the number of the pose last put on the copy (0 none)
@@ -87,7 +90,7 @@ static PoseSlot *slot_of(int cell, int make) {   // (under pose_lk)
 }
 static int pose_off(void) {
     static int v = -1;
-    if (v < 0) { const char *e = cfg_get("TOTK_COOP_EN_POSE"); v = !(e && *e == '1'); }   // off unless TOTK_COOP_EN_POSE=1: see the note at the top
+    if (v < 0) { const char *e = cfg_get("TOTK_COOP_EN_POSE"); v = e && *e == '0'; }
     return v;
 }
 
@@ -97,12 +100,13 @@ void en_pose_precalc(uint64_t actor, EnCell *m) {
     int32_t rs = 0;
     int16_t ei = atomic_load(&m->en);
     if (pose_off() || !rg || !coop_rd(rg + 0x20, &rs, 4) || (rs != 3 && rs != 1) || ei < 0 || (coop_sess_frame_no() & 1)) return;
+    // (called after the actor's model phase: the bodies have just been read back into the records)
     plat_mutex_lock(&pose_lk);
     PoseSlot *s = slot_of((int)(m - en_map), 1);
     if (s) {
         int len = coop_enemy_bones_pack(actor, s->out.d, sizeof s->out.d);
         if (len) s->out.key = en_state_key(en_tab[ei].id) ^ POSE_KEY, s->out.id = en_tab[ei].id, s->out.seq++, s->out.len = (uint16_t)len, s->out_new = 1;
-        if (len) pose_say("sent", actor, s->out.seq);
+        if (len) pose_say("sent", actor, s->out.seq, m);
     }
     plat_mutex_unlock(&pose_lk);
 }
@@ -127,7 +131,7 @@ void en_pose_phase0(void) {
         static MPose in;
         uint64_t age = 0;
         int len = id ? coop_ctr_latest(id, ENM_POSE, en_state_key(e->id) ^ POSE_KEY, &in, sizeof in, &age) : 0;
-        if (len < (int)offsetof(MPose, d) + 2 || !enid_eq(in.id, e->id) || in.len > POSE_MAX || len != (int)offsetof(MPose, d) + in.len || age > 300000000ull) continue;
+        if (len < (int)offsetof(MPose, d) + 30 || !enid_eq(in.id, e->id) || in.len > POSE_MAX || len != (int)offsetof(MPose, d) + in.len || age > 300000000ull) continue;
         PoseSlot *s = slot_of(e->cell, 1);
         if (!s || (s->in_n && s->in_seq == in.seq)) continue;
         if (s->in_n) memcpy(s->in[0], s->in[1], POSE_MAX), s->in_ns[0] = s->in_ns[1];
@@ -152,6 +156,18 @@ int en_pose_phase(Cpu *c, uint64_t addr) {
     if (deep || addr != MOD_MAIN_BASE + 0x245030 || !coop_enemy_new() || pose_off()) return 0;
     uint64_t actor = c->x[0], now = plat_now_ns();
     EnCell *m = actor > 0x10000 ? en_cell_of(actor) : NULL;
+    if (m && atomic_load_explicit(&m->state, memory_order_relaxed) == EM_OWNED) {   // this game's own: the phase, then its bones are kept to send
+        uint64_t rg = coop_rd_ptr(en_comps(actor) + 0x3e8);
+        int32_t rs = 0;
+        if (!rg || !coop_rd(rg + 0x20, &rs, 4) || (rs != 3 && rs != 1)) return 0;
+        deep = 1, c->pc = addr;
+        rt_dispatch(c);
+        deep = 0;
+        uint64_t r0 = c->x[0];
+        en_pose_precalc(actor, m);
+        c->x[0] = r0;
+        return 1;
+    }
     if (!m || atomic_load_explicit(&m->state, memory_order_relaxed) != EM_COPY || (m->show_rag != 3 && m->show_rag != 1)) return 0;
     float f = 1;
     int have = 0;
@@ -180,5 +196,5 @@ int en_pose_phase(Cpu *c, uint64_t addr) {
 // (test) The copy's calc start: what its skeleton holds after the last frame's put.
 void en_pose_copy_precalc(uint64_t actor, EnCell *m) {
     uint32_t seq = pose_test() ? atomic_exchange(&put_seq[(m - en_map) & 4095], 0) : 0;
-    if (seq) pose_say("shown", actor, seq);
+    if (seq) pose_say("shown", actor, seq, m);
 }

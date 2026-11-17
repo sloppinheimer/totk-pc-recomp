@@ -146,6 +146,25 @@ static void equip_read(uint64_t actor, uint32_t eq[EN_EQ_N], int learn) {
         if (learn && name_add(eq[s], nm)) { MName m; memset(&m, 0, sizeof m); m.hash = eq[s], snprintf(m.name, sizeof m.name, "%s", nm); en_send_all(ENM_PLAY, &m, sizeof m); }
     }
 }
+// The same, with what is fused to each held thing (the link at +0xb0 of its [comps+0x208]) and the slot's state byte
+// ([equipment user+0x4620+slot]: 2 drawn, 4 put away; research R13 section 3).
+static void equip_read_more(uint64_t actor, uint32_t att[EN_EQ_N], uint8_t eqs[EN_EQ_N], int learn) {
+    uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230);
+    for (int s = 0; s < EN_EQ_N; s++) {
+        att[s] = 0, eqs[s] = 0;
+        uint64_t ref = eu ? coop_rd_ptr(eu + 0x20 + (uint64_t)s * 0x18 + 8) : 0, held = ref ? coop_rd_ptr(ref + 0x40) : 0;
+        if (!held) continue;
+        coop_rd(eu + 0x4620 + (uint64_t)s, &eqs[s], 1);
+        uint64_t wc = coop_rd_ptr(en_comps(held) + 0x208), aref = wc ? coop_rd_ptr(wc + 0xb0 + 8) : 0, a = aref ? coop_rd_ptr(aref + 0x40) : 0;
+        int32_t ast = 0;
+        char nm[40] = "";
+        if (!a || !coop_rd(a + COOP_ACTOR_STATE, &ast, 4) || ast < 2 || ast > 6) continue;
+        coop_actor_name(a, nm, sizeof nm);
+        if (!nm[0]) continue;
+        att[s] = fnv_str(nm);
+        if (learn && name_add(att[s], nm)) { MName m; memset(&m, 0, sizeof m); m.hash = att[s], snprintf(m.name, sizeof m.name, "%s", nm); en_send_all(ENM_PLAY, &m, sizeof m); }
+    }
+}
 
 // ---- An enemy's AI memory (enemy-sync-spec.md B.2) --------------------------------------------------------------------------
 // What a graph keeps in the actor's blackboard and acts on later belongs to the enemy, not to the game that ran it: a
@@ -522,6 +541,7 @@ int en_copy_hook(Cpu *c, uint64_t off) {
                key, (int)idx, flags, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], st);
         return 0;
     }
+    case 0x1c78060: case 0x1b738e4: case 0xb28394: { int en_loot_hook(Cpu *c, uint64_t off); return en_loot_hook(c, off); }   // coop_enemy_loot.c
     case FN_BRAIN_VERB: {   // (x0 the brain, w1 the verb, w2 bit 0 force): a held brain keeps its owner's verb
         if (tl_brain_mine || !tl_grace_bsa || c->x[0] != tl_grace_bsa) return 0;
         static _Atomic int said;
@@ -724,8 +744,6 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         }
     }
     if (!off && !m->sw_on) {
-        void en_pose_precalc(uint64_t actor, EnCell *m);   // coop_enemy_pose.c: a ragdoll's bones, for its copies
-        if (st == EM_OWNED) en_pose_precalc(actor, m);
         en_hit_precalc(c, actor, m, 0);
         return;
     }
@@ -818,7 +836,8 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             for (int j = 0; j < 2; j++) {
                 uint8_t *st = m->eq_str[j];
                 memset(st, 0, 0x60);
-                snprintf((char *)st + 0x10, 0x40, "%s", j ? "" : wn);
+                const char *an = m->eq_att[k] ? name_of(m->eq_att[k]) : NULL;   // (what is fused to its owner's: the create's seventh argument)
+                snprintf((char *)st + 0x10, 0x40, "%s", j ? an ? an : "" : wn);
                 uint64_t tp = (uint64_t)(uintptr_t)(st + 0x10);
                 int32_t cap = 0x40;
                 memcpy(st, &tp, 8), memcpy(st + 8, &cap, 4);
@@ -832,6 +851,20 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             c->sp = sp0;
             rt_log("coop: en: equip: the copy %llx is given %s in slot %d, as its owner's enemy holds (the create answered %llx; try %d)", (unsigned long long)actor, wn, k, (unsigned long long)r, m->eq_tries[k]);
             break;
+        }
+        {   // Drawn or put away as its owner's (main+0x4f59ec(equipment user, slot, 1 draw | 2 sheathe)): the slot's link is
+            // the same in both states, so the held-things rule never saw it. One call a second a slot at most.
+            uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230);
+            uint32_t fr = coop_sess_frame_no();
+            for (int k = 0; eu && k < EN_EQ_N && fr - m->eq_state_frame >= 30; k++) {
+                uint8_t own = 0, want = m->eq_state[k];
+                if ((want != 2 && want != 4) || !coop_rd(eu + 0x4620 + (uint64_t)k, &own, 1) || own == want || (own != 2 && own != 4)) continue;
+                m->eq_state_frame = fr;
+                coop_guest_call(c, MOD_MAIN_BASE + 0x4f59ec, eu, (uint64_t)k, want == 2 ? 1 : 2, 0);
+                static _Atomic int said;
+                if (atomic_fetch_add(&said, 1) < 30) rt_log("coop: en: equip: the copy %llx %s what its slot %d holds, as its owner's (state %u -> %u)", (unsigned long long)actor, want == 2 ? "draws" : "puts away", k, own, want);
+                break;
+            }
         }
         uint8_t drop = atomic_exchange_explicit(&m->eq_drop, 0, memory_order_relaxed);
         for (int k = 0; drop && k < EN_EQ_N; k++) {
@@ -979,6 +1012,7 @@ void en_copy_phase0(Cpu *c) {
             slots_read(e->actor, s, 1);
             for (int k = 0; k < s->nslot; k++) if (s->sl[k].cmd != cmds[k]) e->send_burst = 3;
             { uint32_t eq[EN_EQ_N]; equip_read(e->actor, eq, 1); if (memcmp(eq, s->eq, sizeof eq)) e->send_burst = 3; memcpy(s->eq, eq, sizeof eq); }
+            { uint32_t att[EN_EQ_N]; uint8_t eqs[EN_EQ_N]; equip_read_more(e->actor, att, eqs, 1); if (memcmp(att, s->att, sizeof att) || memcmp(eqs, s->eqs, sizeof eqs)) e->send_burst = 3; memcpy(s->att, att, sizeof att), memcpy(s->eqs, eqs, sizeof eqs); }
             { uint64_t rg = coop_rd_ptr(en_comps(e->actor) + 0x3e8); int32_t rs = 0; if (rg) coop_rd(rg + 0x20, &rs, 4); if ((uint8_t)rs != s->rag) { e->send_burst = 3; rt_log("coop: en: rag: %s %016llx ragdoll state %d -> %d", e->name, (unsigned long long)e->id.a, s->rag, (int)rs); } s->rag = (uint8_t)rs; }
             {   // the model's hidden mask and the actor's fallback bit (test: logged when they change)
                 uint64_t gmc = coop_rd_ptr(en_comps(e->actor) + 0x280);
@@ -1131,14 +1165,27 @@ void en_copy_phase0(Cpu *c) {
                         }
                 if (e->eq_off >= 3) {   // (for three looks, 0.8 s: not a weapon on its way between two states)
                     uint8_t drop = 0;
-                    for (int k = 0; k < EN_EQ_N; k++) if (eq[k] && !sl->eq[k]) drop |= (uint8_t)(1u << k);
+                    // (another thing than its owner's in the slot is let go of as well: a swap was never made good, since
+                    // neither "holds and the owner does not" nor "holds nothing" fitted)
+                    for (int k = 0; k < EN_EQ_N; k++) if (eq[k] && eq[k] != sl->eq[k]) drop |= (uint8_t)(1u << k);
                     if (drop) atomic_store(&m->eq_drop, drop);
                     for (int k = 0; k < EN_EQ_N; k++) atomic_store(&m->eq_make[k], !eq[k] && sl->eq[k] ? sl->eq[k] : 0);
                 }
             } else {
                 e->eq_off = 0;
                 for (int k = 0; k < EN_EQ_N; k++) if (eq[k]) m->eq_tries[k] = 0;   // (it holds it: a later loss may be made good again)
+                // The same things held: what is fused to each must be the same too. A copy's held thing with another
+                // attachment than its owner's (none where there is one, as every thing the copy was given before the
+                // attachment was stated) is let go of, and made again with it, twice at most.
+                uint32_t att[EN_EQ_N];
+                uint8_t eqs[EN_EQ_N], drop = 0;
+                equip_read_more(e->actor, att, eqs, 0);
+                for (int k = 0; k < EN_EQ_N; k++) if (eq[k] && sl->att[k] && !att[k] && m->eq_att_tries[k] < 2) drop |= (uint8_t)(1u << k), m->eq_att_tries[k]++;
+                if (drop && ++e->eq_att_off >= 3) atomic_store(&m->eq_drop, drop), e->eq_att_off = 0;
+                else if (!drop) e->eq_att_off = 0;
+                else for (int k = 0; k < EN_EQ_N; k++) if (drop >> k & 1) m->eq_att_tries[k]--;
             }
+            memcpy(m->eq_att, sl->att, sizeof m->eq_att), memcpy(m->eq_state, sl->eqs, sizeof m->eq_state);
         }
         if (now - e->log_ns >= SEC / 10 || sl->s.vel[0] * sl->s.vel[0] + sl->s.vel[1] * sl->s.vel[1] + sl->s.vel[2] * sl->s.vel[2] > 16.f) {
             char cmd[40] = "";

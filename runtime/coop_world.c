@@ -2813,6 +2813,7 @@ typedef struct { _Atomic int n; uint64_t dc, by, weap, at_ns; uint32_t brel[CONT
 static CeSlot ce_in[CE_SLOTS];
 static _Atomic int ce_waiting;   // slots in use (ce_add looks only when some are)
 static int ce_owner_of(uint64_t a, uint32_t *key) {
+    { int coop_enemy_contact_route(uint64_t actor, uint32_t *key); int o = coop_enemy_new() ? coop_enemy_contact_route(a, key) : 0; if (o) return o; }   // coop_enemy.c
     *key = key_of_actor(a);
     for (int k = 0; *key && k < FOLLOW_N; k++) if (follow[k].key == *key) return follow[k].owner;
     return 0;
@@ -2839,8 +2840,9 @@ uint64_t coop_eq_row_ref(uint64_t actor, int row);   // coop_players.c
 // A CE packet from player `from` (the hit update of its enemy adds it: ce_add).
 static void ce_take(const ContactPacket *cp, int from) {
     uint64_t now = plat_now_ns();
-    if (!cp->n || cp->n > CONTACT_MAX || !coop_enemy_old()) return;
+    if (!cp->n || cp->n > CONTACT_MAX || (!coop_enemy_old() && !coop_enemy_new())) return;
     uint64_t a = 0, co[COOP_MAX_PLAYERS];
+    { uint64_t coop_enemy_contact_actor(uint32_t key, int from); if (coop_enemy_new()) a = coop_enemy_contact_actor(cp->key, from); }   // coop_enemy.c
     int ids[COOP_MAX_PLAYERS], nc = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
     for (int i = 0; i < KNOWN_N && !a; i++) if (mine_known[i].key == cp->key) a = mine_known[i].actor;
     uint64_t by = 0;
@@ -2871,6 +2873,10 @@ static void ce_take(const ContactPacket *cp, int from) {
         if (said_f++ < 10) rt_log("coop: contact from player %d on %08x dropped: %d already wait", from, cp->key, CE_SLOTS);
     }
 }
+uint32_t coop_sess_frame_no(void);   // coop_sess.c
+static __thread uint64_t ce_added_dc;      // the damage component this thread's hit update added sent contacts to,
+static __thread uint32_t ce_added_frame;   // in which frame,
+static __thread int ce_added_first;        // and from which entry on: those are the other player's blows and stay
 static void ce_add_one(uint64_t dc, CeSlot *sl);
 static void ce_add(uint64_t dc) {   // every packet waiting for this enemy, in this hit update
     if (!atomic_load(&ce_waiting)) return;
@@ -2905,6 +2911,11 @@ static void ce_add_one(uint64_t dc, CeSlot *sl) {
         memcpy((void *)(uintptr_t)(base + (uint64_t)cnt * CONTACT_SZ), e, CONTACT_SZ);
     }
     memcpy((void *)(uintptr_t)(l + 0x18), &cnt, 4);
+    if (added) {
+        uint32_t fr = coop_sess_frame_no();
+        if (ce_added_dc != dc || ce_added_frame != fr) ce_added_first = cnt - added;
+        ce_added_dc = dc, ce_added_frame = fr;
+    }
     char nm[48];
     static int said;
     if (said++ < 20) rt_log("coop: contact: %d from a stand-in added to %s (weapon %s)", added, coop_actor_name(a, nm, sizeof nm), weap ? "its own" : "none");
@@ -2944,9 +2955,18 @@ static void contacts_filter(uint64_t dc) {
             int coop_enemy_role(uint64_t actor), coop_enemy_shot_mirror(uint64_t proj);
             uint64_t coop_enemy_holder(uint64_t actor);
             int keep = 0, victim_copy = coop_enemy_role(a) == 2;
+            ContactPacket ce_new, ce_new_arrows;
+            memset(&ce_new, 0, offsetof(ContactPacket, e)), memset(&ce_new_arrows, 0, offsetof(ContactPacket, e));
             for (int k = 0; k < cnt; k++) {
                 uint64_t e = base + (uint64_t)k * CONTACT_SZ, r1 = coop_rd_ptr(e + 0x68), r2 = coop_rd_ptr(e + 0x80), by = r2 ? coop_rd_ptr(r2 + 0x40) : 0, w = r1 ? coop_rd_ptr(r1 + 0x40) : 0;
-                if (ct_is_link(by) == 2) continue;
+                if (ct_is_link(by) == 2 && !(ce_added_frame == coop_sess_frame_no() && ce_added_dc == dc && k >= ce_added_first)) continue;
+                if (victim_copy && ct_is_link(by) == 1) {   // this player's blow on a copy: to its owner whole, and kept here
+                    char wn2[48] = "";
+                    if (w) coop_actor_name(w, wn2, sizeof wn2);
+                    size_t wl2 = strlen(wn2);
+                    int arrow2 = wl2 >= 5 && !strcmp(wn2 + wl2 - 5, "Arrow");
+                    ce_queue(arrow2 ? &ce_new_arrows : &ce_new, a, e, arrow2 ? ECONTACT_ARROW : ECONTACT_KIND);
+                }
                 if (victim_copy && ((by && by != a && (coop_enemy_role(by) || coop_enemy_holder(by))) || (w && (coop_enemy_holder(w) || coop_enemy_shot_mirror(w))))) {
                     static _Atomic int said_e;
                     char an[48], bn[48], wn[48];
@@ -2957,6 +2977,7 @@ static void contacts_filter(uint64_t dc) {
                 keep++;
             }
             if (keep != cnt) memcpy((void *)(uintptr_t)(l + 0x18), &keep, 4);
+            ce_flush(&ce_new), ce_flush(&ce_new_arrows);
             return;
         }
     }
@@ -6057,38 +6078,21 @@ void coop_weaplog_test(uint64_t me) {
 // ---- An enemy's bones for the enemy sync's ragdoll pose (coop_enemy_pose.c) -------------------------------------------------
 // The skeleton's local records as epose_pack sends them: u16 bones, then 12 bytes a bone (the rotation's smallest three
 // quaternion components and the translation in 1/4096 m). 0: no skeleton, or it does not fit.
+#define POSE_ROOT 30   // u16 bones, the actor's place (3 floats) and turn (a quaternion)
 int coop_enemy_bones_pack(uint64_t a, uint8_t *out, int max) {
     uint64_t sk = enemy_skeleton(a), recs = sk ? coop_rd_ptr(sk + 0x18) : 0;
     uint16_t n = 0;
     static __thread float rec[PUP_BONES][24];
-    static __thread float fin[PUP_BONES][16];
-    uint64_t wmx = sk ? coop_rd_ptr(sk + 0x20) : 0;
-    if (!recs || !wmx || !coop_rd(sk + 0x48, &n, 2) || n == 0 || n > PUP_BONES || 2 + n * POSE_BONE > max || !coop_rd(recs, rec, (size_t)n * 0x60) || !coop_rd(wmx, fin, (size_t)n * 0x40)) return 0;
-    // A ragdoll's pose is in the final matrices, not in the records (the records keep the animation's pose while the
-    // bodies drive the bones): each record is worked out from the finals, R = Ap^-1 Ai S^-1, t = Ap^-1 (ti - tp), as
-    // epose_pack does with TOTK_COOP_EPOSE_FINAL. Bone 0 (no parent) is the finals' own: its matrix from the model's
-    // space, which the copy's root stands in for.
-    const int16_t *par = enemy_parents(a, n, (const float (*)[16])fin, (const float (*)[24])rec);
-    for (int i = 1; par && i < n; i++) {
-        float Ap[3][3], tp[3], Ai[3][3], ti[3], Ip[3][3];
-        if (par[i] < 0 || par[i] >= n) continue;
-        w_of(fin[par[i]], Ap, tp), w_of(fin[i], Ai, ti);
-        if (!inv3(Ap, Ip)) continue;
-        for (int r = 0; r < 3; r++)
-            for (int cl = 0; cl < 3; cl++) {
-                float v = 0;
-                for (int k = 0; k < 3; k++) v += Ip[r][k] * Ai[k][cl];
-                float sc = rec[i][4 + cl];
-                rec[i][8 + cl * 4 + r] = fabsf(sc) > 1e-6f ? v / sc : v;
-            }
-        for (int r = 0; r < 3; r++) {
-            float v = 0;
-            for (int k = 0; k < 3; k++) v += Ip[r][k] * (ti[k] - tp[k]);
-            rec[i][20 + r] = v;
-        }
-    }
-    if (!par) return 0;
+    // (the records themselves: a ragdoll's bodies are read back into the pose in the actor's model phase, main+0x2752c8
+    // inside main+0x245030, and main+0x289620 turns the pose into these records; research R12b. Read after that phase.)
+    if (!recs || !coop_rd(sk + 0x48, &n, 2) || n == 0 || n > PUP_BONES || POSE_ROOT + n * POSE_BONE > max || !coop_rd(recs, rec, (size_t)n * 0x60)) return 0;
     memcpy(out, &n, 2);
+    {   // (bone 0's record is from the actor's matrix: the pose is whole only with the actor's place and turn of the instant)
+        float rp[3] = {0}, rr[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}, rq[4];
+        coop_rd(a + COOP_ACTOR_POS, rp, 12), coop_rd(a + COOP_ACTOR_ROT, rr, 36);
+        mat_quat(rr, rq);
+        memcpy(out + 2, rp, 12), memcpy(out + 14, rq, 16);
+    }
     for (int b = 0; b < n; b++) {
         const float *f = rec[b];
         float R[9] = {f[8], f[12], f[16], f[9], f[13], f[17], f[10], f[14], f[18]}, q[4];
@@ -6101,9 +6105,9 @@ int coop_enemy_bones_pack(uint64_t a, uint8_t *out, int max) {
         for (int k = 0, j = 0; k < 4; k++) if (k != big) v[j++] = q16(q[k] * sign, 32767.0f);
         v[0] = (int16_t)((v[0] & ~3) | big);
         v[3] = q16(f[20], 4096), v[4] = q16(f[21], 4096), v[5] = q16(f[22], 4096);
-        memcpy(out + 2 + b * POSE_BONE, v, POSE_BONE);
+        memcpy(out + POSE_ROOT + b * POSE_BONE, v, POSE_BONE);
     }
-    return 2 + n * POSE_BONE;
+    return POSE_ROOT + n * POSE_BONE;
 }
 static void bone_unpack(const uint8_t *in, float q[4], float t[3]) {
     int16_t v[6];
@@ -6127,13 +6131,28 @@ int coop_enemy_bones_put(Cpu *c, uint64_t a, const uint8_t *pa, const uint8_t *p
     if (!recs || !coop_rd(sk + 0x48, &have, 2) || have != na || na != nb) return 0;
     for (int b = 0; b < na; b++) {
         float qa[4], qb[4], q[4], ta[3], tb[3], R[9];
-        bone_unpack(pa + 2 + b * POSE_BONE, qa, ta), bone_unpack(pb + 2 + b * POSE_BONE, qb, tb);
+        bone_unpack(pa + POSE_ROOT + b * POSE_BONE, qa, ta), bone_unpack(pb + POSE_ROOT + b * POSE_BONE, qb, tb);
         qblend(qa, qb, f, q), quat_mat(q, R);
         float *rec = (float *)(uintptr_t)(recs + (uint64_t)b * 0x60);
         for (int k = 0; k < 3; k++) rec[20 + k] = ta[k] + (tb[k] - ta[k]) * f;
         for (int cl = 0; cl < 3; cl++) for (int k = 0; k < 3; k++) rec[8 + cl * 4 + k] = R[k * 3 + cl];
     }
-    if (model) coop_guest_call(c, MOD_MAIN_BASE + 0x24cc30, model, 0, 0, 0);
+    {   // the actor and its model stand where the owner's stood at the pose's instant
+        float pA[3], pB[3], qA[4], qB[4], pos[3], q[4], rot[9];
+        _Alignas(16) float m[12];
+        memcpy(pA, pa + 2, 12), memcpy(qA, pa + 14, 16), memcpy(pB, pb + 2, 12), memcpy(qB, pb + 14, 16);
+        for (int k = 0; k < 3; k++) pos[k] = pA[k] + (pB[k] - pA[k]) * f;
+        qblend(qA, qB, f, q), quat_mat(q, rot);
+        for (int r = 0; r < 3; r++) {
+            for (int k = 0; k < 3; k++) m[r * 4 + k] = rot[r * 3 + k];
+            m[r * 4 + 3] = pos[r];
+        }
+        memcpy((void *)(uintptr_t)(a + COOP_ACTOR_POS), pos, 12), memcpy((void *)(uintptr_t)(a + COOP_ACTOR_ROT), rot, 36);
+        if (model) memcpy((void *)(uintptr_t)(model + 0x1f8), m, sizeof m);
+    }
+    // (the push builds the final matrices only for a model marked changed: bit 0 of model+0x240, which the actor's own
+    // phase has just cleared; without it the copy kept its own animation's finals. Research R12b 3.A.)
+    if (model) ST8(model + 0x240, LD8(model + 0x240) | 1), coop_guest_call(c, MOD_MAIN_BASE + 0x24cc30, model, 0, 0, 0);
     return 1;
 }
 // (test: where a bone is, from the actor's place, by the skeleton's world matrices; coop_enemy_pose.c lays the two games' side by side)
@@ -6143,6 +6162,8 @@ int coop_enemy_bone_world(uint64_t a, int bone, float out[3]) {
     float m[16], p[3];
     if (!wmx || !coop_rd(sk + 0x48, &n, 2) || bone >= n || !coop_rd(wmx + (uint64_t)bone * 0x40, m, sizeof m) || !coop_rd(a + COOP_ACTOR_POS, p, 12)) return 0;
     (void)p;
-    out[0] = m[12], out[1] = m[13], out[2] = m[14];   // (the matrix's translation, in the model's space)
+    float m0[16];   // (from bone 0: the finals are from an origin of each game's own, so only differences compare)
+    if (!coop_rd(wmx, m0, sizeof m0)) return 0;
+    out[0] = m[12] - m0[12], out[1] = m[13] - m0[13], out[2] = m[14] - m0[14];
     return 1;
 }

@@ -39,7 +39,7 @@ typedef struct {
     struct { float clock, weight; } c[EN_CTRL_N];
 } EnSlot;
 #define EN_EQ_N 8         // equipment slots
-typedef struct { EnSnap s; int32_t hp; uint32_t dstate; uint8_t nslot, rag, hide, vis, mem, verb, tgt, pad[1]; uint32_t eq[EN_EQ_N]; EnSlot sl[EN_SLOT_N]; } EnState;   // eq: the name hash of what each equipment slot holds   // one stated moment of an enemy
+typedef struct { EnSnap s; int32_t hp; uint32_t dstate; uint8_t nslot, rag, hide, vis, mem, verb, tgt, pad[1]; uint32_t eq[EN_EQ_N]; uint32_t att[EN_EQ_N]; uint8_t eqs[EN_EQ_N]; EnSlot sl[EN_SLOT_N]; } EnState;   // eq: the name hash of what each equipment slot holds   // one stated moment of an enemy
 // (hide: the model controller's "not drawn" byte, [comps+0x280]+0x9d; vis: actor+0x444 bit 23)
 
 typedef struct {
@@ -67,6 +67,8 @@ typedef struct {
     EnSlot show_slot[EN_SLOT_N];
     uint8_t show_nslot, show_hold;
     int32_t show_hp; uint32_t show_dstate; uint8_t show_rag, show_hide, show_mem, show_verb, show_tgt;
+    uint32_t eq_att[EN_EQ_N]; uint8_t eq_state[EN_EQ_N], eq_att_tries[EN_EQ_N]; uint32_t eq_state_frame;   // what is fused to each slot's thing at its owner's (name hash), and whether it is drawn (2) or put away (4)
+    uint32_t fwd_frame;   // the frame this game's player's contact on the copy was last sent whole to its owner (its lost life is then not sent as points too)
     uint8_t grace_verb, grace_tgt; uint32_t grace_frame, hold_frame, brain_log_frame;   // a taken-over enemy's brain is held at its owner's verb and target until this frame (B.6)
     // Hits and death (coop_enemy_hit.c).
     _Atomic int32_t hit_dmg;          // life this game's hits took from the copy since phase 0 last looked
@@ -97,7 +99,7 @@ typedef struct {
     EnState cur;                      // an owned enemy as last read
     uint64_t read_ns, sent_ns, log_ns;
     // the record
-    uint32_t st_used, st_lost, st_held, eq_off; float err_sum, err_max; uint32_t err_n;
+    uint32_t st_used, st_lost, st_held, eq_off, eq_att_off; float err_sum, err_max; uint32_t err_n;
 } En;
 
 extern PlatMutex en_lock;

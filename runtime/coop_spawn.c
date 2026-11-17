@@ -1161,6 +1161,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
         return 1;
     }
     if (addr == MOD_MAIN_BASE + 0x599670) {   // the create request: the entity sync runs it inside its hook (its inner entry first)
+        { void coop_enemy_loot_create(Cpu *c); coop_enemy_loot_create(c); }   // coop_enemy_loot.c: an item of a dying enemy's drop
         int coop_ent_hook(Cpu *c, uint64_t addr);
         if (coop_ent_hook(c, addr)) return 1;
         return create_trace(c);

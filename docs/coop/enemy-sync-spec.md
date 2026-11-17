@@ -256,13 +256,39 @@ it is seen every frame (the slot's time since seen stays 0) and fought, and in o
 this game's nearer Link after 12 s. Section 12's question, whether an enemy fights a stand-in in slot 0, is answered
 yes for a Wizzrobe. Not done on a copy: asking the verb while it is a copy (R10 4 ii).
 
-**B.7 A ragdoll on a copy** (research R12; `coop_enemy_pose.c`, off unless `TOTK_COOP_EN_POSE=1`). The ragdoll
-component's state ([[comps+0x3e8]+0x20]) is 0 none, 1 recovering, 2 partial (a flinch), 3 full. A copy does not start
-its own full ragdoll: the owner's game sends the skeleton's bones while its enemy is in state 3 or 1 (worked out from
-the final matrices, 12 bytes a bone, every other frame, latest only) and the copy's game writes them after the
-actor's model phase. Built and measured as not right yet [m]: poses are sent, taken and put, but the copy's skeleton
-at its next calc is 1.3 m (median) from the owner's bones and of another shape. Open: where the game writes a
-ragdoll's bones into the skeleton, in which space, and at which moment a copy's write lasts until the picture.
+**B.7 A ragdoll on a copy** [m] (research R12, R12b; `coop_enemy_pose.c`; `TOTK_COOP_EN_POSE=0` turns it off). The
+ragdoll component's state ([[comps+0x3e8]+0x20]) is 0 none, 1 recovering, 2 partial (a flinch), 3 full. A copy does
+not start its own full ragdoll. The game reads a ragdoll's bodies back into the pose in the actor's model phase
+(main+0x2752c8 inside main+0x245030), turns the pose into the skeleton's parent-local records (main+0x289620) and
+builds the final matrices from them (main+0x24cc30, only for a model marked changed: bit 0 of model+0x240). While its
+enemy is in state 3 or 1 the owner's game sends, after that phase and every other frame, the records (12 bytes a
+bone) with the actor's place and turn of the same instant; the copy's game, after its own model phase, writes the
+actor, the model's matrix and the records, marks the model changed and pushes. Measured: 6 ragdolls, 21 poses laid
+side by side by three bones' places from bone 0: 0.1 cm median, 0.2 cm at worst. Not seen in pictures up close.
+
+**B.9 Loot, a weapon let go, the kill counters** [m] (research R13; `coop_enemy_loot.c`). A copy makes no drops (its
+death's reserve and release sit under the death component's "no drops" bit). The owner's game notes each item its
+dying enemy's drop asks for (main+0x599670 called inside main+0x1c78060) and each weapon an enemy it runs lets go of
+(main+0x1b738e4), and the object mirror takes the noted ones as this game's made objects wherever they are: before,
+loot far from the owner's Link and every weapon near an enemy stayed in the owner's game alone. Seen: a Bokoblin's
+sword and its Item_Enemy_77 made in the owner's game and copied in the other. A copy's death record arms the kill
+counters' writer (main+0xb28394) as the owner's does; on a copy the record's done bit is set at its entry, so the
+shared counters go up once [built; the counter's value not read in a run]. Open: the save flags for a game with no
+actor at the placement; a camp's cleared record.
+
+**B.10 A player's blow on a copy goes to its owner whole** [m] (`coop_world.c`, the older sync's contact packets). The
+points-only HIT gave the owner's enemy a flinch and no more. The contact entry of this game's Link on a copy is kept
+there (the copy shows the blow at once) and sent whole to the owner's game, which adds it to its enemy's contact list
+at its next hit update with the stand-in as attacker: the owner's enemy takes the blow itself and its own selector
+chooses the reaction. Life lost on the copy within three frames of such a contact is not sent as points too. Seen: 9
+of one player's sword blows added to the other game's Bokoblin, which flinched four times and was knocked into a full
+ragdoll twice. [open: a shield's block and a parry of a copy's swing reaching the owner the same way: not run.]
+
+**B.11 Equipment** (research R13 section 3). STATE also carries, per slot, what is fused to the held thing and the
+slot's drawn or put-away state. A copy lets go of a held thing of another name than its owner's (a swap), makes a
+thing again with what is fused to its owner's when its own has none, and draws or puts away as its owner's
+(main+0x4f59ec). [built; a swap, a fused thing and a sheathe not seen in a run.] Not built: a throw replayed on the
+copy, a picked-up thing taken from the copy's ground.
 
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the

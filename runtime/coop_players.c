@@ -2588,10 +2588,14 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
     if (coop_rd(a + COOP_ACTOR_STATE, &ast, 4) && ast > 6 && !is_beam(nm)) return;
     float p[3];
     if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+    // What a dying enemy of this game's dropped, and a weapon one let go of: this game's made object wherever it is
+    // (coop_enemy_loot.c; the rules below kept every such weapon, and loot far from this Link, in this game alone).
+    int coop_enemy_loot_take(uint64_t a, const char *nm, int first);
+    int loot = coop_enemy_loot_take(a, nm, first);
     int coop_enemy_within(const float p[3], float m);   // coop_world.c
-    if (!strncmp(nm, "Weapon_", 7) && coop_enemy_within(p, 3.0f)) return;   // an enemy's (in its hand, or just let go of)
-    { int coop_enemy_holds(uint64_t actor); if (coop_enemy_holds(a)) return; }   // coop_enemy_copy.c: held by an enemy, or fused to what one holds
-    { int coop_enemy_young_near(const float p[3], float m); if (coop_enemy_young_near(p, 6.0f)) return; }   // (or about to be: beside an enemy just made)
+    if (!loot && !strncmp(nm, "Weapon_", 7) && coop_enemy_within(p, 3.0f)) return;   // an enemy's (in its hand, or just let go of)
+    { int coop_enemy_holds(uint64_t actor); if (!loot && coop_enemy_holds(a)) return; }   // coop_enemy_copy.c: held by an enemy, or fused to what one holds
+    { int coop_enemy_young_near(const float p[3], float m); if (!loot && coop_enemy_young_near(p, 6.0f)) return; }   // (or about to be: beside an enemy just made)
     float d2 = (p[0] - ps->me[0]) * (p[0] - ps->me[0]) + (p[1] - ps->me[1]) * (p[1] - ps->me[1]) + (p[2] - ps->me[2]) * (p[2] - ps->me[2]);
     float dco = 1e18f;
     for (int i = 0; i < COOP_MAX_PLAYERS; i++) {
@@ -2601,7 +2605,7 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
             if (e < dco) dco = e;
         }
     }
-    if (d2 > 400 && dco > 400) return;   // within 20 m of a Link, this one or a co-op one
+    if (!loot && d2 > 400 && dco > 400) return;   // within 20 m of a Link, this one or a co-op one
     // The beam (is_beam): a pooled actor, reused, so not new to the key scan: taken as made by this Link whenever it is
     // awake (state 4) within 6 m and nearer it, with a new number each time it wakes, and forgotten when it sleeps.
     if (is_beam(nm)) {
@@ -2653,7 +2657,8 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
         memset(&props[e], 0, sizeof props[e]);
         props[e].actor = a, props[e].key = key, props[e].moved = -1000, memcpy(props[e].last, p, 12);
         snprintf(props[e].name, sizeof props[e].name, "%s", nm);
-        if (first && d2 < 36) {
+        if (loot && ps->n_cand < 32) ps->cand[ps->n_cand++] = e;
+        else if (first && d2 < 36) {
             ps->n_first_near++;
             // Nearer this Link than any stand-in: two Links on one spot each claimed nothing before that rule. A Zonai
             // device with no map placement that is no copy here can only have been made by this game (a capsule, the

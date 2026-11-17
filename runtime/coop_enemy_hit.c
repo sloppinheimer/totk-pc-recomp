@@ -98,7 +98,9 @@ void en_hit_precalc(Cpu *c, uint64_t actor, EnCell *m, int off) {
     // life in the calc after the damage step that found it (two-game run: the life did not change inside the step).
     int32_t hp = m->show_hp, cur = en_hp_of(actor);
     if (m->hp_written > 0 && cur >= 0 && cur < m->hp_written) {
-        atomic_fetch_add(&m->hit_dmg, m->hp_written - cur);
+        // (life lost to a contact that went to the owner whole is not sent as points too: the owner's enemy takes the
+        // blow itself, with its reaction)
+        if (coop_sess_frame_no() - m->fwd_frame > 3) atomic_fetch_add(&m->hit_dmg, m->hp_written - cur);
         m->hit_hp = cur, m->hit_ns = en_now();
     }
     if (en_now() - m->hit_ns < 3 * SEC / 2 && m->hit_hp < hp) hp = m->hit_hp;

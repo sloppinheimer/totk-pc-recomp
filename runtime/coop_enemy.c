@@ -148,6 +148,33 @@ int en_cell_state(uint64_t actor) {
     EnCell *m = actor > 1 ? en_cell_of(actor) : NULL;
     return m ? atomic_load_explicit(&m->state, memory_order_relaxed) : EM_FREE;
 }
+// A blow of this game's player on a copy goes to the copy's owner whole (enemy-sync-spec.md B.10): coop_world.c asks
+// where to (the owner's player id, 0 none) and under which 32-bit name; the owner's game finds its actor by that name.
+static uint32_t en_key32(Enid id) {
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < 8; i++) h = (h ^ (uint8_t)(id.a >> (i * 8))) * 16777619u;
+    for (int i = 0; i < 4; i++) h = (h ^ (uint8_t)(id.b >> (i * 8))) * 16777619u;
+    return h ? h : 1;
+}
+int coop_enemy_contact_route(uint64_t actor, uint32_t *key) {
+    EnCell *m = actor > 1 ? en_cell_of(actor) : NULL;
+    int16_t ei = m ? atomic_load(&m->en) : -1;
+    if (!m || ei < 0 || atomic_load(&m->state) != EM_COPY || !en_tab[ei].used || en_tab[ei].life != EN_LIVE) return 0;
+    *key = en_key32(en_tab[ei].id);
+    m->fwd_frame = coop_sess_frame_no();
+    return en_peer_id(en_tab[ei].owner);
+}
+uint64_t coop_enemy_contact_actor(uint32_t key, int from) {
+    uint64_t me = coop_ctr_me(), a = 0;
+    coop_lock_wait(&en_lock);
+    for (int i = 0; i < EN_N && !a; i++)
+        if (en_tab[i].used && en_tab[i].owner == me && en_tab[i].life == EN_LIVE && en_key32(en_tab[i].id) == key) {
+            a = en_tab[i].actor;
+            en_tab[i].hit_by = from, en_tab[i].hit_by_ns = en_now();   // (the struck hand-over's clue, as a HIT sets it)
+        }
+    plat_mutex_unlock(&en_lock);
+    return a;
+}
 // For the other syncs (the element sync asks who decides for an enemy actor): 0 not an enemy this sync knows, 1 this
 // game decides for it (it runs it for all, or it is unsynced and this game's own), 2 a copy of another game's enemy
 // (or held for a moment before that is known).
