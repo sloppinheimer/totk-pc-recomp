@@ -614,8 +614,10 @@ void ent_ring_events(Cpu *c);       // below: identity and the hooks' events
 void ent_creates(Cpu *c);
 void ent_status_line(void);
 
+static void ent_reader_open(void);
 void coop_ent_phase0(Cpu *c) {
     if (!ent_on()) return;
+    ent_reader_open();
     coop_lock_wait(&ent_lock);
     atomic_store(&phase0_ms, ent_ms());
     ent_hash_tidy();
@@ -647,8 +649,17 @@ void coop_ent_drive(Cpu *c) {
     if (!ent_on() || ent_loading() || ent_paused()) return;
     ctn_drive(c);
 }
+// The entity sync's reader of the transport's inbox (coop_msg.c). Opened before the first session, from the first poll:
+// an unopened reader's messages and join/leave events are dropped by the other reader, the enemy sync's, which reads
+// first in each poll (coop_spawn.c coop_tick) and would take every reliable message.
+static void ent_reader_open(void) {
+    static int opened;
+    if (!opened) opened = 1, coop_msg_open(COOP_MSG_ENT);
+}
+
 void coop_ent_net(void) {
     if (!ent_on()) return;
+    ent_reader_open();
     CoopCtrHb hb = {0};
     if (ent_paused()) hb.flags |= COOP_CTR_HB_PAUSED;
     if (ent_loading()) hb.flags |= COOP_CTR_HB_LOADING;

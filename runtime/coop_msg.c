@@ -1,4 +1,4 @@
-// Co-op: the transport's one inbox, shared by the syncs that read it (docs/coop/enemy-sync.md section 16.1).
+// Co-op: the transport's one inbox, shared by the syncs that read it (docs/coop/enemy-sync.md, "Messages").
 //
 // coop_ctr.c has one inbox of reliable messages for every type and one queue of join and leave events, and until now
 // the entity sync (coop_ent*.c) took all of both and dropped a type it did not know. Here each reader asks for its
@@ -52,7 +52,10 @@ void coop_msg_open(int reader) {
 static int route(int reader, CoopCtrMsg *m) {
     int to = reader_of(m->type);
     if (to == reader) return 1;
-    if (!rd[to].open) { rd[to].dropped++; return 0; }
+    if (!rd[to].open) {   // (a reader that was never opened: its sync is off, or a bug, as the entity sync's was)
+        if (!rd[to].dropped++) rt_log("coop: msg: type %d dropped: reader %d is not open", m->type, to);
+        return 0;
+    }
     if (!rd[to].q) rd[to].q = calloc(MQ_N, sizeof *rd[to].q);
     if (!rd[to].q || rd[to].w - rd[to].r >= MQ_N) {
         held = *m, have_held = 1;

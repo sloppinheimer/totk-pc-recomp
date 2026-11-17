@@ -49,6 +49,10 @@ The whole sync is on unless `TOTK_COOP_CONTRAPTION=0` (`coop_ctn.c ctn_on`, `coo
   and while paused or loading the pause queue, GRANT and REFUSE, and TAKE answers.
 - **Any game thread**: hooks read the published sets (`ent_set_has`) and post events to a ring (`ent_post`).
 
+Reliable messages and join/leave events reach the sync through its own reader of the transport's inbox
+(`coop_msg.c`, `COOP_MSG_ENT`), which `coop_ent.c ent_reader_open` opens at the first poll. The enemy sync reads the
+inbox first in each poll; a reader that is not open has its messages dropped (with one log line).
+
 The order of a phase-0 pass (`coop_ent_phase0`): peer events; the pause queue and the transport's messages; the latest
 POSE, APPLIED and INDEX; the ring's events; each entity's liveness and main-body matrix (`world_caches`); creates and
 the copy maker; bonds (every 250 ms, or at once after a change); islands; this Link's hold and ride; islands again;
