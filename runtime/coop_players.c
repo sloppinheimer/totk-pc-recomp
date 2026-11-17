@@ -2245,6 +2245,7 @@ static int prop_skip(const char *nm) {
     // its own; sent as moved objects, a horse's mane hung in the air beside the other Link (suite case mount,
     // 2026-11-07).
     if (!strncmp(nm, "Horse_", 6) || !strncmp(nm, "GameRomHorseSaddle_", 19) || !strncmp(nm, "GameRomHorseReins_", 18)) return 1;
+    { int coop_mount_kind(const char *nm); if (coop_mount_kind(nm)) return 1; }   // a horse the enemy sync takes (coop_mount.c)
     // (Parasail, the Link's paraglider, was left out here: a copy of it seemed to take the other game down with the
     // Ultrahand crash, which was the beam's race (beam_hook). It is sent in its Link's frame: COOP_OBJ_ONLINK.)
     // Sage_: the sages' companion spirits, and Weapon_Bow_128, Tulin's bow, which follow the Link: sent as moved
@@ -4074,6 +4075,7 @@ static int ride_objects(RideObj *out, int max, const float near[3]) {
 static float ride_frame_s = 1 / 60.0f;   // the last frame's length on the world clock (ride_carry, once a frame)
 // (the stand-in's body has the ridden entity's velocity too, snap_velocity)
 static int ride_place(const Slot *s, float out[3]) {
+    { int coop_mount_place(int net_id, float out[3]); if (coop_mount_place(s->net_id, out)) return 1; }   // on this game's copy of a horse (coop_mount.c)
     uint64_t a = s->ride_actor;
     float p[3], r[9];
     if (!s->ride_owner || s->ride_owner == COOP_RIDE_MOUNT || !s->ride_id || !a) return 0;

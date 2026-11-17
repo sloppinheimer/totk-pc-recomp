@@ -1,6 +1,7 @@
 # Horse and animal sync: the specification
 
-Status, 2026-11-17: first draft, nothing built. Horses and animals are synced by the enemy sync's method
+Status, 2026-11-17: second draft; built as section 0 says, not run yet (no game may be started until the tester's
+other play session ends). Horses and animals are synced by the enemy sync's method
 ([enemy-sync-spec.md](enemy-sync-spec.md), "the enemy spec" below, cited as E plus a section). This file says only
 what differs from that method or is added to it. The older horse and animal code (`coop_mounts.c`, removed with the
 older enemy sync in E B.30) chose who runs a horse and where a rider sits but never mounted a horse in a run; what
@@ -12,6 +13,18 @@ animal and tack actors), H2 (the horse's side: driving, its AI, the save, tack),
 stand-in), H4 (animals; the movement and animation of four-legged actors). Marks as in E: [m] measured in a run,
 [inf] an inference of a reading, [open] not read with the rule that holds until it is, [run] to be settled by a named
 run of section 10. No mark: read in the game's code or data.
+
+## 0. As built (2026-11-17)
+
+`runtime/coop_mount.c`, on with `TOTK_COOP_MOUNTS=1` (off by default). Built and compiled, **not run**. Where the build
+differs from the first draft, the sections below are written as built:
+- What a horse or an animal states besides its STATE (the gait values, the tack, its rider and the rider's place, and
+  for an enemy what it rides) travels in its own message, MOUNT (type 66, unreliable, the latest per entry), sent with
+  the entry's STATE. An enemy's STATE does not grow; an enemy that rides nothing sends no MOUNT.
+- The tack is given to a copy by the game's own tack call (main+0xc48ac0, which the horse's tack node calls), not by
+  the weapon create; `EN_EQ_N` stays 8.
+- A wild herd is held back at the herd node itself (main+0xd7ff68, a new entry hook), not at the create request.
+- Not built: the copy of a registered horse made with its owner's coat (4.5); the wagon (9).
 
 ## 1. Reuse, not a second machine
 
@@ -79,12 +92,13 @@ double is seen.]
 
 4.3 **Wild herds** (H2 section 3.2, H1 section 5): not placed. A `WildHorseCreateTag*` actor (9 kinds, 77 placed:
 50 on the surface, 27 in the depths) makes 2 to 4 horses in one call (ExecuteWildHorseCreate, main+0xd7ff68), drawn
-from a name list by the game's global random generator, so two games would draw different herds. Rule: the create
-request (main+0x599670, hooked already) whose creator is a `WildHorseCreateTag*` actor is refused while another
-game's live horse made by a tag stands within 200 m of the tag (the tag's own radius, H1). The game that made the
-herd owns its horses; the spawn sync makes them in the others. [open: that the creator link is filled for these
-creates, E 5.4 reads it the same way for a copy's creates; if it is not, the refusal is by the call's caller address
-inside main+0xd7ff68.]
+from a name list by the game's global random generator, so two games would draw different herds. Rule: the herd
+node's update (main+0xd7ff68; x0 the node, its tag actor at [[[x0+8]+8]+0x1f8]; it returns true once the whole herd is
+made) is not run in a game while another player's Link is nearer the tag than this game's (within 400 m), or another
+game's live horse made at run time stands within 200 m of the tag (the tag's own radius, H1); it is answered true, so
+the node does not ask again in that load. So the game of the player nearest the tag makes the herd, owns its horses,
+and the spawn sync makes them in the others. Two games that load the tag in the same moment with their players at
+the same distance can still make two herds; the record says so (`coop: mount: herd:`).
 
 4.4 **The players' own horses** (H2 section 3). A registered horse is not placed. At a load each game's owned-horse
 manager (SeqOneShotInitializeOwnedHorseMgr, main+0x981330 and main+0x981ac8) makes **its player's** last-ridden horse
@@ -100,22 +114,24 @@ those (ExecuteHorseWriteGameDataForUI, OneShotOwnedHorseRegistAsLastRiddenAnimal
   stand-in. Accepted and said in the notes for players.
 
 4.5 **What a copy of a horse looks like.** A copy made by the spawn sync is made by name and has no tack and the
-default coat (H2 section 4). The owner states, in the declaration, the create's overrides it captured
-(`UidHash`, `OverwriteColorType`, `OverwriteFootType`, `Horse_OverwriteFamiliarity`) and the copy is made with them
-[open: the field layout of the overrides in the create request, E 10.3's "init values as (hash, value) pairs"];
-the tack travels as equipment: STATE's `eq[]` (E A, "Equipment is state too") carries the name hash per equipment
-slot, and a horse's tack is in slots 0xf, 0x10 and 0x11 of its equipment user (H2 section 4), so `EN_EQ_N` grows
-from 8 to 18 for every kind (for an enemy slots 8 to 17 are empty). The copy is given what its owner's horse holds
-by the equipment create main+0xaf100c, as an enemy's weapon is. [inf: that the equipment create makes tack; H2
-found the slots, not the creator. Until a run shows it, a copy without its tack is the expected fault.] The wagon:
-a child actor of `GameRomHorseSaddle_07_WithWagon` (ActorHolder); not synced in this draft.
+default coat (H2 section 4).
+- **The tack** is in slots 0xf (mane), 0x10 (reins) and 0x11 (saddle) of the horse's equipment user (H2 section 4:
+  the node OneShotHorseEquipHorseTack calls main+0x1b9cec8, 0x1b9ce60 and 0x1b9ce10, which call main+0xc48ac0(equipment
+  user, slot, &name, -1, 0, 1); the name object is a pointer and a capacity, as the armour create's). MOUNT carries the
+  name hash of what each holds; a copy's slot that is empty where its owner's holds something is filled by the same
+  call, once a second, three tries a slot. Every tack name of the census is known to every game, so a name is never
+  missing. [run: that the call makes and binds the tack on a copy.]
+- **The coat** (the create's overrides `UidHash`, `OverwriteColorType`, `OverwriteFootType`,
+  `Horse_OverwriteFamiliarity`): not built. A copy of a registered horse shows its kind's default coat [open: the
+  overrides' layout in the create request, E 10.3's "init values as (hash, value) pairs"].
+- The wagon: a child actor of `GameRomHorseSaddle_07_WithWagon` (ActorHolder); not synced in this draft.
 
 4.6 **The ridden horse is its rider's game's** (H2 section 1, H3 section 2). The rider's input goes into the
 rider's own Rider component and the horse's graph reads it through its seat in the same game (ExecutePlayerRide
 writes Rider +0xf8 to +0x168; ExecuteHorseRiddenByPlayer reads them, H2 1.1). So a horse is run by the game whose
 actor sits in its seat. Rules, added to E 4.4 and 4.5:
 - **this Link mounts a copy**: the ride call main+0x502e60 for this Link's Rider component on a copy horse is let
-  through when the owner's last STATE names no rider, and in the same phase 0 this game claims the horse (E 4.4's
+  through when the owner's last MOUNT names no rider, and at the next phase 0 this game claims the horse (E 4.4's
   take, epoch + 1, no hold). Mounting takes about a second of animation in the game that mounts; the old owner's
   game gets the CLAIM within a round trip and its horse becomes a copy before the rider sits [inf].
 - **a copy whose owner states a rider** refuses the ride call here (returns 0 before any write, as `coop_ent_id.c
@@ -144,7 +160,7 @@ horse handle, type 1, seat 0) (seen in main+0xd3c160, which re-seats a saved rid
 is worked out each frame from the Rider component by main+0x321e8c. So "this Link rides horse H" is: Rider
 ([comps+0x410]) +0x38 is 1 and its mount link +0x20 names H. No box test.
 
-5.1 **Stated with the horse.** The horse's owner is the rider's game (4.6), so the horse's STATE carries its rider
+5.1 **Stated with the horse.** The horse's owner is the rider's game (4.6), so the horse's MOUNT carries its rider
 at the same frame stamp as its pose: `rider` (0 none, 1 + net id a player's Link, 0xff an enemy) and the rider's
 place in the horse's frame (`roff[3]`, from the two actors' poses at the read). NetState's ride fields stay for
 contraptions; `COOP_RIDE_MOUNT` is not sent.
@@ -163,7 +179,7 @@ computation: a larger error is a fault of order, not of the network).
 A Bokoblin on a horse (H3 section 1, R20): the ride writes the mount link and a seat into the rider's ModelBind
 component ([comps+0x18]: +0x70 the parent link, +0x88 the seat's bone name, +0x40 a local matrix, +0x1a4 bit 0);
 the engine places the rider from the horse's bone each frame [inf: the applying function is not found].
-- The rider's STATE carries `ride` = (the horse's Enid, seat, type), from its Rider +0x20, +0x3c, +0x44 when +0x38
+- The rider's MOUNT carries `ride` = (the horse's Enid, seat, type), from its Rider +0x20, +0x3c, +0x44 when +0x38
   is 1.
 - A copy rider is seated by main+0x502e60(its Rider, its game's copy of that horse, type, seat) on the edge "rides
   nothing -> rides H", and put off by main+0xc448c8(Rider, 0, &0) on the other edge or when H changes (get off
@@ -185,14 +201,15 @@ from AI Execute nodes) ends with three writes through the player's setter (vtabl
 +0x54, +0x58 and +0x5c of its state. A copy's AI does not run, so its values stay at their defaults: the copy
 would play straight, flat clips (H4 section B6).
 
-7.1 **STATE carries the gait values.** Per kind a list of names, from the ASB blackboard tables (H4 B6.2):
+7.1 **MOUNT carries the gait values.** Per kind a list of names, from the ASB blackboard tables (H4 B6.2):
 - horse: `RequestGear`, `StickX`, `StickAngle`, `DirectionAngle`, `UserSpeed`, `GroundNormal`, `GroundNormalSide`,
   `ForwardBent`, `PullAnmRate`, `Variation`;
 - deer, bear, wolf and the others: `RequestGear`, `StickX`, `DirectionAngle`, `GroundNormal`, and `Distance` where the
   table has it.
 The owner reads them at phase 0 by the getter (`vt[+0x170](B, &name)`, G5 section 4); the copy writes each that
 differs by the setter by id (`vt[+0x70](value, B, id)`, ids looked up once per copy by `vt[+0x290]`) in pre-calc
-before the animation is applied. Up to 12 floats in STATE (48 bytes). This is generic: an enemy whose ASB has such
+after the animation is asked. Up to 12 floats (48 bytes); the owner reads them when a state is due. Each name's id
+is looked up once per actor; a name its table lacks (id -1) is not read or written. This is generic: an enemy whose ASB has such
 keys (a Lynel, a Hinox's `StickX`) gets them by the same table. [open: which key selects the gear, the command or
 `RequestGear` (H4 b1); both are carried, so either way the copy has it.]
 

@@ -137,6 +137,18 @@ void en_copy_phase0(Cpu *c);                                   // states read an
 void en_copy_burst(int id);                                    // the command names, to a peer that came
 int en_copy_msg(const CoopCtrMsg *m, int from);                // 1: the message was this file's
 
+// coop_mount.c (horses and animals: docs/coop/horse-animal-sync-spec.md)
+void coop_mount_scan(void);                                    // under en_lock, at the top of the ownership pass
+int coop_mount_keep(const En *e);                              // owned, sat on by this game's actor: not handed over
+int coop_mount_ridden(const En *e);                            // another game's, stated ridden: not taken for a pause
+int coop_mount_claim(const En *e);                             // another game's, sat on by this game's actor: claimed
+void coop_mount_forget(int i, int cell);                       // an entry freed (cell) or changing owner (cell -1)
+void coop_mount_phase0(Cpu *c);
+void coop_mount_owner(Cpu *c, En *e, int due);                 // an owned entry's MOUNT, with its STATE
+void coop_mount_take(En *e, int from);                         // a copy's latest MOUNT
+int coop_mount_precalc_ride(Cpu *c, uint64_t actor, EnCell *m);   // 1: it sits on a horse here, its pose is not written
+void coop_mount_precalc(Cpu *c, uint64_t actor, EnCell *m);    // the gait values and the tack
+
 // coop_enemy_shot.c
 int en_shot_hook(Cpu *c, uint64_t off, EnCell *m);              // a prepare or a shoot of an enemy this game runs: made here and captured
 void en_shot_T(int id, int64_t t);                             // the time this game shows a peer at, this frame

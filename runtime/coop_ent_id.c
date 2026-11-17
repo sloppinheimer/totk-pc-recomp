@@ -272,7 +272,7 @@ int coop_ent_hook(Cpu *c, uint64_t addr) {
     if (off == 0x54cb00) return coop_ent_created_hook(c, addr);
     if (off == 0x599670) return coop_ent_create_hook(c, addr);
     if (off == 0xa1bc30) return coop_ent_create_sync_hook(c);
-    if (off == 0x502e60) return coop_ent_seat_hook(c);
+    if (off == 0x502e60) { int coop_mount_ride_hook(Cpu *c); return coop_mount_ride_hook(c) || coop_ent_seat_hook(c); }   // (a horse's seat: coop_mount.c)
     if (off == 0x190f034 || off == 0x191642c || off == 0x190d924) return ent_on() && coop_ent_strand_hook(c, off);
     return 0;
 }

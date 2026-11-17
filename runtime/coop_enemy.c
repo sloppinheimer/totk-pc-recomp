@@ -34,8 +34,9 @@ void coop_lock_wait(PlatMutex *m);   // coop_spawn.c
 // body as before. A whole enemy of a kind this sync does not take is each game's own: made in the other game too it
 // stood there as a second, unsynced enemy (two baby Froxes, a play session, 2026-11-17).
 static int kind_of(const char *nm);
+int coop_mount_kind(const char *nm);   // coop_mount.c
 int coop_enemy_spawn_synced(const char *nm) {
-    if (strncmp(nm, "Enemy_", 6)) return 0;
+    if (strncmp(nm, "Enemy_", 6)) return coop_mount_kind(nm) != 0;   // (a horse or an animal made at run time: coop_mount.c)
     return kind_of(nm) || strstr(nm, "WeakPoint") || strstr(nm, "Dummy") || strstr(nm, "Bullet") || strstr(nm, "Tornado") || strstr(nm, "Thorns") || strstr(nm, "SecretStone");
 }
 
@@ -106,7 +107,7 @@ static int kind_of(const char *nm) {
         return 0;
     for (unsigned i = 0; i < sizeof pre / sizeof *pre; i++)
         if (!strncmp(nm, pre[i], strlen(pre[i]))) return (int)i + 1;
-    return 0;
+    return coop_mount_kind(nm);   // horses and land animals, with TOTK_COOP_MOUNTS=1 (coop_mount.c)
 }
 
 int coop_enemy_kind(const char *nm) { return kind_of(nm); }
@@ -333,6 +334,7 @@ static void cell_unbind(En *e) {
     e->actor = 0, e->gen = 0, e->cell = -1;
 }
 static void en_free(En *e) {
+    coop_mount_forget((int)(e - en_tab), e->cell);
     cell_unbind(e);
     memset(e, 0, sizeof *e);
     e->cell = -1;
@@ -508,6 +510,7 @@ static int en_apply_owner(Enid id, uint64_t owner, uint32_t epoch, const char *w
     if (!e && !(e = en_alloc(id))) return 0;
     if (r) { if (!e->have_decl) e->hp = r->hp, memcpy(e->pose, r->pose, 28); rest_del(id); }
     uint64_t was = e->owner;
+    coop_mount_forget((int)(e - en_tab), -1);
     e->owner = owner, e->epoch = epoch, e->offered = 0, e->offer_to = 0, e->offer_seen_ns = 0, e->notrun_ns = 0, e->owner_ns = en_now();
     e->snap_w = 0, e->tele_seen = 0;   // (the ring of states is the old owner's)
     if (e->life == EN_UNSYNCED) e->life = EN_LIVE;
@@ -666,6 +669,7 @@ static void own_pass(uint64_t now, uint32_t frame) {
     uint64_t me = coop_ctr_me(), link = coop_player_actor();
     hand_have_me = link && coop_rd(link + COOP_ACTOR_POS, hand_me, 12);
     hand_n = coop_player_positions_ids(hand_them, hand_ids, COOP_MAX_PLAYERS);
+    coop_mount_scan();   // who of this game sits on what (coop_mount.c)
     for (int i = 0; i < EN_N; i++) {
         En *e = &en_tab[i];
         if (!e->used || e->life == EN_UNSYNCED) continue;
@@ -681,7 +685,7 @@ static void own_pass(uint64_t now, uint32_t frame) {
                 if (e->offered && !e->offer_all && !e->offer_to) e->offered = 0, en_log_own(e, "offer withdrawn", "this game runs it again");
                 if (e->offered && e->offer_to && now - e->offer_ns >= 2 * SEC)   // the nearer player's game did not take it: not asked again for 10 s
                     e->offered = 0, e->offer_to = 0, e->no_offer_until_ns = now + 10 * SEC, en_log_own(e, "offer withdrawn", "the nearer player's game did not take it");
-                if (!e->offered) handover(e, now);
+                if (!e->offered && !coop_mount_keep(e)) handover(e, now);   // (not a horse this game's actor sits on: coop_mount.c)
                 continue;
             }
             if (e->offered && e->offer_to) e->offered = 0, e->offer_to = 0;   // (no longer run here: the open offer below takes over)
@@ -694,11 +698,12 @@ static void own_pass(uint64_t now, uint32_t frame) {
             continue;   // (the offer's end is the net tick's: it also comes in a load)
         }
         if (e->life != EN_LIVE || !r) continue;
+        if (coop_mount_claim(e)) { take(e, "this game's actor sits on it", now); continue; }   // (a ridden horse is its rider's game's: coop_mount.c)
         int id = en_peer_id(e->owner), ps = id ? coop_sess_peer(id) : COOP_SESS_GONE;
         if (e->offer_seen_ns && now - e->offer_seen_ns < 3 * SEC) take(e, "its owner offered it and this game runs it", now), e->no_offer_until_ns = now + 10 * SEC;
         else if (!id || ps == COOP_SESS_GONE) take(e, "its owner left", now);
         else if (ps == COOP_SESS_LOADING) take(e, "its owner is in a load", now);
-        else if (ps == COOP_SESS_PAUSED && peer[id].paused_ns) {
+        else if (ps == COOP_SESS_PAUSED && peer[id].paused_ns && !coop_mount_ridden(e)) {   // (its rider is in a menu: coop_mount.c)
             uint64_t p = now - peer[id].paused_ns;
             if (p >= 5 * SEC) take(e, "its owner has been paused 5 s", now);
             else if (p >= SEC && e->my_hit_ns && now - e->my_hit_ns < 5 * SEC) take(e, "its owner is paused and this player fights it", now);

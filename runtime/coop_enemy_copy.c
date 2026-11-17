@@ -623,6 +623,7 @@ int en_copy_hook(Cpu *c, uint64_t off) {
     case 0x1bf20cc: { int en_arm_hook(Cpu *c, uint64_t off); return en_arm_hook(c, off); }   // coop_enemy_arm.c
     case 0x1bfa698: case 0x1bfa87c: case 0x1bfa4e0: { int en_shs_hook(Cpu *c, uint64_t off); return en_shs_hook(c, off); }   // coop_enemy_shot.c: a Shooter put to sleep
     case 0x25aafec: case 0x21cdf44: case 0x1d71dfc: case 0x24901b0: case 0x24902e0: case 0xa80f28: { int en_fx_hook(Cpu *c, uint64_t off); return en_fx_hook(c, off); }   // coop_enemy_fx.c
+    case 0xd7ff68: { int coop_mount_herd_hook(Cpu *c); return coop_mount_herd_hook(c); }   // a wild herd is made in one game (coop_mount.c)
     case 0x21cd650: { void en_moon_local(void); en_moon_local(); return 0; }   // the blood moon begins here (coop_enemy.c)
     case 0x1c78060: case 0x1b738e4: case 0x1b73be4: case 0xb28394: { int en_loot_hook(Cpu *c, uint64_t off); return en_loot_hook(c, off); }   // coop_enemy_loot.c
     case FN_BRAIN_VERB: {   // (x0 the brain, w1 the verb, w2 bit 0 force): a held brain keeps its owner's verb
@@ -922,9 +923,12 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
                 }
             }
         }
-        put(c, actor, pos, quat);
-        memcpy(m->pin, pos, 12), memcpy(m->pin + 3, quat, 16), m->pinned = 2;
+        if (!coop_mount_precalc_ride(c, actor, m)) {   // (a rider seated on a horse here is placed by its seat: coop_mount.c)
+            put(c, actor, pos, quat);
+            memcpy(m->pin, pos, 12), memcpy(m->pin + 3, quat, 16), m->pinned = 2;
+        } else m->pinned = 0;
         slots_apply(c, actor, m, slot, nslot, hold, coop_sess_frame_no());
+        coop_mount_precalc(c, actor, m);
         for (int k = 0; k < EN_EQ_N; k++) {
             // What the owner's enemy holds and the copy does not (a weapon fetched again, one picked up) the copy is given by
             // the game's own equipment create, called as coop_players.c give_gear calls it for a stand-in: in the hand,
@@ -1122,7 +1126,7 @@ static void quat_slerp(const float a[4], const float b[4], float t, float out[4]
 }
 
 void en_copy_phase0(Cpu *c) {
-    (void)c;
+    coop_mount_phase0(c);
     uint64_t me = coop_ctr_me(), now = en_now(), stamp = coop_sess_frame_ns();
     uint32_t frame = coop_sess_frame_no();
     if (!(frame % 15)) held_rebuild();
@@ -1266,6 +1270,7 @@ void en_copy_phase0(Cpu *c) {
                 st_bytes += (uint32_t)len, st_n++;
                 e->sent_ns = now;
             }
+            coop_mount_owner(c, e, due);   // a horse's or an animal's gait, tack and rider, an enemy's horse (coop_mount.c)
             uint32_t let = atomic_exchange(&m->passed, 0);
             n_owned++, passed_sum += let;
             gmc_log(e->actor, "run here");
@@ -1282,6 +1287,7 @@ void en_copy_phase0(Cpu *c) {
         }
         int id = en_peer_id(e->owner);
         if (!id) continue;
+        coop_mount_take(e, id);
         MState ms;
         uint64_t age = 0;
         int len = coop_ctr_latest(id, ENM_STATE, key_of(e->id), &ms, sizeof ms, &age);
