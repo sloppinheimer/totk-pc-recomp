@@ -1,8 +1,0 @@
-# Rito Village save: open the inventory, hold the left stick for 20 s, close it.
-300 A 4
-520 A 4
-700 A 4
-900 A 4
-@6000 PLUS 150
-@7000 LSTICK 32767 0 20000
-@28000 PLUS 150
