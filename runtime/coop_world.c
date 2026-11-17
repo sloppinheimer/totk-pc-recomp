@@ -8,8 +8,8 @@
 // - A player's blow on another game's enemy: the contact is sent to the game that runs the enemy ("CE"/"AE"
 //   packets), which adds it to its enemy's hit update (coop_hit_update, contacts_filter); the enemy sync says whose
 //   an enemy is.
-// - The HIT channel's reader (peer_tick), which hands each packet to its sync.
 // - Probes and tests of the research that found these.
+// The HIT channel's reader is coop_hitchan.c.
 // The enemies themselves are synced by coop_enemy.c and its files (docs/coop/enemy-sync-spec.md). The older enemy
 // sync that lived here, and the horses and animals that rode on it, are gone (spec B.30).
 #include <math.h>
@@ -1130,32 +1130,14 @@ static void link_dump_test(uint64_t me) {
     rt_log("coop: test: linkdump %s at %.1f s: %s", path, frame_step_world_us() / 1e6, plat_file_write(path, buf, sizeof buf) ? "written" : "not written");
     done++;
 }
-// Each frame with another player in the session: the HIT channel's packets are handed to their owners (the shared
-// world progress, the rotating ground, a player's blow sent to the game that runs the enemy, the spawn sync, the
-// travel notice), then the spawn sync's own tick; about 10 times a second the list of live enemies is made again.
+// Each frame with another player in the session: this file's tests, the HIT channel (coop_hitchan.c), and about 10
+// times a second the list of live enemies made again.
 static void peer_tick(Cpu *c, uint64_t me) {
     coop_world_me = me;
     link_dump_test(me);
     guard_scan_test(me);
     hit_watch_test(me);
-    void coop_autobuild_tick(Cpu *c, uint64_t me);   // coop_autobuild.c
-    coop_autobuild_tick(c, me);
-    int my_id = coop_net_id(), from = 0, n;
-    static _Alignas(16) uint8_t in[COOP_HIT_MAX];
-    while ((n = coop_net_hit_take(in, sizeof in, &from)) != 0) {
-        int coop_gamedata_take(const void *data, int n, int from);   // coop_gamedata.c: shared world progress
-        if (coop_gamedata_take(in, n, from)) continue;
-        const ContactPacket *cp = (const ContactPacket *)in;
-        const SpawnPacket *sp = (const SpawnPacket *)in;
-        if (n >= (int)offsetof(GroundPacket, g) && ((const GroundPacket *)in)->kind == GROUND_KIND) ground_take((const GroundPacket *)in, n);
-        else if (n >= (int)offsetof(ContactPacket, e) && (cp->kind == ECONTACT_KIND || cp->kind == ECONTACT_ARROW) && (int)cp->to == my_id && cp->n <= CONTACT_MAX &&
-                 n == (int)(offsetof(ContactPacket, e) + cp->n * CONTACT_SZ))
-            coop_contact_take(cp, from);
-        else if (n == (int)sizeof(SpawnPacket) && (sp->kind == SPAWN_KIND || sp->kind == SPAWN_GONE)) spawn_take(c, sp, from);
-        else if (n == (int)sizeof(CoopTravelPacket) && ((const CoopTravelPacket *)in)->kind == COOP_TRAVEL_KIND)   // coop_notices.c
-            coop_notice_travel_take((const CoopTravelPacket *)in, n, from);
-    }
-    spawn_tick(c);
+    coop_hitchan_tick(c, me);
     static int t;
     if (++t % 3 == 0) dup_count();
 }

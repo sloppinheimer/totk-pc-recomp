@@ -29,6 +29,16 @@
 
 void coop_lock_wait(PlatMutex *m);   // coop_spawn.c
 
+// Whether the spawn sync (coop_spawn_sync.c) announces an enemy of that name made at run time and makes the others'
+// one: a kind this sync takes, or a part actor of an enemy (a weak point, a dummy, a bullet), which is made beside its
+// body as before. A whole enemy of a kind this sync does not take is each game's own: made in the other game too it
+// stood there as a second, unsynced enemy (two baby Froxes, a play session, 2026-11-17).
+static int kind_of(const char *nm);
+int coop_enemy_spawn_synced(const char *nm) {
+    if (strncmp(nm, "Enemy_", 6)) return 0;
+    return kind_of(nm) || strstr(nm, "WeakPoint") || strstr(nm, "Dummy") || strstr(nm, "Bullet");
+}
+
 int coop_enemy_new(void) {
     static int on = -1;
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_ENEMY"); on = !(e && *e == '0'); }   // on unless TOTK_COOP_ENEMY=0 (spec B.30)
@@ -79,7 +89,10 @@ static int kind_of(const char *nm) {
         if (n && !strncmp(nm, p, n)) return 100;
         p = q ? q + 1 : NULL;
     }
-    if (strstr(nm, "Swarm") || strstr(nm, "WeakPoint") || strstr(nm, "Dummy") || strstr(nm, "Bullet") || strstr(nm, "Baby")) return 0;   // (not one whole enemy, or a boss)
+    // (Not one whole enemy. A baby Frox is no longer left out: its copy plays its owner's command in 91 % of samples,
+    // under the bar, but left out it was each game's own, two Froxes where the players saw one: a play session,
+    // 2026-11-17.)
+    if (strstr(nm, "Swarm") || strstr(nm, "WeakPoint") || strstr(nm, "Dummy") || strstr(nm, "Bullet")) return 0;
     for (unsigned i = 0; i < sizeof pre / sizeof *pre; i++)
         if (!strncmp(nm, pre[i], strlen(pre[i]))) return (int)i + 1;
     return 0;

@@ -219,6 +219,18 @@ void en_fx_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         }
         atomic_store(&fxq[k].cell, 0);
     }
+    if (m->show_gb & 0x80) {   // the swift-attack bit as its owner's graph has it (B.31)
+        uint64_t cl = coop_rd_ptr(en_comps(actor) + 0x268);
+        uint32_t w34 = 0;
+        if (cl && coop_rd(cl + 0x34, &w34, 4)) {
+            uint32_t to = (w34 & ~0x80u) | (uint32_t)(m->show_gb & 1) << 7;
+            if (to != w34) {
+                memcpy((void *)(uintptr_t)(cl + 0x34), &to, 4);
+                static _Atomic int said;
+                if (atomic_fetch_add(&said, 1) < 30) rt_log("coop: en: swift: the copy %llx's attack is %s, as its owner's", (unsigned long long)actor, m->show_gb & 1 ? "a swift one" : "no longer a swift one");
+            }
+        }
+    }
     if (m->show_wx) {
         uint64_t mgr = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + 0x395dc20));
         if (mgr) coop_guest_call(c, MOD_MAIN_BASE + 0x21cdf44, mgr, (uint64_t)(m->show_wx - 1), 0, actor);

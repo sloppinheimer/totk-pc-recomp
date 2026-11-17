@@ -452,7 +452,7 @@ the actor registry and keys, the HIT channel's reader, and research probes.
 - Taken by default now [m] (the standing test of B.19, command the same in that share of samples): a Gleeok
   (`Enemy_Drake`, 99.8 %), a block construct (`Enemy_Zonau_BlockMaster`, 99.7 %), and the boss variants of families
   already taken, which a name rule used to leave out: a boss Bokoblin 99.7 %, an armoured Lynel 99.7 %, a Gibdo boss
-  with its parts 98.8 %. Not fought. A baby Frox stays out (91.4 %).
+  with its parts 98.8 %. Not fought. (A baby Frox, 91.4 %, was left out here and is taken since B.31.)
 - `TOTK_COOP_EN_KINDS` is asked before the name exclusions, so a left-out name can be tried.
 - A pick-up (B.17's ENM_PICK) of a weapon that lies placed in the world, not one a game dropped: the message carries
   the weapon's place, and the copy's game finds its own actor of that name within 2.5 m of it among all its actors
@@ -480,6 +480,27 @@ the actor registry and keys, the HIT channel's reader, and research probes.
   followed device striking an enemy this game runs is counted in both games, as it was: [open].)
 - [m] before the code was cut, with only the defaults flipped: the bench's fight, wizzrobe and handover cases, tables
   equal, no leak. The state with the code cut builds and has not been run.
+
+**B.31 After the first play session without the older sync** (2026-11-17).
+- A baby Frox is taken (it had been left out for its 91 % command share). Left out, it was each game's own, and the
+  spawn sync still made each game's Frox in the other: two Froxes fought apart where the players saw one.
+- The spawn sync announces and makes only what this sync takes, and part actors (a weak point, a dummy, a bullet); a
+  whole enemy of a family this sync does not take is each game's own and is no longer made in the other game.
+  Not taken today, by the name rule against the census (30 of 221 names): the five dungeon bosses and their
+  Uncleared and Underground forms, Ganondorf and his Miasma form, Phantom Ganon, Kohga's two constructs, the Goron
+  mid-boss and its weak points, the sand worm, the Keese and bee swarms, the dungeon practice construct.
+- The shield's fuse is found by the nearest actor at the shield; an enemy standing in a Link's place was taken for
+  one and sent as the shield's material. An `Enemy_` actor is never a fuse.
+- The swift-attack bit (research R4 section 5): bit 7 of the word +0x34 of an enemy's game-balance client
+  ([comps+0x268]), set and cleared by the node OneShotGameBalanceSetSwiftAttack of its attack's graph. A copy's graph
+  does not run, so STATE carries it (`gb`: 0x80 stated, bit 0 the bit) and the copy's is written before its calc.
+  Built, not seen; whether a perfect dodge against a copy then starts the rush is not known (research R18, being
+  read).
+- The HIT channel's reader is `coop_hitchan.c`. Seven message types the design named and nothing sent are gone from
+  the list (their numbers stay free).
+- [open] A skeleton made by a game's own spawner stood 0.0 and 0.2 m from the other player's stand-in (twice, once
+  in each game) and played no clip in the game that ran it; its copy stood in its idle clip inside the other player's
+  Link. Not read: how the game keeps such an enemy undrawn before it rises, and why it is made at the stand-in.
 
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the

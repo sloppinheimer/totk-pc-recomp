@@ -58,4 +58,6 @@ _Static_assert(sizeof(SpawnPacket) <= COOP_HIT_MAX, "SpawnPacket fits a HIT pack
 void spawn_tick(Cpu *c);
 void spawn_take(Cpu *c, const SpawnPacket *sp, int from);
 
+void coop_hitchan_tick(Cpu *c, uint64_t me);   // coop_hitchan.c: the HIT channel's packets to their syncs, then the spawn sync's tick
+
 #endif

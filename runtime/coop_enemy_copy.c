@@ -1164,6 +1164,15 @@ void en_copy_phase0(Cpu *c) {
                 }
                 s->binfo = f, s->binfo2 = b2;
             }
+            {   // Its attack is a swift one (B.31; research R4 section 5): bit 7 of its game-balance client's word +0x34
+                // ([comps+0x268]), which the node OneShotGameBalanceSetSwiftAttack of its attack's graph sets and
+                // clears. A copy's graph does not run, so the bit is stated.
+                uint64_t cl = coop_rd_ptr(en_comps(e->actor) + 0x268);
+                uint32_t w34 = 0;
+                uint8_t gb = cl && coop_rd(cl + 0x34, &w34, 4) ? (uint8_t)(0x80 | (w34 >> 7 & 1)) : 0;
+                if (gb != s->gb) e->send_burst = 3;
+                s->gb = gb;
+            }
             { uint8_t wx = frame - m->wx_frame < 10 ? m->wx_type : 0; if (wx != s->wx) e->send_burst = 3; s->wx = wx; }   // (the magic weather its graph asks for: coop_enemy_fx.c)
             if (!((frame + (uint32_t)i) & 7)) attn_owner(e);
             {   // its AI memory (B.2)
@@ -1271,7 +1280,7 @@ void en_copy_phase0(Cpu *c) {
         // The owner's enemy began a flinch (a partial ragdoll, by its own player's blow or anything else): the copy's is
         // asked of its own ragdoll component, unless this game's player just struck it and it flinched here already.
         // (no flinch is asked of the copy's own ragdoll component any more: see en_copy_hook, the ragdoll start)
-        m->show_rag = sl->rag, m->show_hide = sl->hide, m->show_mem = sl->mem, m->show_verb = sl->verb, m->show_tgt = sl->tgt, m->show_wx = sl->wx, m->show_binfo = sl->binfo, m->show_blink = sl->blink, m->show_bhave = 1;
+        m->show_rag = sl->rag, m->show_hide = sl->hide, m->show_mem = sl->mem, m->show_verb = sl->verb, m->show_tgt = sl->tgt, m->show_wx = sl->wx, m->show_binfo = sl->binfo, m->show_blink = sl->blink, m->show_bhave = 1, m->show_gb = sl->gb;
         m->show_nslot = sl->nslot, m->show_hold = (uint8_t)hold, m->show_teleport = (uint8_t)jump, m->show_hp = sl->hp, m->show_dstate = sl->dstate;
         for (int k = 0; k < sl->nslot; k++) {
             m->show_slot[k] = sl->sl[k];

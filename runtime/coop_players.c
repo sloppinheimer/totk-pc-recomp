@@ -5275,7 +5275,8 @@ static void shield_fuse_fn(uint64_t a, void *arg) {
     char nm[48];
     coop_actor_name(a, nm, sizeof nm);
     if (!nm[0] || !strncmp(nm, "Player", 6) || !strncmp(nm, "Weapon_", 7) || !strncmp(nm, "Armor_", 6) || !strncmp(nm, "Accessory_", 10) ||
-        strstr(nm, "Arrow") || !strncmp(nm, "Parasail", 8) || !strncmp(nm, "Obj_OneTouch", 12))   // (the fuse's own link)
+        strstr(nm, "Arrow") || !strncmp(nm, "Parasail", 8) || !strncmp(nm, "Obj_OneTouch", 12) ||   // (the fuse's own link)
+        !strncmp(nm, "Enemy_", 6))   // (an enemy standing at the shield is not fused to it: a skeleton in a Link's place was taken for one, a play session, 2026-11-17)
         return;
     Slot *cs;
     int ck;

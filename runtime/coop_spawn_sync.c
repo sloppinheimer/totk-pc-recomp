@@ -62,7 +62,8 @@ static void keyed_prune(void) {
 // the 1.2.1 site by its code). An Enemy_ with no map placement (its placement hash, [actor+0x370]+0x88 in 1.2.1, 0) is
 // sent to the others (SPAWN_KIND: its key, name, place, rotation), and each makes one there with that key; when it goes
 // away here without dying (unloaded), SPAWN_GONE deletes the others' (a death goes by the enemy sync).
-static int spawn_kind(const char *nm) { return !strncmp(nm, "Enemy_", 6); }   // what the spawn sync announces and makes: enemies
+int coop_enemy_spawn_synced(const char *nm);   // coop_enemy.c
+static int spawn_kind(const char *nm) { return coop_enemy_spawn_synced(nm); }   // what the spawn sync announces and makes: the enemies the enemy sync takes, and their parts
 #define BORN_N 256   // (a load hands over hundreds; only enemies are kept)
 static struct { _Atomic uint64_t actor; _Atomic uint64_t at_ns; } born[BORN_N];   // handed over here (spawn_tick)
 static _Atomic unsigned born_n;
