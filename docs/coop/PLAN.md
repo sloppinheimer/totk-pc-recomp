@@ -197,6 +197,29 @@ Gate runs (2026-11-17, both Links standing, a test Bokoblin at 20 s, the planted
   pictures of a moving enemy are not of one moment; they show it is there in both, not where. The checker's places are
   of one moment (the PC's clock).
 
+The baseline before step 2 (2026-11-17, the camp save `build/profile-v143-camp`, restored from a worktree recycled in
+the clean-up; `run_pair.ps1` with `camp_melee.txt` for A and `camp_watch.txt` for B, 110 s, seven Bokoblins, pictures
+from both; the same run with the action layer off, as players have it, and on, `TOTK_COOP_EN_ACT=1` at its default
+verbs). A fought in both (enemies' life went down; none died); B watched from about 30 m; no FATAL; 560 enemy-seconds
+compared in each.
+
+| | layer off | layer on |
+|---|---|---|
+| lag (the four that moved) | 70 ms each | 70 ms each |
+| place error p95 | 0.03 m | 0.04 to 0.07 m |
+| stutter | 1.19 to 1.23x | 1.18 to 1.27x |
+| owner's command, worst copy | 90 % (three under 95 %) | 96 % |
+| phase p95, worst | 0.084 s | 0.081 s |
+| life differences | none | none |
+| differences held two seconds | 6: a Guard Bokoblin run by neither game (each its own) for 19 s; a bow in slot 3 of a Guard Bokoblin in one game only, 40 s and 22 s; ragdoll 3 s twice; a command 4 s | 4: the bow in one game only, 36 s; a sword in one only, 3 s; ragdoll 2 s; a command 2 s |
+
+So on what the checker measures, the action layer changes little: movement and life are the same, commands agree a
+little better. That is expected: in both models the copy's animation is the owner's stated one. What the layer is for
+(effects, sounds, arming, held things, physics an action does) the checker does not see yet; to measure step 2 onward
+against this baseline, the checker needs those (an enemy's effects by key, its armed attacks, hits on each Link).
+Lasting differences found in both runs, with or without the layer: a Guard Bokoblin's bow held in one game only, and
+(one run) an enemy each game ran as its own. One run each: no repeat.
+
 Step 1 is done by its "done when": the checker runs on a scripted pair, lists differences by actor and kind, finds the
 planted desync, and one run hosted from the Co-op tab.
 
