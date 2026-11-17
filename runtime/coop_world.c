@@ -850,7 +850,7 @@ void coop_world_tick(Cpu *c, uint64_t me) {
     watch_slot5();
     coop_puppet_tick(me);
     static int ton = -1, tt;
-    if (ton < 0) { const char *e = getenv("TOTK_COOP_TRACE"); ton = e && strstr(e, "target"); }
+    if (ton < 0) { const char *e = cfg_get("TOTK_COOP_TRACE"); ton = e && strstr(e, "target"); }
     if (ton && ++tt % 60 == 0) {
         int ids[COOP_MAX_PLAYERS];
         tp_links[0] = me;
@@ -981,7 +981,7 @@ void coop_world_tick(Cpu *c, uint64_t me) {
         each_live(target_probe_one, NULL);
     }
     static int on = -1, t;
-    if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "enemy"); }
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_TRACE"); on = e && strstr(e, "enemy"); }
     if (on && ++t % 300 == 0) { probe_me = me; each_live(probe_one, NULL); }
     if (coop_world_role()) peer_tick(c, me);
     void coop_anim_slots_test(uint64_t me);   // (below)

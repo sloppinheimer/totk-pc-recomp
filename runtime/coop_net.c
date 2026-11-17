@@ -263,7 +263,7 @@ static void net_thread(void *arg) {
             if (objs_in_n < OBJQ) memcpy(objs_in[objs_in_n].d, buf + HEADER, n - HEADER), objs_in[objs_in_n].len = n - HEADER,
                                   objs_in[objs_in_n].from = id, objs_in_n++;
             plat_mutex_unlock(&lock);
-        } else if (kind == HIT && n - HEADER <= COOP_HIT_MAX) {
+        } else if (kind == HIT && id >= 1 && id <= COOP_MAX_PLAYERS && n - HEADER <= COOP_HIT_MAX) {
             plat_mutex_lock(&lock);
             if (hit_in_n < HITQ) memcpy(hit_in[hit_in_n].d, buf + HEADER, n - HEADER), hit_in[hit_in_n].len = n - HEADER,
                                  hit_in[hit_in_n].from = id, hit_in_n++;
