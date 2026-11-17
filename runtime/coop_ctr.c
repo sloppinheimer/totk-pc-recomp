@@ -220,20 +220,6 @@ int coop_ctr_recv(CoopCtrMsg *m) {
     return got;
 }
 
-int coop_ctr_recv_type(int type, CoopCtrMsg *m) {   // the oldest reliable message of that type (the others stay in order)
-    plat_mutex_lock(&lock);
-    int got = 0;
-    for (int i = 0; i < inbox_n && !got; i++) {
-        int at = (inbox_head + i) % INBOX;
-        if (inbox[at].type != type) continue;
-        m->from = inbox[at].inc, m->from_id = inbox[at].id, m->type = inbox[at].type, m->flags = inbox[at].flags;
-        m->len = inbox[at].len, memcpy(m->d, inbox[at].d, inbox[at].len);
-        for (int j = i; j + 1 < inbox_n; j++) inbox[(inbox_head + j) % INBOX] = inbox[(inbox_head + j + 1) % INBOX];
-        inbox_n--, got = 1;
-    }
-    plat_mutex_unlock(&lock);
-    return got;
-}
 
 // The latest-only slots of one type, one after another: *it starts at 0; 0 when there are no more.
 int coop_ctr_slot_next(int type, int *it, CoopCtrMsg *m, uint64_t *age_ns) {

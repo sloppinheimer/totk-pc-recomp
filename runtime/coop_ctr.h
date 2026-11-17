@@ -43,7 +43,6 @@ int coop_ctr_send(int to, int type, int flags, const void *d, int len);
 // Receiving: reliable messages in order per stream (1 one taken, 0 none); unreliable ones as the latest per (sender,
 // type, key = the payload's first 8 bytes); its length, 0 none.
 int coop_ctr_recv(CoopCtrMsg *m);
-int coop_ctr_recv_type(int type, CoopCtrMsg *m);   // the oldest one of that type, the others left in order
 int coop_ctr_latest(int from_id, int type, uint64_t key, void *out, int max, uint64_t *age_ns);
 // Players: this game's incarnation, a relay id's, the relay id an incarnation is on (0 none), and players coming and
 // going by incarnation (1 one taken: joined 1 came, 0 left).

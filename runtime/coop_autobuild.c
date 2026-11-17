@@ -400,8 +400,6 @@ static void stick_test(Cpu *c, uint64_t me, int n) {
 
 // The research tests that ran from these places are gone; the calls stay, so these do nothing.
 void coop_autobuild_seq_tests(Cpu *c) { (void)c; }   // (from coop_ent_hooks.c coop_ent_seq_calc) no test runs here now
-void coop_autobuild_link_calc(Cpu *c) { (void)c; }   // (from coop_spawn.c calc_wrap) no test runs here now
-void coop_autobuild_part_calc(Cpu *c, uint64_t actor) { (void)c, (void)actor; }   // (from coop_spawn.c calc_wrap) no test runs here now
 
 void coop_autobuild_tick(Cpu *c, uint64_t me) {   // the tests' tick (from coop_ent_hooks.c coop_ent_tick)
     if (!coop_ab_log_on()) return;

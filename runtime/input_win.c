@@ -242,11 +242,6 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
 
 static int key_down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
 
-int input_coop_keys(void) {
-    HWND w = gfx_window_handle();
-    if (!w || w != GetForegroundWindow()) return 0;
-    return key_down(VK_NUMPAD1) | key_down(VK_NUMPAD2) << 1;   // the spawn tests (coop_spawn.c coop_tick)
-}
 
 // The tester's mark (coop_ent_log.c): Home or numpad 0, read whichever window has the focus, so that every game on
 // this PC writes the mark at the same moment.

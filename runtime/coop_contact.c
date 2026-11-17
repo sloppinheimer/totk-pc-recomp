@@ -21,13 +21,6 @@ int coop_enemy_new(void);   // coop_enemy.c: the enemy sync is on
 
 // An actor's reference object (+0x40 the actor), from a pointer in the actor's first 0x1000 bytes: what a hit record
 // names its attacker by. 0 none found.
-uint64_t coop_actor_ref(uint64_t a) {
-    static uint64_t w[0x1000 / 8];
-    if (!a || !coop_rd(a, w, sizeof w)) return 0;
-    for (int i = 0; i < 0x1000 / 8; i++)
-        if (w[i] > 0x100000000ull && w[i] < 0x8000000000ull && coop_rd_ptr(w[i] + 0x40) == a) return w[i];
-    return 0;
-}
 // A body's hits are built in its damage component's hit update, main+0x300a30, from the contacts waiting in the list
 // at [dc+0x1910]+0x50 (count +0x18, capacity +8, 0x1c0-byte records from +0x10; main+0x1cd0c80 runs main+0x1cd263c on
 // each): the attack's power (+0xa0), its kind (+0x90), the attacker's handles (+0x60, +0x78 with +0x94 bit 0), and

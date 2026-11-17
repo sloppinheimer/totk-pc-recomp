@@ -45,7 +45,7 @@ Checked against upstream's `main` at the last merge base (6151ac4f, 2026-11-15) 
 | `runtime/romfs.c`, `runtime/fs.h` | `romfs_live_add` (files added while the game runs), `ROMFS_RESTBL_SPARES` and `restbl_spares` (16384 spare size-table entries), `romfs_read_whole`, `TOTK_TEST_RESTBL_SKIP` | a party member's character fetched in a session (`coop_chars.c restbl_guest_add`); `romfs_read_whole` is used by `coop_gamedata.c` and `coop_notices.c`. They use romfs.c's own tables, so they stay there |
 | `runtime/restbl.c`, `runtime/restbl.h` | `restbl_hash`, `restbl_each`, `restbl_empty` | the size-table entries `coop_chars.c` adds to the game's copy |
 | `runtime/boot.c` | `rt_mark_shot()` and its save in `rt_frame_presented` | the tester's mark (Home or numpad 0, `coop_ent_log.c`) saves a picture |
-| `runtime/input.h`, `runtime/input_win.c`, `runtime/input_sdl.c` | `input_mark_key()`; `input_coop_keys()` | the mark key, read in any window. `input_coop_keys` (numpad 1 and 2) has no caller left: it can go |
+| `runtime/input.h`, `runtime/input_win.c` | `input_mark_key()` | the mark key, read in any window |
 | `tools/build_game.py` | `-lws2_32` in both link lists | the in-game relay (`coop_relay.c`) and UPnP (`coop_upnp.c`) use Winsock |
 | `tests/diff/harness.c` | a stub of `coop_fnprof_hit` | the differential tests link `cpu.h`'s `FN_ENTER` |
 | `AGENTS.md` | a "Co-op" section of one line | points agents at `docs/coop/README.md`, where the co-op rules are |
@@ -86,8 +86,6 @@ Not co-op code, but made for it. Candidates for upstream pull requests.
 ## Leftovers to tidy
 
 - `runtime/ov.h` calls `coop_tick` "co-op spawn test, from the gamepad poll"; it is the whole co-op net tick.
-- `runtime/input.h` keeps a comment "Co-op player 2: the second connected gamepad" with no declaration under it, and
-  `input_coop_keys` has no caller.
 
 ## Merging upstream
 

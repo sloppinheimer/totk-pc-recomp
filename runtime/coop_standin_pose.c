@@ -44,12 +44,6 @@ static _Atomic uint64_t puppet_skel[COOP_MAX_PLAYERS], puppet_pose[COOP_MAX_PLAY
 static _Atomic int puppet_id[COOP_MAX_PLAYERS], puppet_n;
 // Proxy mode: the input pose object main+0x283c750 was last called with for a co-op Link's body skeleton (kept from
 // before its update stopped; the proxy driver calls the writer with it). 0: not seen yet.
-uint64_t coop_puppet_pose_obj(uint64_t skel) {
-    int n = atomic_load_explicit(&puppet_n, memory_order_relaxed);
-    for (int i = 0; skel && i < n; i++)
-        if (skel == atomic_load_explicit(&puppet_skel[i], memory_order_relaxed)) return atomic_load(&puppet_pose[i]);
-    return 0;
-}
 static _Atomic uint64_t my_body_skel;
 void coop_puppet_tick(uint64_t me) {
     uint64_t s0 = me;

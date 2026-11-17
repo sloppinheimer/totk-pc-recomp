@@ -634,7 +634,6 @@ int coop_in_remote_calc(void) { return inside; }   // this thread runs a co-op L
 static void owner_matrix(Slot *s, float m[12]);
 static float body_top_root(uint64_t actor, float *root_y);
 static void top_log(const char *who, uint64_t actor);
-uint64_t coop_puppet_pose_obj(uint64_t skel);   // coop_world.c
 static uint64_t body_skeleton(uint64_t actor) {
     static const uint32_t path[8] = {0x48, 0x2a8, 0x20, 0x20, 0, 0xf8, 0x58, 0xb0};
     uint64_t sk = actor;
@@ -3344,7 +3343,6 @@ int coop_is_copy(uint64_t a) {
     int coop_contraption_made(uint64_t a);   // coop_autobuild.c: a part made from another player's record is a copy too
     return copy_of(a, &cs, &ck) || coop_contraption_made(a);
 }
-void coop_obj_force(Cpu *c, uint64_t a, const float pos[3], const float q[4]) { force_to(c, a, pos, q); }
 uint64_t coop_player_standin(int net_id) {   // another player's stand-in actor here, 0 none (the element sync shows that Link's fire on it)
     Slot *s = slot_for(SRC_NET, net_id);
     return s && s->state == LIVE ? s->actor : 0;
@@ -3366,7 +3364,6 @@ int coop_standin_holds(uint64_t actor) {
     }
     return 0;
 }
-void coop_mat_quat(const float r[9], float q[4]) { mat_quat(r, q); }
 int coop_obj_ident(uint64_t a, int *owner, uint32_t *id) {
     if (!a) return 0;
     if (coop_ent_ride_name(a, id)) { *owner = COOP_RIDE_ENTITY; return 1; }   // (an entity: named by its Eid in every game)
@@ -3588,16 +3585,6 @@ uint64_t coop_eq_row_ref(uint64_t actor, int row) {
 }
 // The reference object of the first EquipmentUser row holding a bow (gear_kind 1), or 0: a stand-in's bow, the
 // weapon of an arrow hit its owner's game sends on (coop_world.c, ce_take).
-uint64_t coop_eq_bow_ref(uint64_t actor) {
-    uint64_t eq = coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x230);
-    for (int row = 0; eq && row < 24; row++) {
-        uint64_t ref = coop_rd_ptr(eq + GEAR_TABLE + 0x18 * (uint64_t)row);
-        char nm[32];
-        coop_actor_name(ref ? coop_rd_ptr(ref + 0x40) : 0, nm, sizeof nm);
-        if (nm[0] && gear_kind(nm) == 1) return ref;
-    }
-    return 0;
-}
 // Where an item is relative to a Link, in the Link's own frame (x right, y up, z forward, as its rotation rows give
 // them): world = rot * local.
 static int item_local(uint64_t link, uint64_t item, float local[3]) {
@@ -4723,11 +4710,6 @@ int coop_players_all(uint64_t *out, int max) {   // every live stand-in actor (c
     for (int i = 0; i < COOP_MAX_PLAYERS && n < max; i++)
         if (slots[i].state == LIVE && slots[i].actor) out[n++] = slots[i].actor;
     return n;
-}
-uint64_t coop_players_first(void) {
-    for (int i = 0; i < COOP_MAX_PLAYERS; i++)
-        if (slots[i].state == LIVE) return slots[i].actor;
-    return 0;
 }
 
 // ---- The entity sync (coop_ent*.c) and this file's tables: called on the co-op tick --------------------------------------------
