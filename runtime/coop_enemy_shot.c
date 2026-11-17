@@ -274,6 +274,7 @@ static void watch_phase0(void) {
 // ---- Phase 0: captures go out; what was taken becomes due at T -----------------------------------------------------------
 static int64_t peer_T[COOP_MAX_PLAYERS + 1];
 void en_shot_T(int id, int64_t t) { if (id >= 1 && id <= COOP_MAX_PLAYERS) peer_T[id] = t; }   // from en_copy_phase0, once a frame
+int64_t en_shot_T_of(int id) { return id >= 1 && id <= COOP_MAX_PLAYERS ? peer_T[id] : 0; }   // (0: not known)
 
 void en_shot_phase0(void) {
     uint64_t me = coop_ctr_me();

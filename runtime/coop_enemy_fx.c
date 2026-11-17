@@ -45,7 +45,42 @@ uint64_t coop_enemy_holder(uint64_t actor);                                     
 static struct { int cell; char key[48]; _Alignas(16) uint8_t pair[16]; } held[8];   // (the copy's own thread only: its pre-calc)
 static struct { _Atomic int cell; uint8_t elink, slink, mode; char key[48]; uint32_t frame; } fxq[FXQ];       // emits waiting for their copy's pre-calc (cell + 1; 0 free)
 static struct { _Atomic uint32_t frame; int32_t owner; uint32_t id; float pos[3]; char name[48]; } pickq[8];         // ground weapons to delete here
-static _Atomic uint32_t n_fx_sent, n_fx_made, n_wx, n_pick_sent, n_pick_done;
+static _Atomic uint32_t n_fx_sent, n_fx_made, n_wx, n_pick_sent, n_pick_done, n_fx_own;
+
+// What a copy's own node started (a copy that runs its owner's action, B.41): the stated emit of the same key is then
+// not made a second time. One entry an emit, used up by the stated one it answers; an entry not asked for in three
+// seconds is forgotten.
+extern __thread uint64_t tl_act_actor;   // coop_enemy_act.c
+static struct { _Atomic int cell; char key[48]; uint32_t frame; uint8_t held; } own_fx[24];   // cell + 1; 0 free, -1 being filled
+static void own_add(int cell, const char *key, int held) {
+    uint32_t frame = coop_sess_frame_no();
+    for (int i = 0; i < 24; i++) {
+        int cc = atomic_load(&own_fx[i].cell), z = cc;
+        if (cc > 0 && frame - own_fx[i].frame <= 180) continue;
+        if (cc < 0 || !atomic_compare_exchange_strong(&own_fx[i].cell, &z, -1)) continue;
+        strncpy(own_fx[i].key, key, sizeof own_fx[i].key - 1), own_fx[i].key[sizeof own_fx[i].key - 1] = 0;
+        own_fx[i].frame = frame, own_fx[i].held = (uint8_t)held;
+        atomic_store(&own_fx[i].cell, cell);
+        return;
+    }
+}
+static int own_take(int cell, const char *key, int held) {
+    uint32_t frame = coop_sess_frame_no();
+    for (int i = 0; i < 24; i++) {
+        int cc = cell;
+        if (atomic_load(&own_fx[i].cell) != cell || own_fx[i].held != held || frame - own_fx[i].frame > 180 || strcmp(own_fx[i].key, key)) continue;
+        if (atomic_compare_exchange_strong(&own_fx[i].cell, &cc, 0)) return 1;
+    }
+    return 0;
+}
+// The key of an emit node (the string behind the tagged cell).
+static int node_key(uint64_t cellp, char *out, size_t n) {
+    uint64_t kc = cellp & ~3ull, kp = kc ? coop_rd_ptr(kc) : 0;
+    memset(out, 0, n);
+    if (!kp || !coop_rd(kp, out, n - 1) || !out[0]) return 0;
+    for (char *q = out; *q; q++) if (*q < 0x20 || *q >= 0x7f) { *q = 0; break; }
+    return out[0] != 0;
+}
 
 static int fx_on(void) {
     static int v = -1;
@@ -60,6 +95,11 @@ int en_fx_hook(Cpu *c, uint64_t off) {
     case 0x25aafec: {   // a node's emit by key
         uint64_t node = c->x[0], inst = node > 0x10000 ? coop_rd_ptr(node + 8) : 0, own = inst ? coop_rd_ptr(inst + 8) : 0, actor = own ? coop_rd_ptr(own + 0x1f8) : 0;
         EnCell *m = actor > 0x10000 ? en_cell_of(actor) : NULL;
+        if (m && actor == tl_act_actor) {   // a copy's own node, in the action it runs: noted
+            char k0[48];
+            if (node_key(coop_rd_ptr(node + 0x30), k0, sizeof k0)) own_add((int)(m - en_map) + 1, k0, 0), atomic_fetch_add(&n_fx_own, 1);
+            return 0;
+        }
         if (!m || atomic_load_explicit(&m->state, memory_order_relaxed) != EM_OWNED) return 0;
         uint64_t kc = coop_rd_ptr(node + 0x30) & ~3ull, kp = kc ? coop_rd_ptr(kc) : 0, ec = coop_rd_ptr(node + 0x40), sc = coop_rd_ptr(node + 0x48);
         MFx f;
@@ -81,6 +121,14 @@ int en_fx_hook(Cpu *c, uint64_t off) {
     case 0x24901b0: case 0x24902e0: {   // a held emit's node enters (key cell +0x40, flags +0x50 and +0x58), and leaves
         uint64_t node = c->x[0], inst = node > 0x10000 ? coop_rd_ptr(node + 8) : 0, own = inst ? coop_rd_ptr(inst + 8) : 0, actor = own ? coop_rd_ptr(own + 0x1f8) : 0;
         EnCell *m = actor > 0x10000 ? en_cell_of(actor) : NULL;
+        if (m && actor == tl_act_actor) {   // a copy's own node, in the action it runs: its start is noted, its stop is its own
+            char k0[48];
+            if (off == 0x24901b0 && node_key(coop_rd_ptr(node + 0x40), k0, sizeof k0)) {
+                own_add((int)(m - en_map) + 1, k0, 1), atomic_fetch_add(&n_fx_own, 1);
+                rt_log("coop: en: fx: the copy %llx's own node starts the held '%s': the stated one is not made again", (unsigned long long)actor, k0);
+            }
+            return 0;
+        }
         if (!m || atomic_load_explicit(&m->state, memory_order_relaxed) != EM_OWNED) return 0;
         uint64_t kc = coop_rd_ptr(node + 0x40) & ~3ull, kp = kc ? coop_rd_ptr(kc) : 0, ec = coop_rd_ptr(node + 0x50), sc = coop_rd_ptr(node + 0x58);
         MFx f;
@@ -194,12 +242,25 @@ void en_fx_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     int cell = (int)(m - en_map) + 1;
     uint32_t frame = coop_sess_frame_no();
     if (!fx_on()) return;
+    // The copy's own node has started a held effect that the stated start had already started here (the node came
+    // later than the wait below): the stated one is stopped, the node's own stays and is stopped by its leave.
+    for (int j = 0; j < 8; j++) {
+        if (held[j].cell != cell || !own_take(cell, held[j].key, 1)) continue;
+        coop_guest_call(c, MOD_MAIN_BASE + 0x6e34e8, (uint64_t)(uintptr_t)held[j].pair, (uint64_t)(uint32_t)-1, 0, 0);
+        held[j].cell = 0;
+        rt_log("coop: en: fx: the copy %llx's own node holds '%s' now: the one started for its owner's is stopped", (unsigned long long)actor, held[j].key);
+    }
     for (int k = 0; k < FXQ; k++) {
         if (atomic_load_explicit(&fxq[k].cell, memory_order_relaxed) != cell) continue;
         uint64_t xl = coop_rd_ptr(en_comps(actor) + 0x68), eu = xl ? coop_rd_ptr(xl + 0x70) : 0, su = xl ? coop_rd_ptr(xl + 0x78) : 0;
         memcpy(key, fxq[k].key, sizeof key);
-        if (fxq[k].mode && m->act_run) {   // (the copy runs its owner's action: the node's own enter and leave start and stop it, B.38)
-        } else if (fxq[k].mode && frame - fxq[k].frame < 600) {   // a held one: its handles are kept, or it is stopped
+        // A copy that runs its owner's action (B.41): what its own node started is not made again. Its node may come
+        // a few frames after the stated emit (the action is made at the time this game shows its owner at), so a start
+        // with no such node yet waits up to a third of a second for one.
+        int en_act_has(int cell);   // coop_enemy_act.c
+        if (fxq[k].mode != 2 && own_take(cell, key, fxq[k].mode == 1)) { atomic_store(&fxq[k].cell, 0); continue; }
+        if (fxq[k].mode != 2 && en_act_has(cell) && frame - fxq[k].frame < 20) continue;
+        if (fxq[k].mode && frame - fxq[k].frame < 600) {   // a held one: its handles are kept, or it is stopped
             int h = -1, fr = -1;
             for (int j = 0; j < 8; j++) { if (held[j].cell == cell && !strcmp(held[j].key, key)) h = j; else if (!held[j].cell && fr < 0) fr = j; }
             if (fxq[k].mode == 1 && h < 0 && fr >= 0) {

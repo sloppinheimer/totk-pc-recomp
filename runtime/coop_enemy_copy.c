@@ -594,6 +594,13 @@ int en_copy_hook(Cpu *c, uint64_t off) {
         if (off == 0x50ad74 && coop_rd_ptr(c->x[0] + 0x18) == tl_act_actor) return 0;
         if (off == 0x50b404 && c->x[30] - MOD_MAIN_BASE == 0x50afe4 && coop_rd_ptr(c->x[0] + 0x1f8) == tl_act_actor) { tl_act_runs++; return 0; }
         if (off == 0x50b404 || off == 0x50ad74 || off == 0x2beb80 || off == 0x44ff30 || off == 0x42e0c8) tl_act_other++, tl_act_lr = (c->x[30] - MOD_MAIN_BASE) | off << 32;
+        if (off == FN_PLAY && coop_rd_ptr(c->x[0]) == tl_act_actor) {
+            // A play asked by a node of the copy's action (the request's actor at +0): the copy's slots play what its
+            // owner states (slots_apply), so this one is answered "played" and not made (B.41).
+            int en_act_plays(void);
+            extern __thread uint32_t tl_act_plays;
+            if (!en_act_plays()) { tl_act_plays++; c->x[0] = 1; return 1; }
+        }
     } else if (off == 0x50ad74) { void en_act_owner(Cpu *c); en_act_owner(c); }   // (of an enemy this game runs: told)
     uint64_t actor;
     switch (off) {
@@ -1059,8 +1066,9 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             // (The battle-info component's flags ([comps+0x140]+0x38) are NOT written on a copy: tried, and the copy's own
             // component puts its own value back every frame (measured: still 0 or 0x200 at phase 0 against its owner's
             // 0x720 in battle). What works them out on an enemy that runs is not read: B.20, open.)
-            { void en_fx_precalc(Cpu *c, uint64_t actor, EnCell *m); en_fx_precalc(c, actor, m); }   // coop_enemy_fx.c
+            // (its action first: what its own nodes start is known when the stated effects are looked at)
             { int en_act_precalc(Cpu *c, uint64_t actor, EnCell *m); m->act_run = (uint8_t)en_act_precalc(c, actor, m); }   // coop_enemy_act.c
+            { void en_fx_precalc(Cpu *c, uint64_t actor, EnCell *m); en_fx_precalc(c, actor, m); }   // coop_enemy_fx.c
             { void en_arm_precalc(Cpu *c, uint64_t actor, EnCell *m); if (!m->act_run) en_arm_precalc(c, actor, m); }   // coop_enemy_arm.c
             { void en_shs_precalc(Cpu *c, uint64_t actor, EnCell *m); en_shs_precalc(c, actor, m); }   // coop_enemy_shot.c
             if (m->show_lk[3]) {   // its owner's model looks, each written with its dirty bit as the game's setters do (B.33)

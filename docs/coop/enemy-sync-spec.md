@@ -693,6 +693,39 @@ request of the game's as bytes was gone through:
   is sent: a blanked address could crash where a stale one only reads something else. No such line: no such address
   in what was played.
 
+**B.41 The action layer after the prototype** (`coop_enemy_act.c`, `coop_enemy_act_deny.inc`; still off unless
+`TOTK_COOP_EN_ACT=1`; 2026-11-17).
+- Which actions and enemies. `TOTK_COOP_EN_ACT_VERBS` is a list of action verbs or `all` (every request of the Main
+  slot that is no interrupt request; default still 131, 145, 108); `TOTK_COOP_EN_ACT_FAMILY` is a list of actor
+  name prefixes (default every enemy). A family is widened by naming it with `all`.
+- Time. A request carries its owner's frame time and is made when this game shows that owner at that time (a queue
+  of 16 per copy), as a shot is; the copy's place, clip and action are then of one moment.
+- Animation: the stated slots win. A play request (main+0x4dc628) made under the copy's action call for that copy
+  is answered "played" and not made; the copy's slots play what its owner states, as on every other copy (S 7.3).
+  `TOTK_COOP_EN_ACT_PLAYS=1` lets the action's plays through. [m] A Chuchu's copy: commands equal 95.4 % of frames
+  (the prototype: about 85 %); three Bokoblins standing, every verb: 100 %.
+- The net. A copy does not run a node class that ends in an act the sync carries from its owner or that belongs to
+  one game: its tick (main+0x1920) is turned away and the node left as one that succeeded (a leaf; no half-run
+  parent). The classes are the audit's (R19: 578 outward-acting classes read to where they end), 267 of them, in
+  ten categories: 1 a shot or a Shooter's state, 2 a drop, a throw, a pick-up, 3 death and life, 4 an actor made,
+  deleted or put to sleep, 5 a grab, a lift, a ride, a sweep-out, a knock-back, 6 game data and events, 7 a message
+  or a noise for other actors, 8 a chemical switch, 9 the game balance's attack turns, 10 what the sync holds
+  another way (weather, form, territory, a teleport, the jump of B.38). What a copy's nodes do do: effects, an
+  attack armed by a node, the model's looks, equipment slot commands, physics on its own body, its own blackboard.
+  `TOTK_COOP_EN_ACT_ALLOW=<category>,..` lets categories run. About a fifth of the audit's classes were placed by
+  name only (R19); a class placed wrongly is denied or let run wrongly.
+- Effects. What a copy's own node starts (the two emit entries, under the copy's action call) is noted, and the
+  stated emit of the same key is not made a second time (B.17's replay); a stated start with no node yet waits a
+  third of a second for one; a held effect started for the owner's before the copy's node came is stopped when the
+  node starts its own. [m] A Yiga footsoldier, default verbs and every verb: each `Sign` once (the prototype: twice).
+- The request's unused bytes are cleared before it is told (B.40's net named five leftovers in the first run).
+- [m] Runs of 80 s, two games, the enemy spawned beside one Link: a Yiga footsoldier and a Chuchu on the default
+  verbs and on every verb, three Bokoblins on every verb: no crash, no leak, tables equal; the Chuchu's copy ran its
+  tackle and armed its attack; denied in these runs: the jump (a Chuchu) and one class of category 10 (a Yiga's verb
+  23). Not seen: a fight with every verb on (a Bokoblin's throw, a drop, a death), any other family, a play session.
+- Not built: the other slots, interrupt requests, the form key. The replays of B.17 and B.35 stay as they are for
+  copies that run no action: nothing is retired while the layer is off by default.
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is

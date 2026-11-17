@@ -1,6 +1,7 @@
-// Co-op: a copy runs the action its owner is in (docs/coop/enemy-sync-spec.md B.38; research R22). A PROTOTYPE, off
-// unless TOTK_COOP_EN_ACT=1, and only for the action verbs of TOTK_COOP_EN_ACT_VERBS (default: 131 JumpAttack and 145
-// OrderAttack, a Chuchu's attack; 108 Appear, a Yiga's).
+// Co-op: a copy runs the action its owner is in (docs/coop/enemy-sync-spec.md B.38, B.41; research R22). Off unless
+// TOTK_COOP_EN_ACT=1. Which actions: TOTK_COOP_EN_ACT_VERBS, a list of action verbs or `all` (default: 131 JumpAttack
+// and 145 OrderAttack, a Chuchu's attack; 108 Appear, a Yiga's); for which enemies: TOTK_COOP_EN_ACT_FAMILY, a list of
+// actor name prefixes (default: every enemy).
 //
 // Why. A copy has no AI, and most of what a player sees an enemy do is done by nodes of its AI graphs, not by its
 // animation: effects, attacks armed by a node, lifting, commands on what it holds (research R19 counted about 9,700
@@ -20,10 +21,18 @@
 // clock and target are its owner's as before. When the owner's verb is no longer a listed one the copy is asked for
 // Wait once, so the root it was in is left and what it held (a Yiga's `Sign`) is stopped by the node's own leave.
 //
-// Not in the prototype: the other slots; a net for the nodes a copy must never run (a death request, a delete, a
-// drop, a shot, a message: none is in the listed verbs' roots but for a Chuchu's shockwave); an interrupt request;
-// the form key (the default one is assumed). While a copy runs an action this file's caller leaves out the arm
-// replay of B.35 and the held effects of B.23 for it, which the action's own nodes now do.
+// What a copy's action does not do itself (B.41). (1) The acts the sync already carries from the owner, or that
+// belong to one game only: a shot, a drop, a death, a made or deleted actor, a lift or a ride, game data, a message
+// to another actor, a chemical switch, an attack turn asked of the game balance. The node classes that end in those
+// are known from the audit of the AI graphs (coop_enemy_act_deny.inc); the tick of such a node is turned away and
+// the node left as one that succeeded. (2) Its animation: the copy's slots play what its owner states (S 7.3), and a
+// play asked by a node of the action is answered "played" without being made (TOTK_COOP_EN_ACT_PLAYS=1 lets them
+// through). (3) Time: a request is made when this game shows its owner at the request's time, as a shot is.
+// What its nodes do do: effects, an attack armed by a node, the model's looks, physics on its own body. While a copy
+// runs an action the arm replay of B.35 is left out for it, and an effect its own node started is not started again
+// by the replay of B.17 (coop_enemy_fx.c).
+//
+// Not built: the other slots; an interrupt request; the form key (the default one is assumed).
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -43,18 +52,23 @@ void coop_lock_wait(PlatMutex *m);   // coop_spawn.c
 #define VERB_WAIT 40
 #define ACTQ 32
 
-typedef struct { Enid id; uint8_t mode, stop, pad[2]; uint8_t req[ACT_REQ]; char var[32]; } MAct;
+#define ACT_IN 16
+typedef struct { Enid id; int64_t ns; uint8_t mode, stop, pad[6]; uint8_t req[ACT_REQ]; char var[32]; } MAct;
+typedef struct { int64_t ns; uint64_t taken; uint8_t mode, stop; uint8_t req[ACT_REQ]; char var[32]; } ActIn;
 static struct {
     _Atomic int cell;   // cell + 1; 0 free, -1 being filled
+    ActIn in[ACT_IN];   // told, not yet due (written by the receiving thread at in_w, taken by the copy's at in_r)
+    _Atomic uint32_t in_w, in_r;
     uint8_t req[ACT_REQ];
     char var[32];
     uint32_t verb, frame;
-    uint8_t enter, stop, said;
+    uint8_t enter, stop, said, have;
     uint32_t sum_runs, sum_ticks, sum_calls, sum_frame;   // (the prototype's log: a second's worth)
 } actq[ACTQ];
 __thread uint64_t tl_act_actor;   // the copy whose action request this file is making (read by en_copy_hook)
 __thread uint32_t tl_act_ticks, tl_act_runs, tl_act_other;   // under one call: node ticks, the slot's graph run, other runner entries turned away
 __thread uint64_t tl_act_lr;      // the last of those others: its entry << 32 | where it was called from
+__thread uint32_t tl_act_plays;   // plays asked by the action's nodes and not made (counted over the copy's life of the thread)
 static _Atomic int n_told, n_made;
 
 int en_act_on(void) {
@@ -63,15 +77,46 @@ int en_act_on(void) {
     return on;
 }
 static int verb_listed(uint32_t v) {
-    static uint32_t list[16];
-    static int n = -1;
+    static uint32_t list[64];
+    static int n = -1, all;
     if (n < 0) {
         const char *e = cfg_get("TOTK_COOP_EN_ACT_VERBS");
         int k = 0;
-        for (const char *p = e && *e ? e : "131,145,108"; p && *p && k < 16; p = strchr(p, ','), p = p ? p + 1 : NULL) list[k++] = (uint32_t)strtoul(p, NULL, 0);
+        all = e && !strcmp(e, "all");
+        for (const char *p = e && *e ? e : "131,145,108"; !all && p && *p && k < 64; p = strchr(p, ','), p = p ? p + 1 : NULL) list[k++] = (uint32_t)strtoul(p, NULL, 0);
         n = k;
     }
+    if (all) return v < VERB_NONE;
     for (int i = 0; i < n; i++) if (list[i] == v) return 1;
+    return 0;
+}
+// Whether an enemy of this actor name is one whose copies run its action (a list of name prefixes; none: every enemy).
+static int family_listed(const char *name) {
+    static char buf[256];
+    static const char *pre[16];
+    static int n = -1;
+    if (n < 0) {
+        const char *e = cfg_get("TOTK_COOP_EN_ACT_FAMILY");
+        int k = 0;
+        if (e && *e) {
+            strncpy(buf, e, sizeof buf - 1);
+            for (char *q = buf; q && *q && k < 16;) { pre[k++] = q; q = strchr(q, ','); if (q) *q++ = 0; }
+        }
+        n = k;
+    }
+    if (!n) return 1;
+    for (int i = 0; i < n; i++) if (!strncmp(name, pre[i], strlen(pre[i]))) return 1;
+    return 0;
+}
+// Whether a play asked by a node of a copy's action is made (default: no, the copy's slots are its owner's).
+int en_act_plays(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_EN_ACT_PLAYS"); on = e && *e == '1'; }
+    return on;
+}
+// Whether this copy (cell + 1) has an action told for it (coop_enemy_fx.c: an effect may then be its own node's).
+int en_act_has(int cell) {
+    for (int i = 0; i < ACTQ; i++) if (atomic_load_explicit(&actq[i].cell, memory_order_relaxed) == cell) return 1;
     return 0;
 }
 static uint32_t verb_of(const uint8_t *req) {
@@ -97,12 +142,18 @@ void en_act_owner(Cpu *c) {
     memcpy(&slot, req + 0x48, 4), memcpy(&flags, req + 0x50, 8);
     if (slot) return;   // (the Main slot only)
     uint32_t v = verb_of(req);
-    int listed = verb_listed(v) && !(flags & 1);
+    char an[48];
+    int listed = verb_listed(v) && !(flags & 1) && family_listed(coop_actor_name(actor, an, sizeof an));
     if (!listed && !m->act_verb) return;
     memcpy(a.req, req, ACT_REQ);
+    // What the request does not use holds leftovers of the asking game's stack, pieces of its addresses among them
+    // (the net of B.40 named them in the first run): the rest of a vector whose first number says "none" (NaN), the
+    // bytes after the valid byte, the bytes after the 16 flag bits (stored with a half-word store, main+0x2bbb0).
+    for (int k = 0; k < 0x24; k += 0xc) { uint32_t x; memcpy(&x, a.req + k, 4); if ((x & 0x7fffffffu) > 0x7f800000u) memset(a.req + k + 4, 0, 8); }
+    memset(a.req + 0x41, 0, 7), memset(a.req + 0x52, 0, 6);
     { void en_foreign_scan(const char *what, const uint8_t *p, int n, int skip); en_foreign_scan("an action request", a.req, ACT_REQ, 0x38); }   // coop_enemy_shot.c
     memset(a.req + 0x38, 0, 8);
-    a.mode = (uint8_t)(c->x[2] & 1), a.stop = !listed;
+    a.mode = (uint8_t)(c->x[2] & 1), a.stop = !listed, a.ns = (int64_t)coop_sess_frame_ns();
     if (listed && req[0x40] == 1) {
         uint64_t vp;
         memcpy(&vp, req + 0x38, 8);
@@ -145,14 +196,13 @@ int en_act_msg(const CoopCtrMsg *m) {
         if (have < 0 && (a->stop || f < 0)) return 1;
         int k = have >= 0 ? have : f, z = 0;
         if (have < 0 && !atomic_compare_exchange_strong(&actq[k].cell, &z, -1)) return 1;
-        uint32_t v = verb_of(a->req);
-        if (have < 0) actq[k].verb = 0, actq[k].enter = 0, actq[k].stop = 0, actq[k].said = 0;
-        if (a->stop) actq[k].stop = 1;
-        else {
-            if (a->mode || v != actq[k].verb) actq[k].enter = 1;
-            memcpy(actq[k].req, a->req, ACT_REQ), memcpy(actq[k].var, a->var, sizeof a->var);
-            actq[k].verb = v, actq[k].stop = 0;
-        }
+        if (have < 0) actq[k].verb = 0, actq[k].enter = 0, actq[k].stop = 0, actq[k].said = 0, actq[k].have = 0, atomic_store(&actq[k].in_w, 0), atomic_store(&actq[k].in_r, 0);
+        uint32_t w = atomic_load(&actq[k].in_w);
+        if (w - atomic_load(&actq[k].in_r) >= ACT_IN) w--;   // (full: the newest told takes the last place)
+        ActIn *in = &actq[k].in[w % ACT_IN];
+        in->ns = a->ns, in->taken = en_now(), in->mode = a->mode, in->stop = a->stop;
+        memcpy(in->req, a->req, ACT_REQ), memcpy(in->var, a->var, sizeof a->var);
+        atomic_store(&actq[k].in_w, w + 1);
         actq[k].frame = coop_sess_frame_no();
         if (have < 0) atomic_store(&actq[k].cell, cell);
     }
@@ -200,6 +250,25 @@ int en_act_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     if (k < 0) return 0;
     uint64_t bsa = en_bsa(actor), slot = bsa ? coop_rd_ptr(bsa + 0x1f0) : 0, ctrl = slot ? coop_rd_ptr(slot + 0x70) : 0, ip = ctrl ? coop_rd_ptr(ctrl + 0x20) : 0;
     uint32_t frame = coop_sess_frame_no();
+    {   // What was told and is due: this game shows the owner at the request's time (or it waited a second).
+        int64_t en_shot_T_of(int id);   // coop_enemy_shot.c
+        int16_t ei = atomic_load(&m->en);
+        int id = ei >= 0 && en_tab[ei].used ? en_peer_id(en_tab[ei].owner) : 0;
+        int64_t T = en_shot_T_of(id);
+        uint64_t now = en_now();
+        for (uint32_t r = atomic_load(&actq[k].in_r); r != atomic_load(&actq[k].in_w); atomic_store(&actq[k].in_r, ++r)) {
+            const ActIn *in = &actq[k].in[r % ACT_IN];
+            if (T && T < in->ns && now - in->taken < 1000000000ull) break;
+            uint32_t v = verb_of(in->req);
+            if (in->stop) actq[k].stop = 1;
+            else {
+                if (in->mode || v != actq[k].verb) actq[k].enter = 1;
+                memcpy(actq[k].req, in->req, ACT_REQ), memcpy(actq[k].var, in->var, sizeof in->var);
+                actq[k].verb = v, actq[k].stop = 0, actq[k].have = 1;
+            }
+        }
+    }
+    if (!actq[k].have && !actq[k].stop && frame - actq[k].frame <= 30) return 0;   // (told, none due yet)
     int stop = actq[k].stop || frame - actq[k].frame > 30;   // (told to leave, or not told for half a second: its owner's calls stopped)
     // Only once the copy has left its warm-up and its Main slot has its controller and its instance (R22 Q6).
     if (!atomic_load_explicit(&m->warm, memory_order_relaxed) || !ctrl || !ip || !coop_rd_ptr(ip)) {
@@ -259,41 +328,58 @@ int en_act_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     return 1;
 }
 
-// A node of a copy's action that the copy must not run itself (1: its tick is turned away, the node left as one that
-// succeeded). The node's tick main+0x1920 takes the node and returns nothing; a leaf turned away this way leaves its
-// parent a finished child, which is not the half-run tick of B.37 (a parent ticked with a child never made).
-// First of the list: OneShotPhysicsCctJump (vtable main+0x3800740). A copy's place is its owner's and its body is
-// static: its own jump put its character controller in the air for good, and the action then waited for ever on
-// QueryPhysicsCctIsPreLand (true on the ground; in the air only when falling with ground close below).
-// TOTK_COOP_EN_ACT_DENY=<vtable offset>[,...] replaces the list (0: none).
-static int act_denied(uint64_t vt) {
-    static uint64_t list[32];
+// A node of a copy's action that the copy does not run itself (the category, 0: it runs). The table is the audit's
+// (research R19): every node class of the enemies' graphs that acts outward, read to where it ends, and listed here
+// when that is an act the sync carries from the owner or one that belongs to one game only. The categories: 1 a shot
+// or a Shooter's state, 2 a drop, a throw, a pick-up, 3 death and life, 4 an actor made, deleted or put to sleep, 5 a
+// grab, a lift, a ride, a sweep-out, a knock-back, 6 game data and events, 7 a message or a noise for other actors,
+// 8 a chemical switch, 9 the game balance's attack turns, 10 what the sync holds another way (weather, form,
+// territory, a teleport, a jump of its own). The node's tick main+0x1920 takes the node and returns nothing; a leaf
+// turned away with its result set to success leaves its parent a finished child, which is not the half-run tick of
+// B.37 (a parent ticked with a child never made). All of these classes are leaves (Execute and OneShot nodes).
+// TOTK_COOP_EN_ACT_ALLOW=<category>[,...] lets categories run (a trial); TOTK_COOP_EN_ACT_DENY=<vtable offset>[,...]
+// adds classes (category 11).
+static const struct { uint32_t vt; uint8_t cat; } deny_tab[] = {
+#include "coop_enemy_act_deny.inc"
+};
+static int deny_cat(uint64_t vt) {
+    static uint64_t extra[32];
     static int n = -1;
+    static uint32_t allow;
     if (n < 0) {
-        const char *e = cfg_get("TOTK_COOP_EN_ACT_DENY");
+        const char *e = cfg_get("TOTK_COOP_EN_ACT_DENY"), *al = cfg_get("TOTK_COOP_EN_ACT_ALLOW");
         int k = 0;
-        for (const char *q = e && *e ? e : "0x3800740"; q && *q && k < 32; q = strchr(q, ','), q = q ? q + 1 : NULL) {
+        for (const char *q = e; q && *q && k < 32; q = strchr(q, ','), q = q ? q + 1 : NULL) {
             uint64_t v = strtoull(q, NULL, 0);
-            if (v) list[k++] = MOD_MAIN_BASE + v;
+            if (v) extra[k++] = MOD_MAIN_BASE + v;
         }
+        for (const char *q = al; q && *q; q = strchr(q, ','), q = q ? q + 1 : NULL) { unsigned long v = strtoul(q, NULL, 0); if (v < 32) allow |= 1u << v; }
         n = k;
     }
-    for (int i = 0; i < n; i++) if (list[i] == vt) return 1;
+    for (int i = 0; i < n; i++) if (extra[i] == vt) return 11;
+    if (vt < MOD_MAIN_BASE) return 0;
+    uint64_t off = vt - MOD_MAIN_BASE;
+    int lo = 0, hi = (int)(sizeof deny_tab / sizeof deny_tab[0]) - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (deny_tab[mid].vt == off) return allow >> deny_tab[mid].cat & 1 ? 0 : deny_tab[mid].cat;
+        if (deny_tab[mid].vt < off) lo = mid + 1; else hi = mid - 1;
+    }
     return 0;
 }
 
 // The prototype's log: each node class a copy's action ticks, once, by its vtable (the node table of the research
 // names it), with the verb the copy was in. Returns whether the node's tick is turned away.
-static _Atomic uint64_t seen_vt[96];
+static _Atomic uint64_t seen_vt[512];
 int en_act_tick_seen(uint64_t node) {
     uint64_t vt = node > 0x10000 ? coop_rd_ptr(node) : 0;
     if (!vt) return 0;
-    int deny = act_denied(vt), isnew = 0;
+    int deny = deny_cat(vt), isnew = 0;
     if (deny) {
         uint32_t fl = 0;
         if (coop_rd(node + 0x18, &fl, 4)) { fl = (fl & 0x3fffffffu) | 0x80000000u; memcpy((void *)(uintptr_t)(node + 0x18), &fl, 4); }
     }
-    for (int i = 0; i < 96; i++) {
+    for (int i = 0; i < 512; i++) {
         uint64_t have = atomic_load_explicit(&seen_vt[i], memory_order_relaxed);
         if (have == vt) break;
         if (!have) {
@@ -306,6 +392,7 @@ int en_act_tick_seen(uint64_t node) {
         uint16_t idx = 0;
         coop_rd(node + 0x1c, &idx, 2);
         rt_log("coop: en: act: a copy in verb %u ticks a node of class vtable main+%#llx (node index %u)%s", tl_act_verb, (unsigned long long)(vt - MOD_MAIN_BASE), idx, deny ? ": turned away, left as succeeded" : "");
+        if (deny) rt_log("coop: en: act: (denied category %d)", deny);
     }
-    return deny;
+    return deny != 0;
 }
