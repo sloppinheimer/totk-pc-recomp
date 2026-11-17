@@ -88,7 +88,8 @@ weak spots of a public repository; finding IDs below are its). Fixed, in the rep
 - SYNC-001: the contraption sync opens its reader of the transport's inbox; the enemy sync, on by default, had been
   taking and dropping all its reliable messages and join/leave events.
 - SEC-003, SEC-010, SEC-011, SEC-016: hosting asks for a session code (the address players type is now
-  `<address> <code>`, packet version 31; the standalone relay takes `--code`); the router's forward follows the relay.
+  `<address> <code>`; the standalone relay takes `--code`); the router's forward follows the relay. The packet version
+  is 32 (31 for the code, 32 for a player state without the fields nothing read).
 - BUG-001, BUG-002, BUG-003, SEC-002, SEC-008, SEC-009: what another game sends is checked before it is used (numbers,
   offsets, counts); a stack overflow in the contraption status line and a write through a stale actor address fixed.
 - SEC-001, SEC-004, SEC-005, SEC-006, SEC-012, SEC-013: names and owners of what another game asks this one to make,
@@ -118,9 +119,8 @@ Left, and where it goes:
   and 0x1b70a04 have no handler; step 2 is to use them and replaces 0x1bb16a0 and 0x1ba7710.
 - Small, when the files are next touched: duplicated helpers (quaternion conversions, FNV hashes, main-body lookups,
   the equipment-slot walk, the "paused" tests, `coop_spawn.c`'s copies of `coop_game.c`'s reads and create; the
-  report's consolidation table); unread network-state fields (`cam_fwd`, `cam_right`, `sticks`, `life`, `life_max`: a
-  packet version change); comments that still name removed files or tests (fewer than the 40 listed before); the
-  overlay thread reading player slots without a lock; `coop_cfg_names.inc` holds 7 co-op names; 48 input scripts in
+  report's consolidation table); comments that still name removed files or tests (fewer than the 40 listed before);
+  `coop_cfg_names.inc` holds 7 co-op names; 48 input scripts in
   `tools/coop/` that no file names; the character stand-in's lightning flag (`charmod.py build_set`); the saved bench
   change (`build/contraptions-uncommitted-2026-11-17.patch`); the untracked `map_hold.txt` and `menu_hold.txt`; the
   parked branches `claude/coop-arrow-tail-wip` and `claude/quizzical-poincare-8711f5`.

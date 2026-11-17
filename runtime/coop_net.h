@@ -4,15 +4,14 @@
 #include <stdint.h>
 
 #define COOP_MAX_PLAYERS 8
-#define COOP_NET_VERSION 31   // packet header version: games and relays of another version ignore each other
-                              // (29: CTR packets, routed by header byte 7; 31: HELLO carries the session code)
+#define COOP_NET_VERSION 32   // packet header version: games and relays of another version ignore each other
+                              // (29: CTR packets, routed by header byte 7; 31: HELLO carries the session code;
+                              // 32: NetState without the fields nothing read)
 #define COOP_CODE_LEN 8       // the host's session code (coop_relay.c), at most this many characters
 #define COOP_HELLO_LEN (16 + COOP_CODE_LEN)   // HELLO's payload: the name, then the code
 void coop_name_clean(char *s, int n);   // control bytes of a name from the network become '?'
 
-// One player's state, sent about 30 times a second. Positions and directions are world space; the sticks are as the
-// player's own camera saw them, with the camera's horizontal forward and right so a receiver can turn them into its
-// own camera's frame.
+// One player's state, sent about 30 times a second. Positions and directions are world space.
 // A world object the player shot, made or moved (coop_players.c, "world objects"). Its own (arrows, fused materials,
 // dropped and made objects): shown in the other games as a copy, by the owner's number. One every game has (a
 // placed rock it moves): COOP_OBJ_KEYED | its key, and the other games move their own to match.
@@ -50,9 +49,7 @@ typedef struct {
                                       // bit 11: the shield is placed as shield_pos / shield_q say (a shield surf)
                                       // bit 12: lightning is about to strike this Link (its sparks; coop_players.c)
     float pos[3], rot[9];
-    float cam_fwd[2], cam_right[2];   // x, z
     uint64_t buttons;                 // Switch buttons (input_map.h B_*)
-    int32_t sticks[4];                // lx, ly, rx, ry (-32767..32767)
     char gear[6][32];                 // equipped actor names: weapon, bow, shield, head, body, legs ("" unknown, "-" none)
     float day_seconds;                // time of day, 0..86400 (-1 unknown): the host's is followed
     int32_t weather;                  // weather type at the player (-1 unknown): the host's is followed
@@ -64,7 +61,6 @@ typedef struct {
     uint32_t ride_id;                 // riding: that object's id as its owner sends it (CoopObj.id)
     float ride_off[3];                // riding: where this Link is in the object's frame
     float shield_pos[3], shield_q[4]; // with flags bit 11: the shield in this Link's frame (rotation as x y z w)
-    uint16_t life, life_max;          // this Link's life and most life, quarter hearts (0: unknown)
     float shield_fuse_scale[3];       // the scale (actor +0x2e4) of the actor fused to the shield (0: none or unknown)
     CoopAnim anim[COOP_ANIM_SLOTS];   // this Link's animation player's first slots (coop_world.c, coop_anim_pack)
     CoopMask mask[COOP_ANIM_MASKS];   // the masks those slots use, as the owner's graph set them
@@ -79,7 +75,7 @@ typedef struct {
     uint32_t char_mod, char_pad;      // its GameBanana mod id (0 none): where another game can fetch it
 } NetState;
 #define COOP_RIDE_MOUNT 0xfe   // NetState.ride_owner for a horse (no player has this id; an older game rides nothing)
-_Static_assert(sizeof(NetState) == 520 + 16 * COOP_ANIM_SLOTS + 88 * COOP_ANIM_MASKS, "NetState wire size");
+_Static_assert(sizeof(NetState) == 480 + 16 * COOP_ANIM_SLOTS + 88 * COOP_ANIM_MASKS, "NetState wire size");
 #define COOP_GEAR_SLOTS 6
 extern const int coop_gear_slot[COOP_GEAR_SLOTS];   // the EquipmentUser slots they are (coop_players.c)
 

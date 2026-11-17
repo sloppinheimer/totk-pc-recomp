@@ -50,7 +50,7 @@ typedef struct {
     int nseen;
     float err_max, err_sum;
     int err_n;
-    int have_want, idle;
+    int have_want;
     char gear_want[COOP_GEAR_SLOTS][32], gear_have[COOP_GEAR_SLOTS][32];   // the owner's gear; what this Link was given
     char character[COOP_CHAR_KEY];     // the owner's character (NetState.character; "" Link) and the stand-in actor
     char standin[48];                  // spawned for it (coop_chars.c: that character's set, else PlayerPuppet)
@@ -108,23 +108,12 @@ static PlatMutex lock = PLAT_MUTEX_INIT;   // input fields, read by the calc wra
 
 // This PC's input as the game read it this poll (ov_input.c npad_states), for the relay.
 static uint64_t local_buttons;
-static int32_t local_sticks[4];
 void coop_local_input(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
-    local_buttons = buttons, local_sticks[0] = lx, local_sticks[1] = ly, local_sticks[2] = rx, local_sticks[3] = ry;
+    (void)lx, (void)ly, (void)rx, (void)ry;   // (the sticks were sent and read by nobody: dropped with packet version 32)
+    local_buttons = buttons;
 }
 
 
-// The camera's horizontal forward and right (PlayerCamera's rotation: it looks along -Z, X is its right; 2026-11-04).
-static int camera_frame(float fwd[2], float right[2]) {
-    uint64_t cam = coop_resident_named("PlayerCamera", NULL);
-    float r[9];
-    if (!cam || !coop_rd(cam + COOP_ACTOR_ROT, r, sizeof r)) return 0;
-    fwd[0] = -r[2], fwd[1] = -r[8], right[0] = r[0], right[1] = r[6];
-    float lf = sqrtf(fwd[0] * fwd[0] + fwd[1] * fwd[1]), lr = sqrtf(right[0] * right[0] + right[1] * right[1]);
-    if (lf < 1e-3f || lr < 1e-3f) return 0;
-    fwd[0] /= lf, fwd[1] /= lf, right[0] /= lr, right[1] /= lr;
-    return 1;
-}
 
 // ---- name tags over the other players' Links (drawn by ui/coop_tags.cpp with the overlay).
 // The camera: PlayerCamera's position is the eye, its rotation's columns right, up and back (it looks along -Z);
@@ -4275,7 +4264,6 @@ void coop_players_tick(Cpu *c) {
         NetState st = {0};
         st.world_us = frame_step_world_us();
         coop_rd(me + COOP_ACTOR_POS, st.pos, 12), coop_rd(me + COOP_ACTOR_ROT, st.rot, 36);
-        camera_frame(st.cam_fwd, st.cam_right);
         st.buttons = local_buttons;
         memcpy(st.gear, my_gear, sizeof st.gear);
         memcpy(st.dye, my_dye, sizeof st.dye);
@@ -4332,11 +4320,6 @@ void coop_players_tick(Cpu *c) {
             }
             was = l;
         }
-        {   // proxy attacks: its life, so the proxies' match (the Master Sword's beam comes at full life only)
-            int coop_life_of(uint64_t a), coop_life_max_of(uint64_t a);
-            int l = coop_life_of(me), lm = coop_life_max_of(me);
-            st.life = (uint16_t)(l > 0 && l < 65535 ? l : 0), st.life_max = (uint16_t)(lm > 0 && lm < 65535 ? lm : 0);
-        }
         // TOTK_COOP_FAKE_AT=<s>: the fakes below apply only from that world time (a change during the session)
         const char *fat = cfg_get("TOTK_COOP_FAKE_AT");
         int fakes = !fat || frame_step_world_us() / 1e6 >= atof(fat);
@@ -4355,7 +4338,6 @@ void coop_players_tick(Cpu *c) {
             if (n && n < 32) memcpy(st.gear[k], fake, n), st.gear[k][n] = 0;
             fake += n + (fake[n] == ',');
         }
-        memcpy(st.sticks, local_sticks, sizeof st.sticks);
         // A menu is open here when the clock has stopped (the game stops time in its menus) and Link has not moved
         // for 150 ms: the game keeps updating Link in the inventory, so that is no sign (pair test 2026-11-04);
         // where time stands still in play (if anywhere), Link moving with the input keeps it flowing.
@@ -4378,7 +4360,6 @@ void coop_players_tick(Cpu *c) {
         was_paused = paused;
         if (paused) {   // a menu is open here: the sticks and buttons move through it, not Link
             st.buttons = 0;
-            memset(st.sticks, 0, sizeof st.sticks);
         }
         st.day_seconds = day_seconds();
         read_weather(c, me);
@@ -4561,7 +4542,6 @@ void coop_players_tick(Cpu *c) {
         }
         // The actor fused to its shield at its owner's size: a fused material is drawn at full size otherwise.
         if (s->state == LIVE && st.fuse[2][0] && st.shield_fuse_scale[0] > 0) proxy_fuse_scale(s, st.shield_fuse_scale);
-        s->idle = !st.buttons && abs(st.sticks[0]) < 3000 && abs(st.sticks[1]) < 3000;
     }
     int others = 0;
     for (int i = 0; i < COOP_MAX_PLAYERS; i++) others += slots[i].state != FREE && slots[i].source == SRC_NET;
