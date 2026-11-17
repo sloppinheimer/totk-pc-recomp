@@ -31,7 +31,7 @@ comes nearer, strikes the enemy, or the owner leaves, loads or pauses.
 | `runtime/coop_enemy_arm.c` | Attacks armed by AI nodes. |
 | `runtime/coop_enemy_pose.c` | Ragdoll poses sent as bones. |
 | `runtime/coop_enemy_loot.c` | Drops and thrown weapons noted for the object mirror; kill counters refused on copies. |
-| `runtime/coop_enemy_act.c`, `coop_enemy_act_deny.inc` | The action layer (off by default). |
+| `runtime/coop_enemy_act.c`, `coop_enemy_act_deny.inc` | The action layer (off by default): a copy runs its owner's action, with its node classes denied by list and its calls into engine functions refused (`en_act_refuse`). |
 | `runtime/coop_contact.c` | Which contacts of a blow count, and where. |
 | `runtime/coop_spawn_sync.c` | Enemies made at run time, made in the other games too. |
 | `runtime/coop_mount.c` | Horses and land animals as kinds of this sync (off by default). |
@@ -404,8 +404,24 @@ already play the owner's commands (`TOTK_COOP_EN_ACT_PLAYS=1` lets them through)
 list, or nothing comes for half a second, the copy is asked for Wait (verb 40) once. While a copy runs an action the
 ARM replay is skipped and an effect its own node started is not started again.
 
+Under the same mark, whichever node makes the call, `en_act_refuse` skips the engine functions an action's outward acts
+end in, with the game's own "nothing done" answer (facts/enemies.md 4.1): the actor create (main+0x599670, 0 and error
+code 1), the equipment creates (main+0xaf100c, main+0xc4961c: 0, at their entries), equipment mode 0 (main+0x4f59ec,
+a drop where it is; modes 1 and 2 run), the drop and throw records (main+0x1b738e4, main+0x1b73be4), the remove
+(main+0x1b70a04), the pick-up (main+0x1d71dfc: 1), the lifter's throw (main+0x1ba796c: 1), the Shooter's prepare
+(main+0x1bf8df4: -1), shoot (main+0x1bfbaa4, main+0x1bf8f74, main+0x1bfbb28: 0) and sleeps (main+0x1bfa698,
+main+0x1bfa4e0, main+0x1bfa87c: 0), the death requests (main+0x1953184, main+0x1b4b738: 1), the drop now and reserve
+(main+0x1b55b48, main+0x1b55bb4: 0), placementSetDead (main+0x195321c), the game data Bool64 setter (main+0x2ab6dcc)
+and the noise producers (main+0x1f40d34, main+0x4cac5c). The equipment user's entries and the pick-up are refused only
+when the actor they name (the holder [x0+0x18], the picker x1) is the marked copy, and logged "let through" otherwise;
+the rest are refused under the mark alone, a death included, since an action asks deaths of other actors too (its
+weapon, a lifted actor). Each (function, caller) pair is logged once with the last node class the action ticked, and
+the per-call line counts the refusals. The calls are routed as before: `en_copy_hook`'s marked block for the
+`COOP_HOOKED_EN` addresses, `coop_spawn.c coop_hook` for the creates, `coop_life.c` for the deaths and the prepare, each
+asking `en_act_refuse` first. The mod's own replays run before the action call, outside the mark.
+
 Not built, from the file's own list and PLAN.md: the other four slots, interrupt requests (`flags & 1` are not sent),
-the form key, and every engine-level block of PLAN step 2. `TOTK_COOP_EN_ACT_ALLOW` and `TOTK_COOP_EN_ACT_DENY` change
+and the form key. The refusals have not been run (PLAN.md step 2's gate). `TOTK_COOP_EN_ACT_ALLOW` and `TOTK_COOP_EN_ACT_DENY` change
 the deny table for a test. PLAN.md lists what was measured with it.
 
 ### The Shooter-sleep replay
@@ -420,11 +436,8 @@ MOUNT; a ridden horse belongs to its rider's game (`coop_mount_claim`, `coop_mou
 
 ## Leftovers in the code
 
-- `runtime/coop_hooks.h COOP_HOOKED_EN` still lists game functions with no handler: the three PLAN step 2 will block
-  (remove main+0x1b70a04; main+0x1bb16a0, the AI's memory of a weapon; main+0x1ba7710, the lifter's release setter;
-  kept on purpose, PLAN.md step 2), and also
-  main+0x2314ab0, 0x42ec98, 0x1b87a9c, 0x195321c, 0xa70a1c, 0x4e603c, 0x4f59ec and 0xc448c8. Each costs one test on every
-  call of that function.
+- `runtime/coop_hooks.h COOP_HOOKED_EN` still lists game functions with no handler: main+0x2314ab0, 0x42ec98,
+  0x1b87a9c, 0xa70a1c, 0x4e603c and 0xc448c8. Each costs one test on every call of that function.
 - Comments that no longer match: `coop_enemy.c`'s file comment and the net tick's first log line still say
   `TOTK_COOP_ENEMY=1` turns it on and that an older enemy sync in `coop_world.c` keeps other kinds (it is on unless `0`,
   and the older sync is gone); `cell_resolve` names `coop_world.c` for `coop_world_spawn_key` (it is in

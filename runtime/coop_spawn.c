@@ -462,6 +462,8 @@ void coop_ctl_leave(void);
 int coop_puppet_place(Cpu *c, uint64_t addr);   // coop_players.c: a puppet put at its owner after its physics step
 void coop_players_tick(Cpu *c);
 int coop_players_gear(Cpu *c, uint64_t addr);
+extern __thread uint64_t tl_act_actor;          // coop_enemy_act.c: the copy whose action request the mod is making
+int en_act_refuse(Cpu *c, uint64_t off);         // coop_enemy_act.c: an engine call that action ends in, refused
 
 int coop_watch_counts(void) { return 1; }   // (coop_watch_win.c: every fault counts)
 
@@ -748,6 +750,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
         return 1;
     }
     if (addr == MOD_MAIN_BASE + 0x599670) {   // the create request: the entity sync runs it inside its hook (its inner entry first)
+        if (tl_act_actor && en_act_refuse(c, 0x599670)) return 1;   // (under a copy's action: no actor made, coop_enemy_act.c)
         // (the loot note on the outer entry only: the entity hook runs the request again through rt_dispatch, whose
         // entry comes back here, and each drop item was noted twice; code review, 2026-11-17)
         static __thread int depth;
@@ -857,7 +860,11 @@ int coop_hook(Cpu *c, uint64_t addr) {
                    ldr_describe(c->x[30], from, sizeof from));
         return 1;
     }
-    if (addr == MOD_MAIN_BASE + 0xc4961c || addr == MOD_MAIN_BASE + 0xaf100c) return coop_players_gear(c, addr);
+    if (addr == MOD_MAIN_BASE + 0xc4961c || addr == MOD_MAIN_BASE + 0xaf100c) {
+        // (under a copy's action, refused at the entry, before the create writes the slot's bookkeeping: coop_enemy_act.c)
+        if (tl_act_actor && en_act_refuse(c, addr - MOD_MAIN_BASE)) return 1;
+        return coop_players_gear(c, addr);
+    }
     if (addr == MOD_MAIN_BASE + ACTOR_CALC) {
         coop_actor_seen(c->x[0]);   // every live actor passes here each frame (coop_world.c)
     if (prof4 && !enemy_calc && c->x[0]) {   // an enemy's calc, bracketed for the profiler

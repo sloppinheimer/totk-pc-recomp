@@ -403,7 +403,7 @@ still running.
 | Drop record main+0x1b738e4, throw record main+0x1b73be4 | void | they only write the slot's request; with flag A they also call main+0x1c95440, which writes the placement's game-data flag |
 | Remove main+0x1b70a04 | void | deletes the held weapon and kills its attachment |
 | Pick up main+0x1d71dfc | x0 = 1 (OneShotTargetEquipTarget is then done, as on the owner) | 0 is also safe but fails the node |
-| Lifter throw main+0x1ba796c | x0 = 1 (0 is the game's "nothing held") | not hooked yet; its only enemy node is denied |
+| Lifter throw main+0x1ba796c | x0 = 1 (0 is the game's "nothing held") | its only enemy node is denied |
 | Shooter prepare main+0x1bf8df4 | x0 = 0xffffffff (no record) | refuse at the entries, not main+0x1bf9af8 / main+0x1bfbc44, which the shot replay calls |
 | Shooter shoot main+0x1bfbaa4, main+0x1bf8f74, main+0x1bfbb28 | x0 = 0 | "no prepared record" |
 | Shooter sleep main+0x1bfa698, main+0x1bfa4e0, main+0x1bfa87c | x0 = 0 | the owner's sleeps come by the replay |

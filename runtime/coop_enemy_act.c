@@ -25,7 +25,8 @@
 // belong to one game only: a shot, a drop, a death, a made or deleted actor, a lift or a ride, game data, a message
 // to another actor, a chemical switch, an attack turn asked of the game balance. The node classes that end in those
 // are known from the audit of the AI graphs (coop_enemy_act_deny.inc); the tick of such a node is turned away and
-// the node left as one that succeeded. (2) Its animation: the copy's slots play what its owner states (S 7.3), and a
+// the node left as one that succeeded. Whatever node makes it, a call into the engine functions those acts end in is
+// refused too (en_act_refuse, at the end of this file). (2) Its animation: the copy's slots play what its owner states (S 7.3), and a
 // play asked by a node of the action is answered "played" without being made (TOTK_COOP_EN_ACT_PLAYS=1 lets them
 // through). (3) Time: a request is made when this game shows its owner at the request's time, as a shot is.
 // What its nodes do do: effects, an attack armed by a node, the model's looks, physics on its own body. While a copy
@@ -69,6 +70,8 @@ __thread uint64_t tl_act_actor;   // the copy whose action request this file is 
 __thread uint32_t tl_act_ticks, tl_act_runs, tl_act_other;   // under one call: node ticks, the slot's graph run, other runner entries turned away
 __thread uint64_t tl_act_lr;      // the last of those others: its entry << 32 | where it was called from
 __thread uint32_t tl_act_plays;   // plays asked by the action's nodes and not made (counted over the copy's life of the thread)
+static __thread uint64_t tl_act_node_vt;   // the class (vtable) of the last node the action ticked (named in a refusal's log)
+extern __thread uint32_t tl_act_refused;
 static _Atomic int n_told, n_made;
 
 int en_act_on(void) {
@@ -295,7 +298,7 @@ int en_act_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     uint32_t s7c0 = 0, s7c1 = 0, s780 = 0, s781 = 0, q0 = 0, q1 = 0;
     uint64_t inst = coop_rd_ptr(ip);
     coop_rd(ctrl + 0x19c, &root0, 4), coop_rd(slot + 0x7c, &s7c0, 4), coop_rd(slot + 0x78, &s780, 4), coop_rd(inst + 0x90, &q0, 4);
-    tl_act_ticks = tl_act_runs = tl_act_other = 0, tl_act_lr = 0;
+    tl_act_ticks = tl_act_runs = tl_act_other = tl_act_refused = 0, tl_act_lr = 0, tl_act_node_vt = 0;
     cct_write(actor, m);
     tl_act_verb = stop ? VERB_WAIT : actq[k].verb;
     tl_act_actor = actor;
@@ -303,7 +306,7 @@ int en_act_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     tl_act_actor = 0;
     coop_rd(ctrl + 0x19c, &root1, 4), coop_rd(slot + 0x7c, &s7c1, 4), coop_rd(slot + 0x78, &s781, 4), coop_rd(inst + 0x90, &q1, 4);
     if (mode || !actq[k].said || (uint32_t)ret) {
-        if (atomic_fetch_add(&n_made, 1) < 80) rt_log("coop: en: act: the copy %llx is asked for %s verb %u, mode %u: the call answered %u, its Main slot's root %d -> %d; slot +0x7c %x -> %x, +0x78 %u -> %u, queue %u -> %u; under the call: the slot's graph run %u times, %u node ticks, %u other entries turned away (last main+%#llx from main+%#llx)", (unsigned long long)actor, stop ? "Wait, leaving" : "its owner's", stop ? VERB_WAIT : actq[k].verb, (unsigned)mode, (unsigned)ret, root0, root1, s7c0, s7c1, s780, s781, q0, q1, tl_act_runs, tl_act_ticks, tl_act_other, (unsigned long long)(tl_act_lr >> 32), (unsigned long long)(tl_act_lr & 0xffffffffu));
+        if (atomic_fetch_add(&n_made, 1) < 80) rt_log("coop: en: act: the copy %llx is asked for %s verb %u, mode %u: the call answered %u, its Main slot's root %d -> %d; slot +0x7c %x -> %x, +0x78 %u -> %u, queue %u -> %u; under the call: the slot's graph run %u times, %u node ticks, %u other entries turned away (last main+%#llx from main+%#llx), %u engine calls refused",(unsigned long long)actor, stop ? "Wait, leaving" : "its owner's", stop ? VERB_WAIT : actq[k].verb, (unsigned)mode, (unsigned)ret, root0, root1, s7c0, s7c1, s780, s781, q0, q1, tl_act_runs, tl_act_ticks, tl_act_other, (unsigned long long)(tl_act_lr >> 32), (unsigned long long)(tl_act_lr & 0xffffffffu), tl_act_refused);
         actq[k].said = 1;
     }
     actq[k].sum_runs += tl_act_runs, actq[k].sum_ticks += tl_act_ticks, actq[k].sum_calls++;
@@ -375,6 +378,7 @@ int en_act_tick_seen(uint64_t node) {
     uint64_t vt = node > 0x10000 ? coop_rd_ptr(node) : 0;
     if (!vt) return 0;
     int deny = deny_cat(vt), isnew = 0;
+    tl_act_node_vt = vt;
     if (deny) {
         uint32_t fl = 0;
         if (coop_rd(node + 0x18, &fl, 4)) { fl = (fl & 0x3fffffffu) | 0x80000000u; memcpy((void *)(uintptr_t)(node + 0x18), &fl, 4); }
@@ -395,4 +399,108 @@ int en_act_tick_seen(uint64_t node) {
         if (deny) rt_log("coop: en: act: (denied category %d)", deny);
     }
     return deny != 0;
+}
+
+// ---- Refusals at the engine functions an action ends in (PLAN.md step 2; docs/coop/facts/enemies.md 4.1) -------------
+// What a copy's action would do to the shared world passes through a few engine functions: a create, an equipment
+// create, a drop, a throw, a remove, a pick-up, a lifter's throw, a Shooter's prepare, shoot and sleep, a death
+// request, a drop made without a death, a kill flag, a noise. The owner's game does each of these and the sync carries
+// its result (a noise is carried by nothing: it is heard where it is made). So while the mod's call of a copy's action
+// runs (tl_act_actor set), each is skipped, whichever node made the call, with the answer the game itself gives when
+// it does nothing, chosen so that every caller an action reaches carries on (facts 4.1 says why for each). The deny
+// list above is a second net: a refusal here logs the function, where it was called from and the last node class the
+// action ticked, so a class missing from the list is found.
+//
+// Where the function names the actor it is about, the refusal is for the marked copy only (SYNC-006: were another
+// actor's calc ever run inside the copy's action, its calls are its own): the equipment user's entries ([x0+0x18],
+// the holder) and the pick-up (x1, the picker). The others are refused under the mark alone. A death request is among
+// them on purpose: an action's own requests are about other actors too (the held weapon, a lifted actor, bullets),
+// and each is an act of the owner's game.
+//
+// The mod's own replays on a copy (equipment create, draw and put away, the throw, the shots and sleeps) run in
+// en_copy_precalc before the action is asked for, outside the mark, and are never refused here.
+//
+// A refusal sets the answer in x0 and the hook returns 1, which makes the entry return at once with the guest seeing
+// x0 as the function's return; a void function's x0 is left as it is.
+__thread uint32_t tl_act_refused;   // engine calls refused under one action call (the per-call log line)
+static _Atomic uint64_t refuse_seen[512];   // (function << 32 | where it was called from), each logged once
+
+static const char *refuse_name(uint64_t off) {
+    switch (off) {
+    case 0x599670: return "the actor create";
+    case 0xaf100c: return "the equipment create";
+    case 0xc4961c: return "the static equipment create";
+    case 0x4f59ec: return "the equipment mode 0 (drop where it is)";
+    case 0x1b738e4: return "the drop record";
+    case 0x1b73be4: return "the throw record";
+    case 0x1b70a04: return "the remove of a held thing";
+    case 0x1d71dfc: return "the pick-up";
+    case 0x1ba796c: return "the lifter's throw";
+    case 0x1bf8df4: return "the Shooter's prepare";
+    case 0x1bfbaa4: case 0x1bf8f74: case 0x1bfbb28: return "a Shooter's shoot";
+    case 0x1bfa698: case 0x1bfa4e0: case 0x1bfa87c: return "a Shooter's sleep";
+    case 0x1953184: return "the death request (by actor)";
+    case 0x1b4b738: return "the death request";
+    case 0x1b55b48: return "the drop now";
+    case 0x1b55bb4: return "the drop reserve";
+    case 0x195321c: return "placementSetDead";
+    case 0x2ab6dcc: return "the game data Bool64 setter";
+    case 0x1f40d34: return "a noise producer";
+    case 0x4cac5c: return "the noise and terror producer";
+    default: return NULL;
+    }
+}
+
+// A call of one of those functions (off, main-relative), at its entry. 1: refused, the answer set; 0: it runs.
+int en_act_refuse(Cpu *c, uint64_t off) {
+    uint64_t me = tl_act_actor;
+    if (!me) return 0;
+    const char *what = refuse_name(off);
+    if (!what) return 0;
+    uint64_t about = 0;   // the actor the call names, where it names one
+    switch (off) {
+    case 0x4f59ec:   // (component, slot, mode): modes 1 and 2 draw and put away, the copy's own body; 0 is a drop
+        if ((uint32_t)c->x[2] != 0) return 0;
+        /* fall through */
+    case 0xaf100c: case 0x1b738e4: case 0x1b73be4: case 0x1b70a04: about = coop_rd_ptr(c->x[0] + 0x18); break;   // the equipment user's holder
+    case 0x1d71dfc: about = c->x[1]; break;   // the picker
+    default: break;
+    }
+    int refuse = !about || about == me;
+    uint64_t lr = c->x[30] - MOD_MAIN_BASE, key = off << 32 | (lr & 0xffffffffu), have;
+    int isnew = 0;
+    for (int i = 0; i < 512; i++) {
+        have = atomic_load_explicit(&refuse_seen[i], memory_order_relaxed);
+        if (have == key) break;
+        if (!have) {
+            if (!atomic_compare_exchange_strong(&refuse_seen[i], &have, key)) { if (have == key) break; continue; }
+            isnew = 1;
+            break;
+        }
+    }
+    if (isnew) {
+        char an[48] = "";
+        if (refuse) rt_log("coop: en: act: the copy %llx in verb %u: %s main+%#llx refused, from main+%#llx (last node ticked: class vtable main+%#llx)", (unsigned long long)me, tl_act_verb, what, (unsigned long long)off, (unsigned long long)lr, (unsigned long long)(tl_act_node_vt ? tl_act_node_vt - MOD_MAIN_BASE : 0));
+        else rt_log("coop: en: act: the copy %llx in verb %u: %s main+%#llx from main+%#llx is about another actor, %llx %s: let through", (unsigned long long)me, tl_act_verb, what, (unsigned long long)off, (unsigned long long)lr, (unsigned long long)about, about > 0x10000 ? coop_actor_name(about, an, sizeof an) : "-");
+    }
+    if (!refuse) return 0;
+    tl_act_refused++;
+    switch (off) {
+    case 0x599670: {   // the game's "manager closed" answer: 0, error code 1 to the caller's out pointer ([sp+8] at the entry), the handle cell untouched
+        uint64_t ep = coop_rd_ptr(c->sp + 8);
+        uint32_t was;
+        if (ep > 0x10000 && coop_rd(ep, &was, 4)) { uint32_t one = 1; memcpy((void *)(uintptr_t)ep, &one, 4); }
+        c->x[0] = 0;
+        break;
+    }
+    case 0xaf100c: case 0xc4961c: c->x[0] = 0; break;     // no equipment made: every node caller ignores it
+    case 0x1d71dfc: case 0x1ba796c: c->x[0] = 1; break;   // picked, thrown: the node succeeds, as on the owner
+    case 0x1bf8df4: c->x[0] = 0xffffffffull; break;       // no record (the 32-bit -1, zero-extended)
+    case 0x1bfbaa4: case 0x1bf8f74: case 0x1bfbb28: c->x[0] = 0; break;   // no prepared record shot
+    case 0x1bfa698: case 0x1bfa4e0: case 0x1bfa87c: c->x[0] = 0; break;   // nothing put to sleep
+    case 0x1953184: case 0x1b4b738: c->x[0] = 1; break;   // "started": the copy's death comes from its owner's
+    case 0x1b55bb4: case 0x2ab6dcc: c->x[0] = 0; break;
+    default: break;   // void: the drop and throw records, the remove, mode 0, the drop now, placementSetDead, the noises
+    }
+    return 1;
 }

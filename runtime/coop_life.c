@@ -26,6 +26,8 @@
 #include "platform/platform.h"
 
 int64_t frame_step_world_us(void);
+extern __thread uint64_t tl_act_actor;    // coop_enemy_act.c: the copy whose action request the mod is making
+int en_act_refuse(Cpu *c, uint64_t off);   // coop_enemy_act.c: an engine call that action ends in, refused
 
 #define DELETE_REQUEST 0x63baa8
 #define DELETE_DEFER 0x63b6b0
@@ -228,6 +230,8 @@ static void foe_end_log(Cpu *c, uint64_t off) {
 int coop_life_hook(Cpu *c, uint64_t addr) {
     uint64_t off = addr - MOD_MAIN_BASE;
     if (off == DELETE_REQUEST || off == DELETE_DEFER || off == DEATH_REQUEST || off == DEATH_COMPONENT) foe_end_log(c, off);
+    // A death asked by a copy's action: refused, answered "started" (coop_enemy_act.c; the copy's own comes from its owner's)
+    if ((off == DEATH_REQUEST || off == DEATH_COMPONENT) && tl_act_actor && en_act_refuse(c, off)) return 1;
     // The enemy TOTK_COOP_TEST_SPAWN made is kept from its own AI's far delete: on the Great Sky Island platform its
     // brain finds no path home, takes verb 47 (ForceReturnHome) and its node OneShotGenericFarDeleteThisActor (the
     // call at main+0x2534d30) asks a delete with reason 3 about 8 s after it is made (a run, 2026-11-17; research R23).
@@ -554,6 +558,8 @@ int coop_life_v3(Cpu *c, uint64_t off) {
         return 1;
     }
     if (off == 0x1bf8df4) {
+        // (the Shooter's prepare asked by a copy's action: refused with -1, coop_enemy_act.c; the owner's comes by the shot replay)
+        if (tl_act_actor && en_act_refuse(c, off)) return 1;
         if (!in_follow_cannon) return 0;
         atomic_fetch_add(&shots_kept, 1);
         c->x[0] = 0xffffffffull;   // (the 32-bit -1 the function answers, zero-extended: finding 88)

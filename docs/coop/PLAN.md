@@ -284,9 +284,8 @@ into any of these is refused, whichever node made it:
 
 The full list, with arguments and sources, is facts/enemies.md section 4; read it before building. It corrects two
 addresses this plan first had: main+0x1bb16a0 is the AI's memory of a weapon, not the pick-up, and main+0x1ba7710 is
-the lifter's release setter, not the throw. `coop_hooks.h` still registers those two for this step; they are
-replaced when it is built. Addresses no runtime code uses yet rest on the research notes alone and are read again
-before use. For each function: what its callers do when it is refused (a node that expects an actor back
+the lifter's release setter, not the throw; both are off `coop_hooks.h` now, replaced by the throw's entry.
+Addresses no runtime code uses yet rest on the research notes alone and are read again before use. For each function: what its callers do when it is refused (a node that expects an actor back
 may crash). The class list stays as a second net; a refusal at an engine function logs the node class, so a
 class missing from the list is found.
 
@@ -313,6 +312,15 @@ design, built as one piece:
    another within 200 ms (Turn, then Attack) starts 200 ms late; the clock is then jumped to the owner's, which does
    not move the clip's events (facts 5.3). Stamp the limit only when a play did not take. Catching up without a jump
    across an event (main+0x1b569fc, read first) is left for after this step.
+
+Built (2026-11-17), not run: the four parts above, in one branch. Part 1 is `coop_enemy_act.c en_act_refuse`, asked
+first in `en_copy_hook`'s marked block, in `coop_spawn.c coop_hook` for the three creates and in `coop_life.c` for the
+deaths and the Shooter's prepare; the six new hooks were checked in Ghidra as function entries of the shapes the
+research gives, and the create's error-code pointer as the entry's [sp+8]. A death is refused under the mark alone
+(R25), not only when it is about the marked copy: an action asks deaths of other actors too (its weapon by the remove,
+a lifted actor, bullets). Part 2 adds the nine classes (276 now). Part 3 keys the node tick and the target reset on the
+call's own actor (`tl_grace_actor`). Part 4 stamps `slot_try` only when the command read back after a play is not
+the one asked. Each change was syntax-checked with clang; no game was built or launched.
 
 Gate: the camp fight (`camp_melee.txt` for both Links) with the layer on and every verb on
 (`TOTK_COOP_EN_ACT=1`, `TOTK_COOP_EN_ACT_VERBS=all`): no crash, each refusal logged by function and caller, and the

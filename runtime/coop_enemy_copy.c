@@ -629,6 +629,8 @@ int en_copy_hook(Cpu *c, uint64_t off) {
     if (tl_act_actor) {   // a copy runs its owner's action (B.38): this one call tree goes through the switch, whole
         extern __thread uint32_t tl_act_ticks, tl_act_runs, tl_act_other;   // (counted for the prototype's log)
         extern __thread uint64_t tl_act_lr;
+        int en_act_refuse(Cpu *c, uint64_t off);   // (an engine function an action ends in: skipped with the game's own "nothing done")
+        if (en_act_refuse(c, off)) return 1;
         if (off == 0x1920) {   // a node of the copy's action (its actor, [[[node+8]+8]+0x1f8], the marked one): counted, denied by class
             uint64_t ctrl = coop_rd_ptr(coop_rd_ptr(c->x[0] + 8) + 8);
             if (ctrl && coop_rd_ptr(ctrl + 0x1f8) == tl_act_actor) { int en_act_tick_seen(uint64_t node); tl_act_ticks++; return en_act_tick_seen(c->x[0]); }
