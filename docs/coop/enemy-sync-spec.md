@@ -657,6 +657,18 @@ research R21, R22; from a play session, 2026-11-17).
   the listed verbs widened family by family, and the hand-made replays of B.17 to B.36 taken out where the action
   does the same.
 
+**B.39 From a second play session** (2026-11-17, a Bokoblin spawned beside one player, both players in its reach).
+- A copy's melee blow does hurt this game's player [seen by a tester, and in the logs: player 1's life fell nine
+  times while the Bokoblin was the other game's and a copy here]. The open question of B.38 is answered: the
+  scripted runs that showed no hit never had the watching Link inside a swing. The tester found the hits
+  "inconsistent"; not explained. In that short fight the Bokoblin changed owner four times, once offered with both
+  Links 1.7 m from it.
+- [open] A small stone a Bokoblin throws (`Rock_Weapon`, a Shooter's shot) is seen flying by one player only. The
+  logs: the copy's game makes the prepare and the shoot with the same request as its owner's (velocity -8.32 13.82
+  -11.04), and both calls answer 1; but the owner's stone starts at height 121.0 and travels 12 m in a second, and
+  the copy's starts at 113.1, eight metres lower, and falls a metre where it is. Why the copy's shot is made lower
+  and does not keep its velocity is not read.
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is
