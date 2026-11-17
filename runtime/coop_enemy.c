@@ -769,15 +769,15 @@ static void take_msg(const CoopCtrMsg *m) {
     }
     case ENM_MOON: {   // another game's blood moon began
         const MSyncEnd *s = (const MSyncEnd *)m->d;
-        // (only the next life: a life number far ahead freed every entry and refused every later claim, and its +1
-        // then wrapped; code review, 2026-11-17)
-        if (m->len == (int)sizeof *s && s->life_no == life_no + 1) moon_apply(s->life_no, "another game's blood moon");
+        // (at most 64 lives ahead: a number near the top freed every entry, refused every later claim, and its +1 then
+        // wrapped; code review, 2026-11-17. A game that joined late is several moons behind, so not only the next.)
+        if (m->len == (int)sizeof *s && s->life_no <= life_no + 64) moon_apply(s->life_no, "another game's blood moon");
         break;
     }
     case ENM_SYNC_END: {
         const MSyncEnd *s = (const MSyncEnd *)m->d;
         if (m->len != (int)sizeof *s) break;
-        if (s->life_no == life_no + 1) life_no = s->life_no;   // (at most one moon ahead, as MOON)
+        if (s->life_no > life_no && s->life_no <= life_no + 64) life_no = s->life_no;   // (as MOON: a late joiner catches up)
         int stale = 0;
         for (int i = 0; i < EN_N; i++)
             if (en_tab[i].used && en_tab[i].owner == m->from && en_tab[i].stale) {

@@ -285,7 +285,7 @@ void spawn_take(Cpu *c, const SpawnPacket *sp, int from) {
     for (int i = 0; i < 3; i++) if (!isfinite(sp->pos[i]) || fabsf(sp->pos[i]) > 1e5f) return;   // (a NaN place matched
     for (int i = 0; i < 9; i++) if (!isfinite(sp->rot[i]) || fabsf(sp->rot[i]) > 1e3f) return;   // any enemy's below;
                                                                                               // a matrix may carry scale)
-    {   // At most 8 a second from a player, and within 500 m of where it last stood: one game asked this one for any
+    {   // At most 32 a second from a player, and within 500 m of where it last stood: one game asked this one for any
         // number of enemies anywhere (code review, 2026-11-17). Its own spawners make what it announces, near it.
         static uint64_t since[COOP_MAX_PLAYERS + 1];
         static int n[COOP_MAX_PLAYERS + 1];
@@ -294,9 +294,9 @@ void spawn_take(Cpu *c, const SpawnPacket *sp, int from) {
         if (from < 1 || from > COOP_MAX_PLAYERS || !coop_net_remote(from, &st, &age)) return;
         float d2 = 0;
         for (int i = 0; i < 3; i++) d2 += (sp->pos[i] - st.pos[i]) * (sp->pos[i] - st.pos[i]);
-        if (d2 > 500.0f * 500.0f) return;
+        if (age < 2000000000ull && d2 > 500.0f * 500.0f) return;   // (a place over 2 s old may be from before a warp)
         if (now - since[from] > 1000000000ull) since[from] = now, n[from] = 0;
-        if (n[from]++ >= 8) return;
+        if (n[from]++ >= 32) return;   // (a camp loaded at once announces a few dozen)
     }
     for (int k = 0; k < 32; k++) if (made[k].state && made[k].key == sp->key) return;
     // This game's own spawner made one of that name at that place (both games run the same spawners): that one

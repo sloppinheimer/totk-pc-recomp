@@ -314,11 +314,12 @@ All go through `coop_msg.c` on the enemy stream. "Reliable" ones go through the 
 
 73, 81 and 85 are free. SPAWN and SPAWN_GONE (the spawn sync) and the contact filter use the HIT channel instead.
 
-What a message may do is checked against who sent it: DEATH, DEATH_END, ATTN, EQUIP and PICK are taken only from the
-game that owns that enemy here; PICK deletes only a `Weapon_`; MOON and SYNC_END raise the life number by one at most;
+What a message may do is checked against who sent it: ATTN, EQUIP and PICK are taken only from the game that owns
+that enemy here, DEATH and DEATH_END never from another game than its owner here (an enemy with no entry yet is taken
+as stated); PICK deletes only a `Weapon_`; MOON and SYNC_END raise the life number by 64 at most;
 a PLAY name must hash to the hash it is given for; a copy is given no equipment named as a player, character, enemy,
-animal, chest or armor. SPAWN is taken at most 8 times a second from a player and only within 500 m of where that
-player last stood, with a finite place and rotation.
+animal, chest or armor. SPAWN is taken at most 32 times a second from a player and, when its last place is under 2 s
+old, only within 500 m of it, with a finite place and rotation.
 
 ## Settings
 

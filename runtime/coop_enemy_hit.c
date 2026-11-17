@@ -312,9 +312,11 @@ void en_hit_msg(const CoopCtrMsg *m, int from) {
         if (m->len != (int)sizeof *d) break;
         // Only the game that runs the enemy states its death (a death was taken from any game, which let one kill or
         // free any enemy everywhere; code review, 2026-11-17).
-        int from_owner = 0;
-        for (int i = 0; i < EN_N && !from_owner; i++) from_owner = en_tab[i].used && enid_eq(en_tab[i].id, d->id) && en_tab[i].owner == m->from;
-        if (!from_owner) break;
+        // (an enemy this game has no entry for yet is taken as stated: its tombstone keeps this game's spawner from
+        // making it alive again; one stream per sender keeps a new owner's claim before its DEATH)
+        int other_owner = 0;
+        for (int i = 0; i < EN_N && !other_owner; i++) other_owner = en_tab[i].used && enid_eq(en_tab[i].id, d->id) && en_tab[i].owner != m->from;
+        if (other_owner) break;
         if (d->id.b != EN_RT && d->id.b >= en_life_no()) en_tomb_add(d->id.a, d->id.b, 1);
         for (int i = 0; i < EN_N; i++) {
             En *e = &en_tab[i];
