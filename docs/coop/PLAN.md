@@ -119,8 +119,8 @@ Left, and where it goes:
 - With step 1's runs: SYNC-007, a contraption copy's device striking an enemy this game runs counts in both games.
   Leaving it to the device's game (tried in e9b9ddcf, taken back) loses the blow when that game has not loaded the
   enemy; the checker's life column shows which case happens.
-- Replaced by step 1's checker: the enemy bench's own bookkeeping (tables equal, shot counts), the empty enemy list of
-  the sync audit.
+- Replaced by step 1's checker: the enemy bench's own bookkeeping (tables equal, shot counts; en_bench does not run
+  the checker yet). The sync audit's empty enemy list is removed.
 - `coop_hooks.h`: the enemy hooks 0x2314ab0, 0x42ec98, 0x1b87a9c, 0x195321c, 0xa70a1c, 0x4e603c, 0x4f59ec, 0xc448c8
   and 0x1b70a04 have no handler; step 2 is to use them and replaces 0x1bb16a0 and 0x1ba7710.
 - Small, when the files are next touched: duplicated helpers (quaternion conversions, FNV hashes, main-body lookups,
@@ -135,13 +135,34 @@ Both games write, once a second, every actor within reach of either Link, read f
 (placement hash or the sync's run-time id), name, position, rotation, life, death state, the command in each
 animation slot, what each equipment slot holds, whether it is drawn. A tool lines the two games' records up by time
 and identity and lists every difference beyond a tolerance, including an actor that exists in one game only. It
-replaces the sync audit's enemy check, which always wrote an empty list (`coop_world.c coop_audit_enemies`).
+replaces the sync audit's enemy check, which always wrote an empty list.
 
 The scripted pair runs use the Python relay (`server/coop_relay.py`); players host from the Co-op tab with the
 in-game relay (`coop_relay.c`). At least one checker run hosts from game A's tab, so the relay players use is tested.
 
+Movement and animation are judged from the first pass, per enemy copy against its owner, from each game's
+per-frame record. Targets (set before the first measurement; a step is not done on state agreement alone):
+- lag (the delay that best lines the copy's path up with the owner's, while it moves): at most 200 ms on one PC;
+- place error at that lag: 95th percentile at most 0.3 m;
+- stutter (the copy's frame-to-frame acceleration, RMS, over the owner's): at most 1.5 times;
+- the owner's command in the first animation slot: at least 95 % of frames;
+- the animation's phase (clock difference on the same command, in seconds of the owner's clock rate): 95th
+  percentile at most 0.1 s;
+- once a second: no difference that holds two seconds in place, rotation, life, death, ragdoll, drawn, slot commands
+  or equipment, and no enemy within 60 m of a Link shown in one game only.
+
 Done when: it runs on a scripted pair, its report lists differences by actor and kind, and a deliberate desync
 (an enemy moved in one game by a test key) shows up in it.
+
+Built (2026-11-17, not yet run in the game): `runtime/coop_check.c` writes each game's `logs/check.jsonl` (with
+`TOTK_COOP_DEBUG=1`), read from the game's memory with the enemy sync's readers of slots and equipment
+(`en_read_anim`, `en_read_equip`, which tell no other game anything); `tools/coop/check.py` compares the two
+(enemy-sync.md, "Checks"); `run_pair.ps1`, `run_session.ps1` and `play_two.ps1` run it at the end. The deliberate
+desync is `run_pair.ps1 -Nudge <t>,<s>,<m>`: game B shows its first enemy copy m metres east of where its owner's
+state puts it, through the copy's own shown place, so its pictures show it too. The sync audit's empty enemy list and
+its enemy check are removed. Checked without a game: `check.py` on a made-up pair of records found a 120 ms lag, the
+planted 5 m desync in its window, and an enemy in one game only. The test-spawned Bokoblin leaves its owner's game
+after about 5 s (step 0), so the gate runs wait on the reading of why.
 
 ### 2. Block at engine functions
 

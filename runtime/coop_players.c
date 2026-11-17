@@ -4152,9 +4152,7 @@ static void audit_tick(Cpu *c, uint64_t me, const CoopObj *sent, int n_sent, con
         audit_vec(f, "p", q);
         fputc('}', f);
     }
-    fputs("],\"enemies\":", f);
-    void coop_audit_enemies(FILE *f, uint64_t me);   // coop_world.c
-    coop_audit_enemies(f, me);
+    fputs("]", f);   // (enemies: the mismatch checker's own record, coop_check.c)
     void coop_ent_audit(FILE *f);   // coop_ent_bench.c: the entities and the devices that are none
     coop_ent_audit(f);
     fputs("}\n", f);
@@ -4304,6 +4302,8 @@ void coop_players_tick(Cpu *c) {
         if (my_eq && LD8(my_eq + EQ_ATTACKING)) st.flags |= 1u << 13;
         shield_fuse_tick(me, my_eq);
         audit_tick(c, me, cur, n_objs, &st);
+        void coop_check_tick(Cpu *c, uint64_t me);   // coop_check.c: the mismatch checker's record
+        coop_check_tick(c, me);
         if (coop_debug()) {   // (record) this Link's life when it changes, with each proxy's and whether it runs its own update then (P1's
             // hearts went up and down while P2 swung)
             int coop_life_of(uint64_t a);

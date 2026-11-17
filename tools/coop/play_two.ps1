@@ -59,7 +59,7 @@ foreach ($f in Get-ChildItem $a -Force) {
 
 # (a game that never reaches the world writes no audit: an older run's must not stand in for it)
 foreach ($d in $a, $b) {
-    Remove-Item -Force (Join-Path $d 'logs\audit.jsonl'), (Join-Path $d 'logs\motion.jsonl'), (Join-Path $d 'logs\mark-*.png') -ErrorAction SilentlyContinue
+    Remove-Item -Force (Join-Path $d 'logs\audit.jsonl'), (Join-Path $d 'logs\check.jsonl'), (Join-Path $d 'logs\motion.jsonl'), (Join-Path $d 'logs\mark-*.png') -ErrorAction SilentlyContinue
 }
 # The session record (runtime\coop_ent_log.c) is on with TOTK_COOP_DEBUG=1, which this script sets; the drive's line for every frame it writes a copy is
 # asked for here, for every session: about 0.4 KB a frame for each copy that moves, none for one at rest.
@@ -138,18 +138,23 @@ $report = Join-Path $root 'build/audit_report.txt'
 & (Join-Path $root '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'sync_audit.py') (Join-Path $a 'logs/audit.jsonl') (Join-Path $b 'logs/audit.jsonl') |
     Tee-Object -FilePath $report
 "(kept in $report)"
-# The session kept: both games' log, audit, motion file and mark pictures in build\sessions\<start time>\1 and \2, so
+# The mismatch checker's report on the enemies (tools/coop/check.py), kept in build/check_report.txt and shown here.
+$creport = Join-Path $root 'build/check_report.txt'
+$clines = & (Join-Path $root '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'check.py') $a $b
+$clines | Set-Content -Encoding utf8 $creport   # (Tee-Object writes UTF-16 in Windows PowerShell)
+$clines
+# The session kept: both games' log, audit, checker record, motion file and mark pictures in build\sessions\<start time>\1 and \2, so
 # the next start does not write over them, and what was written around each of the tester's marks (Home or numpad 0;
 # tools\coop\ent_marks.py) in marks.txt beside them. Nothing here deletes an older session.
 $keep = Join-Path $root "build\sessions\$stamp"
 foreach ($g in @(@{dir = $a; n = 1}, @{dir = $b; n = 2})) {
     $to = Join-Path $keep "$($g.n)"
     New-Item -ItemType Directory -Force $to | Out-Null
-    foreach ($f in 'totk.log', 'audit.jsonl', 'motion.jsonl', 'mark-*.png') {
+    foreach ($f in 'totk.log', 'audit.jsonl', 'check.jsonl', 'motion.jsonl', 'mark-*.png') {
         Copy-Item -Force (Join-Path $g.dir "logs\$f") $to -ErrorAction SilentlyContinue
     }
 }
-Copy-Item -Force $report $keep -ErrorAction SilentlyContinue
+Copy-Item -Force $report, $creport $keep -ErrorAction SilentlyContinue
 $marks = & (Join-Path $root '.venv/Scripts/python.exe') (Join-Path $PSScriptRoot 'ent_marks.py') (Join-Path $keep '1') (Join-Path $keep '2')
 $marks | Set-Content -Encoding utf8 (Join-Path $keep 'marks.txt')
 "(session kept in $keep; marks: $(@($marks | Where-Object { $_ -match '^== MARK' }).Count))"

@@ -11,17 +11,13 @@ lines pair by time (both games on one PC). For each pair, both ways (the owner's
               report), and at its place
   stale       a copy shown of an object its owner no longer sends
   dup / dead  two copies of one object; a copy whose actor is gone
-  enemy       each enemy near a Link in both games: its place and life the same (the host is the lower id). The audit
-              writes no enemies today (coop_world.c coop_audit_enemies): PLAN.md step 1's checker is to compare them.
-  enemy-only  an enemy within 100 m of the host's Link in one game only (not counted as a failure: it can be the
-              other game's streaming)
   time        the time of day: the guest follows the host's (within 180 game seconds, 3 s of real time); not while
               the host's clock stands (its map or a menu: the guest keeps its own then) nor for 5 s after
   weather     the same within 300 m of each other
 Nothing is checked in the first 10 s after both games have an id (the Links are being made). A mismatch is counted
 when it holds in two snapshots in a row (one-off timing is not). Places allow for movement:
 0.75 m plus a quarter second of the owner's speed. Prints each kind with its first time and example, and exits 1
-when there is any (enemy-only aside). --all prints every occurrence.
+when there is any. --all prints every occurrence. Enemies are compared by tools/coop/check.py (the mismatch checker).
 """
 import json
 import math
@@ -144,22 +140,6 @@ def check_pair(a, a_prev, b, b_prev, report):
     t = a['t']
     if host_prev and host['tod'] >= 0 and host['tod'] == host_prev['tod']:
         _clock['stood_until'] = t + 5   # the host's clock stands (coop_players.c follow_host_time: not followed)
-    # enemies
-    he = {e['key']: e for e in host.get('enemies', []) if not e.get('dup')}
-    ge = {e['key']: e for e in guest.get('enemies', []) if not e.get('dup')}
-    for k in he.keys() & ge.keys():
-        x, y = he[k], ge[k]
-        d = dist(x['p'], y['p'])
-        if d > 2.0:
-            report('enemy-place', f'{k:08x}', t, f"enemy {x['name']} {k:08x} is {d:.2f} m apart (host {host['id']}, guest {guest['id']})")
-        if x['dead'] != y['dead'] or (not x['dead'] and x['life'] != y['life']):
-            report('enemy-life', f'{k:08x}', t, f"enemy {x['name']} {k:08x}: host life {x['life']}{' dead' if x['dead'] else ''}, guest {y['life']}{' dead' if y['dead'] else ''}")
-    for k in he.keys() ^ ge.keys():
-        e = he.get(k) or ge.get(k)
-        if dist(e['p'], host['me']['p']) > 100:
-            continue   # the host has only the area about its own Link loaded
-        where = f"host {host['id']}" if k in he else f"guest {guest['id']}"
-        report('enemy-only', f'{k:08x}', t, f"enemy {e['name']} {k:08x} is near a Link in the {where}'s game only")
     # time of day and weather
     if host['tod'] >= 0 and guest['tod'] >= 0 and t > _clock['stood_until']:
         dt = abs(host['tod'] - guest['tod'])
@@ -208,15 +188,14 @@ def main():
     print(f'{pairs} paired snapshots ({len(A)} and {len(B)}), players {A[-1]["id"]} and {B[-1]["id"]}')
     failures = 0
     order = ['link', 'link-place', 'link-life', 'link-gear', 'link-hands', 'link-fuse', 'link-dye', 'object', 'object-place', 'stale', 'dup', 'dead',
-             'enemy-place', 'enemy-life', 'time', 'weather', 'enemy-only']
+             'time', 'weather']
     for kind in order:
         if kind not in kinds:
             continue
         items = kinds[kind]
         n = sum(len(r) for _, r in items)
-        if kind != 'enemy-only':
-            failures += 1
-        print(f'{kind}: {len(items)} subject(s), {n} snapshot(s)' + (' (not counted)' if kind == 'enemy-only' else ''))
+        failures += 1
+        print(f'{kind}: {len(items)} subject(s), {n} snapshot(s)')
         for subj, runs in sorted(items, key=lambda x: x[1][0][1]):
             for i, (_, t, text) in enumerate(runs if show_all else runs[:1]):
                 print(f'  {t - t0:7.1f} s  {text}' + ('' if show_all or len(runs) == 1 else f'  (x{len(runs)})'))

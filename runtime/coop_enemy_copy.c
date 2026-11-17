@@ -212,13 +212,18 @@ static void slots_read(uint64_t actor, EnState *st, int learn) {
 // What each equipment slot of an actor holds, as the hash of the held actor's name (0: nothing). The equipment user
 // is [comps+0x230]; its slot links are 0x18 apart from +0x20, each an actor link (+8 the reference object, whose
 // +0x40 is the actor; +0x10 the actor's id).
+static uint64_t equip_held(uint64_t eu, int s) {   // the actor a slot holds, 0 none (its link's id must be the actor's)
+    uint64_t ref = eu ? coop_rd_ptr(eu + 0x20 + (uint64_t)s * 0x18 + 8) : 0, held = ref ? coop_rd_ptr(ref + 0x40) : 0;
+    uint32_t id = 0, gen = 0;
+    if (!held || !coop_rd(eu + 0x20 + (uint64_t)s * 0x18 + 0x10, &id, 4) || !coop_rd(held + 0x10, &gen, 4) || id != gen) return 0;
+    return held;
+}
 static void equip_read(uint64_t actor, uint32_t eq[EN_EQ_N], int learn) {
     uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230);
     for (int s = 0; s < EN_EQ_N; s++) {
         eq[s] = 0;
-        uint64_t ref = eu ? coop_rd_ptr(eu + 0x20 + (uint64_t)s * 0x18 + 8) : 0, held = ref ? coop_rd_ptr(ref + 0x40) : 0;
-        uint32_t id = 0, gen = 0;
-        if (!held || !coop_rd(eu + 0x20 + (uint64_t)s * 0x18 + 0x10, &id, 4) || !coop_rd(held + 0x10, &gen, 4) || id != gen) continue;
+        uint64_t held = equip_held(eu, s);
+        if (!held) continue;
         char nm[40] = "";
         coop_actor_name(held, nm, sizeof nm);
         if (!nm[0]) continue;
@@ -250,6 +255,33 @@ static void equip_read_more(uint64_t actor, uint32_t att[EN_EQ_N], uint8_t eqs[E
         if (!nm[0]) continue;
         att[s] = fnv_str(nm);
         if (learn && name_add(att[s], nm)) { MName m; memset(&m, 0, sizeof m); m.hash = att[s], snprintf(m.name, sizeof m.name, "%s", nm); en_send_all(ENM_PLAY, &m, sizeof m); }
+    }
+}
+
+// For the mismatch checker (coop_check.c), of any actor, owned, copy or neither: each animation slot's command and
+// the clock of its current blend controller, and each equipment slot's held thing and state byte (2 drawn, 4 put
+// away). The same reads as slots_read and equip_read, without telling other games any name. Returns the slot count.
+int en_read_anim(uint64_t actor, char cmd[EN_SLOT_N][40], float clock[EN_SLOT_N]) {
+    uint64_t g = anim_g(actor);
+    int n = anim_count(g);
+    for (int i = 0; i < EN_SLOT_N; i++) {
+        cmd[i][0] = 0, clock[i] = 0;
+        if (i >= n) continue;
+        uint64_t s = anim_slot(g, i), ctx = anim_ctx(s, NULL);
+        anim_cmd(s, cmd[i], 40);
+        if (ctx) coop_rd(ctx + 0x68, &clock[i], 4);
+    }
+    return n;
+}
+void en_read_equip(uint64_t actor, char held[EN_EQ_N][40], uint8_t eqs[EN_EQ_N]) {
+    uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230);
+    for (int s = 0; s < EN_EQ_N; s++) {
+        uint64_t h = equip_held(eu, s);
+        held[s][0] = 0, eqs[s] = 0;
+        if (!h) continue;
+        coop_actor_name(h, held[s], 40);
+        coop_rd(eu + 0x4620 + (uint64_t)s, &eqs[s], 1);
+        eqs[s] &= 0x3f;
     }
 }
 
@@ -1408,6 +1440,7 @@ void en_copy_phase0(Cpu *c) {
         } else {          // T is before every state kept: the oldest, as it is
             memcpy(pos, b->s.pos, 12), memcpy(quat, b->s.quat, 16);
         }
+        coop_check_nudge(e->actor, e->id.a, pos);   // (a test of the mismatch checker, TOTK_COOP_TEST_NUDGE: coop_check.c)
         uint32_t s0 = atomic_load(&m->seq);
         atomic_store_explicit(&m->seq, s0 + 1, memory_order_release);
         memcpy(m->show_pos, pos, 12), memcpy(m->show_quat, quat, 16);

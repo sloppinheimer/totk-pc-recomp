@@ -437,13 +437,6 @@ int coop_is_skeleton(uint64_t s) {
     return n >= 20 && n <= 600 && w[4] && w[4] == w[0xc] && (w[3] - w[4] == (uint64_t)n * 0x40 || w[0xb] - w[4] == (uint64_t)n * 0x40);
 }
 
-// The sync audit's "enemies" (coop_players.c, audit_tick): an empty array. The enemy sync writes its own record to the
-// log, which tools/coop/en_report.py compares across the games.
-void coop_audit_enemies(FILE *f, uint64_t me) {
-    (void)me;
-    fputs("[]", f);
-}
-
 // ---- what the contact code and the spawn sync share
 static float dist3(const float a[3], const float b[3]) {
     return sqrtf((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));

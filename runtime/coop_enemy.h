@@ -139,6 +139,12 @@ int en_copy_hook(Cpu *c, uint64_t off);                        // the switch: no
 void en_copy_phase0(Cpu *c);                                   // states read and sent, states taken, what copies show
 void en_copy_burst(int id);                                    // the command names, to a peer that came
 int en_copy_msg(const CoopCtrMsg *m, int from);                // 1: the message was this file's
+int en_read_anim(uint64_t actor, char cmd[EN_SLOT_N][40], float clock[EN_SLOT_N]);   // for coop_check.c: reads only
+void en_read_equip(uint64_t actor, char held[EN_EQ_N][40], uint8_t eqs[EN_EQ_N]);
+
+// coop_check.c (the mismatch checker's record, PLAN.md step 1)
+void coop_check_tick(Cpu *c, uint64_t me);                     // each tick in a session
+void coop_check_nudge(uint64_t actor, uint64_t key, float pos[3]);   // TOTK_COOP_TEST_NUDGE: a copy put where it is not
 
 // coop_mount.c (horses and animals: docs/coop/facts/horses-animals.md)
 void coop_mount_scan(void);                                    // under en_lock, at the top of the ownership pass

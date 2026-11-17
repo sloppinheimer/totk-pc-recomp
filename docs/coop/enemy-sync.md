@@ -35,6 +35,7 @@ comes nearer, strikes the enemy, or the owner leaves, loads or pauses.
 | `runtime/coop_contact.c` | Which contacts of a blow count, and where. |
 | `runtime/coop_spawn_sync.c` | Enemies made at run time, made in the other games too. |
 | `runtime/coop_mount.c` | Horses and land animals as kinds of this sync (off by default). |
+| `runtime/coop_check.c` | The mismatch checker's record of what this game shows of every listed actor near a Link (not part of the sync: it reads the game, never the sync's tables). |
 
 ## Threads
 
@@ -360,12 +361,25 @@ For finding a fault (tests):
 
 ## Checks
 
+The mismatch checker judges what both games show. With `TOTK_COOP_DEBUG=1` each game writes `logs/check.jsonl`
+(`runtime/coop_check.c`), read from its own memory: once a second every actor of a listed kind within 120 m of a
+Link (name, place, rotation, life, actor state, death word, ragdoll state, drawn, each animation slot's command and
+clock, each equipment slot's held thing and state), and every frame the place, rotation and first slot of those
+within 40 m. An actor is named by its placement hash, else by the spawn sync's key, else by its address (this game's
+alone). `tools/coop/check.py <dir A> <dir B>` pairs the two records by time and identity and lists each difference
+that holds two seconds (shown in one game only, two or no owners, place, rotation, life, death, ragdoll, drawn,
+command, equipment), and per copy against its owner the lag, the place error at that lag, stutter, the share of
+frames with the owner's command and the animation's phase; PLAN.md step 1 has the targets. `run_pair.ps1`,
+`run_session.ps1` and `play_two.ps1` run it at the end. `run_pair.ps1 -Nudge <t>,<s>,<m>` plants a desync to show
+it is found (`TOTK_COOP_TEST_NUDGE`: game B shows its first enemy copy m metres off for s seconds).
+
 `tools/coop/en_bench.ps1` runs fixed two-game cases on the camp save and judges each from both games' logs with
 `tools/coop/en_report.py`: the two tables equal at the end, no leak, the copy's actor within 1 cm of its owner's
 enemy standing and 12 cm moving (95th percentile, measured where the copy's actor stands, `en_copy_precalc`'s
 `coop: en: pos:` lines, `TOTK_COOP_DEBUG=1`), the same animation command in 95 % of samples. A FATAL line fails a
 case; a case whose event did not happen is "not judged", and a run with nothing judged exits 2. The tables and the
-shot counts are the sync's own records; PLAN.md step 1's mismatch checker is to replace them with both games' state.
+shot counts are the sync's own records, kept for finding a fault; a test passes on the checker's report (PLAN.md,
+rule 3), which en_bench does not run yet.
 
 ## Built but off or not confirmed
 

@@ -21,12 +21,16 @@
 #   -ADir build\v143d -Tag 2: a second pair beside another one: A runs from that folder (made of links to build\v143 like
 #    -BDir), the profiles and the relay log are named after the tag, and only this pair's games are stopped (give each
 #    pair its own -ADir, -BDir and -Port)
+#   At the end, the mismatch checker (tools\coop\check.py) compares what the two games showed of the enemies
+#    (logs\check.jsonl, written with TOTK_COOP_DEBUG=1) and prints its report
+#   -Nudge 40,8,5: a test of the checker (TOTK_COOP_TEST_NUDGE, runtime/coop_check.c): from 40 world seconds game B
+#    shows its first enemy copy 5 m east of where its owner has it, for 8 s; the report must list it
 #   -Row 1: the two windows placed side by side on that row of a 2x2 grid (A left, B right; row 0 at the top), so two
 #    pairs can be watched at once
 param([int]$Seconds = 90, [string]$ScriptA = "tools\coop\walk.txt", [string]$ScriptB = "tools\coop\idle.txt", [string]$FakeGearA = "", [string]$FakeDyeA = "", [string]$FakeHandA = "",
       [string]$ShotsA = "", [string]$ShotsB = "", [string]$ShotsDir = "", [int]$QuitBAfter = 0, [string]$FakeAtA = "", [string]$SpawnA = "", [string]$SpawnB = "", [string]$Profile = "build\profile-v143", [switch]$ShotsSmall, [string]$BDir = "build\v143b",
       [string]$MarkShotsA = "", [string]$MarkShotsB = "", [switch]$MarkSelf, [string]$EnvA = "", [string]$EnvB = "", [int]$Port = 41900,
-      [string]$StopWhen = "", [int]$StopGrace = 3, [string]$ADir = "build\v143", [string]$Tag = "", [int]$Row = 0)
+      [string]$StopWhen = "", [int]$StopGrace = 3, [string]$ADir = "build\v143", [string]$Tag = "", [int]$Row = 0, [string]$Nudge = "")
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
@@ -50,6 +54,7 @@ foreach ($d in @($a, $b) | Where-Object { $_ -ne $src }) {
     }
 }
 
+foreach ($d in $a, $b) { Remove-Item -Force (Join-Path $d 'logs\check.jsonl') -ErrorAction SilentlyContinue }   # (an older run's must not stand in)
 . (Join-Path $PSScriptRoot 'quiet.ps1')   # no consoles, no mouse capture, the windows stay behind
 $relayLog = "build\relay$Tag.log"
 $relay = Start-Quiet (Join-Path $root '.venv\Scripts\pythonw.exe') "server\coop_relay.py --port $Port --log $relayLog" $root
@@ -79,6 +84,7 @@ foreach ($g in @(@{dir = $a; prof = "build\prof-coop-a$Tag"; script = $ScriptA; 
     if ($MarkSelf) { $env:TOTK_COOP_TEST_MARKSELF = '1' } else { Remove-Item Env:TOTK_COOP_TEST_MARKSELF -ErrorAction SilentlyContinue }
     foreach ($kv in (($EnvA + ';' + $EnvB) -split ';' | Where-Object { $_ -match '=' })) { Remove-Item "Env:$(($kv -split '=', 2)[0])" -ErrorAction SilentlyContinue }
     $mine = if ($g.name -eq 'A') { $EnvA } else { $EnvB }
+    if ($g.name -eq 'B' -and $Nudge) { $env:TOTK_COOP_TEST_NUDGE = $Nudge } else { Remove-Item Env:TOTK_COOP_TEST_NUDGE -ErrorAction SilentlyContinue }
     foreach ($kv in ($mine -split ';' | Where-Object { $_ -match '=' })) { $k, $v = $kv -split '=', 2; Set-Item "Env:$k" $v }
     $games += Start-Quiet (Join-Path $g.dir 'totk.exe') '' $g.dir
     Start-Sleep 3
@@ -123,3 +129,4 @@ foreach ($d in $a, $b) {
     Select-String -Path (Join-Path $d 'logs\totk.log') -Pattern 'coop net|coop: (slot|player slot|remote|markers|notice|test: notice|test: travel)|FATAL' | Select-Object -ExpandProperty Line
 }
 "=== relay"; Get-Content (Join-Path $root $relayLog)
+"=== check"; & (Join-Path $root '.venv\Scripts\python.exe') (Join-Path $PSScriptRoot 'check.py') $a $b

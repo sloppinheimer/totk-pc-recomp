@@ -85,11 +85,15 @@ numpad 0 in any window writes a mark in both logs, with a picture each.
 ## Records
 
 A plain game writes no session records. `TOTK_COOP_DEBUG=1` (or `coop_debug = 1` in `totk.ini`) turns them on: the
-sync audit file, the contraption session record, the enemy position lines and the stand-in's measurements that the
-reports in `tools/coop/` read. The launchers below and `play_two.ps1` set it.
+sync audit file, the mismatch checker's record (`logs/check.jsonl`), the contraption session record, the enemy
+position lines and the stand-in's measurements that the reports in `tools/coop/` read. The launchers below and
+`play_two.ps1` set it.
 
 ## Test tools
 - `tools/coop/run_test.ps1`: one game, scripted input, a copy of the profile.
+- `tools/coop/check.py`: the mismatch checker (enemy-sync.md, "Checks"): what two games showed of the enemies near
+  the Links, compared; `run_pair.ps1`, `run_session.ps1` and `play_two.ps1` run it at the end (`play_two.ps1` keeps
+  it in `build/check_report.txt` and the session folder).
 - `tools/coop/run_pair.ps1`: two games on this PC in one session through a local relay (`server/coop_relay.py`).
 - `tools/coop/run_suite.ps1`: a few run_pair cases, each passed on log lines both games must print and on
   `sync_audit.py`'s comparison of the two games' audit files (players' places, gear, hands, fused materials, dyes as
@@ -98,5 +102,5 @@ reports in `tools/coop/` read. The launchers below and `play_two.ps1` set it.
 - `tools/coop/ent_suite.ps1` and `ent_report.py`: the contraption bench scenes (`TOTK_COOP_BENCH`), passed on both
   games' audit lines of every entity.
 - `tools/coop/run_session.ps1`: a session hosted from game A's Co-op tab (the in-game relay, code `TEST42`) and joined
-  by game B; it prints, it does not judge.
+  by game B; it prints the session's lines and the checker's report.
 - `tools/coop/gamedata_test.ps1`: shared world progress between two games; it prints, it does not judge.
