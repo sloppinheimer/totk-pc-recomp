@@ -30,7 +30,6 @@
 void coop_lock_wait(PlatMutex *m);   // coop_spawn.c
 
 #define SEC 1000000000ull
-#define ENM_MOUNT 66        // (free in the enemy sync's list: its HITACK was never needed)
 #define KIND_HORSE 200
 #define KIND_ANIMAL 201
 #define GAIT_N 12
