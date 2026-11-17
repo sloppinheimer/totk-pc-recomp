@@ -68,6 +68,7 @@ static void set_my_id(int id) {
 }
 static void set_live(int id, int live) {   // (lock held)
     if (others[id].live != live) others[id].live = live, presence_gen[id]++;
+    if (!live) others[id].name[0] = 0;   // (a new player given this id was shown with the one before's name)
 }
 
 static void header(uint8_t *p, int kind) { memcpy(p, "TKCO", 4), p[4] = VERSION, p[5] = (uint8_t)kind, p[6] = (uint8_t)my_id, p[7] = 0; }
@@ -268,6 +269,13 @@ static void net_thread(void *arg) {
             break;
         }
         if (net_gen != gen) break;
+        {   // a player not heard for 6 s has gone (as the relay's own 5 s), whether or not its LEAVE came
+            uint64_t tn = plat_now_ns();
+            plat_mutex_lock(&lock);
+            for (int i = 1; i <= COOP_MAX_PLAYERS; i++)
+                if (others[i].live && tn - others[i].at_ns > 6000000000ull) rt_log("coop net: player %d silent for 6 s: gone", i), set_live(i, 0);
+            plat_mutex_unlock(&lock);
+        }
         if (n < HEADER || memcmp(buf, "TKCO", 4) || buf[4] != VERSION) continue;
         heard_ns = plat_now_ns();
         int kind = buf[5], id = buf[6];
@@ -277,14 +285,22 @@ static void net_thread(void *arg) {
             if (my_id != id) rt_log(my_id ? "coop net: the relay now calls this game player %d (was %d)" : "coop net: joined as player %d", id, my_id);
             joined = 1;
             set_my_id(id);
+            uint32_t seated = 0;   // the relay's list of everyone else seated now
             for (int off = HEADER; off + 17 <= n; off += 17) {
                 int other = buf[off];
                 if (other < 1 || other > COOP_MAX_PLAYERS) continue;
+                seated |= 1u << other;
                 plat_mutex_lock(&lock);
                 memcpy(others[other].name, buf + off + 1, 16);
                 coop_name_clean(others[other].name, 16);
                 plat_mutex_unlock(&lock);
             }
+            // A player the relay no longer seats has left, though its LEAVE (sent once) was lost: it stayed here, a
+            // frozen stand-in and a name, for the rest of the session (code review, 2026-11-17).
+            plat_mutex_lock(&lock);
+            for (int i = 1; i <= COOP_MAX_PLAYERS; i++)
+                if (i != id && others[i].live && !(seated >> i & 1)) rt_log("coop net: player %d is no longer seated: gone", i), set_live(i, 0);
+            plat_mutex_unlock(&lock);
         } else if (kind == STATE && id >= 1 && id <= COOP_MAX_PLAYERS && n >= HEADER + (int)sizeof(NetState)) {
             NetState in;
             memcpy(&in, buf + HEADER, sizeof in);

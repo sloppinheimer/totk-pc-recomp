@@ -497,9 +497,12 @@ static void hello(void) {   // (lock held) HELLO_C to each player here, once: bo
 }
 
 void coop_ctr_tick(void) {
-    if (!coop_net_on()) return;
+    // (the session's end is seen first: after Leave, with networking off, the old players, their slots and inbox stayed
+    // until the next join, and the entity sync took them as still here; code review, 2026-11-17)
+    int on = coop_net_on();
     plat_mutex_lock(&lock);
     session_check();
+    if (!on) { plat_mutex_unlock(&lock); return; }
     if (my_inc) {
         presence_check();
         receive();

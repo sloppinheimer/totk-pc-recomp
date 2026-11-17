@@ -136,6 +136,12 @@ double coop_sess_hold_s(void) {
 // ---- The clock, per peer (called at phase 0 only) --------------------------------------------------------------------
 void coop_sess_clock_sample(int id, int64_t peer_stamp_ns) {
     if (id < 1 || id > COOP_MAX_PLAYERS) return;
+    {   // a new player on this id (or the same one joined again): its clock starts afresh, not from the one before's
+        // offset, which held its copies 1 to 3 s far from every state (code review, 2026-11-17)
+        static uint64_t inc_of[COOP_MAX_PLAYERS + 1];
+        uint64_t inc = coop_ctr_incarnation(id);
+        if (inc != inc_of[id]) inc_of[id] = inc, memset(&clocks[id], 0, sizeof clocks[id]);
+    }
     uint64_t now = atomic_load(&frame_ns);
     clock_sample(&clocks[id], now, (int64_t)now - peer_stamp_ns);
 }
