@@ -58,8 +58,7 @@ static void loose_fn(uint64_t a, void *arg) {
     LooseScan *s = arg;
     char nm[48];
     float p[3];
-    coop_actor_name(a, nm, sizeof nm);
-    if (strncmp(nm, "SpObj_", 6) || strstr(nm, "Capsule") || coop_ent_is(a) || !ctn_alive(a) || !coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+    if (!ent_is_loose(a, nm, p)) return;
     if (s->n >= 64) return;
     fprintf(s->f, "%s{\"name\":\"%s\",\"p\":[%.3f,%.3f,%.3f]}", s->n++ ? "," : "", nm, p[0], p[1], p[2]);
 }

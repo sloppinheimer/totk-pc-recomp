@@ -167,6 +167,7 @@ extern Peer peers[ENT_PEERS];
 int64_t ent_ms(void);                      // wall clock, ms
 int ent_on(void);                          // on unless TOTK_COOP_CONTRAPTION=0
 Ent *ent_by_id(Eid id);
+int ent_is_loose(uint64_t a, char nm[48], float p[3]);   // a Zonai device that is no entity, its name and place
 Ent *ent_by_actor(uint64_t actor);         // checked against gen
 Ent *ent_new(Eid id);                      // NULL: the table is full (counted, logged)
 void ent_drop(Ent *e);

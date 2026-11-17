@@ -705,3 +705,11 @@ void ent_status_line(void) {
     said = now, memcpy(last, line, sizeof last);
     rt_log("coop: ent: %lld %s", (long long)now, line);
 }
+
+// A Zonai device in the world that is no entity ("loose": one the sync does not know, as one that came with a save),
+// with its name and place: what the audit (coop_ent_bench.c) and the session record (coop_ent_log.c) count.
+int coop_ent_is(uint64_t a);   // coop_ctn.c
+int ent_is_loose(uint64_t a, char nm[48], float p[3]) {
+    coop_actor_name(a, nm, 48);
+    return !strncmp(nm, "SpObj_", 6) && !strstr(nm, "Capsule") && !coop_ent_is(a) && ctn_alive(a) && coop_rd(a + COOP_ACTOR_POS, p, 12);
+}

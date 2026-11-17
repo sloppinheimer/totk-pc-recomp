@@ -105,8 +105,7 @@ static void loose_fn(uint64_t a, void *arg) {
     LooseSet *s = arg;
     char nm[48];
     float p[3];
-    coop_actor_name(a, nm, sizeof nm);
-    if (strncmp(nm, "SpObj_", 6) || strstr(nm, "Capsule") || coop_ent_is(a) || !ctn_alive(a) || !coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
+    if (!ent_is_loose(a, nm, p)) return;
     s->n++, s->x ^= a * 0x9e3779b97f4a7c15ull;
     if (s->len < 110) s->len += snprintf(s->names + s->len, sizeof s->names - (size_t)s->len, " %s@%.0f,%.0f,%.0f", nm + 6, p[0], p[1], p[2]);
 }
