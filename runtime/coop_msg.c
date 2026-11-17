@@ -65,10 +65,6 @@ static int route(int reader, CoopCtrMsg *m) {
 
 int coop_msg_recv(int reader, CoopCtrMsg *m) {
     if (reader < 0 || reader >= COOP_MSG_READERS) return 0;
-    // Test (TOTK_COOP_MSG_DIRECT=1): the entity sync reads the transport itself, as before this file, for comparing.
-    static int direct = -1;
-    if (direct < 0) direct = cfg_get("TOTK_COOP_MSG_DIRECT") != NULL;
-    if (direct && reader == COOP_MSG_ENT) return coop_ctr_recv(m);
     // With no other reader open there is nothing to set aside: the one reader takes from the transport as it always
     // did (the same call, no lock of this file), so a session without the enemy sync is as it was before this file.
     if (!rd[reader == COOP_MSG_ENT ? COOP_MSG_ENEMY : COOP_MSG_ENT].open && !have_held && !(rd[reader].q && rd[reader].r != rd[reader].w))

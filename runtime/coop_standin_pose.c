@@ -35,44 +35,6 @@ int16_t coop_pose_q16(float v, float scale) {
 // (3 x s16, the dropped one's index in the low 2 bits of the first) and the translation (3 x s16, 1/4096 m); then
 // per bone whose scale is not 1: u16 index + 3 floats.
 #define POSE_IN_STRIDE 0x50
-static int pose_pack_input(uint64_t pose, uint8_t *out, int max) {
-    uint16_t n = 0;
-    uint64_t arr = coop_rd_ptr(pose);
-    if (!arr || !coop_rd(pose + 0xa, &n, 2) || n == 0 || n > 600 || 4 + n * POSE_BONE > max) return 0;
-    static __thread float f[600 * 20];
-    if (!coop_rd(arr, f, (size_t)n * POSE_IN_STRIDE)) return 0;
-    int at = 4 + n * POSE_BONE, nsc = 0;
-    for (int b = 0; b < n; b++) {
-        const float *e = f + b * 20;
-        const float *sc = e, *tr = e + 4, *a = e + 8, *c = e + 12;   // rows a, c; third = a x c
-        float r00 = a[0], r01 = a[1], r02 = a[2], r10 = c[0], r11 = c[1], r12 = c[2];
-        float r20 = r01 * r12 - r02 * r11, r21 = r02 * r10 - r00 * r12, r22 = r00 * r11 - r01 * r10;
-        float q[4];   // x y z w
-        float trc = r00 + r11 + r22;
-        if (trc > 0) { float s = sqrtf(trc + 1) * 2; q[3] = s / 4, q[0] = (r21 - r12) / s, q[1] = (r02 - r20) / s, q[2] = (r10 - r01) / s; }
-        else if (r00 > r11 && r00 > r22) { float s = sqrtf(1 + r00 - r11 - r22) * 2; q[3] = (r21 - r12) / s, q[0] = s / 4, q[1] = (r01 + r10) / s, q[2] = (r02 + r20) / s; }
-        else if (r11 > r22) { float s = sqrtf(1 + r11 - r00 - r22) * 2; q[3] = (r02 - r20) / s, q[0] = (r01 + r10) / s, q[1] = s / 4, q[2] = (r12 + r21) / s; }
-        else { float s = sqrtf(1 + r22 - r00 - r11) * 2; q[3] = (r10 - r01) / s, q[0] = (r02 + r20) / s, q[1] = (r12 + r21) / s, q[2] = s / 4; }
-        float len = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
-        int big = 0;
-        for (int k = 0; k < 4; k++) { q[k] = len > 0 ? q[k] / len : (k == 3); if (fabsf(q[k]) > fabsf(q[big])) big = k; }
-        float sign = q[big] < 0 ? -1.0f : 1.0f;
-        int16_t v[6];
-        for (int k = 0, j = 0; k < 4; k++) if (k != big) v[j++] = coop_pose_q16(q[k] * sign, 32767.0f);
-        v[0] = (int16_t)((v[0] & ~3) | big);
-        v[3] = coop_pose_q16(tr[0], 4096), v[4] = coop_pose_q16(tr[1], 4096), v[5] = coop_pose_q16(tr[2], 4096);
-        memcpy(out + 4 + b * POSE_BONE, v, POSE_BONE);
-        if (fabsf(sc[0] - 1) > 1e-3f || fabsf(sc[1] - 1) > 1e-3f || fabsf(sc[2] - 1) > 1e-3f) {
-            if (at + 14 > max) return 0;
-            uint16_t bi = (uint16_t)b;
-            memcpy(out + at, &bi, 2), memcpy(out + at + 2, sc, 12), at += 14, nsc++;
-        }
-    }
-    memcpy(out, &n, 2);
-    uint16_t ns = (uint16_t)nsc;
-    memcpy(out + 2, &ns, 2);
-    return at;
-}
 // This Link's latest packed pose (from the hook, any thread) and the tick that sends it.
 static uint8_t pose_latest[COOP_POSE_MAX];
 static _Atomic int pose_latest_len;
@@ -248,11 +210,6 @@ static void pose_hist_take(int id, const uint8_t *in, int len, uint64_t age) {
 // update phase main+0x257310 (the last frame's, after its IK and helper-bone steps), packed for sending as a POSE
 // packet with the bone count's top bit set. The writer's input (what puppet mode sends) misses those steps, and a
 // proxy does not run them: 30 bones differed between the two even standing still (TOTK_COOP_TEST_IKDIFF, 2026-11-05).
-static int proxy_records_on(void) {
-    static int on = -1;   // TOTK_COOP_PROXY_POSE=input: send and apply the writer's input as puppet mode does (control)
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_PROXY_POSE"); on = !(e && !strcmp(e, "input")); }
-    return on;
-}
 // The final bone matrices (skeleton +0x20, 0x40 a bone: rows 0..2 the rotation of a row-vector matrix, row 3 the
 // translation) also carry steps that write them after the local records are built: feet put on stairs, a hand put
 // on a wall (the owner's body top 1.55 m on the stairs and 1.90 m at the shrine wall against its proxy's 1.60 m,
@@ -318,7 +275,6 @@ static void find_parents(int n, const float (*w)[16], const float (*rec)[24]) {
                parents_n ? "found" : "not yet", good, n - 1, worst);
 }
 void coop_proxy_pack_mine(uint64_t me) {
-    if (!proxy_records_on()) return;
     uint64_t sk = me;
     for (int i = 0; i < 8 && sk; i++) sk = coop_rd_ptr(sk + coop_skel_path[i]);
     uint16_t n = 0;
@@ -329,10 +285,8 @@ void coop_proxy_pack_mine(uint64_t me) {
     if (!recs || !wm || !coop_rd(sk + 0x48, &n, 2) || n == 0 || n > POSE_HIST_BONES || 4 + n * POSE_BONE > COOP_POSE_MAX ||
         !coop_rd(recs, rec, (size_t)n * 0x60) || !coop_rd(wm, w, (size_t)n * 0x40))
         return;
-    static int finals = -1;   // TOTK_COOP_PROXY_FINAL=0: send the records as they are (control)
-    if (finals < 0) { const char *e = cfg_get("TOTK_COOP_PROXY_FINAL"); finals = !(e && *e == '0'); }
-    if (finals && parents_n != n) find_parents(n, (const float (*)[16])w, (const float (*)[24])rec);
-    if (finals && parents_n == n)   // each record from the final matrices: R = Ap^-1 Ai S^-1, t = Ap^-1 (ti - tp)
+    if (parents_n != n) find_parents(n, (const float (*)[16])w, (const float (*)[24])rec);
+    if (parents_n == n)   // each record from the final matrices: R = Ap^-1 Ai S^-1, t = Ap^-1 (ti - tp)
         for (int i = 1; i < n; i++) {
             float Ap[3][3], tp[3], Ai[3][3], ti[3], Ip[3][3];
             coop_pose_w_of(w[bone_parent[i]], Ap, tp), coop_pose_w_of(w[i], Ai, ti);
@@ -389,7 +343,7 @@ void coop_proxy_pack_mine(uint64_t me) {
 // weapon's left hand off its grip: those corrections are the Player's own, which the stand-in has not (the tester's
 // session, 2026-11-08). 0: not done (no records from that player, or another bone count).
 int coop_standin_put_pose(uint64_t skel, int id) {
-    if (!skel || id < 1 || id > COOP_MAX_PLAYERS || !proxy_records_on()) return 0;
+    if (!skel || id < 1 || id > COOP_MAX_PLAYERS) return 0;
     static __thread uint8_t in[COOP_POSE_MAX];
     uint64_t age = 0;
     int len = coop_net_pose(id, in, sizeof in, &age);
@@ -453,18 +407,7 @@ void coop_test_ikdiff(uint64_t me) {
     memset(seen, 0, sizeof seen);
 }
 int coop_puppet_before_writer(uint64_t pose, uint64_t skel) {
-    if (skel && skel == atomic_load_explicit(&my_body_skel, memory_order_relaxed)) {
-        static __thread uint8_t tmp[COOP_POSE_MAX];
-        if (proxy_records_on()) return 0;   // coop_proxy_pack_mine sends the records instead
-        int len = pose_pack_input(pose, tmp, sizeof tmp);
-        pose_log("out", pose);
-        if (len) {
-            plat_mutex_lock(&pose_lock);
-            memcpy(pose_latest, tmp, len), atomic_store(&pose_latest_len, len);
-            plat_mutex_unlock(&pose_lock);
-        }
-        return 0;
-    }
+    if (skel && skel == atomic_load_explicit(&my_body_skel, memory_order_relaxed)) return 0;   // (coop_proxy_pack_mine sends this Link's records)
     int n = atomic_load_explicit(&puppet_n, memory_order_relaxed);
     for (int i = 0; skel && i < n; i++) {
         if (skel != atomic_load_explicit(&puppet_skel[i], memory_order_relaxed)) continue;
