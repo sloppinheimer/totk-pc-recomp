@@ -30,3 +30,7 @@ now, one folder holds what is known about the game.
    fork-differences.md.
 6. **No test settings without a script that uses them.** A `TOTK_COOP_TEST_*` setting is added with the script that
    sets it and removed when the script goes. Records and periodic measurements run only with `TOTK_COOP_DEBUG=1`.
+7. **What another game sends is checked where it is received**: who sent it (the game that owns what it is about),
+   what it names (only names that may be made or deleted on another game's word) and its numbers (finite, in range,
+   counts within the bytes received). A sender's filter is not a check: another game may be modified or broken, and
+   a hosted session can be reached from the internet. `python tests/coop_static_check.py` runs with every co-op change.
