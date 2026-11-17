@@ -164,7 +164,7 @@ int coop_phase0_hook(Cpu *c, uint64_t addr) {
                 uint8_t bb = 0;
                 static _Atomic int said;
                 if (coop_rd(comp + 0x8d, &bb, 1) && (bb & 8) && coop_contraption_made(actor) && atomic_fetch_add(&said, 1) < 6)
-                    rt_log("coop: contraption: switch update of a copy part with a toggle request: driven %d, ours %d", coop_ctn_driven(actor), 0);
+                    rt_log("coop: contraption: switch update of a copy part with a toggle request: driven %d", coop_ctn_driven(actor));
             }
             if (coop_ctn_follows(actor) && coop_rd(comp + 0x8d, &b8d, 1) && (b8d & 8)) {
                 __atomic_fetch_and((uint8_t *)(uintptr_t)(comp + 0x8d), (uint8_t)~8, __ATOMIC_SEQ_CST);

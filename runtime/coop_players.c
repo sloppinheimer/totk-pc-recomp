@@ -1184,7 +1184,7 @@ static void snap_velocity(Cpu *c, Slot *s) {
     if (d > worst) worst = d, memcpy(w_was, was, sizeof was), w_set[0] = V[0], w_set[1] = V[1], w_set[2] = V[2];
     int64_t now = frame_step_world_us();
     if (now - said_us > 1000000) {
-        if (worst > 1.0f)
+        if (worst > 1.0f && coop_debug())   // (a periodic measurement: TOTK_COOP_DEBUG=1, docs/coop/README.md rule 6)
             rt_log("coop: puppet: slot %d body velocity before it is set: %.1f %.1f %.1f, set to %.1f %.1f %.1f (%s; the largest difference of the last second)",
                    (int)(s - slots), w_was[0], w_was[1], w_was[2], w_set[0], w_set[1], w_set[2], riding ? "the ridden entity's" : "its owner's");
         said_us = now, worst = 0;
@@ -4297,7 +4297,7 @@ void coop_players_tick(Cpu *c) {
         if (my_eq && LD8(my_eq + EQ_ATTACKING)) st.flags |= 1u << 13;
         shield_fuse_tick(me, my_eq);
         audit_tick(c, me, cur, n_objs, &st);
-        {   // test: this Link's life when it changes, with each proxy's and whether it runs its own update then (P1's
+        if (coop_debug()) {   // (record) this Link's life when it changes, with each proxy's and whether it runs its own update then (P1's
             // hearts went up and down while P2 swung)
             int coop_life_of(uint64_t a);
             static int was = -1, said;

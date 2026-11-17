@@ -307,7 +307,7 @@ int en_act_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         actq[k].said = 1;
     }
     actq[k].sum_runs += tl_act_runs, actq[k].sum_ticks += tl_act_ticks, actq[k].sum_calls++;
-    {   // (the prototype's log: the SensorHit component's armed bits right after the action ran, when any is set)
+    if (coop_debug()) {   // (record: the SensorHit component's armed bits right after the action ran, when any is set)
         uint64_t ac = coop_rd_ptr(en_comps(actor) + 0x428);
         uint8_t b[8] = {0};
         static _Atomic int said;

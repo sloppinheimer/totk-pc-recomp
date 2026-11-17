@@ -68,7 +68,7 @@ int ent_apply_owner(Ent *e, uint64_t owner, uint32_t epoch) {
     if (was == me && owner != me) {
         if (ent_this_link_holds(e)) e->end_hold = 1;
         if (ent_this_link_rides(e)) e->end_ride = 1;
-        e->flags |= e->actor && !(e->flags & ENT_MAP) ? 0 : 0;   // (an original stays an original: only GONE decides, S 7.2)
+        // (an original stays an original: only GONE decides, S 7.2)
     }
     if (owner == me && was != me && became_n < 64) became_mine[became_n++] = (int16_t)ent_i(e);
     ent_mark_due(e);

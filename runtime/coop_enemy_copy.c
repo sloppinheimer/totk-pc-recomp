@@ -546,7 +546,7 @@ static void held_rebuild(void) {
             if (!w || !coop_rd(w + COOP_ACTOR_STATE, &ws, 4) || ws < 2 || ws > 6) continue;
             held_put(t, by, w, a);
             held_shooter(t, by, w, a);
-            {   // (test) each held actor once: what it is and what its attachment link reads
+            if (coop_debug()) {   // (record, TOTK_COOP_DEBUG=1) each held actor once: what it is and what its attachment link reads
                 static uint64_t seen[64];
                 static int nseen;
                 int was = 0;
@@ -561,7 +561,7 @@ static void held_rebuild(void) {
             }
             uint64_t wc = coop_rd_ptr(en_comps(w) + 0x208), aref = wc ? coop_rd_ptr(wc + 0xb0 + 8) : 0, att = aref ? coop_rd_ptr(aref + 0x40) : 0;
             int32_t as = 0;
-            {   // (test) each weapon's attachment once: the actor the link gives, its name and state
+            if (coop_debug()) {   // (record) each weapon's attachment once: the actor the link gives, its name and state
                 static uint64_t seen[64];
                 static int nseen;
                 int was = 0;
@@ -1425,7 +1425,7 @@ void en_copy_phase0(Cpu *c) {
         atomic_store_explicit(&m->seq, s0 + 2, memory_order_release);
         e->hp = sl->hp;
         gmc_log(e->actor, "copy");
-        {   // (test) the copy's own hidden mask and bit against its owner's
+        if (coop_debug()) {   // (record) the copy's own hidden mask and bit against its owner's
             uint64_t gmc = coop_rd_ptr(en_comps(e->actor) + 0x280);
             uint8_t hm = 0;
             uint32_t fl = 0;
@@ -1437,7 +1437,7 @@ void en_copy_phase0(Cpu *c) {
                 rt_log("coop: en: hide: %s %016llx (copy) own mask %02x bit %u; its owner's mask %02x bit %u", e->name, (unsigned long long)e->id.a, hm, vb, sl->hide, sl->vis);
             was[i][0] = hm, was[i][1] = vb, was[i][2] = sl->hide, was[i][3] = sl->vis;
         }
-        if ((frame & 15) == (uint32_t)((i + 5) & 15)) {   // (the record: the copy's battle-info words against its owner's, at each change)
+        if (coop_debug() && (frame & 15) == (uint32_t)((i + 5) & 15)) {   // (the record: the copy's battle-info words against its owner's, at each change)
             uint64_t bi = coop_rd_ptr(en_comps(e->actor) + 0x140);
             uint32_t f = 0, n = 0;
             uint16_t w = 0;
