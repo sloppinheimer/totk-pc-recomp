@@ -164,10 +164,10 @@ void en_pose_of(uint64_t actor, float pose[7]);
 void en_quat_of_rot(const float r[9], float q[4]);
 void en_rot_of_quat(const float q[4], float r[9]);
 
-// Message types (60 to 89, through coop_msg.c). Not used, kept free: 64, 66, 70, 73, 81, 85 (the design's EVENT,
+// Message types (60 to 89, through coop_msg.c). Not used, kept free: 66, 70, 73, 81, 85 (the design's
 // HITACK, KILL, ORPHAN_ACK, PROJ_END and DEATH_SIGNAL, which the state-based sync never needed).
 enum {
-    ENM_STATE = 60, ENM_ARM = 61, ENM_DECL = 62, ENM_PLAY = 63, ENM_HIT = 65,
+    ENM_STATE = 60, ENM_ARM = 61, ENM_DECL = 62, ENM_PLAY = 63, ENM_SHS = 64, ENM_HIT = 65,
     ENM_OUTCOME = 67, ENM_DEATH = 68, ENM_DEATH_END = 69, ENM_TOMBS = 71, ENM_CLAIM = 72,
     ENM_REST = 74, ENM_OFFER = 75, ENM_GONE = 76, ENM_NEED = 77, ENM_INDEX = 78, ENM_SYNC_END = 79,
     ENM_PROJ = 80, ENM_EQUIP = 82, ENM_MOON = 83, ENM_UNSYNCED = 84, ENM_POSE = 86, ENM_ATTN = 87, ENM_FX = 88, ENM_PICK = 89,

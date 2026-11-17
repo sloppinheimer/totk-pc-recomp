@@ -392,3 +392,74 @@ int coop_enemy_shot_mirror(uint64_t proj) {
     if (shooter && !coop_enemy_role(shooter)) { uint64_t h = coop_enemy_holder(shooter); if (h) shooter = h; }
     return shooter && coop_enemy_role(shooter) == 2;
 }
+
+// ---- A Shooter put to sleep (docs/coop/enemy-sync-spec.md B.36; research R19, the shooter-state nodes) -----------------------
+// Besides prepare and shoot, the nodes of an enemy's graph put its Shooter's shots to sleep: a prepared arrow put away
+// when an archer gives up its shot (OneShotEquipmentUserCancelShooter, OneShotShooterRequestSleep, the "drop prepared"
+// nodes when the shot is no longer in the hand), all shots of a name (main+0x1bfa4e0), every prepared one
+// (main+0x1bfa87c). A copy's graph does not run, so the shot its copy prepared from its owner's request stayed nocked.
+// The three entries take the Shooter and plain numbers (main+0x1bfa698(S, name hash, index), main+0x1bfa4e0(S, name
+// hash, force), main+0x1bfa87c(S)), so the game that runs the enemy tells each call and the copy's game makes it on
+// its own Shooter before the copy's calc. TOTK_COOP_EN_SHS=0: not.
+void coop_lock_wait(PlatMutex *m);   // coop_spawn.c
+typedef struct { Enid id; uint32_t fn, a1, a2; uint8_t via, pad[3]; } MShs;
+#define SHSQ 16
+static struct { _Atomic int cell; uint32_t fn, a1, a2; uint8_t via; uint32_t frame; } shsq[SHSQ];   // cell + 1; 0 free, -1 being filled
+static int shs_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_EN_SHS"); on = !(e && *e == '0'); }
+    return on;
+}
+int en_shs_hook(Cpu *c, uint64_t off) {
+    if (!shs_on()) return 0;
+    uint64_t s = c->x[0], shooter = s > 0x10000 ? coop_rd_ptr(s + 0x18) : 0;
+    EnCell *m = shooter > 0x10000 ? en_cell_of(shooter) : NULL;
+    if (!m && shooter > 0x10000) { uint64_t h = coop_enemy_holder(shooter); m = h ? en_cell_of(h) : NULL; }
+    if (!m || atomic_load_explicit(&m->state, memory_order_relaxed) != EM_OWNED) return 0;
+    uint64_t actor = atomic_load(&m->actor);
+    MShs q;
+    memset(&q, 0, sizeof q);
+    for (int k = 0; shooter != actor && !q.via && k < EN_EQ_N; k++) q.via = held_of(actor, k, 0) == shooter ? (uint8_t)(1 + k) : held_of(actor, k, 1) == shooter ? (uint8_t)(0x80 | (1 + k)) : 0;
+    if (shooter != actor && !q.via) return 0;
+    q.fn = (uint32_t)off, q.a1 = off == 0x1bfa87c ? 0 : (uint32_t)c->x[1], q.a2 = off == 0x1bfa87c ? 0 : (uint32_t)c->x[2];
+    coop_lock_wait(&en_lock);
+    int16_t ei = atomic_load(&m->en);
+    if (ei >= 0 && en_tab[ei].used) {
+        q.id = en_tab[ei].id;
+        en_send_all(ENM_SHS, &q, sizeof q);
+        static _Atomic int said;
+        if (atomic_fetch_add(&said, 1) < 30) rt_log("coop: en: shot: %s puts its Shooter's shots to sleep (main+%#x, %08x, %u): told to its copies", en_tab[ei].name, q.fn, q.a1, q.a2);
+    }
+    plat_mutex_unlock(&en_lock);
+    return 0;
+}
+int en_shs_msg(const CoopCtrMsg *m) {
+    if (m->type != ENM_SHS) return 0;
+    const MShs *q = (const MShs *)m->d;
+    uint64_t me = coop_ctr_me();
+    if (m->len != (int)sizeof *q || (q->fn != 0x1bfa698 && q->fn != 0x1bfa87c && q->fn != 0x1bfa4e0)) return 1;
+    for (int i = 0; i < EN_N; i++) {
+        if (!en_tab[i].used || !enid_eq(en_tab[i].id, q->id) || en_tab[i].owner == me || en_tab[i].cell < 0) continue;
+        for (int k = 0; k < SHSQ; k++) {
+            int z = 0;
+            if (!atomic_compare_exchange_strong(&shsq[k].cell, &z, -1)) continue;
+            shsq[k].fn = q->fn, shsq[k].a1 = q->a1, shsq[k].a2 = q->a2, shsq[k].via = q->via, shsq[k].frame = coop_sess_frame_no();
+            atomic_store(&shsq[k].cell, en_tab[i].cell + 1);
+            break;
+        }
+    }
+    return 1;
+}
+void en_shs_precalc(Cpu *c, uint64_t actor, EnCell *m) {
+    int cell = (int)(m - en_map) + 1;
+    for (int k = 0; k < SHSQ; k++) {
+        if (atomic_load_explicit(&shsq[k].cell, memory_order_relaxed) != cell) continue;
+        uint64_t of = via_actor(actor, shsq[k].via), s = of ? coop_rd_ptr(en_comps(of) + 0x448) : 0;
+        if (s && coop_sess_frame_no() - shsq[k].frame < 120) {
+            coop_guest_call(c, MOD_MAIN_BASE + shsq[k].fn, s, shsq[k].a1, shsq[k].a2, 0);
+            static _Atomic int said;
+            if (atomic_fetch_add(&said, 1) < 30) rt_log("coop: en: shot: the copy %llx puts its Shooter's shots to sleep as its owner's did (main+%#x)", (unsigned long long)actor, shsq[k].fn);
+        }
+        atomic_store(&shsq[k].cell, 0);
+    }
+}

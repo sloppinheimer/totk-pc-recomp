@@ -128,6 +128,7 @@ int en_copy_msg(const CoopCtrMsg *m, int from) {
     (void)from;
     { int en_fx_msg(const CoopCtrMsg *m); if (en_fx_msg(m)) return 1; }   // coop_enemy_fx.c
     { int en_arm_msg(const CoopCtrMsg *m); if (en_arm_msg(m)) return 1; }   // coop_enemy_arm.c
+    { int en_shs_msg(const CoopCtrMsg *m); if (en_shs_msg(m)) return 1; }   // coop_enemy_shot.c
     if (m->type == ENM_ATTN) {
         const MAttn *q = (const MAttn *)m->d;
         if (m->len != (int)sizeof *q) return 1;
@@ -620,6 +621,7 @@ int en_copy_hook(Cpu *c, uint64_t off) {
         return 0;
     }
     case 0x1bf20cc: { int en_arm_hook(Cpu *c, uint64_t off); return en_arm_hook(c, off); }   // coop_enemy_arm.c
+    case 0x1bfa698: case 0x1bfa87c: case 0x1bfa4e0: { int en_shs_hook(Cpu *c, uint64_t off); return en_shs_hook(c, off); }   // coop_enemy_shot.c: a Shooter put to sleep
     case 0x25aafec: case 0x21cdf44: case 0x1d71dfc: case 0x24901b0: case 0x24902e0: case 0xa80f28: { int en_fx_hook(Cpu *c, uint64_t off); return en_fx_hook(c, off); }   // coop_enemy_fx.c
     case 0x21cd650: { void en_moon_local(void); en_moon_local(); return 0; }   // the blood moon begins here (coop_enemy.c)
     case 0x1c78060: case 0x1b738e4: case 0x1b73be4: case 0xb28394: { int en_loot_hook(Cpu *c, uint64_t off); return en_loot_hook(c, off); }   // coop_enemy_loot.c
@@ -1023,6 +1025,7 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             // 0x720 in battle). What works them out on an enemy that runs is not read: B.20, open.)
             { void en_fx_precalc(Cpu *c, uint64_t actor, EnCell *m); en_fx_precalc(c, actor, m); }   // coop_enemy_fx.c
             { void en_arm_precalc(Cpu *c, uint64_t actor, EnCell *m); en_arm_precalc(c, actor, m); }   // coop_enemy_arm.c
+            { void en_shs_precalc(Cpu *c, uint64_t actor, EnCell *m); en_shs_precalc(c, actor, m); }   // coop_enemy_shot.c
             if (m->show_lk[3]) {   // its owner's model looks, each written with its dirty bit as the game's setters do (B.33)
                 uint64_t g = coop_rd_ptr(en_comps(actor) + 0x280);
                 static const struct { uint16_t off; uint32_t bit; } F[4] = {{0x4c, 0x1000}, {0x54, 0x10000000}, {0x58, 0x100}, {0x5c, 0x20000}};

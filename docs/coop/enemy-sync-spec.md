@@ -570,6 +570,25 @@ the Keese swarms): their copies never hit. Thirty-four more are armed by both.
   the rider's get-off, the sweep-out state setter. Research R20 has a recipe for each. Whether a lifted object
   already follows through the object mirror is to be seen in play before the lifter is built.
 
+**B.36 A Shooter put to sleep** (research R19, the shooter-state nodes; `coop_enemy_shot.c`; built, not run; off
+with `TOTK_COOP_EN_SHS=0`). Besides prepare and shoot, an enemy's graph puts its Shooter's shots to sleep: a
+prepared arrow put away when an archer gives up its shot (OneShotEquipmentUserCancelShooter,
+OneShotShooterRequestSleep, the "drop prepared" nodes when the shot is no longer in the hand), all shots of a name,
+every prepared one. A copy's graph does not run, so the shot its copy prepared from its owner's request stayed
+nocked. The three entries take the Shooter and plain numbers: main+0x1bfa698(S, name hash, index),
+main+0x1bfa4e0(S, name hash, force), main+0x1bfa87c(S). The game that runs the enemy tells each call (SHS, type 64)
+with whose Shooter it is (the enemy's own, a slot's thing, what is fused to it, as a shot is told); the copy's game
+makes it on its own Shooter ([comps+0x448]) before the copy's calc. The "drop prepared" node of a shot still in the
+hand ends in the shoot call, which B.3 carries already.
+- Read and not built: riding (research R20: the rider keeps its mount as an actor link; a copy would be put on its
+  game's copy of the mount by the ride call main+0x502e60(rider, mount handle, type, seat) and taken off by
+  main+0xc448c8). An enemy's mount is a horse, which no sync carries since B.30, so there is nothing to put it on.
+- Read and not built: lifting (R20: a copy is put into "holds O" by main+0x1ba75d0(lifter, O's reference, the hold
+  key, flag), the throw by main+0x1ba796c(lifter, three floats)). Whether a lifted object already follows in the
+  other game through the object mirror is to be seen in play first.
+- Read and judged not worth carrying until a fault is seen: the sweep-out table ([comps+0x4a0]): its states only move
+  the enemy's own bodies to another collision layer, and a copy's body is static.
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is
