@@ -281,6 +281,16 @@ void en_shot_phase0(void) {
     watch_phase0();
     for (int i = 0; i < SHOT_N; i++) {
         Shot *h = &shots[i];
+        if (atomic_load(&h->state) == 3) {
+            // A shot due on a copy is freed only by that copy's pre-calc; a copy taken over, let go, unloaded or dead
+            // never ran it, and after 16 such shots no shot was captured or taken in any game for the session, while a
+            // stale one could fire on another copy that came to the same cell (code review, 2026-11-17). Freed here
+            // (phase 0, outside the actor update the pre-calcs run in) once over 3 s old or no longer its copy's.
+            En *e = NULL;
+            for (int k = 0; k < EN_N && !e; k++) if (en_tab[k].used && enid_eq(en_tab[k].id, h->id)) e = &en_tab[k];
+            if (!e || e->owner == me || e->cell != h->cell || en_now() - h->taken_ns > 3 * SEC) atomic_store(&h->state, 0), atomic_fetch_add(&n_miss, 1);
+            continue;
+        }
         if (atomic_load(&h->state) != 2) continue;
         if (h->actor) {   // captured here: stated to everyone
             EnCell *m = en_cell_of(h->actor);
@@ -522,6 +532,10 @@ int en_shs_msg(const CoopCtrMsg *m) {
     const MShs *q = (const MShs *)m->d;
     uint64_t me = coop_ctr_me();
     if (m->len != (int)sizeof *q || (q->fn != 0x1bfa698 && q->fn != 0x1bfa87c && q->fn != 0x1bfa4e0)) return 1;
+    for (int k = 0; k < SHSQ; k++) {   // (one older than 240 frames was never made: its copy went; freed, as shots[] is)
+        int c = atomic_load(&shsq[k].cell);
+        if (c > 0 && coop_sess_frame_no() - shsq[k].frame > 240) atomic_compare_exchange_strong(&shsq[k].cell, &c, 0);
+    }
     for (int i = 0; i < EN_N; i++) {
         if (!en_tab[i].used || !enid_eq(en_tab[i].id, q->id) || en_tab[i].owner == me || en_tab[i].cell < 0) continue;
         for (int k = 0; k < SHSQ; k++) {

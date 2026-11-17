@@ -336,7 +336,12 @@ void en_log_own(const En *e, const char *what, const char *why) {
 }
 
 // ---- Peers and sending ------------------------------------------------------------------------------------------------
-#define OUT_N 256
+// Messages waiting for one peer. A burst is queued whole before it is flushed: at most 7 claim messages, a DECL and
+// an UNSYNCED per entry (256 each), 32 tombstone and 64 resting messages, 1024 names and SYNC_END, about 1,650. With
+// 256, the names and SYNC_END at the end of a burst were dropped for good once a game knew some 200 names (a name is
+// sent once per peer and never asked for again), and copies then played no command of those names (code review,
+// 2026-11-17). Allocated per peer when it first is sent to (about 2.4 MB each).
+#define OUT_N 2048
 typedef struct { uint8_t type; uint16_t len; uint8_t d[COOP_CTR_PAYLOAD]; } OutMsg;
 static struct {
     uint64_t inc;
