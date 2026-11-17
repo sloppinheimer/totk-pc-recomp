@@ -147,6 +147,78 @@ static void equip_read(uint64_t actor, uint32_t eq[EN_EQ_N], int learn) {
     }
 }
 
+// ---- An enemy's AI memory (enemy-sync-spec.md B.2) --------------------------------------------------------------------------
+// What a graph keeps in the actor's blackboard and acts on later belongs to the enemy, not to the game that ran it: a
+// Wizzrobe's IsMagicWeather is set by its weather action and, while it is set, the graph that always runs asks for the
+// weather and shoots a fireball at intervals (research R8c). It stayed in the game that had run the summon: the rain
+// stopped when the other game took the Wizzrobe over and began again when it came back (a play session, 2026-11-16).
+// The bools below travel in STATE as bits (0x80: stated at all; bit k: key k is true; a key the actor's blackboard does
+// not have reads false) and a copy's own blackboard is given them, so a game that takes the enemy over finds them.
+// The blackboard ([[[actor+0x228]+0]+0x10]): its bools' section at +0x198 (count +0, values +8, a table of {u32 hash,
+// s32 index} at +0x30 of the size at +0x3c; keys are murmur3_32 of the name: coop_ctn.c bb_index), a lock byte per
+// bool at [+0x1e0] and a change counter per bool at [+0x1f0], as the game's own setter writes them
+// (ExecuteBlackboardSetBool, main+0x740b68, its actor case: a locked bool is left, the counter goes up by one).
+static const char *const mem_keys[] = {"IsMagicWeather", "IsShootMagicObj"};
+#define MEM_N ((int)(sizeof mem_keys / sizeof *mem_keys))
+static uint32_t murmur3(const char *s) {
+    uint32_t h = 0, k, n = (uint32_t)strlen(s), i = 0;
+    for (; i + 4 <= n; i += 4) {
+        memcpy(&k, s + i, 4);
+        k *= 0xcc9e2d51u, k = k << 15 | k >> 17, k *= 0x1b873593u;
+        h ^= k, h = h << 13 | h >> 19, h = h * 5 + 0xe6546b64u;
+    }
+    k = 0;
+    switch (n & 3) {
+    case 3: k ^= (uint32_t)(uint8_t)s[i + 2] << 16;   // fallthrough
+    case 2: k ^= (uint32_t)(uint8_t)s[i + 1] << 8;    // fallthrough
+    case 1: k ^= (uint8_t)s[i], k *= 0xcc9e2d51u, k = k << 15 | k >> 17, k *= 0x1b873593u, h ^= k;
+    }
+    h ^= n, h ^= h >> 16, h *= 0x85ebca6bu, h ^= h >> 13, h *= 0xc2b2ae35u, h ^= h >> 16;
+    return h;
+}
+static int mem_index(uint64_t bb, int key) {
+    static uint32_t hash[MEM_N];
+    if (!hash[key]) hash[key] = murmur3(mem_keys[key]);
+    uint64_t tab = bb ? coop_rd_ptr(bb + 0x198 + 0x30) : 0;
+    int32_t size = 0, count = 0;
+    if (!tab || !coop_rd(bb + 0x198 + 0x3c, &size, 4) || !coop_rd(bb + 0x198, &count, 4) || size <= 0 || size > 4096) return -1;
+    uint32_t at = hash[key] % (uint32_t)size;
+    for (int i = 0; i < size; i++, at = (at + 1) % (uint32_t)size) {
+        struct { uint32_t hash; int32_t index; } e;
+        if (!coop_rd(tab + 8 * (uint64_t)at, &e, 8) || !e.hash) return -1;
+        if (e.hash == hash[key]) return e.index >= 0 && e.index < count ? e.index : -1;
+    }
+    return -1;
+}
+static uint64_t mem_bb(uint64_t actor) {
+    uint64_t c0 = coop_rd_ptr(en_comps(actor));
+    return c0 ? coop_rd_ptr(c0 + 0x10) : 0;
+}
+static uint8_t mem_read(uint64_t actor) {
+    uint64_t bb = mem_bb(actor), vals = bb ? coop_rd_ptr(bb + 0x198 + 8) : 0;
+    uint8_t out = 0x80;
+    for (int k = 0; vals && k < MEM_N; k++) {
+        int i = mem_index(bb, k);
+        uint8_t b = 0;
+        if (i >= 0 && coop_rd(vals + (uint64_t)i, &b, 1) && b) out |= (uint8_t)(1 << k);
+    }
+    return out;
+}
+static void mem_write(uint64_t actor, uint8_t want, const char *name) {
+    uint64_t bb = mem_bb(actor), vals = bb ? coop_rd_ptr(bb + 0x198 + 8) : 0, locks = bb ? coop_rd_ptr(bb + 0x1e0) : 0, counts = bb ? coop_rd_ptr(bb + 0x1f0) : 0;
+    if (!(want & 0x80) || !vals) return;
+    for (int k = 0; k < MEM_N; k++) {
+        int i = mem_index(bb, k);
+        uint8_t b = 0, lock = 0, cn = 0, v = want >> k & 1;
+        if (i < 0 || !coop_rd(vals + (uint64_t)i, &b, 1) || !!b == v) continue;
+        if (locks && coop_rd(locks + (uint64_t)i, &lock, 1) && (lock & 1)) continue;
+        memcpy((void *)(uintptr_t)(vals + (uint64_t)i), &v, 1);
+        if (counts && coop_rd(counts + (uint64_t)i, &cn, 1)) cn++, memcpy((void *)(uintptr_t)(counts + (uint64_t)i), &cn, 1);
+        static _Atomic int said;
+        if (atomic_fetch_add(&said, 1) < 40) rt_log("coop: en: memory: the copy of %s is given %s = %u, as its owner's has it", name, mem_keys[k], v);
+    }
+}
+
 // ---- What enemies hold ---------------------------------------------------------------------------------------------------
 // Every actor an enemy of a listed kind holds here, and what is fused to it (a held weapon's attachment: the link at
 // +0xb0 of the weapon's component [[w+0x228]+0x208]), as a set the object mirror asks (coop_players.c prop_fn): such an
@@ -614,6 +686,10 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             // sets dirty bit 0x200 of the word at +0xac, and the controller's apply then tells the models (research
             // R7b). Written the same way here, on the copy and on what it holds and what is fused to that: they are
             // actors of their own with controllers of their own. [m: the byte alone, without the dirty bit, hid nothing.]
+            {   // its owner's AI memory, kept in the copy's own blackboard for the day this game runs it
+                int16_t mei = atomic_load(&m->en);
+                mem_write(actor, m->show_mem, mei >= 0 ? en_tab[mei].name : "?");
+            }
             uint8_t want = m->show_hide;
             uint64_t who[1 + EN_EQ_N * 2], eu = coop_rd_ptr(en_comps(actor) + 0x230);
             int nw = 0;
@@ -746,6 +822,11 @@ void en_copy_phase0(Cpu *c) {
                 if (hm != s->hide || vb != s->vis) { e->send_burst = 3; rt_log("coop: en: hide: %s %016llx (run here) mask %02x -> %02x, bit %u -> %u, slot 0 plays %08x", e->name, (unsigned long long)e->id.a, s->hide, hm, s->vis, vb, s->nslot ? s->sl[0].cmd : 0); }
                 s->hide = hm, s->vis = vb;
             }
+            {   // its AI memory (B.2)
+                uint8_t mm = mem_read(e->actor);
+                if (mm != s->mem) { e->send_burst = 3; if (s->mem) rt_log("coop: en: memory: %s %016llx (run here) %02x -> %02x (bit 0 IsMagicWeather, 1 IsShootMagicObj)", e->name, (unsigned long long)e->id.a, s->mem, mm); }
+                s->mem = mm;
+            }
             { uint32_t dw = 0; uint64_t dc = coop_rd_ptr(en_comps(e->actor) + 0x1c8); if (dc) coop_rd(dc + 0x20, &dw, 4); if (dw != s->dstate) e->send_burst = 3; s->dstate = dw; }
             float near2 = 1e30f;
             for (int k = 0; k < nl; k++) {
@@ -846,7 +927,7 @@ void en_copy_phase0(Cpu *c) {
         // The owner's enemy began a flinch (a partial ragdoll, by its own player's blow or anything else): the copy's is
         // asked of its own ragdoll component, unless this game's player just struck it and it flinched here already.
         if (sl->rag == 2 && m->show_rag != 2 && now - m->hit_ns > SEC) atomic_store(&m->flinch, 1);
-        m->show_rag = sl->rag, m->show_hide = sl->hide;
+        m->show_rag = sl->rag, m->show_hide = sl->hide, m->show_mem = sl->mem;
         m->show_nslot = sl->nslot, m->show_hold = (uint8_t)hold, m->show_teleport = (uint8_t)jump, m->show_hp = sl->hp, m->show_dstate = sl->dstate;
         for (int k = 0; k < sl->nslot; k++) {
             m->show_slot[k] = sl->sl[k];

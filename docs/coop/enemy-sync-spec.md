@@ -216,7 +216,15 @@ event, cleared only when the brain goes back to wandering; while it is set the a
 weather every frame and shoots a fireball at a random interval, with no timer: R8c) stayed in the game that had run
 the summon. The keys a family's graphs set and read across actions are listed per family and travel in STATE; a game
 that takes an enemy over writes them to its own actor through the game's blackboard setter before its graphs run.
-First list: Wizzrobe `IsMagicWeather`, `IsShootMagicObj`. [open: the setter's call (main+0x740b68, R8c) is not read.]
+First list: Wizzrobe `IsMagicWeather`, `IsShootMagicObj`. Built [m]: the bools travel as bits of one STATE byte and a
+copy's blackboard is given them at every pre-calc as the game's setter writes a bool (main+0x740b68, the actor case:
+the value at [bb+0x1a0], not when its lock byte at [bb+0x1e0] is set, its change counter at [bb+0x1f0] up by one). A
+run: the owner's Wizzrobe set `IsMagicWeather`, the copy was given it, the owner's game closed and the other took the
+Wizzrobe over with the bool true. Its graphs then cleared it at once: a taken-over enemy's brain starts unaware (the
+clips after the take-over were Fly, Find, Disappear), and the bool is cleared whenever the brain is not in battle. So
+the rain still ends at a change of owner; what it needs is the brain's state at hand-over (section 12, the target),
+not more memory. `IsShootMagicObj` read false in the owner's actor blackboard while fireballs were shot: it is kept
+somewhere else [open].
 
 **B.3 Melee.** A swing is armed either by the node ExecuteSensorHitSetupAttack (main+0x2444d80) or by the attack
 component's own poll of the playing clips' AtCollision events (main+0x42ec98), which reads no AI state and arms 148
