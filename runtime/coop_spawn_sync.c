@@ -93,7 +93,7 @@ void coop_actor_created(uint64_t a) {   // coop_spawn.c, from the getActor hook 
 }
 static struct { uint32_t key; char name[48]; float pos[3]; int state; uint64_t actor, ref, ns; int from;
                 _Alignas(16) uint8_t handle[0x40], link[0x40]; } made[32];   // the copies being made here (state 1, 2 made)
-static struct { uint32_t key; uint64_t actor; } spawned_mine[64];   // enemies this game made at run time and sent
+static struct { uint32_t key; uint64_t actor; uint8_t dead; } spawned_mine[64];   // enemies this game made at run time and sent; dead: seen at life 0
 // The copies made here for another game, after made[] let go of them: deleted once far from every player (coop_far.c),
 // as TotK Online's server disposes of an actor 1000 m from every player and its client deletes a runtime-made one.
 static struct { uint32_t key; uint64_t actor; int from; char name[48]; } made_held[64];
@@ -263,20 +263,22 @@ void spawn_tick(Cpu *c) {
             rt_log("coop: spawn sync: %s %08x could not be made (%d)", made[k].name, made[k].key, st);
         }
     }
-    // this game's spawned enemies gone (unloaded, not dead): the others' copies go too
+    // this game's spawned enemies gone (unloaded, not dead): the others' copies go too. One seen dead before it went is
+    // left to the enemy sync, whose death the copies are still playing.
     for (int k = 0; k < 64; k++) {
         if (!spawned_mine[k].key) continue;
         uint64_t a = spawned_mine[k].actor;
         int32_t st = 0;
         char nm[48];
         int alive = coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6 && spawn_kind(coop_actor_name(a, nm, sizeof nm));
+        if (alive && coop_life_of(a) == 0) spawned_mine[k].dead = 1;
         if (alive && keyed_of(a) == spawned_mine[k].key) continue;
-        if (!alive || coop_life_of(a) != 0) {
+        if (!spawned_mine[k].dead && (!alive || coop_life_of(a) != 0)) {
             SpawnPacket sp = {.key = spawned_mine[k].key, .kind = SPAWN_GONE};
             coop_net_hit_send(&sp, sizeof sp);
             rt_log("coop: spawn sync: %08x gone here: the others go too", sp.key);
         }
-        spawned_mine[k].key = 0, spawned_mine[k].actor = 0;
+        spawned_mine[k].key = 0, spawned_mine[k].actor = 0, spawned_mine[k].dead = 0;
     }
 }
 void spawn_take(Cpu *c, const SpawnPacket *sp, int from) {
