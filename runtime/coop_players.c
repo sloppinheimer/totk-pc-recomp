@@ -1268,6 +1268,17 @@ static int copies_live[COOP_MAX_PLAYERS];   // per slot, its copies in state 3 (
 // A copy's actor is still the one made: alive (state 2..6) and of the copy's name. The game can free a copy's actor
 // (a paraglider's went away by itself) and give its memory to another; one not checked was still placed, woken and
 // deleted (code review, 2026-11-06).
+static int deny_name(const char *nm);   // below, with prop_skip
+// At most 32 copies asked for per player and second: another game could list 256 new objects again and again, and
+// each is a create request of this game's actor manager.
+static int create_budget(const Slot *s) {
+    static uint64_t since[COOP_MAX_PLAYERS];
+    static int n[COOP_MAX_PLAYERS];
+    int i = (int)(s - slots);
+    uint64_t now = plat_now_ns();
+    if (now - since[i] > 1000000000ull) since[i] = now, n[i] = 0;
+    return n[i]++ < 32;
+}
 // A world object from the network with a usable place and rotation: finite, within 100 km of the map's middle (a
 // local place within 100 m of its frame), a rotation of length near 1 (senders normalise it, mat_quat).
 static int obj_sane(const CoopObj *o) {
@@ -1531,7 +1542,7 @@ static void arrow_copies(Cpu *c, Slot *s) {
         for (int b = 0; b < 16 && !went; b++)
             went = blown[b].key == ((uint64_t)s->net_id << 32 | o->id) && blown[b].until_ms > plat_now_ns() / 1000000;
         if (went) continue;
-        if (!strncmp(o->name, "MergedActor", 11) || !strncmp(o->name, "UltraHand_Connection_Effect", 27)) continue;   // (prop_skip; a sender of before)
+        if (deny_name(o->name)) continue;   // (the sender filters too, but a sender's filter is not a check)
         int k = 0;
         while (k < COOP_OBJS && !(s->mir[k].state && s->mir[k].id == o->id)) k++;
         if (k == COOP_OBJS) {
@@ -1572,6 +1583,7 @@ static void arrow_copies(Cpu *c, Slot *s) {
         }
         if (s->mir[k].state == 1 && coop_far_from_players(s->mir[k].pos)) continue;
         if (s->mir[k].state == 1 && copy_wait(s, k)) continue;
+        if (s->mir[k].state == 1 && !create_budget(s)) continue;
         // An owner's autobuilt device: made as an autobuild makes it with TOTK_COOP_AUTOBUILT=1 (autobuilt_on).
         if (s->mir[k].state == 1 && ((s->mir[k].flags & COOP_OBJ_AUTOBUILT) && autobuilt_on()
                                          ? coop_request_create_autobuilt(c, s->mir[k].name, s->mir[k].pos, s->mir[k].rot, s->mir[k].handle)
@@ -1924,6 +1936,48 @@ static void set_driven(uint64_t a) {
 // runs its own update and its body is driven at the owner's beam's speed (as a ridden copy's is).
 static int is_beam(const char *nm) { return !strcmp(nm, "PlayerBeam"); }
 
+// What no copy is made of (prop_skip, deny_name).
+static const char *const deny_pre[] = {"Player", "Armor_", "Accessory_", "PlayerRaul", "Npc", "Animal_", "Enemy_",
+                            "Weapon_Sheath", "Weapon_Quiver", "TBox_", "Sage_", "Weapon_Bow_128",
+                            // the Link's own helpers (its edges): a save load took the WakeBoardRope for a destroyed
+                            // object, and the other game deleted its own (load_3rd.txt)
+                            "WakeBoardRope", "Obj_OneTouch_Connection", "Dm_Npc_RevivalFairy", "CarryBox", "ThrowBox",
+                            // what a warp brings in about the Link where it lands: the shrine entrance and its warp
+                            // point, a cannon terminal and door; taken as made, each game had copies of the other's,
+                            // and a warp to a place with a copied warp point hung about a minute (a play session,
+                            // 2026-11-06)
+                            "DgnObj_ZonauShrineEntrance", "DgnObj_WarpPoint", "ZonauShrine_EntranceGate", "FldObj_Cannon",
+                            // the Gloom Hands (MiasmaSwarm and its MiasmaTentacle hands): made in one game when its
+                            // Link came near, then sent as moved objects; the other game's copy of a MiasmaTentacle
+                            // crashed it at once (access violation in main+0x4f2894)
+                            "Miasma",
+                            // the pooled helper actor the game gives each combined contraption (an autobuild's):
+                            // the idle ones wait at the origin, so the other game took one of its own idle ones for
+                            // it by key and moved it to the owner's build (autobuild_3rd.txt pair test, 2026-11-08)
+                            "CombinedActorIntegrator",
+                            // the map's merged-mesh groups (MergedActorD100): a game moves them as world objects;
+                            // the other, which had not got them (after a fast travel), asked for copies by name, the
+                            // game cannot make one (handle status 4), and the requests asked for again every tick
+                            // took the actor manager down: no actor could be made there
+                            "MergedActor",
+                            // the Link's Ultrahand glue-effect actor (one per Link, made by its effect manager,
+                            // main+0x994048, which it draws every glue joint from): a copy made by name has no
+                            // manager and drew a large green slab between glued parts and a glow in a loose fan in
+                            // the other game
+                            "UltraHand_Connection_Effect"};
+
+static int deny_name(const char *nm) {
+    for (size_t i = 0; i < sizeof deny_pre / sizeof *deny_pre; i++) if (!strncmp(nm, deny_pre[i], strlen(deny_pre[i]))) return 1;
+    // Helpers that go with this Link and are not things in the world: EventCamera and CameraXLinkControl were sent
+    // as moved objects (pair test, 2026-11-05).
+    // (Not for Zonai devices: SpObj_ControlStick, the steering stick, has "Control" in it and was never sent.)
+    static const char *const in[] = {"Camera", "Event", "Control", "Manager", "Sensor", "Area", "System"};
+    for (size_t i = 0; i < sizeof in / sizeof *in && strncmp(nm, "SpObj_", 6); i++) if (strstr(nm, in[i])) return 1;
+    return 0;
+}
+// Names never copied from another game, whatever it sends: the prefixes and words of prop_skip that are about the
+// kind of thing, not about this Link's own gear. The receiver applies it too (arrow_copies, props_receive,
+// destroy_apply): a sender's filter is not a check, and a copy of one of these crashed or hung a game before.
 static int prop_skip(const char *nm) {
     if (is_beam(nm)) return 0;
     // A horse's parts: its mane (every Horse_ actor is a Horse_Link_Mane*), saddle and reins. Each game's horse has
@@ -1936,44 +1990,12 @@ static int prop_skip(const char *nm) {
     // Sage_: the sages' companion spirits, and Weapon_Bow_128, Tulin's bow, which follow the Link: sent as moved
     // objects, their copies came and went over and over and the bow showed on the other Link (glide.txt on the Rito
     // save).
-    static const char *pre[] = {"Player", "Armor_", "Accessory_", "PlayerRaul", "Npc", "Animal_", "Enemy_",
-                                "Weapon_Sheath", "Weapon_Quiver", "TBox_", "Sage_", "Weapon_Bow_128",
-                                // the Link's own helpers (its edges): a save load took the WakeBoardRope for a destroyed
-                                // object, and the other game deleted its own (load_3rd.txt)
-                                "WakeBoardRope", "Obj_OneTouch_Connection", "Dm_Npc_RevivalFairy", "CarryBox", "ThrowBox",
-                                // what a warp brings in about the Link where it lands: the shrine entrance and its warp
-                                // point, a cannon terminal and door; taken as made, each game had copies of the other's,
-                                // and a warp to a place with a copied warp point hung about a minute (a play session,
-                                // 2026-11-06)
-                                "DgnObj_ZonauShrineEntrance", "DgnObj_WarpPoint", "ZonauShrine_EntranceGate", "FldObj_Cannon",
-                                // the Gloom Hands (MiasmaSwarm and its MiasmaTentacle hands): made in one game when its
-                                // Link came near, then sent as moved objects; the other game's copy of a MiasmaTentacle
-                                // crashed it at once (access violation in main+0x4f2894)
-                                "Miasma",
-                                // the pooled helper actor the game gives each combined contraption (an autobuild's):
-                                // the idle ones wait at the origin, so the other game took one of its own idle ones for
-                                // it by key and moved it to the owner's build (autobuild_3rd.txt pair test, 2026-11-08)
-                                "CombinedActorIntegrator",
-                                // the map's merged-mesh groups (MergedActorD100): a game moves them as world objects;
-                                // the other, which had not got them (after a fast travel), asked for copies by name, the
-                                // game cannot make one (handle status 4), and the requests asked for again every tick
-                                // took the actor manager down: no actor could be made there
-                                "MergedActor",
-                                // the Link's Ultrahand glue-effect actor (one per Link, made by its effect manager,
-                                // main+0x994048, which it draws every glue joint from): a copy made by name has no
-                                // manager and drew a large green slab between glued parts and a glow in a loose fan in
-                                // the other game
-                                "UltraHand_Connection_Effect"};
+
     // (UltraHand_Connection_Effect2: left out again, above)
     // (LightningStrike, a thunderstorm's strike, was left out here for a while; it is sent again, the one that hits
     // this Link, so the others see it struck: The tester's list, 2026-11-06. Its copy runs its own update, copy_place.)   // chests: each player's own
-    for (size_t i = 0; i < sizeof pre / sizeof *pre; i++) if (!strncmp(nm, pre[i], strlen(pre[i]))) return 1;
+    if (deny_name(nm)) return 1;
     if (strstr(nm, "Arrow")) return 1;
-    // Helpers that go with this Link and are not things in the world: EventCamera and CameraXLinkControl were sent
-    // as moved objects (pair test, 2026-11-05).
-    // (Not for Zonai devices: SpObj_ControlStick, the steering stick, has "Control" in it and was never sent.)
-    static const char *in[] = {"Camera", "Event", "Control", "Manager", "Sensor", "Area", "System"};
-    for (size_t i = 0; i < sizeof in / sizeof *in && strncmp(nm, "SpObj_", 6); i++) if (strstr(nm, in[i])) return 1;
     if (!strncmp(nm, "Weapon_", 7)) {   // gear still worn by this Link or given to a co-op Link
         for (int k = 0; k < 3; k++) if (!strcmp(nm, my_gear[k])) return 1;
         for (int i = 0; i < COOP_MAX_PLAYERS; i++)
@@ -2013,7 +2035,8 @@ static int copy_pending_near(const float *p) {
 // game (a play session, 2026-11-05: "holds Weapon_Shield_030, owner -" four times, then "I move Weapon_Shield_030").
 // It is watched for 30 s; once it is out of the proxy's gear it is deleted, and it is never sent meanwhile.
 // remade: one only watched after its item was made again (deleted once out of the gear, kept while held).
-static struct { uint64_t actor, eq; int k, until, since, remade; uint32_t id; char name[48], fuse[32]; } old_items[16];
+#define OLD_N 64   // (16 filled with fast gear changes, and an entry taken over left its item in the world)
+static struct { uint64_t actor, eq; int k, until, since, remade; uint32_t id; char name[48], fuse[32]; } old_items[OLD_N];
 #define OLD_ITEM_ID 0x380   // an actor's own id (coop_glue.c ACTOR_ID): one made at a freed one's address has another
 static char old_item_fuse[32];   // the next old item's fused material: the gear code sets it before regive_gear
 static uint64_t dkilled[64];   // set off here for another game's notice, or deleted here by this code: not told as destroyed
@@ -2022,7 +2045,7 @@ static int dkilled_n, dtick;
 // other game does not destroy its own original by that key (coop_autobuild.c; Phase 1 pair test, 2026-11-09)
 void coop_deleted_here(uint64_t a) { if (a) dkilled[dkilled_n++ % 64] = a; }
 int old_fuse_name(const char *nm) {   // (a loose one is not sent: old_items_tick deletes it)
-    for (int i = 0; i < 16; i++) if (old_items[i].actor && old_items[i].fuse[0] && !strcmp(nm, old_items[i].fuse)) return 1;
+    for (int i = 0; i < OLD_N; i++) if (old_items[i].actor && old_items[i].fuse[0] && !strcmp(nm, old_items[i].fuse)) return 1;
     return 0;
 }
 static void watch_old_item(uint64_t eq, int k, uint64_t old, int remade) {
@@ -2038,7 +2061,7 @@ static void watch_old_item(uint64_t eq, int k, uint64_t old, int remade) {
         if (f < 0 && (!old_items[i].actor || old_items[i].until < prop_tick)) f = i;   // a free entry first (review)
     }
     if (f < 0)
-        for (int i = f = 0; i < 16; i++) if (old_items[i].until < old_items[f].until) f = i;
+        for (int i = f = 0; i < OLD_N; i++) if (old_items[i].until < old_items[f].until) f = i;
     old_items[f].actor = old, old_items[f].eq = eq, old_items[f].k = k, old_items[f].until = prop_tick + 900, old_items[f].since = prop_tick;
     old_items[f].remade = remade;
     coop_actor_name(old, old_items[f].name, sizeof old_items[f].name);
@@ -2134,11 +2157,11 @@ static void gear_hand(Cpu *c, uint64_t eq, int k, int in) {
     if (!in) coop_guest_call(c, MOD_MAIN_BASE + GEAR_REMOVE_IN_HAND, eq, row[k], 0, 0);
 }
 static int old_item(uint64_t a) {
-    for (int i = 0; i < 16; i++) if (old_items[i].actor == a && old_items[i].until >= prop_tick) return 1;
+    for (int i = 0; i < OLD_N; i++) if (old_items[i].actor == a && old_items[i].until >= prop_tick) return 1;
     return 0;
 }
 static void old_items_tick(Cpu *c) {
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < OLD_N; i++) {
         if (!old_items[i].actor) continue;
         // Its fused material come loose while it is watched (emptying a slot knocked a stand-in's horn off its spear,
         // and the horn lay there and was sent as a world object: A play session, 2026-11-08): deleted, within 1.5 m
@@ -2620,7 +2643,25 @@ static void destroy_watch(uint64_t me) {
     for (int i = 0; i < ng; i++) rt_log("coop: %s (key %08x) was destroyed here; the others are told", gone[i].name, gone[i].id & ~COOP_OBJ_KEYED);
 }
 // Another game's notice: its placed objects destroyed there go here too.
+// Within m metres of the stand-in of player `from` (LIVE here), as a place another game reports about its own Link's
+// surroundings must be: its notices about this game's placed objects were taken anywhere (code review, 2026-11-17).
+static int near_sender(int from, const float p[3], float m) {
+    const Slot *s = slot_for(SRC_NET, from);
+    float sp[3];
+    if (!s || s->state != LIVE || !s->actor || !coop_rd(s->actor + COOP_ACTOR_POS, sp, 12)) return 0;
+    float d2 = 0;
+    for (int k = 0; k < 3; k++) d2 += (p[k] - sp[k]) * (p[k] - sp[k]);
+    return d2 <= m * m;
+}
 static void destroy_apply(Cpu *c, const CoopObj *o, int from) {
+    {   // at most 4 a second from each player, as its sender sends at most 4 a scan (destroy_watch)
+        static uint64_t since[COOP_MAX_PLAYERS + 1];
+        static int n[COOP_MAX_PLAYERS + 1];
+        uint64_t now = plat_now_ns();
+        if (from < 1 || from > COOP_MAX_PLAYERS || deny_name(o->name)) return;
+        if (now - since[from] > 1000000000ull) since[from] = now, n[from] = 0;
+        if (n[from]++ >= 4) return;
+    }
     KeyFind kf = {0};
     kf.key[0] = o->id & ~COOP_OBJ_KEYED, kf.name[0] = o->name, kf.n = 1;
     void coop_actors_all(void (*fn)(uint64_t, const char *, uint32_t, void *), void *arg);   // coop_world.c
@@ -2629,7 +2670,9 @@ static void destroy_apply(Cpu *c, const CoopObj *o, int from) {
     char nm[48];
     // (never a Link's gear or a stand-in's, nor one of a name their gear has: a fused stick deleted in the other game
     // was told as destroyed, and the stand-in's held stick of that name broke here)
-    if (!a || strcmp(coop_actor_name(a, nm, sizeof nm), o->name) || coop_is_resident(a) || !strncmp(nm, "Parasail", 8) || fuse_on_held(a)) {
+    float ap[3] = {0};
+    if (!a || strcmp(coop_actor_name(a, nm, sizeof nm), o->name) || coop_is_resident(a) || !strncmp(nm, "Parasail", 8) || fuse_on_held(a) ||
+        !coop_rd(a + COOP_ACTOR_POS, ap, 12) || !near_sender(from, ap, 40.0f)) {
         rt_log("coop: player %d destroyed %s (key %08x): not here (or one not to destroy)", from, o->name, o->id & ~COOP_OBJ_KEYED);
         return;
     }
@@ -2691,6 +2734,11 @@ static void props_receive(Cpu *c) {
             continue;
         }
         if (coop_net_id() < want_from[i] && my_report(a)) continue;   // this game sends it too, and wins
+        {   // only what that player's game may move: a kind it sends (prop_skip), here and going to within 100 m of its Link
+            float ap[3];
+            if (deny_name(want[i]->name) || !coop_rd(a + COOP_ACTOR_POS, ap, 12) || !near_sender(want_from[i], ap, 100.0f) ||
+                !near_sender(want_from[i], want[i]->pos, 100.0f)) continue;
+        }
         if (part_or_followed(a)) continue;   // (a build's part, or a followed device: the core's, plan 44.2 item 1)
         for (int k = 0; k < 128; k++)   // the last place sent, for after the reports stop
             if (key_found[k].actor == a)
@@ -4468,12 +4516,15 @@ void coop_players_tick(Cpu *c) {
         for (int k = 0; k < COOP_GEAR_SLOTS; k++) {
             memcpy(s->gear_want[k], st.gear[k], 32);
             s->gear_want[k][31] = 0;
+            // (only an item of that slot's kind: the weapon create was asked for any name another game put there)
+            if (s->gear_want[k][0] && strcmp(s->gear_want[k], "-") && gear_kind(s->gear_want[k]) != k) strcpy(s->gear_want[k], "-");
             s->dye_want[k] = st.dye[k];
             // Armor on another character's stand-in: this game has its armor fitted to its own Link's character only,
             // so that stand-in wears its own character's bare pieces (coop_chars.c; docs/coop/character-mods.md).
             const char *bare = k > 2 && s->gear_want[k][0] ? coop_char_bare(s->character, k - 3) : NULL;
             if (bare) snprintf(s->gear_want[k], sizeof s->gear_want[k], "%s", bare), s->dye_want[k] = -1;
             if (k < 3) memcpy(s->fuse_want[k], st.fuse[k], 32), s->fuse_want[k][31] = 0;
+            if (k < 3 && deny_name(s->fuse_want[k])) s->fuse_want[k][0] = 0;
             if (k < 3) s->out_want = (s->out_want & ~(1 << k)) | (int)((st.flags >> (8 + k)) & 1) << k;
             if (k == 0) s->attack_want = (int)(st.flags >> 13 & 1);
         }
