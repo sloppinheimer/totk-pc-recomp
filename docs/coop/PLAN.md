@@ -102,8 +102,11 @@ weak spots of a public repository; finding IDs below are its). Fixed, in the rep
   DOC-002: the enemy outbox and shot table, threads' shared state, shared-world stamps, the rotating ground's sender,
   test tracers, hooks and functions with no use, docs and comments.
 
-Not run: none of these fixes has been exercised in the game. Hosting from the Co-op tab now needs the code: the first
-run of step 1 that hosts from game A's tab tests it (`run_session.ps1` gives game A the code `TEST42`).
+Run once (2026-11-17, `run_session.ps1`, 90 s, both games standing still, no pictures taken): game A hosted with the
+code, game B joined with `127.0.0.1 TEST42`, each game made the other's stand-in ("slot 0: Player ... in the world"
+in both logs), the router was asked for the forward only after the relay had the port (no router answered here), no
+FATAL line and no message dropped for an unopened reader. B's leave at 70 s fell after the run's end. Nothing else of
+these fixes has been exercised: moving players, enemies, contraptions and hits wait for step 1's runs.
 
 Left, and where it goes:
 - With step 2 (engine reads): SYNC-006, whether one actor's calc can run inside another's (an enemy copy's
