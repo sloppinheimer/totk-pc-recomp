@@ -806,9 +806,15 @@ int coop_hook(Cpu *c, uint64_t addr) {
         return 1;
     }
     if (addr == MOD_MAIN_BASE + 0x599670) {   // the create request: the entity sync runs it inside its hook (its inner entry first)
-        { void coop_enemy_loot_create(Cpu *c); coop_enemy_loot_create(c); }   // coop_enemy_loot.c: an item of a dying enemy's drop
+        // (the loot note on the outer entry only: the entity hook runs the request again through rt_dispatch, whose
+        // entry comes back here, and each drop item was noted twice; code review, 2026-11-17)
+        static __thread int depth;
+        if (!depth) { void coop_enemy_loot_create(Cpu *c); coop_enemy_loot_create(c); }   // coop_enemy_loot.c: an item of a dying enemy's drop
         int coop_ent_hook(Cpu *c, uint64_t addr);
-        if (coop_ent_hook(c, addr)) return 1;
+        depth++;
+        int ran = coop_ent_hook(c, addr);
+        depth--;
+        if (ran) return 1;
         return create_trace(c);
     }
     // HUD control guide (bottom-right prompts such as "Dive R"): main+0x2192c50 (type) shows one, main+0x4cb540 (type)

@@ -236,11 +236,13 @@ static int anim_clock(uint64_t standin, float *dt) {   // the stand-in's clock, 
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_STANDIN_ANIM_EASE"); on = !(e && *e == '0'); }
     if (!on) return -1;
     int k = -1, free = -1;
+    uint64_t now = plat_now_ns();
+    // (an entry not set for 5 s is free: a stand-in made again has a new address, and with every entry held by gone
+    // ones two stand-ins took entry 0 from each other each call, so neither eased; code review, 2026-11-17)
     for (int j = 0; j < COOP_MAX_PLAYERS && k < 0; j++) {
         if (aclock[j].standin == standin) k = j;
-        else if (!aclock[j].standin && free < 0) free = j;
+        else if ((!aclock[j].standin || now - aclock[j].ns > 5000000000ull) && free < 0) free = j;
     }
-    uint64_t now = plat_now_ns();
     if (k < 0) {
         k = free >= 0 ? free : 0;
         memset(&aclock[k], 0, sizeof aclock[k]);
@@ -452,14 +454,15 @@ void coop_blur_pack(Cpu *c, uint64_t me, NetState *st) {
 // The owner's event as last received, per stand-in (written by the co-op tick, read by the update's hook on the
 // actor's own thread: seq is odd while it is written).
 typedef struct { uint8_t hand; uint16_t serial; float frame, start, param; } BlurEv;
-static struct { _Atomic uint64_t actor; _Atomic uint32_t seq; BlurEv ev; uint64_t until_ns; } blur_live[COOP_MAX_PLAYERS];
+static struct { _Atomic uint64_t actor; _Atomic uint32_t seq; BlurEv ev; uint64_t until_ns, seen_ns; } blur_live[COOP_MAX_PLAYERS];
 void coop_blur_apply(uint64_t standin, const NetState *st, uint64_t age_ns) {
     if (!blur_on() || !standin) return;
     int k = -1, free = -1;
-    for (int j = 0; j < COOP_MAX_PLAYERS && k < 0; j++) {
+    uint64_t now_ns = plat_now_ns();
+    for (int j = 0; j < COOP_MAX_PLAYERS && k < 0; j++) {   // (an entry not seen for 5 s is free: it was never let go)
         uint64_t a = atomic_load(&blur_live[j].actor);
         if (a == standin) k = j;
-        else if (!a && free < 0) free = j;
+        else if ((!a || now_ns - blur_live[j].seen_ns > 5000000000ull) && free < 0) free = j;
     }
     static int said_on;
     if (st->blur_on && said_on++ < 3) rt_log("coop: stand-in: its owner's WeaponBlur event came (age %.0f ms)", age_ns / 1e6);
@@ -474,6 +477,7 @@ void coop_blur_apply(uint64_t standin, const NetState *st, uint64_t age_ns) {
         b->hand = st->blur_hand, b->serial = st->blur_serial, b->frame = fr, b->start = st->blur_start, b->param = st->blur_param;
         blur_live[k].until_ns = plat_now_ns() + 100000000ull;   // (held 100 ms past the last state that had it)
     } else blur_live[k].until_ns = 0;
+    blur_live[k].seen_ns = now_ns;
     atomic_store(&blur_live[k].actor, standin);
     atomic_fetch_add(&blur_live[k].seq, 1);
 }

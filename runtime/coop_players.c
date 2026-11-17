@@ -1293,6 +1293,15 @@ static int actor_is(uint64_t a, const char *name) {   // alive, and of that name
     return a && coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6 && !strcmp(coop_actor_name(a, nm, sizeof nm), name);
 }
 static int copy_alive(const Slot *s, int k) { return actor_is(s->mir[k].actor, s->mir[k].name); }
+// A player's copies when it goes: those made deleted, and the create requests still on their way released (wiped
+// with the table, they kept the actor manager's request records, which run out; code review, 2026-11-17).
+static void mir_release_all(Cpu *c, Slot *s) {
+    for (int k = 0; k < COOP_OBJS; k++) {
+        if (s->mir[k].state == 3 && copy_alive(s, k)) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0);
+        else if (s->mir[k].state == 2) coop_handle_release(c, s->mir[k].handle);
+    }
+    memset(s->mir, 0, sizeof s->mir), copies_live[s - slots] = 0;
+}
 static int copy_of(uint64_t actor, Slot **out_s, int *out_k) {
     for (int i = 0; i < COOP_MAX_PLAYERS; i++)
         for (int k = 0; k < COOP_OBJS && actor && copies_live[i]; k++)
@@ -4393,12 +4402,10 @@ void coop_players_tick(Cpu *c) {
                 // The slot stays LET_GO, driven with no input, until the actor reads as going away.
                 s->state = LET_GO;
                 if (s->actor) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->actor, COOP_DELETE_REASON, 0, 0);
-                for (int k = 0; k < COOP_OBJS; k++)   // their arrows' copies too (each still that copy)
-                    if (s->mir[k].state == 3 && copy_alive(s, k)) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0);
-                memset(s->mir, 0, sizeof s->mir), copies_live[s - slots] = 0;
+                mir_release_all(c, s);
                 rt_log("coop: remote player %d left; their Link is deleted", id);
             } else if (s && s->state == REQUESTED) s->leaving = 1;   // (a create on its way: deleted when it comes)
-            else if (s && s->state != LET_GO) s->state = FREE;
+            else if (s && s->state != LET_GO) mir_release_all(c, s), s->state = FREE;
             continue;
         }
         if (s) s->leaving = 0;   // back before its Player came

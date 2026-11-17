@@ -233,8 +233,11 @@ static int live_pending;
 static char live_dir[2300];
 static CoopCharAsk ask;
 static int asking, restart_needed;
-static char declined[16][COOP_CHAR_KEY];
-static int ndeclined;
+// The keys declined (or whose lookup failed) this session: a ring of 64, the oldest forgotten first. Sixteen kept
+// nothing more once full, and the 17th key was asked about again and looked up again without end.
+#define DECLINED_N 64
+static char declined[DECLINED_N][COOP_CHAR_KEY];
+static int ndeclined, declined_next;
 static char asked_for[COOP_CHAR_KEY];   // the key the current ask is about ("" a lookup typed into the menu)
 
 static int is_declined(const char *key) {
@@ -242,7 +245,10 @@ static int is_declined(const char *key) {
     return 0;
 }
 static void decline(const char *key) {
-    if (key[0] && ndeclined < 16 && !is_declined(key)) snprintf(declined[ndeclined++], COOP_CHAR_KEY, "%s", key);
+    if (!key[0] || is_declined(key)) return;
+    snprintf(declined[declined_next], COOP_CHAR_KEY, "%s", key);
+    declined_next = (declined_next + 1) % DECLINED_N;
+    if (ndeclined < DECLINED_N) ndeclined++;
 }
 
 static void info_for(uint32_t mod_id, uint32_t file_id) {
@@ -485,14 +491,17 @@ void coop_chars_tick(void) {
         if (job.state == COOP_JOB_DONE) live_load(live_dir);
     }
     if (asking && asked_for[0] && coop_char_find(asked_for)) asking = 0;   // that character came in another way
-    for (int id = 1; id <= COOP_MAX_PLAYERS && !asking && job.state != COOP_JOB_RUNNING; id++) {
+    // (one lookup started every 10 s at most: each is a GameBanana request with ids another game chose)
+    static uint64_t last_info_ns;
+    int may_look = plat_now_ns() - last_info_ns > 10000000000ull;
+    for (int id = 1; id <= COOP_MAX_PLAYERS && !asking && may_look && job.state != COOP_JOB_RUNNING; id++) {
         const char *key = party[id].key;
         if (strncmp(key, "gb:", 3) || coop_char_find(key) || is_declined(key) || !party[id].mod_id) continue;
         memset(&ask, 0, sizeof ask);
         ask.player_id = id, ask.mod_id = party[id].mod_id, ask.file_id = (uint32_t)strtoul(key + 3, NULL, 10);
         snprintf(asked_for, sizeof asked_for, "%s", key);
         snprintf(ask.page, sizeof ask.page, "https://gamebanana.com/mods/%u", ask.mod_id);
-        asking = 1;
+        asking = 1, last_info_ns = plat_now_ns();
         info_for(ask.mod_id, ask.file_id);
     }
     if (asking && !ask.ready && !strcmp(job.what, "info") && job.state != COOP_JOB_RUNNING) {
