@@ -131,8 +131,8 @@ Before each calc, `en_copy_precalc`:
   interpolates (Hermite on place, normalised lerp on rotation). With no later state, the newest is held. `put` writes
   the matrix (COOP_FORCE_MATRIX) and the actor's own transforms.
 - **Animation.** `slots_apply` plays the owner's command in each slot by the game's own play request (main+0x4dc628)
-  when it differs, at most 5 times a second per slot. Clocks more than 3 units off are written; smaller errors bend the
-  rate by up to 10 %.
+  when it differs, at once; a command the slot did not take (read back after the play) is asked again 12 frames later
+  at the soonest. Clocks more than 3 units off are written; smaller errors bend the rate by up to 10 %.
 - **Life and death.** `coop_enemy_hit.c en_hit_precalc` (below).
 - **Equipment.** Every 16 frames phase 0 compares what the copy holds with what the owner's enemy holds. After three
   differing looks, a thing the owner does not hold is deleted, and a missing one is made by the game's equipment create

@@ -817,9 +817,12 @@ static void slots_apply(Cpu *c, uint64_t actor, EnCell *m, const EnSlot *want, i
         anim_cmd(s, cmd, sizeof cmd);
         int played = 0;
         if (fnv_str(cmd) != o->cmd || !cmd[0]) {
+            // A command this actor did not take the last time is asked again 5 times a second at most. Only a play that
+            // did not take starts that wait: a command that follows another within 200 ms (Turn, then Attack) plays at
+            // once. When every play was limited, such a copy started its attack 12 frames late, and the clock jump
+            // that caught it up does not move the clip's events, so it armed that much late (facts/enemies.md 5.3).
             const char *nm = name_of(o->cmd);
-            if (!nm || frame - m->slot_try[i] < 12) continue;   // (a command this actor does not take is asked for 5 times a second)
-            m->slot_try[i] = frame;
+            if (!nm || frame - m->slot_try[i] < 12) continue;
             static __thread _Alignas(16) uint8_t req[0x60];
             uint64_t np = (uint64_t)(uintptr_t)nm;
             uint32_t slot = (uint32_t)i;
@@ -830,6 +833,8 @@ static void slots_apply(Cpu *c, uint64_t actor, EnCell *m, const EnSlot *want, i
             coop_guest_call(c, MOD_MAIN_BASE + FN_PLAY, (uint64_t)(uintptr_t)req, 0, 0, 0);
             atomic_fetch_add_explicit(&m->n_play, 1, memory_order_relaxed);
             played = 1;
+            anim_cmd(s, cmd, sizeof cmd);   // (the play changes the slot's command at once: facts/enemies.md 5.1)
+            if (fnv_str(cmd) != o->cmd) m->slot_try[i] = frame;
         }
         int cur = 0;
         uint64_t ctx = anim_ctx(s, &cur);
