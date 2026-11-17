@@ -376,6 +376,13 @@ out on an enemy that runs (so what a copy lacks) is not read, and the list the b
 ([*main+0x395e090]+0x4548) links a component at an offset of its own, not at +0x58. [open: the marks, the gauge's
 battle state and the battle music for an enemy another game runs.]
 
+**B.21 A copy holds its owner's brain verb and battle target all the time** [m] (research R10 4 ii, R15 3 and 4). Not
+only at a take-over (B.6): at each of a copy's pre-calcs, when its verb differs from the stated one it is asked with
+force (main+0xad9844), which runs the game's own procedures for the verb (in battle: the head's look-at at target
+slot 0), and when slot 0 does not name this game's actor of the stated player it is filled (main+0xa70a1c). Measured
+in a camp fight: copies went 2 -> 6 -> 12 with their owner's enemies, slot 0 on the stand-in; tables equal, no leak,
+position and command figures as before. Not seen: the head turning. Slot 8 is left alone (these verbs do not use it).
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is

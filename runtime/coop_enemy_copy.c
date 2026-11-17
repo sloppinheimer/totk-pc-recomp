@@ -878,6 +878,10 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     { void en_pose_copy_precalc(uint64_t actor, EnCell *m); en_pose_copy_precalc(actor, m); }   // (test: coop_enemy_pose.c)
     m->sw_on = 1;
     four_writes(actor, m);
+    // A copy holds its owner's brain verb and battle target all the time, not only when it is taken over (B.21): the verb
+    // asked with force runs the game's own procedures for it (in battle: the head's look-at at target slot 0), and slot
+    // 0 names this game's actor of the player its owner's enemy fights. Only at a change. TOTK_COOP_EN_TEST_SKIP=v: not.
+    if (m->show_verb && !en_test_skip('v')) m->grace_verb = m->show_verb, m->grace_tgt = m->show_tgt, brain_hold(c, actor, m, "a copy");
     if (body && !m->body_static && !en_test_skip('s')) coop_guest_call(c, MOD_MAIN_BASE + FN_MOTION_TYPE, body, 0, 0, 0), m->body_static = 1;
     // What to show: phase 0 wrote it whole under the sequence.
     float pos[3], quat[4];
