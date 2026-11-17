@@ -999,6 +999,28 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             // component puts its own value back every frame (measured: still 0 or 0x200 at phase 0 against its owner's
             // 0x720 in battle). What works them out on an enemy that runs is not read: B.20, open.)
             { void en_fx_precalc(Cpu *c, uint64_t actor, EnCell *m); en_fx_precalc(c, actor, m); }   // coop_enemy_fx.c
+            if (m->show_lk[3]) {   // its owner's model looks, each written with its dirty bit as the game's setters do (B.33)
+                uint64_t g = coop_rd_ptr(en_comps(actor) + 0x280);
+                static const struct { uint16_t off; uint32_t bit; } F[4] = {{0x4c, 0x1000}, {0x54, 0x10000000}, {0x58, 0x100}, {0x5c, 0x20000}};
+                static const struct { uint16_t off; uint32_t bit; } Bt[3] = {{0x9b, 1}, {0x9c, 0x100000}, {0x9e, 0x10000}};
+                uint32_t dirty = 0;
+                for (int k = 0; g && k < 4; k++) {
+                    float v = 0;
+                    if (coop_rd(g + F[k].off, &v, 4) && memcmp(&v, &m->show_look[k], 4)) memcpy((void *)(uintptr_t)(g + F[k].off), &m->show_look[k], 4), dirty |= F[k].bit;
+                }
+                for (int k = 0; g && k < 3; k++) {
+                    uint8_t v = 0;
+                    if (!coop_rd(g + Bt[k].off, &v, 1) || v == m->show_lk[k]) continue;
+                    // (the hidden mask's dirty bit is set only when the mask goes between none and some, as main+0xbb0dd0 does)
+                    if (k || !v != !m->show_lk[k]) dirty |= Bt[k].bit;
+                    memcpy((void *)(uintptr_t)(g + Bt[k].off), &m->show_lk[k], 1);
+                }
+                if (dirty) {
+                    __atomic_fetch_or((uint32_t *)(uintptr_t)(g + 0xac), dirty, __ATOMIC_SEQ_CST);
+                    static _Atomic int said_l;
+                    if (atomic_fetch_add(&said_l, 1) < 60) rt_log("coop: en: look: the copy %llx takes its owner's model looks (dirty %08x: ice %.2f, fade %.2f, hidden mask %02x, enabled %u)", (unsigned long long)actor, dirty, m->show_look[0], m->show_look[3], m->show_lk[0], m->show_lk[1]);
+                }
+            }
             uint8_t want = m->show_hide;
             uint64_t who[1 + EN_EQ_N * 2], eu = coop_rd_ptr(en_comps(actor) + 0x230);
             int nw = 0;
@@ -1132,6 +1154,20 @@ void en_copy_phase0(Cpu *c) {
                 uint8_t vb = (uint8_t)(fl >> 23 & 1);
                 if (hm != s->hide || vb != s->vis) { e->send_burst = 3; rt_log("coop: en: hide: %s %016llx (run here) mask %02x -> %02x, bit %u -> %u, slot 0 plays %08x", e->name, (unsigned long long)e->id.a, s->hide, hm, s->vis, vb, s->nslot ? s->sl[0].cmd : 0); }
                 s->hide = hm, s->vis = vb;
+                // The model controller's other looks (B.33; research R7b, R19): each a field with its own dirty bit in
+                // the word at +0xac, set by nodes of the AI graph that a copy does not run: the ice look's amount
+                // (+0x4c, node OneShotGameModelControllerSetIceEffect), +0x54, the death effect's amount (+0x58), the
+                // fade (+0x5c, the fade-in of an enemy that appears), the hidden mask (+0x9b, SetVisible), the model
+                // enabled (+0x9c, SetOnlyModelVisible), and +0x9e.
+                float lf[4] = {0};
+                uint8_t lb[4] = {0};
+                if (gmc && coop_rd(gmc + 0x4c, &lf[0], 4) && coop_rd(gmc + 0x54, &lf[1], 12) && coop_rd(gmc + 0x9b, &lb[0], 2) && coop_rd(gmc + 0x9e, &lb[2], 1)) lb[3] = 1;
+                if (memcmp(lf, s->look, sizeof lf) || memcmp(lb, s->lk, sizeof lb)) {
+                    e->send_burst = 3;
+                    static _Atomic int said_l;
+                    if (atomic_fetch_add(&said_l, 1) < 60) rt_log("coop: en: look: %s %016llx (run here) ice %.2f, +0x54 %.2f, death %.2f, fade %.2f, hidden mask %02x, enabled %u, +0x9e %u", e->name, (unsigned long long)e->id.a, lf[0], lf[1], lf[2], lf[3], lb[0], lb[1], lb[2]);
+                }
+                memcpy(s->look, lf, sizeof lf), memcpy(s->lk, lb, sizeof lb);
             }
             brain_read(e->actor, &s->verb, &s->tgt);
             {   // One target at a time, no flicker (design 9.4; B.22). The game's own rule can swap between two players at
@@ -1280,7 +1316,7 @@ void en_copy_phase0(Cpu *c) {
         // The owner's enemy began a flinch (a partial ragdoll, by its own player's blow or anything else): the copy's is
         // asked of its own ragdoll component, unless this game's player just struck it and it flinched here already.
         // (no flinch is asked of the copy's own ragdoll component any more: see en_copy_hook, the ragdoll start)
-        m->show_rag = sl->rag, m->show_hide = sl->hide, m->show_mem = sl->mem, m->show_verb = sl->verb, m->show_tgt = sl->tgt, m->show_wx = sl->wx, m->show_binfo = sl->binfo, m->show_blink = sl->blink, m->show_bhave = 1, m->show_gb = sl->gb;
+        m->show_rag = sl->rag, m->show_hide = sl->hide, m->show_mem = sl->mem, m->show_verb = sl->verb, m->show_tgt = sl->tgt, m->show_wx = sl->wx, m->show_binfo = sl->binfo, m->show_blink = sl->blink, m->show_bhave = 1, m->show_gb = sl->gb, memcpy(m->show_look, sl->look, sizeof m->show_look), memcpy(m->show_lk, sl->lk, sizeof m->show_lk);
         m->show_nslot = sl->nslot, m->show_hold = (uint8_t)hold, m->show_teleport = (uint8_t)jump, m->show_hp = sl->hp, m->show_dstate = sl->dstate;
         for (int k = 0; k < sl->nslot; k++) {
             m->show_slot[k] = sl->sl[k];

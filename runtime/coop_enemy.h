@@ -39,7 +39,7 @@ typedef struct {
     struct { float clock, weight; } c[EN_CTRL_N];
 } EnSlot;
 #define EN_EQ_N 8         // equipment slots
-typedef struct { EnSnap s; int32_t hp; uint32_t dstate; uint8_t nslot, rag, hide, vis, mem, verb, tgt, wx; uint32_t eq[EN_EQ_N]; uint32_t att[EN_EQ_N]; uint8_t eqs[EN_EQ_N]; uint32_t binfo, binfo2; uint8_t blink, gb, bpad[2]; EnSlot sl[EN_SLOT_N]; } EnState;   // gb: 0x80 stated, bit 0 its attack is a swift one (B.31);   // eq: the name hash of what each equipment slot holds   // one stated moment of an enemy
+typedef struct { EnSnap s; int32_t hp; uint32_t dstate; uint8_t nslot, rag, hide, vis, mem, verb, tgt, wx; uint32_t eq[EN_EQ_N]; uint32_t att[EN_EQ_N]; uint8_t eqs[EN_EQ_N]; uint32_t binfo, binfo2; uint8_t blink, gb, bpad[2]; float look[4]; uint8_t lk[4]; EnSlot sl[EN_SLOT_N]; } EnState;   // look, lk: its model controller's looks (B.33): floats +0x4c +0x54 +0x58 +0x5c, bytes +0x9b +0x9c +0x9e, lk[3] 1 when stated;   // gb: 0x80 stated, bit 0 its attack is a swift one (B.31);   // eq: the name hash of what each equipment slot holds   // one stated moment of an enemy
 // (hide: the model controller's "not drawn" byte, [comps+0x280]+0x9d; vis: actor+0x444 bit 23)
 
 typedef struct {
@@ -71,6 +71,7 @@ typedef struct {
     uint8_t throw_slot, throw_due; uint64_t throw_x3, throw_x4; uint8_t throw_req[0x30];   // a throw of its owner's enemy to make here (B.14)
     _Atomic uint8_t tgt_back;   // the player (1 + net id) its target slot is to name again: a change too soon after the last (B.22)
     uint8_t show_gb;   // its owner's game-balance bits, as EnState.gb (B.31)
+    float show_look[4]; uint8_t show_lk[4];   // its owner's model looks, as EnState.look and lk (B.33)
     uint32_t show_binfo; uint8_t show_blink, show_bhave;   // its owner's battle-info flags and whether it is in the battle manager's list (B.20)
     uint8_t wx_type, show_wx; uint32_t wx_frame;   // the magic weather its graph last asked for (type + 1) and when; what its owner states
     _Atomic uint8_t out_cls, out_frames;   // how another player took this enemy's blow (1 guarded, 3 at the right moment), to show its own sensor for a few frames (B.27)

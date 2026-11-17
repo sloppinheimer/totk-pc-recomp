@@ -516,6 +516,29 @@ the rule at all: the census's System actors (the army managers, the dragons).
   arena or its scripted fight. What each family's graphs do that a copy does not show is being read from the graphs
   themselves (research R19), not found by fighting each.
 
+**B.33 What a copy does not show, read from the graphs; and the model's looks** (2026-11-17; research R19).
+- Method: every outward-acting node class of every enemy family's AI graphs (578 classes over 95 families, 2,734 graph
+  files; the 11-family census of R9 is reproduced exactly) was read to the game function it ends in and put in a
+  bucket: carried by this sync (22 entry points), local to the game that runs the enemy, or a gap. By node instances
+  in the graphs: 3,868 carried, 2,681 local, 9,748 gaps. About a fifth of the classes were placed by name only (no
+  function at the node's address), most of them boss moves; native modules, sequence data and animation events are not
+  in the count. The tables are outside this repository (they are derived from game data).
+- The gaps by instances: physics on the enemy's own body 3,192 (a copy's body is static and posed from its owner's;
+  each needs a judgement, not all need building); grab, hold, swallow, lift and throw of another actor 929; commands
+  on a held weapon (hide, extinguish, state) 829; messages to other actors 684; game-balance client bits and timers
+  564; shooter state other than prepare and shoot 532; mount and dismount 511; the model's looks 498; an attack or
+  sensor armed by a node 377; blackboard writes 339; the sweep-out table 225; game-wide state 199; chemical
+  generators switched 175; an actor deleted by a node 162; weak-point parts 151; smaller ones (noise, the notice
+  mark, form change, territory, the block construct's own state, swarm state).
+- Built from it: the model controller's looks. [comps+0x280] keeps each look in a field with a dirty bit in the word
+  at +0xac, set by nodes a copy does not run (research R7b): the ice look's amount +0x4c (bit 0x1000), +0x54
+  (0x10000000), the death effect's amount +0x58 (0x100), the fade +0x5c (0x20000), the hidden mask +0x9b (bit 1 when
+  it goes between none and some), the model enabled +0x9c (0x100000), +0x9e (0x10000). STATE carries them (`look`,
+  `lk`) and the copy's are written with their dirty bits before its calc. [m] a skeleton spawned by the test, copy
+  bound, same command 97.1 %, no crash, the values stated; none of the looks was seen to change in a run.
+- [open] the buried skeleton of B.31 is not explained by these: one spawned by the test plays a clip at once and
+  has every look at its default. The buried state belongs to the game's own spawner's skeleton and is not read.
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is
