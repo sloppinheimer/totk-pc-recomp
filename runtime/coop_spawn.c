@@ -906,12 +906,12 @@ int coop_hook(Cpu *c, uint64_t addr) {
         int coop_life_veto(Cpu *c);
         return coop_life_veto(c);
     }
-    if (COOP_HOOKED_EN(addr)) {   // the enemy sync's hooks (coop_enemy_probe.c); the node tick among them is hot
+    if (COOP_HOOKED_EN(addr)) {   // the enemy sync's hooks (coop_enemy_hooks.c); the node tick among them is hot
         int coop_enemy_hook(Cpu *c, uint64_t off);
         return coop_enemy_hook(c, addr - MOD_MAIN_BASE);
     }
     if (COOP_HOOKED_EL(addr)) { int coop_elem_hook(Cpu *c, uint64_t off); return coop_elem_hook(c, addr - MOD_MAIN_BASE); }   // the element sync (coop_elem.c)
-    if (addr == MOD_MAIN_BASE + 0x41bb20 || addr == MOD_MAIN_BASE + 0x50ad74) {   // the actor's calc and the action request: seen by the enemy probe first
+    if (addr == MOD_MAIN_BASE + 0x41bb20 || addr == MOD_MAIN_BASE + 0x50ad74) {   // the actor's calc and the action request: seen by the enemy sync first (coop_enemy_hooks.c)
         int coop_enemy_shared(Cpu *c, uint64_t off);
         if (coop_enemy_shared(c, addr - MOD_MAIN_BASE)) return 1;
     }
