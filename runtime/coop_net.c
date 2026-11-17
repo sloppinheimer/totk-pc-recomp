@@ -293,6 +293,7 @@ static void net_thread(void *arg) {
                 if (other < 1 || other > COOP_MAX_PLAYERS) continue;
                 seated |= 1u << other;
                 plat_mutex_lock(&lock);
+            if (net_gen != gen) { plat_mutex_unlock(&lock); break; }   // (a left session's thread writes nothing)
                 memcpy(others[other].name, buf + off + 1, 16);
                 coop_name_clean(others[other].name, 16);
                 plat_mutex_unlock(&lock);
@@ -300,6 +301,7 @@ static void net_thread(void *arg) {
             // A player the relay no longer seats has left, though its LEAVE (sent once) was lost: it stayed here, a
             // frozen stand-in and a name, for the rest of the session (code review, 2026-11-17).
             plat_mutex_lock(&lock);
+            if (net_gen != gen) { plat_mutex_unlock(&lock); break; }   // (a left session's thread writes nothing)
             for (int i = 1; i <= COOP_MAX_PLAYERS; i++)
                 if (i != id && others[i].live && !(seated >> i & 1)) rt_log("coop net: player %d is no longer seated: gone", i), set_live(i, 0);
             plat_mutex_unlock(&lock);
@@ -312,7 +314,7 @@ static void net_thread(void *arg) {
                 continue;
             }
             plat_mutex_lock(&lock);
-            if (net_gen != gen) { plat_mutex_unlock(&lock); break; }   // (checked under the lock coop_net_leave takes: a left session's thread writes nothing)
+            if (net_gen != gen) { plat_mutex_unlock(&lock); break; }   // (a left session's thread writes nothing)
             if (!others[id].live) rt_log("coop net: player %d is here", id);
             others[id].st = in;
             others[id].at_ns = plat_now_ns();
@@ -320,20 +322,24 @@ static void net_thread(void *arg) {
             plat_mutex_unlock(&lock);
         } else if (kind == POSE && id >= 1 && id <= COOP_MAX_PLAYERS && n - HEADER <= COOP_POSE_MAX) {
             plat_mutex_lock(&lock);
+            if (net_gen != gen) { plat_mutex_unlock(&lock); break; }   // (a left session's thread writes nothing)
             memcpy(pose_in[id].d, buf + HEADER, n - HEADER), pose_in[id].len = n - HEADER, pose_in[id].at_ns = plat_now_ns();
             plat_mutex_unlock(&lock);
         } else if (kind == OBJS && id >= 1 && id <= COOP_MAX_PLAYERS && n - HEADER <= COOP_OBJS_PACKET_MAX) {
             plat_mutex_lock(&lock);
+            if (net_gen != gen) { plat_mutex_unlock(&lock); break; }   // (a left session's thread writes nothing)
             if (objs_in_n < OBJQ) memcpy(objs_in[objs_in_n].d, buf + HEADER, n - HEADER), objs_in[objs_in_n].len = n - HEADER,
                                   objs_in[objs_in_n].from = id, objs_in_n++;
             plat_mutex_unlock(&lock);
         } else if (kind == HIT && id >= 1 && id <= COOP_MAX_PLAYERS && n - HEADER <= COOP_HIT_MAX) {
             plat_mutex_lock(&lock);
+            if (net_gen != gen) { plat_mutex_unlock(&lock); break; }   // (a left session's thread writes nothing)
             if (hit_in_n < HITQ) memcpy(hit_in[hit_in_n].d, buf + HEADER, n - HEADER), hit_in[hit_in_n].len = n - HEADER,
                                  hit_in[hit_in_n].from = id, hit_in_n++;
             plat_mutex_unlock(&lock);
         } else if (kind == CTR && id >= 1 && id <= COOP_MAX_PLAYERS && n > HEADER && n - HEADER <= COOP_CTR_MAX) {
             plat_mutex_lock(&lock);
+            if (net_gen != gen) { plat_mutex_unlock(&lock); break; }   // (a left session's thread writes nothing)
             if (ctr_in_n < COOP_CTR_QUEUE) {
                 int at = (ctr_in_head + ctr_in_n++) % COOP_CTR_QUEUE;
                 memcpy(ctr_in[at].d, buf + HEADER, n - HEADER), ctr_in[at].len = n - HEADER, ctr_in[at].peer = id;
@@ -342,6 +348,7 @@ static void net_thread(void *arg) {
             plat_mutex_unlock(&lock);
         } else if (kind == LEAVE && id >= 1 && id <= COOP_MAX_PLAYERS) {
             plat_mutex_lock(&lock);
+            if (net_gen != gen) { plat_mutex_unlock(&lock); break; }   // (a left session's thread writes nothing)
             if (others[id].live) rt_log("coop net: player %d left", id);
             set_live(id, 0);
             plat_mutex_unlock(&lock);

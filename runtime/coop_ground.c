@@ -283,10 +283,17 @@ void ground_tick(Cpu *c, uint64_t me) {
 }
 void ground_take(const GroundPacket *p, int n, int from) {
     if (n != (int)(offsetof(GroundPacket, g) + p->n * sizeof p->g[0]) || p->n > GR_MAX) return;
-    {   // only from the host, the lowest player id here (any player's packets were taken; code review, 2026-11-17)
-        int host = coop_net_id();
-        for (int i = 1; i <= COOP_MAX_PLAYERS; i++) if (coop_net_live(i) && (!host || i < host)) host = i;
-        if (from != host || from == coop_net_id()) return;
+    {   // Only from the host: the lowest player id here, or a lower id than this game's while the lowest sends none
+        // (a game takes the host's role when the lower ones' states are stale, coop_players.c world_role). Any player's
+        // packets were taken (code review, 2026-11-17).
+        static uint64_t heard[COOP_MAX_PLAYERS + 1];
+        int me = coop_net_id(), low = me;
+        uint64_t t = plat_now_ns();
+        for (int i = 1; i <= COOP_MAX_PLAYERS; i++) if (coop_net_live(i) && (!low || i < low)) low = i;
+        if (from < 1 || from > COOP_MAX_PLAYERS || from == me) return;
+        int ok = from == low || (me && from < me && (low < 1 || low > COOP_MAX_PLAYERS || t - heard[low] > 2000000000ull));
+        heard[from] = t;
+        if (!ok) return;
     }
     uint64_t now = plat_now_ns();
     for (uint32_t k = 0; k < p->n; k++) {
