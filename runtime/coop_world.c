@@ -171,12 +171,9 @@ static uint32_t place_key(uint64_t a, const char *name) {
     for (int b = 0; b < 8; b++) h = (h ^ (uint8_t)(ph >> (8 * b))) * 16777619u;
     return h ? h : 1;
 }
-// An actor's key: its placement's (place_key), else its name and home (enemy_key). TOTK_COOP_PLACE_KEY=0: the name
-// and home always (the old way).
+// An actor's key: its placement's (place_key), else its name and home (enemy_key).
 static uint32_t actor_key(uint64_t a, const char *name, const float home[3]) {
-    static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_PLACE_KEY"); on = !(e && *e == '0'); }
-    uint32_t k = on ? place_key(a, name) : 0;
+    uint32_t k = place_key(a, name);
     return k ? k : enemy_key(name, home);
 }
 uint32_t coop_world_actor_key(uint64_t a, const char *name, const float home[3]) { return actor_key(a, name, home); }   // (for the files split out of this one)

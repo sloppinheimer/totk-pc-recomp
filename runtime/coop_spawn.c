@@ -1223,45 +1223,14 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // (its fall killed it here too) (2026-11-04). The life is lifted for the call and put back (healing kept).
     // TOTK_COOP_TEST_LIFE_KEEP: the damage is applied as before (a control for tests).
     if (addr == MOD_MAIN_BASE + 0x4400b0 && coop_is_coop_life(c->x[0])) {
-        static __thread int in;
+        // A co-op Link's life update does not run at all: any change it made to the life showed on this game's hearts
+        // as a fill (the tester's capture and session, 2026-11-06); its life is its owner's, set from the owner's
+        // reports. (TOTK_COOP_TEST_LIFE_KEEP: it runs.)
         static int keep = -1;
         if (keep < 0) keep = cfg_get("TOTK_COOP_TEST_LIFE_KEEP") != NULL;
         uint64_t p = rd_ptr(c->x[0] + 0x1830);
         uint32_t before = 0;
-        if (in || keep || !p || !rd(p + 8, &before, 4)) return 0;
-        // Its life update does not run at all (TOTK_COOP_LIFT=lift or none: as before, below). Any change it made to
-        // the life, the lift's clamp to most life or a quarter heart, showed on this game's hearts as a fill (the tester's
-        // capture and session, 2026-11-06); its life is its owner's, set from the owner's reports.
-        static int run_it = -1;
-        if (run_it < 0) { const char *e = cfg_get("TOTK_COOP_LIFT"); run_it = e && (!strcmp(e, "lift") || !strcmp(e, "none")); }
-        if (!run_it) return 1;
-        // TOTK_COOP_LIFT=none: the update runs on the life as it is, and a drop is put back after (a lethal hit inside
-        // one update can then kill it here). Lifted (the default), this game's hearts filled and emptied at each of
-        // its updates (each of its owner's swings): tried to tell which.
-        static int nolift = -1;
-        if (nolift < 0) { const char *e = cfg_get("TOTK_COOP_LIFT"); nolift = e && !strcmp(e, "none"); }
-        if (!nolift) ST32(p + 8, 0x3fffffffu);
-        in = 1, in_coop_life = 1;
-        c->pc = addr;
-        rt_dispatch(c);
-        in = 0, in_coop_life = 0;
-        uint32_t after = LD32(p + 8);
-        if (after < 0x3fffffffu && after > 0x3fff0000u) {   // damage taken off the lifted value (not the clamp to max)
-            static _Atomic int said;
-            if (atomic_fetch_add(&said, 1) < 8) rt_log("coop: a co-op Link's damage %u not taken here", 0x3fffffffu - after);
-        }
-        // Put back: life lifted for the call and taken off it is not taken; healed above it, the heal is kept; any
-        // other value (the clamp of the lifted value to most life, every update) is the lift's, not the game's, and is
-        // put back. (Keeping a value set outright, unless it was the most life, kept the clamp: the most life could not
-        // be read in here, and the proxy went to full life in each update it ran; the sync audit, 2026-11-06.)
-        if (nolift) ST32(p + 8, after < before ? before : after);
-        else ST32(p + 8, after > 0x3fffffffu ? before + (after - 0x3fffffffu) : before);
-        static int lifelog = -1;   // TOTK_COOP_TEST_LIFELOG: each co-op Link life update that changed the lifted value
-        if (lifelog < 0) lifelog = cfg_get("TOTK_COOP_TEST_LIFELOG") != NULL;
-        static _Atomic int said_lu;
-        if (lifelog && after != 0x3fffffffu && atomic_fetch_add(&said_lu, 1) < 40)
-            rt_log("coop: test: a co-op Link's life update: %u before, %#x after", before, after);
-        return 1;
+        return !keep && p && rd(p + 8, &before, 4);
     }
     // main+0x207ea50 (instant tips manager, tip id) queues an instant tip ("To shield surf...") and records the action
     // (main+0x207eba0). A co-op Link's actions call it from its calc; its own game shows the tip (2026-11-04).

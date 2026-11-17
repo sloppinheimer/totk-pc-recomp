@@ -1,5 +1,4 @@
-// A blow's contacts: a player's blow on an enemy another game runs is sent to that game, which adds it to its enemy's
-// hit update; a stand-in takes no hits; the contact kept for a Zonai device's hit test. Moved out of coop_world.c as
+// A blow's contacts: a stand-in takes no hits, an enemy copy keeps only this game's player's blows; the contact kept for a Zonai device's hit test. Moved out of coop_world.c as
 // it was (docs/coop/enemy-sync-spec.md B.28); the packets come in through that file's reader of the HIT channel.
 #include <math.h>
 #include <stddef.h>
@@ -111,147 +110,7 @@ static int ct_is_link(uint64_t a) {
     for (int i = 0; i < n; i++) if (co[i] == a) return 2;
     return 0;
 }
-// ---- contacts sent to the enemy's owner. TotK Online records, in the game whose Link
-// made it, a contact with an actor another game owns, takes it out there and puts it into the owner's game, where the
-// game builds the hit from it (read for behaviour only). The PlayerPuppet's swing in the owner's game makes no hit
-// of its own (its attack byte on, no contact came: pair test, 2026-11-07), so this Link's sword contact on a copy goes
-// to the copy's owner ("CE" packets: the enemy's key, the body's place from the enemy's main body), whose game adds
-// it to that enemy's waiting contacts with the handles made the stand-in's (attacker) and its weapon's.
-// An arrow's contact (the owner's game adds it with the stand-in's bow as the weapon): like a sword's, so the enemy
-// plays its hit there. Kept on the copy, an arrow only took life off the copy, sent on as lost life, which played no
-// hit: a Stalkoblin never fell apart and its life came back.
-// The contacts sent go in a packet of each hit update's own (hit updates run on several threads at once). Each one
-// received waits in a slot of ce_in, under ce_lock (taken on the game thread, added on a hit update's), until its
-// enemy's next hit update, or CE_WAIT_NS: an enemy that died or went to sleep has no hit update. With one slot for
-// every enemy, a packet that came while one waited was dropped unlogged: a Stalkoblin shot ten times took none of the
-// arrows. CE_SLOTS wait at once; a packet with none free is logged.
-#define CE_WAIT_NS 1000000000ull
-#define CE_SLOTS 16
-static PlatMutex ce_lock = PLAT_MUTEX_INIT;
-typedef struct { _Atomic int n; int fresh; uint64_t dc, by, weap, by_actor, at_ns; uint32_t brel[CONTACT_MAX]; _Alignas(16) uint8_t e[CONTACT_MAX][CONTACT_SZ]; } CeSlot;
-static CeSlot ce_in[CE_SLOTS];
-static _Atomic int ce_waiting;   // slots in use (ce_add looks only when some are)
-static __thread uint32_t tl_ce_attack;   // the attack id of the contact being queued (the enemy sync sends one blow once)
-static int ce_owner_of(uint64_t a, uint32_t *key) {
-    int coop_enemy_contact_route(uint64_t actor, uint32_t *key, uint32_t attack_id);   // coop_enemy.c: who runs it; below 0, not sent
-    int o = coop_enemy_new() ? coop_enemy_contact_route(a, key, tl_ce_attack) : 0;
-    return o < 0 ? 0 : o;
-}
-static void ce_queue(ContactPacket *out, uint64_t a, uint64_t e, uint32_t kind) {   // out: this hit update's, of kind
-    uint32_t key = 0;
-    int owner = ce_owner_of(a, &key);
-    if (!owner || !key || out->n >= CONTACT_MAX) return;
-    if (!out->n) out->key = key, out->to = (uint32_t)owner, out->kind = kind;
-    if (!coop_rd(e, out->e[out->n], CONTACT_SZ)) return;
-    uint64_t body, mb0 = enemy_body(a);
-    memcpy(&body, out->e[out->n] + 0x58, 8);
-    out->brel[out->n] = body && mb0 && body >= mb0 && body - mb0 < 0x20000 ? (uint32_t)(body - mb0) + 1 : 0;
-    out->n++;
-}
-static void ce_flush(const ContactPacket *out) {
-    if (!out->n) return;
-    coop_net_hit_send(out, (int)(offsetof(ContactPacket, e) + out->n * CONTACT_SZ));
-    static _Atomic int said;
-    if (atomic_fetch_add(&said, 1) < 20)
-        rt_log("coop: contact: %u of this Link's %s on the copy of %08x sent to player %u", out->n, out->kind == ECONTACT_ARROW ? "arrows" : "sword", out->key, out->to);
-}
-uint64_t coop_eq_row_ref(uint64_t actor, int row);   // coop_players.c
-// A CE packet from player `from` (the hit update of its enemy adds it: ce_add).
-void coop_contact_take(const ContactPacket *cp, int from) {
-    uint64_t now = plat_now_ns();
-    if (!cp->n || cp->n > CONTACT_MAX || !coop_enemy_new()) return;
-    uint64_t a = 0, co[COOP_MAX_PLAYERS];
-    int fresh = 0;
-    { uint64_t coop_enemy_contact_actor(uint32_t key, int from); a = coop_enemy_contact_actor(cp->key, from), fresh = a != 0; }   // coop_enemy.c
-    int ids[COOP_MAX_PLAYERS], nc = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
-    uint64_t by = 0;
-    for (int i = 0; i < nc; i++) if (ids[i] == from) by = co[i];
-    uint64_t dc = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x2f8) : 0;
-    if (!dc || !by) { rt_log("coop: contact from player %d on %08x: %s", from, cp->key, !dc ? "no such enemy here" : "no stand-in of theirs"); return; }
-    uint64_t coop_eq_bow_ref(uint64_t actor);   // coop_players.c
-    uint64_t by_ref = coop_actor_ref(by), weap = cp->kind == ECONTACT_ARROW ? coop_eq_bow_ref(by) : coop_eq_row_ref(by, 0);
-    plat_mutex_lock(&ce_lock);
-    CeSlot *sl = NULL;
-    for (int i = 0; i < CE_SLOTS && !sl; i++) {
-        CeSlot *t = &ce_in[i];
-        if (atomic_load(&t->n) && now - t->at_ns >= CE_WAIT_NS) {   // waited too long: its enemy has no hit update
-            atomic_store(&t->n, 0), atomic_fetch_sub(&ce_waiting, 1);
-            static int said_x;
-            if (said_x++ < 10) rt_log("coop: contact from a stand-in dropped: its enemy ran no hit update in 1 s");
-        }
-        if (!atomic_load(&t->n)) sl = t;
-    }
-    if (sl) {
-        memcpy(sl->e, cp->e, cp->n * CONTACT_SZ), memcpy(sl->brel, cp->brel, sizeof sl->brel);
-        // (the enemy sync's: both handles name the stand-in itself. The game takes the knock-back's direction from
-        // the live place of the actor behind the first handle, in all three axes: the stand-in's weapon object does
-        // not stand at the stand-in's hand in this game, and the struck enemy flew into the sky; research R14.)
-        sl->dc = dc, sl->by = by_ref, sl->weap = fresh ? by_ref : weap, sl->by_actor = by, sl->fresh = fresh, sl->at_ns = now;
-        atomic_store(&sl->n, (int)cp->n), atomic_fetch_add(&ce_waiting, 1);
-    }
-    plat_mutex_unlock(&ce_lock);
-    if (!sl) {
-        static int said_f;
-        if (said_f++ < 10) rt_log("coop: contact from player %d on %08x dropped: %d already wait", from, cp->key, CE_SLOTS);
-    }
-}
 uint32_t coop_sess_frame_no(void);   // coop_sess.c
-static __thread uint64_t ce_added_dc;      // the damage component this thread's hit update added sent contacts to,
-static __thread uint32_t ce_added_frame;   // in which frame,
-static __thread int ce_added_first;        // and from which entry on: those are the other player's blows and stay
-static void ce_add_one(uint64_t dc, CeSlot *sl);
-static void ce_add(uint64_t dc) {   // every packet waiting for this enemy, in this hit update
-    if (!atomic_load(&ce_waiting)) return;
-    for (int i = 0; i < CE_SLOTS; i++)
-        if (atomic_load(&ce_in[i].n) && ce_in[i].dc == dc) ce_add_one(dc, &ce_in[i]);
-}
-static void ce_add_one(uint64_t dc, CeSlot *sl) {
-    uint8_t ein[CONTACT_MAX][CONTACT_SZ];
-    uint32_t brel[CONTACT_MAX];
-    uint64_t by, weap, by_actor;
-    int fresh;
-    plat_mutex_lock(&ce_lock);
-    int n = atomic_load(&sl->n);
-    if (!n || dc != sl->dc) { plat_mutex_unlock(&ce_lock); return; }
-    memcpy(ein, sl->e, (size_t)n * CONTACT_SZ), memcpy(brel, sl->brel, sizeof brel);
-    by = sl->by, weap = sl->weap, by_actor = sl->by_actor, fresh = sl->fresh;
-    atomic_store(&sl->n, 0), atomic_fetch_sub(&ce_waiting, 1);
-    plat_mutex_unlock(&ce_lock);
-    uint64_t a = coop_rd_ptr(dc + 0x198), l = contact_list(dc), base;
-    int32_t cnt = 0, cap = 0;
-    if (!l || !coop_rd(l + 0x18, &cnt, 4) || !coop_rd(l + 8, &cap, 4) || !(base = coop_rd_ptr(l + 0x10)) || cnt < 0) return;
-    int added = 0;
-    for (int k = 0; k < n && cnt < cap; k++, cnt++, added++) {
-        uint8_t *e = ein[k];
-        uint64_t refs[2] = {weap ? weap : by, by};
-        for (int hk = 0; hk < 2; hk++) {
-            uint32_t ser = 0xffffffffu;
-            if (refs[hk]) coop_rd(refs[hk] + 0x48, &ser, 4);
-            memcpy(e + (hk ? 0x80 : 0x68), &refs[hk], 8), memcpy(e + (hk ? 0x88 : 0x70), &ser, 4);
-        }
-        uint64_t mb = enemy_body(a), body = brel[k] && mb ? mb + brel[k] - 1 : mb;
-        memcpy(e + 0x58, &body, 8);
-        if (fresh) {   // what else of the entry is the sending game's own (R14 section 4)
-            float sp[3] = {0};
-            uint32_t id;
-            memset(e + 0x18, 0, 0x20);                                   // the two contact-side copies with their pointers
-            memset(e + 0x1a4, 0, 8);                                     // the stealth id
-            memcpy(&id, e + 0x38, 4), id |= 0x40000000u, memcpy(e + 0x38, &id, 4);   // (the attack id, out of this game's own ids' way)
-            if (by_actor && coop_rd(by_actor + COOP_ACTOR_POS, sp, 12)) memcpy(e + 0xb0, sp, 12);   // the attacker's place: the stand-in's here
-            e[0x94] |= 1;                                                // (the first handle is the attacker itself)
-        }
-        memcpy((void *)(uintptr_t)(base + (uint64_t)cnt * CONTACT_SZ), e, CONTACT_SZ);
-    }
-    memcpy((void *)(uintptr_t)(l + 0x18), &cnt, 4);
-    if (added) {
-        uint32_t fr = coop_sess_frame_no();
-        if (ce_added_dc != dc || ce_added_frame != fr) ce_added_first = cnt - added;
-        ce_added_dc = dc, ce_added_frame = fr;
-    }
-    char nm[48];
-    static int said;
-    if (said++ < 20) rt_log("coop: contact: %d from a stand-in added to %s (weapon %s)", added, coop_actor_name(a, nm, sizeof nm), weap ? "its own" : "none");
-}
 static void contacts_filter(uint64_t dc) {
     static int on = -1;
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_CONTACT_FILTER"); on = !(e && *e == '0'); }
@@ -300,20 +159,9 @@ static void contacts_filter(uint64_t dc) {
             int coop_enemy_role(uint64_t actor), coop_enemy_shot_mirror(uint64_t proj);
             uint64_t coop_enemy_holder(uint64_t actor);
             int keep = 0, victim_copy = coop_enemy_role(a) == 2;
-            ContactPacket ce_new, ce_new_arrows;
-            memset(&ce_new, 0, offsetof(ContactPacket, e)), memset(&ce_new_arrows, 0, offsetof(ContactPacket, e));
             for (int k = 0; k < cnt; k++) {
                 uint64_t e = base + (uint64_t)k * CONTACT_SZ, r1 = coop_rd_ptr(e + 0x68), r2 = coop_rd_ptr(e + 0x80), by = r2 ? coop_rd_ptr(r2 + 0x40) : 0, w = r1 ? coop_rd_ptr(r1 + 0x40) : 0;
-                if (ct_is_link(by) == 2 && !(ce_added_frame == coop_sess_frame_no() && ce_added_dc == dc && k >= ce_added_first)) continue;
-                if (victim_copy && ct_is_link(by) == 1) {   // this player's blow on a copy: to its owner whole, and kept here
-                    char wn2[48] = "";
-                    if (w) coop_actor_name(w, wn2, sizeof wn2);
-                    size_t wl2 = strlen(wn2);
-                    int arrow2 = wl2 >= 5 && !strcmp(wn2 + wl2 - 5, "Arrow");
-                    tl_ce_attack = 0, coop_rd(e + 0x38, &tl_ce_attack, 4);
-                    ce_queue(arrow2 ? &ce_new_arrows : &ce_new, a, e, arrow2 ? ECONTACT_ARROW : ECONTACT_KIND);
-                    tl_ce_attack = 0;
-                }
+                if (ct_is_link(by) == 2) continue;
                 if (victim_copy && ((by && by != a && (coop_enemy_role(by) || coop_enemy_holder(by))) || (w && (coop_enemy_holder(w) || coop_enemy_shot_mirror(w))))) {
                     static _Atomic int said_e;
                     char an[48], bn[48], wn[48];
@@ -334,15 +182,13 @@ static void contacts_filter(uint64_t dc) {
                 keep++;
             }
             if (keep != cnt) memcpy((void *)(uintptr_t)(l + 0x18), &keep, 4);
-            ce_flush(&ce_new), ce_flush(&ce_new_arrows);
             return;
         }
     }
 }
 // ---- a hit's contact replayed on a Zonai device (research, TOTK_COOP_TEST_DEVHIT). dev_contact keeps the first contact
 // a hit leaves on a device's damage component (its waiting list, as for an enemy) and, once coop_dev_hit names another
-// device, copies it onto that one's list at its next hit update, on the body the real hit landed on, as ce_add_one
-// puts a stand-in's contact on an enemy. The device runs the hit reaction (main+0x1b914e8) but does not turn on: see
+// device, copies it onto that one's list at its next hit update, on the body the real hit landed on. The device runs the hit reaction (main+0x1b914e8) but does not turn on: see
 // docs/coop/re-notes.md "Device state on the copies".
 static _Alignas(16) uint8_t dev_tpl[CONTACT_SZ];
 static _Atomic int dev_tpl_ok;
@@ -398,7 +244,6 @@ int coop_dev_hit(uint64_t device) {   // 1: a contact is kept; 0: none yet (put 
 void coop_hit_update(Cpu *c) {
     dev_contact(c->x[0]);
     contacts_test(c->x[0]);
-    ce_add(c->x[0]);
     contacts_filter(c->x[0]);
 }
 // Test (TOTK_COOP_TEST_HITWATCH=<from>-<to>[@<off>]): from that many seconds into the world to the other, a write

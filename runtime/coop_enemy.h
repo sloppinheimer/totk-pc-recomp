@@ -79,10 +79,7 @@ typedef struct {
     float show_look[4]; uint8_t show_lk[4];   // its owner's model looks, as EnState.look and lk (B.33)
     uint32_t show_binfo; uint8_t show_blink, show_bhave;   // its owner's battle-info flags and whether it is in the battle manager's list (B.20)
     uint8_t wx_type, show_wx; uint32_t wx_frame;   // the magic weather its graph last asked for (type + 1) and when; what its owner states
-    _Atomic uint8_t out_cls, out_frames;   // how another player took this enemy's blow (1 guarded, 3 at the right moment), to show its own sensor for a few frames (B.27)
     uint32_t out_id;      // the attack id of the copy's blow whose outcome on this game's Link was last told to its owner
-    uint32_t fwd_id;      // the attack id of the contact last sent whole (one blow is sent once)
-    uint32_t fwd_frame;   // the frame this game's player's contact on the copy was last sent whole to its owner (its lost life is then not sent as points too)
     uint8_t grace_verb, grace_tgt; uint32_t grace_frame, hold_frame, brain_log_frame;   // a taken-over enemy's brain is held at its owner's verb and target until this frame (B.6)
     // Hits and death (coop_enemy_hit.c).
     _Atomic int32_t hit_dmg;          // life this game's hits took from the copy since phase 0 last looked
