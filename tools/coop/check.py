@@ -29,7 +29,16 @@ Every frame, for actors within 40 m of a Link, the copy against its owner (the g
   command     the share of the copy's frames playing the owner's command (first slot) at that delay
   phase       how far the copy's clock of that command is from the owner's, in seconds (each command's clock rate
               and loop length are taken from the owner's own frames)
+  armed       attacks armed (main+0x1bf20cc, by the clip or an AI node): of the owner's armed moments, the share the
+              copy had one within 50 ms; of the copy's armed frames, the share the owner had none
 The owner is taken per second, so an enemy handed over is compared the right way round on each side of the change.
+
+Events, each game's own, matched with the other game's within 0.3 s before to 0.8 s after:
+  effects     effects and sounds an enemy starts by key (ELink main+0xa98cf8, SLink main+0xa98d00): of the owner's, the
+              share the copy's game made too (while it showed the enemy near a Link), and the copy's the owner had not
+  blows       blows between an enemy and a Link, from the contacts the game builds hits from: each in both games (in
+              the owner's game on the other player's stand-in, in that player's on their Link), with the same outcome
+              (hit, guarded, avoided)
 
 A planted desync (TOTK_COOP_TEST_NUDGE, in either game's log) must show as "pos" on its enemy during its window;
 --expect-nudge (run_pair.ps1 -Nudge) fails the run when no game logged one.
@@ -46,16 +55,18 @@ import re
 import sys
 from collections import defaultdict
 
-TARGET = dict(lag_ms=200, err_p95=0.3, stutter=1.5, cmd_share=0.95, phase_p95=0.1)
+TARGET = dict(lag_ms=200, err_p95=0.3, stutter=1.5, cmd_share=0.95, phase_p95=0.1, arm_found=0.95, arm_extra=0.05,
+              fx_found=0.95, fx_extra=0.05)
+MATCH_S = 0.8   # an event of the other game counts as the same one when it comes this long after (or 0.3 s before)
 MISS_NEAR = 60.0
 SETTLE = 10.0
 
 
 def load(d):
     path = os.path.join(d, 'logs', 'check.jsonl')
-    snaps, frames, bad = [], [], 0
+    snaps, frames, events, bad, lost = [], [], [], 0, 0
     if not os.path.exists(path):
-        return snaps, frames, path, 0
+        return snaps, frames, path, 0, events, 0
     with open(path, encoding='utf-8', errors='replace') as f:
         lines = f.readlines()
     for k, line in enumerate(lines):
@@ -64,8 +75,16 @@ def load(d):
         except json.JSONDecodeError:
             bad += k != len(lines) - 1   # (the last one may be cut short when the game was closed)
             continue
-        (snaps if r.get('k') == 's' else frames).append(r)
-    return snaps, frames, path, bad
+        kind = r.get('k')
+        if kind == 's':
+            snaps.append(r)
+        elif kind == 'f':
+            frames.append(r)
+        elif kind == 'e':
+            events.append(r)
+        elif kind == 'lost':
+            lost = r['n']
+    return snaps, frames, path, bad, events, lost
 
 
 def log_lines(d):
@@ -191,7 +210,7 @@ def series(frames):
     out = defaultdict(list)   # id -> [(t, pos, quat, cmd, clock)]
     for r in frames:
         for a in r['a']:
-            out[a[0]].append((r['t'], a[1:4], a[4:8], a[8], a[9]))
+            out[a[0]].append((r['t'], a[1:4], a[4:8], a[8], a[9], a[10] if len(a) > 10 else None))
     return out
 
 
@@ -252,6 +271,24 @@ def motion(own, cop, skip):
                 phase.append((r[3], r[4] - o[2]))
     res.update(err_p50=pct(errs, 0.5), err_p95=pct(errs, 0.95), err_max=max(errs) if errs else float('nan'),
                cmd_share=same / both if both else None)
+    # attacks armed: of the copy's frames whose moment the owner had an attack armed (at the lag), the share where the
+    # copy had one within 50 ms; of the copy's armed frames, the share the owner had none within 50 ms of
+    if cop[0][5] is not None and own[0][5] is not None:
+        cts = [r[0] for r in cop]
+
+        def armed_near(ser, tss, t):
+            j0, j1 = bisect.bisect_left(tss, t - 0.05), bisect.bisect_right(tss, t + 0.05)
+            return any(ser[j][5] for j in range(j0, j1))
+        need = found = carmed = extra = 0
+        for r in cop:
+            j = bisect.bisect_right(ts, r[0] - lag)
+            if 0 < j < len(ts) and own[j - 1][5]:
+                need += 1
+                found += armed_near(cop, cts, r[0])
+            if r[5]:
+                carmed += 1
+                extra += not armed_near(own, ts, r[0] - lag)
+        res.update(arm_need=need, arm_found=found / need if need else None, arm_extra=extra / carmed if carmed else None)
     rates, top = defaultdict(list), defaultdict(float)   # per command: the owner's clock per second, its highest clock
     for k in range(1, len(own)):
         dt = own[k][0] - own[k - 1][0]
@@ -290,8 +327,11 @@ def main():
     if len(args) != 2:
         print(__doc__)
         return 2
-    (SA, FA, pa, bada), (SB, FB, pb, badb) = load(args[0]), load(args[1])
+    (SA, FA, pa, bada, EA, losta), (SB, FB, pb, badb, EB, lostb) = load(args[0]), load(args[1])
     fail = []
+    for p, n in ((pa, losta), (pb, lostb)):
+        if n:
+            fail.append(f'{n} events of {p} were lost (the ring was full): the event lists are not whole')
     for p, nb in ((pa, bada), (pb, badb)):
         if nb:
             fail.append(f'{nb} lines of {p} could not be read (a number written as nan or inf?)')
@@ -381,6 +421,7 @@ def main():
             report_motion(i, who, r, names, fail)
     if not measured:
         print('  no enemy within 40 m was run by one game and shown by the other')
+    compare_events(EA, EB, owner, ser, names, fail)
 
     def planted(key):   # the planted desync's own "pos", inside its window
         kind, i = key
@@ -390,8 +431,8 @@ def main():
     if counted:
         fail.append(f'{len(counted)} differences held two seconds' + (' (the planted one aside)' if nudges else ''))
     print()
-    print('Not checked here: hits and who struck, drops, throws, shots, effects and sounds, what a player sees on screen'
-          ' (the pictures are for that).')
+    print('Not checked here: effects and sounds not started by key (a clip\'s own), blows between two enemies or two'
+          ' Links, drops, throws, shots, what a player sees on screen (the pictures are for that).')
     if fail:
         print('FAIL:')
         for f_ in fail:
@@ -402,6 +443,109 @@ def main():
         return 2
     print('PASS')
     return 0
+
+
+def compare_events(EA, EB, owner, ser, names, fail):
+    """effects and sounds by key: the owner's against the copy's game; blows between an enemy and a Link: each in both"""
+    E = [EA, EB]
+    shown = [{i: [r[0] for r in s] for i, s in ser[g].items()} for g in (0, 1)]
+
+    def near(g, i, t):   # the game shows that enemy within 40 m about then
+        tss = shown[g].get(i)
+        if not tss:
+            return False
+        j = bisect.bisect_left(tss, t - 0.5)
+        return j < len(tss) and tss[j] <= t + 0.5
+
+    def take(pool, t, test):   # the first unused event of the pool at t - 0.3 .. t + MATCH_S that passes test
+        for e in pool:
+            if not e.get('used') and t - 0.3 <= e['t'] <= t + MATCH_S and test(e):
+                e['used'] = 1
+                return e
+        return None
+    print('Effects and sounds started by key (the owner\'s against the copy\'s game):')
+    fx = defaultdict(lambda: [0, 0, 0, 0, [], []])   # (id, owner game) -> made, found, copy's, extra, missing keys, extra keys
+    for g in (0, 1):
+        for e in E[g]:
+            if e['w'] not in 'xs':
+                continue
+            i, sec = e['a'], int(e['t'])
+            ow = owner.get(i, {}).get(sec)
+            if ow is None:
+                continue
+            o = 1 - ow
+            if g == ow and near(o, i, e['t']):
+                fx[(i, ow)][0] += 1
+                pool = [x for x in E[o] if x['w'] == e['w'] and x['a'] == i]
+                if take(pool, e['t'], lambda x: x['key'] == e['key']):
+                    fx[(i, ow)][1] += 1
+                else:
+                    fx[(i, ow)][4].append(e['key'])
+    for g in (0, 1):   # the copy's game: what it made that the owner had not
+        for e in E[g]:
+            if e['w'] not in 'xs' or e.get('used'):
+                continue
+            ow = owner.get(e['a'], {}).get(int(e['t']))
+            if ow is None or ow == g:
+                continue
+            fx[(e['a'], ow)][2] += 1
+            fx[(e['a'], ow)][3] += 1
+            fx[(e['a'], ow)][5].append(e['key'])
+    for g in (0, 1):
+        for e in E[g]:
+            if e['w'] in 'xs' and e.get('used'):
+                ow = owner.get(e['a'], {}).get(int(e['t']))
+                if ow is not None:
+                    fx[(e['a'], ow)][2] += 1
+    if not fx:
+        print('  none (no enemy near both Links started one by key)')
+    for (i, ow), (made, found, copys, extra, miss, ext) in sorted(fx.items()):
+        tag = f"{names.get(i, '?')} {i} (run by {'AB'[ow]})"
+        fr = found / made if made else None
+        xr = extra / copys if copys else None
+        print(f"  {tag}: {made} by the owner, {found} in the copy's game too" +
+              (f"; {extra} of the copy's {copys} the owner had not" if copys else '') +
+              (f"; missing {sorted(set(miss))[:6]}" if miss else '') + (f"; extra {sorted(set(ext))[:6]}" if ext else ''))
+        if made >= 5 and fr < TARGET['fx_found']:
+            fail.append(f"{tag}: effects by key found in the copy's game {fr * 100:.0f} % (under {TARGET['fx_found'] * 100:.0f} %)")
+        if copys >= 5 and xr > TARGET['fx_extra']:
+            fail.append(f"{tag}: effects by key the owner had not {xr * 100:.0f} % (over {TARGET['fx_extra'] * 100:.0f} %)")
+
+    print('Blows between an enemy and a Link (each must be in both games):')
+    blows = [[e for e in E[g] if e['w'] == 'h'] for g in (0, 1)]
+    one, differ, both_n = [], [], 0
+    for g in (0, 1):
+        for e in blows[g]:
+            if e.get('seen'):
+                continue
+            en = e['by'] if e['a'].startswith('L') else e['a']   # the enemy of the pair
+            if not near(1 - g, en, e['t']):
+                continue   # (the other game does not show that enemy near a Link then)
+            m = None
+            for x in blows[1 - g]:
+                if not x.get('seen') and x['a'] == e['a'] and x['by'] == e['by'] and abs(x['t'] - e['t']) <= MATCH_S:
+                    m = x
+                    break
+            e['seen'] = 1
+            if not m:
+                one.append((g, e))
+                continue
+            m['seen'] = 1
+            both_n += 1
+            if m['cls'] != e['cls']:
+                differ.append((g, e, m))
+    cls_name = {0: 'hit', 1: 'guarded', 3: 'guarded in time', 4: 'avoided'}
+    print(f'  {both_n} in both games, {len(one)} in one game only, {len(differ)} with another outcome')
+    for g, e in one[:12]:
+        print(f"    in {'AB'[g]} only at {e['t']:.1f}: {names.get(e['by'], e['by'])} {e['by']} -> {names.get(e['a'], e['a'])} {e['a']}, "
+              f"{cls_name.get(e['cls'], e['cls'])}")
+    for g, e, m in differ[:12]:
+        print(f"    at {e['t']:.1f}: {e['by']} -> {e['a']}: {cls_name.get(e['cls'], e['cls'])} in {'AB'[g]}, "
+              f"{cls_name.get(m['cls'], m['cls'])} in {'AB'[1 - g]}")
+    if one:
+        fail.append(f'{len(one)} blows between an enemy and a Link in one game only')
+    if differ:
+        fail.append(f'{len(differ)} blows with another outcome in each game')
 
 
 def report_motion(i, who, r, names, fail):
@@ -415,6 +559,14 @@ def report_motion(i, who, r, names, fail):
     ph = r.get('phase_p95')
     print(f"      command same {cs * 100:.0f} % of frames" if cs is not None else '      command: none played',
           f", phase p95 {ph:.3f} s (clock {r['clock_rate']:.1f}/s)" if ph is not None else ', phase not measured')
+    af, ax = r.get('arm_found'), r.get('arm_extra')
+    if af is not None or ax is not None:
+        print(f"      attacks armed: {r['arm_need']} owner frames armed, the copy too in {af * 100:.0f} %" if af is not None else '      attacks armed: the owner none',
+              f"; the copy armed without the owner {ax * 100:.0f} % of its armed frames" if ax is not None else '')
+    for v, ok, msg in ((af, lambda v: v >= TARGET['arm_found'], f"attacks armed with the owner under {TARGET['arm_found'] * 100:.0f} %"),
+                       (ax, lambda v: v <= TARGET['arm_extra'], f"attacks armed without the owner over {TARGET['arm_extra'] * 100:.0f} %")):
+        if v is not None and not ok(v):
+            fail.append(f"{names.get(i, '?')} {i} (run by {'AB'[who]}): {msg}")
     checks = [('lag_ms', r.get('lag_ms'), lambda v: v <= TARGET['lag_ms'], f"lag over {TARGET['lag_ms']} ms"),
               ('err_p95', r.get('err_p95') if r.get('lag_ms') is not None else None, lambda v: v <= TARGET['err_p95'], f"error p95 over {TARGET['err_p95']} m"),
               ('stutter', r.get('stutter'), lambda v: v <= TARGET['stutter'], f"stutter over {TARGET['stutter']}x"),

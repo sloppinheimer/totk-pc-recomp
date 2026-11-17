@@ -124,6 +124,128 @@ static void snap_actor(FILE *f, int first, const EnCell *m, uint64_t a, const ch
     fputs("]}", f);
 }
 
+// ---- What the enemies do, seen where the game does it (any thread): attacks armed, effects and sounds by key, blows
+// between an enemy and a Link. The hooks look an actor up in a table the tick makes of the listed actors near the
+// Links (its SensorHit component [comps+0x428], its effect and sound users [[comps+0x68]+0x70] and +0x78), so they
+// cost a short scan, and nothing at all before the record is on.
+static _Atomic int ev_on;
+#define USERS_N 128
+static struct { _Atomic uint64_t actor, eu, su, sh; } users[2][USERS_N];
+static _Atomic int users_cur, users_n[2];
+static uint64_t user_actor(uint64_t p, int what) {   // what: 0 the SensorHit component, 1 the effect user, 2 the sound user
+    int b = atomic_load_explicit(&users_cur, memory_order_acquire), n = atomic_load_explicit(&users_n[b], memory_order_relaxed);
+    for (int i = 0; p && i < n; i++) {
+        uint64_t v = atomic_load_explicit(what == 0 ? &users[b][i].sh : what == 1 ? &users[b][i].eu : &users[b][i].su, memory_order_relaxed);
+        if (v == p) return atomic_load_explicit(&users[b][i].actor, memory_order_relaxed);
+    }
+    return 0;
+}
+// Attacks armed (main+0x1bf20cc, made again every frame while an attack is on, by the clip's event or an AI node, or
+// by the enemy sync's replay on a copy): the attack types armed, per actor, with the frame.
+#define ARMS_N 256
+static struct { _Atomic uint64_t actor; _Atomic uint32_t frame, mask; } arms[ARMS_N];
+void coop_check_arm(Cpu *c) {
+    if (!atomic_load_explicit(&ev_on, memory_order_relaxed)) return;
+    uint64_t a = user_actor(c->x[0], 0);
+    uint32_t type = 0;
+    if (!a || !coop_rd(c->x[1] + 4, &type, 4)) return;
+    uint32_t fr = coop_sess_frame_no(), k = (uint32_t)((a >> 4) * 2654435761u) % ARMS_N;
+    atomic_store_explicit(&arms[k].actor, a, memory_order_relaxed);
+    if (atomic_exchange_explicit(&arms[k].frame, fr, memory_order_relaxed) != fr) atomic_store_explicit(&arms[k].mask, 0, memory_order_relaxed);
+    atomic_fetch_or_explicit(&arms[k].mask, 1u << (type & 31), memory_order_relaxed);
+}
+static uint32_t arm_mask(uint64_t a) {   // armed in this frame or the one before
+    uint32_t k = (uint32_t)((a >> 4) * 2654435761u) % ARMS_N, fr = coop_sess_frame_no();
+    if (atomic_load_explicit(&arms[k].actor, memory_order_relaxed) != a || fr - atomic_load_explicit(&arms[k].frame, memory_order_relaxed) > 1) return 0;
+    return atomic_load_explicit(&arms[k].mask, memory_order_relaxed);
+}
+// Events (effects, sounds, blows): a ring the hooks fill and the tick writes out as "e" lines.
+#define EV_N 1024
+typedef struct { _Atomic int ready; char kind; uint8_t cls; uint32_t aid; uint64_t ns; char a[24], b[24], key[40]; } Ev;
+static Ev evs[EV_N];
+static _Atomic uint32_t ev_w, ev_lost;
+static Ev *ev_take(void) {
+    Ev *e = &evs[atomic_fetch_add(&ev_w, 1) % EV_N];
+    if (atomic_load_explicit(&e->ready, memory_order_acquire)) { atomic_fetch_add(&ev_lost, 1); return NULL; }
+    e->ns = plat_now_ns();
+    return e;
+}
+static int link_ident(uint64_t a, char *out, size_t n) {   // "L<player id>": this game's Link or another's stand-in
+    extern uint64_t coop_world_me;
+    if (!a) return 0;
+    if (a == coop_world_me) return snprintf(out, n, "L%d", coop_net_id());
+    uint64_t co[COOP_MAX_PLAYERS];
+    int ids[COOP_MAX_PLAYERS], k = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
+    for (int i = 0; i < k; i++) if (co[i] == a) return snprintf(out, n, "L%d", ids[i]);
+    return 0;
+}
+static int any_ident(uint64_t a, char *out, size_t n) {   // a Link, or an actor of the listed kinds
+    if (link_ident(a, out, n)) return 1;
+    EnCell *m = a ? en_cell_of(a) : NULL;
+    if (!m) return 0;
+    ident(m, a, out, n);
+    return 1;
+}
+// An effect (main+0xa98cf8) or a sound (main+0xa98d00) started by key on a user (x0), the key's string at x1: by an
+// AI node, the enemy sync's replay of one, or anything else that emits by key.
+void coop_check_emit(Cpu *c, int sound) {
+    if (!atomic_load_explicit(&ev_on, memory_order_relaxed)) return;
+    uint64_t a = user_actor(c->x[0], sound ? 2 : 1);
+    char id[24];
+    if (!a || !any_ident(a, id, sizeof id)) return;
+    Ev *e = ev_take();
+    if (!e) return;
+    e->kind = sound ? 's' : 'x', e->cls = 0, e->aid = 0, e->b[0] = 0;
+    memcpy(e->a, id, sizeof id);
+    memset(e->key, 0, sizeof e->key);
+    if (c->x[1]) coop_rd(c->x[1], e->key, sizeof e->key - 1);
+    for (char *q = e->key; *q; q++) if (*q < 0x20 || *q >= 0x7f) { *q = 0; break; }
+    atomic_store_explicit(&e->ready, 1, memory_order_release);
+}
+// A blow between an enemy and a Link, from the contacts a body's hit update (main+0x300a30) is about to build hits from,
+// before coop_contact.c takes any out: in the game that runs the enemy its blow lands on the other player's stand-in,
+// in that player's game on their Link; both are kept. The entry's class byte +0x0b (0 hit, 1 guarded, 3 guarded at the
+// right moment, 4 avoided) and its attack id +0x38.
+void coop_check_hits(uint64_t dc) {
+    if (!atomic_load_explicit(&ev_on, memory_order_relaxed)) return;
+    uint64_t v = coop_rd_ptr(dc + 0x198), o = coop_rd_ptr(dc + 0x1910), l = o ? coop_rd_ptr(o + 0x50) : 0, base;
+    int32_t cnt = 0, cap = 0;
+    if (!l || !coop_rd(l + 0x18, &cnt, 4) || cnt <= 0 || !coop_rd(l + 8, &cap, 4) || cap <= 0) return;
+    if (cnt > cap) cnt = cap;
+    if (cnt > 64 || !(base = coop_rd_ptr(l + 0x10))) return;
+    char vid[24], bid[24];
+    int vlink = link_ident(v, vid, sizeof vid);
+    if (!vlink && !any_ident(v, vid, sizeof vid)) return;
+    for (int k = 0; k < cnt; k++) {
+        uint64_t en = base + (uint64_t)k * 0x1c0, r2 = coop_rd_ptr(en + 0x80), by = r2 ? coop_rd_ptr(r2 + 0x40) : 0;
+        int blink = link_ident(by, bid, sizeof bid);
+        if (!blink && !any_ident(by, bid, sizeof bid)) continue;
+        if (vlink == blink) continue;   // (a Link and a Link, or an enemy and an enemy: not this check's)
+        Ev *e = ev_take();
+        if (!e) return;
+        e->kind = 'h', e->key[0] = 0, e->cls = 0, e->aid = 0;
+        memcpy(e->a, vid, sizeof vid), memcpy(e->b, bid, sizeof bid);
+        coop_rd(en + 0x0b, &e->cls, 1), coop_rd(en + 0x38, &e->aid, 4);
+        atomic_store_explicit(&e->ready, 1, memory_order_release);
+    }
+}
+static void ev_flush(FILE *f) {
+    static uint32_t r;
+    uint32_t w = atomic_load(&ev_w);
+    if (w - r > EV_N) r = w - EV_N;
+    for (; r != w; r++) {
+        Ev *e = &evs[r % EV_N];
+        if (!atomic_load_explicit(&e->ready, memory_order_acquire)) break;   // (still being filled: next tick)
+        fprintf(f, "{\"k\":\"e\",\"t\":%.6f,\"w\":\"%c\",\"a\":\"%s\"", e->ns / 1e9, e->kind, e->a);
+        if (e->kind == 'h') fprintf(f, ",\"by\":\"%s\",\"cls\":%u,\"aid\":%u}\n", e->b, e->cls, e->aid);
+        else fputs(",\"key\":", f), put_str(f, e->key), fputs("}\n", f);
+        atomic_store_explicit(&e->ready, 0, memory_order_release);
+    }
+    static uint32_t lost_said;
+    uint32_t lost = atomic_load(&ev_lost);
+    if (lost != lost_said) fprintf(f, "{\"k\":\"lost\",\"n\":%u}\n", lost), lost_said = lost;
+}
+
 void coop_check_tick(Cpu *c, uint64_t me) {
     (void)c;
     static int on = -1;
@@ -134,8 +256,11 @@ void coop_check_tick(Cpu *c, uint64_t me) {
         on = e ? strcmp(e, "0") != 0 : coop_debug();
         if (on && !(f = fopen("logs/check.jsonl", "w"))) on = 0;
         if (on) rt_log("coop: check: recording to logs/check.jsonl");
+        atomic_store(&ev_on, on);
     }
     if (!on || !me) return;
+    ev_flush(f);
+    int ub = 1 - atomic_load(&users_cur), un = 0;   // the users' table made again in the half the hooks do not read
     float lp[COOP_MAX_PLAYERS + 1][3];
     int nl = links_of(me, lp);
     uint64_t now = plat_now_ns(), sec = now / 1000000000ull;
@@ -159,6 +284,14 @@ void coop_check_tick(Cpu *c, uint64_t me) {
         for (int k = 0; k < 7; k++) if (!isfinite(pose[k])) pose[k] = 0;   // (nan or inf is no JSON: the line would be lost)
         float d = near_link(pose, lp, nl);
         if (d > CHECK_FAR) continue;
+        if (un < USERS_N) {
+            uint64_t comps = en_comps(a), xl = comps ? coop_rd_ptr(comps + 0x68) : 0;
+            atomic_store_explicit(&users[ub][un].actor, a, memory_order_relaxed);
+            atomic_store_explicit(&users[ub][un].sh, comps ? coop_rd_ptr(comps + 0x428) : 0, memory_order_relaxed);
+            atomic_store_explicit(&users[ub][un].eu, xl ? coop_rd_ptr(xl + 0x70) : 0, memory_order_relaxed);
+            atomic_store_explicit(&users[ub][un].su, xl ? coop_rd_ptr(xl + 0x78) : 0, memory_order_relaxed);
+            un++;
+        }
         char id[24];
         ident(m, a, id, sizeof id);
         if (snap) snap_actor(f, !sn++, m, a, id, pose);
@@ -169,10 +302,12 @@ void coop_check_tick(Cpu *c, uint64_t me) {
             if (ns && !isfinite(clk[0])) clk[0] = -1;
             uint32_t h = 2166136261u;   // the first slot's command, as its FNV-1a hash (0: none)
             for (const char *s = cmd[0]; ns && *s; s++) h = (h ^ (uint8_t)*s) * 16777619u;
-            fo += snprintf(fl + fo, sizeof fl - fo, "%s[\"%s\",%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.4f,\"%08x\",%.3f]", fn++ ? "," : "", id,
-                           pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], pose[6], ns && cmd[0][0] ? h : 0u, ns ? clk[0] : 0.f);
+            fo += snprintf(fl + fo, sizeof fl - fo, "%s[\"%s\",%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.4f,\"%08x\",%.3f,%u]", fn++ ? "," : "", id,
+                           pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], pose[6], ns && cmd[0][0] ? h : 0u, ns ? clk[0] : 0.f, arm_mask(a));
         }
     }
+    atomic_store_explicit(&users_n[ub], un, memory_order_relaxed);
+    atomic_store_explicit(&users_cur, ub, memory_order_release);
     if (snap) fputs("]}\n", f);
     if (fn && fo < (int)sizeof fl - 4) fputs(fl, f), fputs("]}\n", f);
     if (snap) fflush(f);

@@ -18,4 +18,7 @@ int coop_enemy_shared(Cpu *c, uint64_t off) {
 }
 
 // Every other hook of COOP_HOOKED_EN. Nonzero: the function is not run.
-int coop_enemy_hook(Cpu *c, uint64_t off) { return coop_enemy_new() && en_copy_hook(c, off); }
+int coop_enemy_hook(Cpu *c, uint64_t off) {
+    if (off == 0x1bf20cc) coop_check_arm(c);   // an attack armed: the mismatch checker's record (coop_check.c)
+    return coop_enemy_new() && en_copy_hook(c, off);
+}

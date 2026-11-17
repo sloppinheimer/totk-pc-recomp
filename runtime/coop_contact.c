@@ -119,5 +119,7 @@ static void contacts_filter(uint64_t dc) {
     }
 }
 void coop_hit_update(Cpu *c) {
+    void coop_check_hits(uint64_t dc);   // coop_check.c: the mismatch checker's record, before any is taken out
+    coop_check_hits(c->x[0]);
     contacts_filter(c->x[0]);
 }

@@ -365,11 +365,16 @@ The mismatch checker judges what both games show. With `TOTK_COOP_DEBUG=1` each 
 (`runtime/coop_check.c`), read from its own memory: once a second every actor of a listed kind within 120 m of a
 Link (name, place, rotation, life, actor state, death word, ragdoll state, drawn, each animation slot's command and
 clock, each equipment slot's held thing and state), and every frame the place, rotation and first slot of those
-within 40 m. An actor is named by its placement hash, else by the spawn sync's key, else by its address (this game's
-alone). `tools/coop/check.py <dir A> <dir B>` pairs the two records by time and identity and lists each difference
+within 40 m, with the attack types it has armed (the arm call main+0x1bf20cc, from the clip, an AI node or the
+arm replay); and as they happen, the effects and sounds an enemy starts by key (ELink main+0xa98cf8, SLink
+main+0xa98d00, hooked for this) and the blows between an enemy and a Link (the contacts of a body's hit update,
+main+0x300a30, read before `coop_contact.c` takes any out). An actor is named by its placement hash, else by the spawn
+sync's key, else by its address (this game's alone); a Link by its player's id. `tools/coop/check.py <dir A> <dir B>` pairs the two records by time and identity and lists each difference
 that holds two seconds (shown in one game only, two or no owners, place, rotation, life, death, ragdoll, drawn,
-command, equipment), and per copy against its owner the lag, the place error at that lag, stutter, the share of
-frames with the owner's command and the animation's phase; PLAN.md step 1 has the targets. `run_pair.ps1`,
+command, equipment), per copy against its owner the lag, the place error at that lag, stutter, the share of frames
+with the owner's command, the animation's phase and the attacks armed with the owner, the owner's effects by key
+found in the copy's game, and every blow between an enemy and a Link found in both games with the same outcome;
+PLAN.md step 1 has the targets. `run_pair.ps1`,
 `run_session.ps1` and `play_two.ps1` run it at the end. `run_pair.ps1 -Nudge <t>,<s>,<m>` plants a desync to show
 it is found (`TOTK_COOP_TEST_NUDGE`: game B shows its first enemy copy m metres off for s seconds).
 

@@ -145,6 +145,7 @@ void en_read_equip(uint64_t actor, char held[EN_EQ_N][40], uint8_t eqs[EN_EQ_N])
 // coop_check.c (the mismatch checker's record, PLAN.md step 1)
 void coop_check_tick(Cpu *c, uint64_t me);                     // each tick in a session
 void coop_check_nudge(uint64_t actor, uint64_t key, float pos[3]);   // TOTK_COOP_TEST_NUDGE: a copy put where it is not
+void coop_check_arm(Cpu *c);                                   // at main+0x1bf20cc, any thread
 
 // coop_mount.c (horses and animals: docs/coop/facts/horses-animals.md)
 void coop_mount_scan(void);                                    // under en_lock, at the top of the ownership pass

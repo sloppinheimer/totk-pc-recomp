@@ -152,7 +152,11 @@ per-frame record. Targets (set before the first measurement; a step is not done 
 - the animation's phase (clock difference on the same command, in seconds of the owner's clock rate): 95th
   percentile at most 0.1 s;
 - once a second: no difference that holds two seconds in place, rotation, life, death, ragdoll, drawn, slot commands
-  or equipment, and no enemy within 60 m of a Link shown in one game only.
+  or equipment, and no enemy within 60 m of a Link shown in one game only;
+- added after the baseline (what an action does): attacks armed with the owner in at least 95 % of the owner's armed
+  moments, and armed without the owner in at most 5 % of the copy's armed frames; effects and sounds started by key:
+  at least 95 % of the owner's made in the copy's game too, at most 5 % of the copy's game's not the owner's (judged
+  from 5 of either); every blow between an enemy and a Link in both games, with the same outcome.
 
 Done when: it runs on a scripted pair, its report lists differences by actor and kind, and a deliberate desync
 (an enemy moved in one game by a test key) shows up in it.
