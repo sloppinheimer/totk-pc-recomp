@@ -35,6 +35,12 @@
 
 #include "cfg.h"
 #include "coop_ctn.h"
+
+// The z of the first fan of the row; the others, the Links and the fans of "saved" are placed from it. It was 1509.2
+// until a suite run's pictures showed a construct one can talk to standing at the third fan's place (z 1512 to 1513):
+// each game moves its own, nothing sends it, and in the second game it pushed that fan's copy 0.49 m off and the Link
+// aside, while the owner's fan lay 5 degrees up on it.
+#define BENCH_Z 1507.2f
 #include "coop_ctr.h"
 #include "coop_ent.h"
 #include "coop_game.h"
@@ -177,7 +183,7 @@ static void bench_aim_tick(Cpu *c, uint64_t me, int id, double now) {
     }
     if (n++ % 6) return;
     uint64_t cam = coop_resident_named("PlayerCamera", NULL);
-    float C[3], r[9], spot[3] = {29.8f, 1514.5f, 1509.2f + 1.5f * k}, T[3], best = 1.5f;
+    float C[3], r[9], spot[3] = {29.8f, 1514.5f, BENCH_Z + 1.5f * k}, T[3], best = 1.5f;
     int found = 0;
     if (!cam || !coop_rd(cam + COOP_ACTOR_POS, C, 12) || !coop_rd(cam + COOP_ACTOR_ROT, r, 36)) return;
     for (int i = 0; i < ENT_N; i++) {
@@ -245,7 +251,7 @@ void coop_ent_bench_tick(Cpu *c, uint64_t me) {
         // where that fan is made, on the line its camera looks along, facing as the camera does: Ultrahand takes
         // what the middle of the picture is on, and the camera keeps its direction when its Link is moved. (A ZL
         // press to bring the camera round locked onto the other player's stand-in instead, in one run of three.)
-        float z = id == 1 ? 1509.7f : 1511.7f, x = 31.8f, fx = -1, fz = 0;
+        float z = id == 1 ? BENCH_Z + 0.5f : BENCH_Z + 2.5f, x = 31.8f, fx = -1, fz = 0;
         int aim = bench_aim[id == 1 ? 0 : 1];
         if (aim >= 0) {
             uint64_t cam = coop_resident_named("PlayerCamera", NULL);
@@ -254,7 +260,7 @@ void coop_ent_bench_tick(Cpu *c, uint64_t me) {
                 float l = sqrtf(r[2] * r[2] + r[8] * r[8]);
                 if (l > 1e-3f) fx = -r[2] / l, fz = -r[8] / l;
             }
-            x = 29.8f - 2.5f * fx, z = 1509.2f + 1.5f * aim - 2.5f * fz;
+            x = 29.8f - 2.5f * fx, z = BENCH_Z + 1.5f * aim - 2.5f * fz;
         }
         float m[12] = {fz, 0, fx, x, 0, 1, 0, 1514.8f, -fx, 0, fz, z};
         coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
@@ -268,7 +274,7 @@ void coop_ent_bench_tick(Cpu *c, uint64_t me) {
         for (int k = 0; k < want && now > 16; k++) {
             if (sst[k] == 0) {
                 // (in a row across both Links' view, turned to face them, so a picture shows which are there)
-                float at[3] = {28.3f, 1515.0f, id == 1 ? 1510.0f + 1.2f * k : 1512.6f}, rot[9] = {0, 0, 1, 0, 1, 0, -1, 0, 0};
+                float at[3] = {28.3f, 1515.0f, id == 1 ? BENCH_Z + 0.8f + 1.2f * k : BENCH_Z + 3.4f}, rot[9] = {0, 0, 1, 0, 1, 0, -1, 0, 0};
                 sst[k] = coop_request_create(c, "SpObj_WindGenerator_A_01", at, rot, sh[k]) ? 1 : 9;
             }
             if (sst[k] == 1 && coop_handle_status(sh[k]) == 3) {
@@ -313,7 +319,7 @@ void coop_ent_bench_tick(Cpu *c, uint64_t me) {
         int all = 1;
         for (int k = 0; k < FANS; k++) {
             if (stage[k] == 0) {
-                float at[3] = {29.8f, 1515.0f, 1509.2f + 1.5f * k}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+                float at[3] = {29.8f, 1515.0f, BENCH_Z + 1.5f * k}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
                 stage[k] = coop_request_create(c, "SpObj_WindGenerator_A_01", at, rot, handle[k]) ? 1 : 9;
             }
             if (stage[k] == 1 && coop_handle_status(handle[k]) == 3) {
