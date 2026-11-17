@@ -1000,4 +1000,3 @@ void coop_world_tick(Cpu *c, uint64_t me) {
     coop_weaplog_test(me);
     if (coop_world_role()) ground_tick(c, me);
 }
-
