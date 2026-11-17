@@ -711,15 +711,8 @@ static void beam_end_watch(const float at[3]);
 static void place_copy(Cpu *c, Slot *s, int k);
 static void beam_copy(Cpu *c, Slot *s, int k, float m[12]);
 static void set_driven(uint64_t a);
-// coop_bonds.c and the v3 registry of builds left the build with the entity sync (coop_ent*.c). What this file asked of
-// them answers "no" now: an actor the entity sync has is none of this file's objects (coop_ent_is), so no copy of
-// this file's is a contraption's part any more.
-static int coop_bonds_claimed(uint64_t actor) { (void)actor; return 0; }
-static int coop_bonds_member(uint64_t actor) { (void)actor; return 0; }
-static int coop_bonds_carried(uint64_t actor) { (void)actor; return 0; }
-static void coop_bonds_came_apart(uint64_t actor, int owner, uint32_t id) { (void)actor, (void)owner, (void)id; }
-static int coop_contraption_owns(int from, uint32_t id) { (void)from, (void)id; return 0; }
-static uint64_t coop_contraption_find(int owner, uint32_t id) { (void)owner, (void)id; return 0; }
+// An actor the entity sync has (coop_ent*.c) is none of this file's objects (coop_ent_is): no copy of this file's is a
+// contraption's part.
 int coop_ent_is(uint64_t a);                             // coop_ctn.c: an entity's actor
 int coop_ctn_core(void);
 int coop_ent_ride_name(uint64_t actor, uint32_t *id);    // coop_ent.c: an entity as the riders name it
@@ -1107,13 +1100,6 @@ static int copy_wait(const Slot *s, int k) {   // 1: a copy that failed is not a
     if (coop_handle_norelease()) return 0;
     int i = fail_find(s->net_id, s->mir[k].id, 0);
     return i >= 0 && plat_now_ns() / 1000000 < fails_tab[i].retry_ms;
-}
-
-int coop_copy_autobuilt(uint64_t actor) {   // a copy here of a device the owner's autobuild made (coop_bonds.c mark_autobuilt)
-    for (int i = 0; actor && i < COOP_MAX_PLAYERS; i++)
-        for (int k = 0; k < COOP_OBJS; k++)
-            if (slots[i].mir[k].state == 3 && slots[i].mir[k].actor == actor) return (slots[i].mir[k].flags & COOP_OBJ_AUTOBUILT) != 0;
-    return 0;
 }
 
 static void spawn_slot(Cpu *c, Slot *s) {
@@ -1818,19 +1804,6 @@ static void arrow_copies(Cpu *c, Slot *s) {
             s->mir[k].state = 1, s->mir[k].actor = 0, s->mir[k].ticks = 0;
             continue;
         }
-        // A part of a contraption this game makes with its own Autobuild from the owner's record (coop_autobuild.c,
-        // on unless TOTK_COOP_CONTRAPTION=0): no copy of its own; one made before the record came is deleted
-        void coop_deleted_here(uint64_t a);
-        if (s->mir[k].state != 0 && coop_contraption_owns(s->net_id, s->mir[k].id)) {
-            if (s->mir[k].state == 3 && s->mir[k].actor) {
-                coop_deleted_here(s->mir[k].actor);
-                rt_log("coop: slot %d: the copy of %s (%u) deleted: its contraption is made here by the Autobuild", (int)(s - slots), s->mir[k].name, s->mir[k].id);
-                coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0), set_driven(s->mir[k].actor);
-            }
-            if (s->mir[k].state == 2) coop_handle_release(c, s->mir[k].handle);
-            if (s->mir[k].state != 1) s->mir[k].state = 1, s->mir[k].actor = 0, s->mir[k].ticks = 0;
-            continue;
-        }
         if (s->mir[k].state == 1 && coop_far_from_players(s->mir[k].pos)) continue;
         if (s->mir[k].state == 1 && copy_wait(s, k)) continue;
         // An owner's autobuilt device: made as an autobuild makes it with TOTK_COOP_AUTOBUILT=1 (autobuilt_on).
@@ -1892,12 +1865,6 @@ static void arrow_copies(Cpu *c, Slot *s) {
                 char nm[48];
                 if (!coop_rd(s->mir[k].actor + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 ||
                     strcmp(coop_actor_name(s->mir[k].actor, nm, sizeof nm), s->mir[k].name)) {
-                    if (coop_bonds_claimed(s->mir[k].actor)) {   // part of a contraption run here: made again, not passed on
-                        rt_log("coop: slot %d: the copy of object %u (%s) went away here (state %d) while this game ran its contraption; made again",
-                               (int)(s - slots), s->mir[k].id, s->mir[k].name, st);
-                        s->mir[k].state = 1, s->mir[k].actor = 0, s->mir[k].ticks = 0;
-                        continue;
-                    }
                     // An autobuilt part's copy come apart with nobody here holding it with Ultrahand: an accident of
                     // this game's (the other player's stand-in put inside the contraption broke a plank off, and the
                     // whole contraption went in both games: autobuild_stick_3rd.txt pair test); made again, not passed
@@ -1906,7 +1873,6 @@ static void arrow_copies(Cpu *c, Slot *s) {
                     if ((s->mir[k].flags & COOP_OBJ_AUTOBUILT) && frame_step_world_us() - atomic_load(&coop_ultrahand_hold_us) > 2000000) {
                         rt_log("coop: slot %d: the copy of autobuilt %u (%s) came apart here (state %d) with no Ultrahand on it here; made again",
                                (int)(s - slots), s->mir[k].id, s->mir[k].name, st);
-                        coop_bonds_came_apart(s->mir[k].actor, s->net_id, s->mir[k].id);
                         s->mir[k].state = 1, s->mir[k].actor = 0, s->mir[k].ticks = 0;
                         continue;
                     }
@@ -1936,7 +1902,6 @@ static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc) {
     // other player's bow could be picked up again and again, and a fused arrow's kept falling asleep and did not
     // show.
     // (a paraglider's copy from its first tick: it went away by itself about 0.5 s after it was made, glide.txt)
-    if (coop_bonds_member(actor)) return 0;   // (one rigid contraption: all its parts run their update, placed or not)
     return copy_of(actor, &s, &k) && (s->mir[k].ticks >= COPY_WARMUP || (s->mir[k].flags & COOP_OBJ_ONLINK)) &&
            strncmp(s->mir[k].name, "SpObj_", 6) && !pickable(s->mir[k].name) && !s->mir[k].blowing && strcmp(s->mir[k].name, "PlayerBeam") &&
            strcmp(s->mir[k].name, "LightningStrike");   // (a strike's copy plays out by itself)
@@ -1988,8 +1953,6 @@ static void place_copy(Cpu *c, Slot *s, int k) {
         s->mir[k].state = 0, s->mir[k].actor = 0;
         return;
     }
-    if (coop_bonds_claimed(actor)) return;   // this game runs that contraption now: its copies move by themselves
-    if (coop_bonds_carried(actor)) return;    // bonded to its group's root, which is placed: the bonds carry it
     // An arrow's copy asks to sleep in its first tick (reason 0, through main+0x55251c: TOTK_COOP_TEST_ARROWWATCH)
     // and sleeps from the third (actor state 6, its model's +0x244 6), where this game's own arrows stay awake (4); a
     // sleeping arrow is not drawn. It is woken as the actor state machine
@@ -4152,7 +4115,6 @@ static void ride_resolve(void) {
         if (!a && s->ride_owner != coop_net_id()) {
             Slot *o = slot_for(SRC_NET, s->ride_owner);
             for (int k = 0; o && k < COOP_OBJS && !a; k++) if (o->mir[k].state == 3 && o->mir[k].id == s->ride_id && copy_alive(o, k)) a = o->mir[k].actor;
-            if (!a) a = coop_contraption_find(s->ride_owner, s->ride_id);
         }
         if (a != s->ride_actor) {
             static int said;
@@ -4192,31 +4154,7 @@ int coop_is_copy(uint64_t a) {
     int coop_contraption_made(uint64_t a);   // coop_autobuild.c: a part made from another player's record is a copy too
     return copy_of(a, &cs, &ck) || coop_contraption_made(a);
 }
-void coop_copy_remake(Cpu *c, uint64_t a) {
-    Slot *s;
-    int k;
-    if (!copy_of(a, &s, &k)) return;
-    if (copy_alive(s, k)) coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, a, COOP_DELETE_REASON, 0, 0), set_driven(a);
-    s->mir[k].state = 1, s->mir[k].actor = 0, s->mir[k].ticks = 0;
-}
-// For coop_bonds.c's claims: what this Link rides (another player's object: its owner and number), what another
-// player's Link rides, and an object of this game's moved to where the player running its contraption has it.
-int coop_ride_now(int *owner, uint32_t *id) {
-    if (!ride_owner_now || ride_owner_now == COOP_RIDE_MOUNT) return 0;
-    *owner = ride_owner_now, *id = ride_id_now;
-    return 1;
-}
-int coop_player_rides(int net_id, int *owner, uint32_t *id) {
-    Slot *s = slot_for(SRC_NET, net_id);
-    if (!s || s->state != LIVE || !s->ride_owner || s->ride_owner == COOP_RIDE_MOUNT) return 0;
-    *owner = s->ride_owner, *id = s->ride_id;
-    return 1;
-}
 void coop_obj_force(Cpu *c, uint64_t a, const float pos[3], const float q[4]) { force_to(c, a, pos, q); }
-int coop_player_pos(int net_id, float out[3]) {   // where another player's Link (its stand-in) is here
-    Slot *s = slot_for(SRC_NET, net_id);
-    return s && s->state == LIVE && s->actor && coop_rd(s->actor + COOP_ACTOR_POS, out, 12);
-}
 uint64_t coop_player_standin(int net_id) {   // another player's stand-in actor here, 0 none (the element sync shows that Link's fire on it)
     Slot *s = slot_for(SRC_NET, net_id);
     return s && s->state == LIVE ? s->actor : 0;
@@ -4268,8 +4206,6 @@ uint64_t coop_obj_find(int owner, uint32_t id, const char *name) {
             if (props[e].actor && props[e].made && props[e].id == id && actor_is(props[e].actor, name)) return props[e].actor;
         return 0;
     }
-    uint64_t made = owner != coop_net_id() ? coop_contraption_find(owner, id) : 0;
-    if (made) return made;
     for (int i = 0; i < COOP_MAX_PLAYERS; i++) {   // a copy here of that player's object (a keyed one too, where this game lacks it)
         if (slots[i].state == FREE || slots[i].source != SRC_NET) continue;
         if (!(id & COOP_OBJ_KEYED) && slots[i].net_id != owner) continue;
@@ -4384,7 +4320,7 @@ static void ride_carry(Cpu *c, uint64_t me) {
                 memcpy(put, np, 12);
             }
         }
-        if (mv > 1e-6f && !nocarry && !coop_bonds_claimed(on->actor) && !on->native) {   // (a claimed copy carries it by its own physics)
+        if (mv > 1e-6f && !nocarry && !on->native) {
             float m[12];
             for (int i = 0; i < 3; i++) {
                 for (int j = 0; j < 3; j++) m[i * 4 + j] = nr[i * 3 + j];

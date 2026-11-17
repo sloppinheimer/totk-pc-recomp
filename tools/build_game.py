@@ -323,10 +323,8 @@ def runtime_sources(skip=()):
     names in skip, so a task adds a file without editing this script."""
     pats = ('*.c', '*.cpp', 'platform/*.c', '*.rc', 'ui/*.cpp', 'third_party/imgui/*.cpp',
             'third_party/imgui/backends/*.cpp')
-    # (the two older contraption paths, replaced by runtime/coop_ent*.c: kept in the tree, not built)
-    retired = ('coop_glue.c', 'coop_bonds.c')
     return sorted(p for pat in pats for p in RUNTIME.glob(pat)
-                  if p.name not in skip and p.name not in retired and not other_os(p.name))
+                  if p.name not in skip and not other_os(p.name))
 
 
 def library_sources(sources):

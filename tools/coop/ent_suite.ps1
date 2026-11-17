@@ -22,7 +22,7 @@ $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
 $out = Join-Path $root 'build\suite'
 New-Item -ItemType Directory -Force $out | Out-Null
-$env:TOTK_COOP_FOLLOW_TRACE = '1'; $env:TOTK_COOP_CONTRAPTION = '1'; $env:TOTK_COOP_DEVICE_SYNC = '0'; $env:TOTK_COOP_GLUE = '0'; $env:TOTK_COOP_BONDS = '0'
+$env:TOTK_COOP_FOLLOW_TRACE = '1'; $env:TOTK_COOP_CONTRAPTION = '1'
 $all = @(
     @{ name = 'drive';      bench = 'fans,drive';                                         seconds = 120; expect = 'drive' },
     @{ name = 'hand';       bench = 'fans,aim1=0@22.7';                                   seconds = 88;  expect = 'hand1';               s1 = 'tools\coop\hand_a.txt' },

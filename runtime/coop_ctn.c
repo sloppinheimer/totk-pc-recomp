@@ -53,15 +53,6 @@ static int ctn_on(void) {
     if (on < 0) {
         const char *set = cfg_get("TOTK_COOP_CONTRAPTION");   // on unless set to 0
         on = !(set && *set == '0');
-        // Devices' on and off are this file's then, lone ones too: the older flip path of coop_bonds.c stands down. And
-        // glue and bonds: anything glued is a build of this file's, whoever owned the parts; the older glue sync made a
-        // maker's bond again every second and refused its break (plan 37 note 11 and section 38). They are switched off
-        // in this process's environment, which cfg_get reads first and cfg_save never writes, not with cfg_set, which
-        // totk.ini would keep after this session (review 1 finding 84). memory.c calls this right after cfg_init, before
-        // the older files read their switch once and keep it.
-        static const char *const older[] = {"TOTK_COOP_DEVICE_SYNC", "TOTK_COOP_GLUE", "TOTK_COOP_BONDS"};
-        for (int k = 0; on && k < 3; k++)
-            if (!cfg_from_env(older[k])) plat_setenv(older[k], "0");
     }
     return on;
 }
