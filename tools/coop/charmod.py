@@ -309,6 +309,20 @@ def build_set(rom, src, key, out, log, tag=None):
             new = str(PurePosixPath(path).with_name(name.replace('Player', actor, 1)))
             members[new] = members.pop(path)
             comps[k] = '?' + new
+    # Its chemical parameters keep the gear it holds from lightning, as the plain stand-in's do (make_puppet_pack.py
+    # CHEMICAL): a thunderstorm in this game does not take the other player's metal for a target; their own game does.
+    chem_path = (comps.get('ChemicalRef') or '')[1:]
+    if chem_path not in members:
+        print(f'{key}: no chemical parameters in its pack ({chem_path or "none"}): the stand-in is not kept from lightning', file=sys.stderr)
+    else:
+        chem = byml.read(members[chem_path])
+        objs = chem.get('Object') if isinstance(chem, dict) else None
+        if isinstance(objs, list) and len(objs) == 1 and isinstance(objs[0], dict):
+            objs[0]['IsEquipmentAvoidLightningTarget'] = True
+            members[chem_path] = byml.write(chem)
+            print(f'{key}: the stand-in is kept from lightning ({chem_path})', file=sys.stderr)
+        else:
+            print(f'{key}: its chemical parameters are not laid out as the Player one: the stand-in is not kept from lightning', file=sys.stderr)
     mi_path = comps['ModelInfoRef'][1:]
     mi = byml.read(members[mi_path])
     newp = model(mi['ModelProjectName'], mi['FmdbName'])

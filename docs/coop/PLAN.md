@@ -123,7 +123,7 @@ Left, and where it goes:
 - Small, when the files are next touched: duplicated helpers (quaternion conversions, FNV hashes, main-body lookups,
   the equipment-slot walk, the "paused" tests, the report's consolidation table); comments that still name removed files or tests (fewer than the 40 listed before);
   `coop_cfg_names.inc` holds 7 co-op names; 48 input scripts in
-  `tools/coop/` that no file names; the character stand-in's lightning flag (`charmod.py build_set`); the untracked `map_hold.txt` and `menu_hold.txt`; the
+  `tools/coop/` that no file names; the untracked `map_hold.txt` and `menu_hold.txt`; the
   parked branches `claude/coop-arrow-tail-wip` and `claude/quizzical-poincare-8711f5`.
 
 ### 1. The mismatch checker

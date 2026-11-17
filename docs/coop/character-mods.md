@@ -16,7 +16,8 @@ one PC (`tools\coop\run_pair.ps1`).
   own Link, a *set* in the mod `mods/zz-coop-characters`, each under a four-character tag made from the character's key:
   - `PlayerPuppet_<tag>`: a stand-in actor made from that character's `Player.pack`, as `make_puppet_pack.py` makes
     `PlayerPuppet` from the game's. Its members that `Player.pack` also has go in under names of its own, and so does its
-    animation set (`AS/PlayerPuppet_<tag>.root.asb`);
+    animation set (`AS/PlayerPuppet_<tag>.root.asb`). Its chemical parameters keep the gear it holds from lightning
+    (`IsEquipmentAvoidLightningTarget`), as the plain stand-in's do;
   - its body model copied as `Model/<tag>.<fmdb>.bfres.mc`, with the copy's `ModelInfo` pointing at it. In the copy
     every texture is renamed (the tag in place of its first four characters, the `.txtg` copied under that name) and
     every material `Mt_<x>` becomes `<letter>t_<x>`, so the stand-in shows its own character's textures in any game
