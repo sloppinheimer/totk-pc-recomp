@@ -11,10 +11,13 @@
 //
 // The records are read after the owner's own model phase (the phase reads the ragdoll's bodies back into the pose,
 // main+0x2752c8, and turns the pose into the records, main+0x289620), with the actor's place and turn of the same
-// instant: bone 0's record is from the actor's matrix. The copy writes actor, model matrix and records, marks the
-// model changed (bit 0 of model+0x240: without it the push keeps the old final matrices) and pushes (research R12b).
-// Measured in two games (TOTK_COOP_EN_TEST_POSE=1: three bones' places from bone 0, per pose, in both): 6 ragdolls,
-// 21 poses laid side by side, 0.1 cm median and 0.2 cm at worst. TOTK_COOP_EN_POSE=0 turns it off.
+// instant: bone 0's record is from the actor's matrix. The copy writes the records, sets the model's matrix from its
+// own actor (it was found stale on a copy), marks the model changed (bit 0 of model+0x240: without it the push keeps
+// the old final matrices) and pushes (research R12b). The actor's place and turn from the packet are NOT written
+// (TOTK_COOP_EN_TEST_POSEROOT=1 writes them): the copy's root stays the stated one.
+// Measured in two games (TOTK_COOP_EN_TEST_POSE=1: three bones' places from bone 0, per pose, in both): 2.3 cm
+// median, 50 cm at worst (the copy's stated turn is a little behind the pose's); bone 0 moves 7 cm by the put.
+// TOTK_COOP_EN_POSE=0 turns it off.
 #include <math.h>
 #include <stdatomic.h>
 #include <stddef.h>
