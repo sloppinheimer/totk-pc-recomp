@@ -132,6 +132,63 @@ static int cells_at(const uint8_t *q, uint64_t q_addr, int kind) {
     return cp == q_addr + (uint64_t)hdr + 0x18 && cnt >= 0 && cnt <= 32 ? hdr + 0x18 : 0;
 }
 
+// The net for the mistake of the track bone's name: any other word of a captured block that is an address of this
+// game's memory (not into the block, not into the game's image) reaches a copy's game as it is, where it names
+// something else. Six of the cells' value types (1, 6, 9, 0xd, 0xe, 0x14) hold eight bytes that may be such an
+// address; what each holds was not read. Each place is logged once with what the address names here, so a next case
+// is seen in a log and not in a play session.
+static void foreign_note(const Shot *h, int co, const char *who) {
+    static _Atomic uint32_t seen[24];
+    for (int k = 8; k + 8 <= Q_SZ; k += 8) {
+        uint64_t v;
+        uint8_t t[25] = {0};
+        memcpy(&v, h->q + k, 8);
+        if ((k == 8 && h->kind == 1) || v < 0x10000 || (v >= h->q_addr && v < h->q_addr + Q_SZ) || (v >= MOD_MAIN_BASE && v < MOD_MAIN_BASE + 0x8000000ull) || !plat_mem_read(v, t, 24)) continue;
+        uint32_t tag = (uint32_t)h->kind << 16 | (uint32_t)k;
+        int isnew = 0;
+        for (int i = 0; i < 24 && !isnew; i++) {
+            uint32_t have = atomic_load(&seen[i]);
+            if (have == tag) break;
+            if (!have) { if (atomic_compare_exchange_strong(&seen[i], &have, tag)) isnew = 1; else if (have == tag) break; }
+        }
+        if (!isnew) continue;
+        int ci = co && k >= co && k < co + 32 * 0xc8 ? (k - co) / 0xc8 : -1;
+        uint32_t type = 0;
+        char name[0x80] = "";
+        if (ci >= 0) memcpy(&type, h->q + co + ci * 0xc8, 4), memcpy(name, h->q + co + ci * 0xc8 + 0x14, 0x7f);
+        for (int i = 0; i < 24; i++) if (t[i] && (t[i] < 0x20 || t[i] >= 0x7f)) t[i] = '.';
+        rt_log("coop: en: shot: FOREIGN ADDRESS in a %s block of %s at +%#x: %llx (cell %d '%s' type %u, +%#x in it); it names here '%s': a copy's game gets the address as it is",
+               h->kind == 2 ? "shoot" : "prepare", who, k, (unsigned long long)v, ci, name, type, ci >= 0 ? (k - co) % 0xc8 : 0, (const char *)t);
+    }
+}
+
+// The same net for the small requests the sync states as bytes (an action request, a node's arm request, a throw's):
+// the first 2000 of them are looked through, each place logged once. `skip` is an offset known to be a pointer and
+// handled (-1: none).
+void en_foreign_scan(const char *what, const uint8_t *p, int n, int skip) {
+    static _Atomic uint32_t seen[32], calls;
+    if (atomic_load_explicit(&calls, memory_order_relaxed) > 2000) return;
+    atomic_fetch_add(&calls, 1);
+    uint32_t hw = 2166136261u;
+    for (const char *s = what; *s; s++) hw = (hw ^ (uint8_t)*s) * 16777619u;
+    for (int k = 0; k + 8 <= n; k += 8) {
+        uint64_t v;
+        uint8_t t[25] = {0};
+        memcpy(&v, p + k, 8);
+        if (k == skip || v < 0x10000 || (v >= MOD_MAIN_BASE && v < MOD_MAIN_BASE + 0x8000000ull) || !plat_mem_read(v, t, 24)) continue;
+        uint32_t tag = (hw + (uint32_t)k * 2654435761u) | 1;
+        int isnew = 0;
+        for (int i = 0; i < 32 && !isnew; i++) {
+            uint32_t have = atomic_load(&seen[i]);
+            if (have == tag) break;
+            if (!have) { if (atomic_compare_exchange_strong(&seen[i], &have, tag)) isnew = 1; else if (have == tag) break; }
+        }
+        if (!isnew) continue;
+        for (int i = 0; i < 24; i++) if (t[i] && (t[i] < 0x20 || t[i] >= 0x7f)) t[i] = '.';
+        rt_log("coop: en: FOREIGN ADDRESS in %s at +%#x: %llx; it names here '%s': a copy's game gets the address as it is", what, k, (unsigned long long)v, (const char *)t);
+    }
+}
+
 // ---- The owner: a prepare or a shoot of an enemy this game runs is made, then captured ---------------------------------
 // From en_copy_hook, at the function's entry. 1: the function was run here.
 int en_shot_hook(Cpu *c, uint64_t off, EnCell *m) {
@@ -253,6 +310,7 @@ void en_shot_phase0(void) {
                     memcpy(&tp, cell + 8, 8), memcpy(&cap, cell + 0x10, 4);
                     if (tp == h->q_addr + (uint64_t)co + (uint64_t)k * 0xc8 + 0x14 && cap == 0x80) memset(cell + 8, 0, 12);
                 }
+                foreign_note(h, co, en_tab[ei].name);
                 // the block with its runs of zeros squeezed: (count of zeros u16, count of bytes u16, the bytes) ...
                 int n = 0, at = 0, ok = 1;
                 while (at < Q_SZ && ok) {

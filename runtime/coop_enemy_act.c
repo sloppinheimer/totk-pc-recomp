@@ -100,6 +100,7 @@ void en_act_owner(Cpu *c) {
     int listed = verb_listed(v) && !(flags & 1);
     if (!listed && !m->act_verb) return;
     memcpy(a.req, req, ACT_REQ);
+    { void en_foreign_scan(const char *what, const uint8_t *p, int n, int skip); en_foreign_scan("an action request", a.req, ACT_REQ, 0x38); }   // coop_enemy_shot.c
     memset(a.req + 0x38, 0, 8);
     a.mode = (uint8_t)(c->x[2] & 1), a.stop = !listed;
     if (listed && req[0x40] == 1) {

@@ -86,6 +86,7 @@ void en_equip_event(uint64_t holder, int slot, int thrown, const uint8_t req[0x3
     memset(&q, 0, sizeof q);
     q.id = en_tab[ei].id, q.slot = (uint32_t)slot, q.thrown = (uint32_t)thrown, q.x3 = x3, q.x4 = x4;
     if (req) memcpy(q.req, req, 0x30);
+    if (req && thrown) { void en_foreign_scan(const char *what, const uint8_t *p, int n, int skip); en_foreign_scan("a throw's request", q.req, 0x30, -1); }   // coop_enemy_shot.c
     en_send_all(ENM_EQUIP, &q, sizeof q);
 }
 // The attention sender's client reason bytes ([[comps+0x130]]+0x24..0x64, one byte a client type: a client with a

@@ -674,6 +674,25 @@ research R21, R22; from a play session, 2026-11-17).
   between the prepare and the throw (7.87 m is that fall). [built, not yet seen in a game] The name is stated whole
   and the copy's block points at its own game's lasting text of it (coop_enemy_shot.c, `bone_text`).
 
+**B.40 Addresses in what is stated as bytes** (the audit after the track bone's name, B.39). The mistake was an
+address inside a block copied from one game to another, taken for a plain value. Every place the sync states a
+request of the game's as bytes was gone through:
+- [read] An action request (0x58 of its 0x60 bytes): its one text pointer (+0x38) is sent as text and the asking
+  node (+0x58) is left out; the rest is numbers.
+- [read; four requests from a play session's logs looked at] A node's arm request (0x24 bytes): numbers. Its padding
+  bytes are stack leftovers and differ from call to call, so the copy's queue takes the same attack for several
+  requests and may arm it more than once a frame; harmless, not changed.
+- [read] A throw (main+0x1b73be4): its fourth and fifth arguments are flags (bit 0 of each); its 0x30-byte request
+  is copied into the equipment slot (+0xc0..) as bytes; what reads it there was not read.
+- [open] A shot's request block: the cells' own pointers and the track bone's name are handled; a cell's value is
+  eight bytes for six of the value types (1, 6, 9, 0xd, 0xe, 0x14) and the setters do not tell whether any is an
+  address. Not read to the end.
+- [built] The net: in the game that runs the enemy, each of these (a shot's block whole, an action, an arm and a
+  throw request) is looked through for a word that is a readable address of that game outside the block and the
+  game's image; each place is logged once (`FOREIGN ADDRESS`), with what it names there. Nothing is changed in what
+  is sent: a blanked address could crash where a stale one only reads something else. No such line: no such address
+  in what was played.
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is

@@ -87,6 +87,7 @@ int en_arm_hook(Cpu *c, uint64_t off) {
     MArm a;
     memset(&a, 0, sizeof a);
     if (!coop_rd(c->x[1], a.p, ARM_SZ)) return 0;
+    { void en_foreign_scan(const char *what, const uint8_t *p, int n, int skip); en_foreign_scan("a node's arm request", a.p, ARM_SZ, -1); }   // coop_enemy_shot.c
     {   // (log: the component's bits in the game that runs it, at the node's arm call)
         uint8_t b[8] = {0};
         static _Atomic int said;
