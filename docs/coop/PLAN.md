@@ -34,8 +34,9 @@ It was replaced by copies that play and never think (2026-11-15) without a side-
 - `TOTK_COOP_EN_ACT=1` turns it on. A copy's Main slot runs its owner's request, made when this game shows the owner
   at the request's time (`en_act_precalc`), with the owner's controller move state and velocity written first
   (`cct_write`).
-- Blocking is by node type: 267 classes in 10 categories (`coop_enemy_act_deny.inc`), from an audit of 578
-  outward-acting classes. About a fifth were placed by name only, so some may be in the wrong category.
+- Blocking is by node type: 276 classes in 10 categories (`coop_enemy_act_deny.inc`), 267 from an audit of 578
+  outward-acting classes and nine that step 2's reading found reaching an engine function (facts/enemies.md 4.1).
+  About a fifth were placed by name only, so some may be in the wrong category.
 - Animation still comes from the owner's stated slots; plays the action asks for are answered "played" and not made.
 - Measured in 80 s scripted runs (B.41): a Yiga footsoldier, a Chuchu and three Bokoblins with every verb on; no
   crash, no leak, tables equal, the same command 95 to 100 % of frames. In a play session a copy's melee blow did
@@ -286,7 +287,7 @@ addresses this plan first had: main+0x1bb16a0 is the AI's memory of a weapon, no
 the lifter's release setter, not the throw. `coop_hooks.h` still registers those two for this step; they are
 replaced when it is built. Addresses no runtime code uses yet rest on the research notes alone and are read again
 before use. For each function: what its callers do when it is refused (a node that expects an actor back
-may crash). The 267-class list stays as a second net; a refusal at an engine function logs the node class, so a
+may crash). The class list stays as a second net; a refusal at an engine function logs the node class, so a
 class missing from the list is found.
 
 Done when: each function is read and blocked, and a scripted run with every verb on logs the refusals with no crash.

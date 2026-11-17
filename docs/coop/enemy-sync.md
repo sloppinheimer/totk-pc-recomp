@@ -398,7 +398,7 @@ rule 3), which en_bench does not run yet.
 game shows the owner at the request's time (`en_act_precalc`), after writing the owner's controller move state and
 velocity (`cct_write`). Under that call (`tl_act_actor`) `en_copy_hook` lets the one call tree through the switch. A
 node tick of the copy's own (the node's actor, [[[node+8]+8]+0x1f8], is the marked one) whose class is in
-`coop_enemy_act_deny.inc` (267 classes in 10 categories) is turned away and marked succeeded (`en_act_tick_seen`); a
+`coop_enemy_act_deny.inc` (276 classes in 10 categories) is turned away and marked succeeded (`en_act_tick_seen`); a
 node of another actor under the mark, were one calc ever run inside another's, is judged as outside it. A play the action asks for is answered "played" and not made, since the copy's slots
 already play the owner's commands (`TOTK_COOP_EN_ACT_PLAYS=1` lets them through). When the owner's verb leaves the
 list, or nothing comes for half a second, the copy is asked for Wait (verb 40) once. While a copy runs an action the

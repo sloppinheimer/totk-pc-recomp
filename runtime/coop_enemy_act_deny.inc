@@ -1,6 +1,12 @@
 // The node classes a copy that runs its owner's action does not run itself: {vtable (main+), category}.
 // Made from the audit of the enemies' AI graphs (research R19: each outward-acting node class and where it
-// ends) joined with the node table; see docs/coop/enemy-sync.md B.41 for the categories. Sorted.
+// ends) joined with the node table; see docs/coop/enemy-sync.md B.41 for the categories. Nine more come from the reading
+// of the engine functions an action ends in (docs/coop/facts/enemies.md 4.1): the other equipment creates (the
+// dynamic one IfUnequipped, the two static ones, ByLevelSensor, EquipStandControl), OneShotDropDrop,
+// ExecuteGenericRequestCreateActor, OneShotTargetEquipTarget and ExecuteOctarockStoneKeepPredation (whole: its
+// refused pick-up would still let its holder's entry go). OneShotEquipmentUserRequestChangeState is not listed: its
+// draw and put-away are the copy's own body, and its drop is refused at the drop record (coop_enemy_act.c
+// en_act_refuse). Sorted.
 {0x3743808, 7},
 {0x3749210, 1},
 {0x3749c58, 7},
@@ -23,6 +29,7 @@
 {0x37636f8, 1},
 {0x3763818, 1},
 {0x37644a8, 7},
+{0x37659c8, 4},
 {0x3766298, 6},
 {0x37663d8, 6},
 {0x3766748, 6},
@@ -36,6 +43,7 @@
 {0x376edc0, 1},
 {0x376eee0, 1},
 {0x376f000, 6},
+{0x3770d00, 4},
 {0x3777090, 6},
 {0x3777548, 7},
 {0x3777668, 2},
@@ -66,6 +74,7 @@
 {0x37825b8, 5},
 {0x3782a70, 6},
 {0x3782cb0, 10},
+{0x3784ce8, 2},
 {0x3787880, 7},
 {0x37879a0, 7},
 {0x37a0968, 7},
@@ -124,6 +133,7 @@
 {0x37e0950, 4},
 {0x37e0e40, 4},
 {0x37e2d28, 3},
+{0x37e2f78, 2},
 {0x37e30a0, 2},
 {0x37e31c8, 2},
 {0x37e32f0, 2},
@@ -138,11 +148,15 @@
 {0x37e4570, 5},
 {0x37e55f0, 8},
 {0x37e5840, 8},
+{0x37e5f30, 4},
 {0x37e6430, 1},
 {0x37e67b0, 1},
 {0x37e68d8, 2},
 {0x37e6fc8, 4},
 {0x37e70f0, 4},
+{0x37e7218, 4},
+{0x37e7340, 4},
+{0x37e7468, 4},
 {0x37e7908, 2},
 {0x37e7a30, 2},
 {0x37e7b58, 2},
@@ -255,6 +269,7 @@
 {0x38291f8, 5},
 {0x3829448, 5},
 {0x3829570, 5},
+{0x3829d80, 2},
 {0x382dad0, 7},
 {0x382f7b8, 10},
 {0x382fb30, 3},
