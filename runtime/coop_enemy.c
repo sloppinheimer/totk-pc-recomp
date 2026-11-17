@@ -61,8 +61,10 @@ static int kind_of(const char *nm) {
                                        // (2026-11-17, each spawned beside a Link with a second game watching, standing: made in the
                                        // other game, bound, followed with the same command in 98.7 to 100 % of samples, no leak.
                                        // Not fought yet. A baby Frox was 94 % and 25 cm off its pose and is left out.)
-                                       "Enemy_LikeLike", "Enemy_Lynel", "Enemy_Treant", "Enemy_Zombie_", "Enemy_Toby" };
-    if (strstr(nm, "Swarm") || strstr(nm, "WeakPoint") || strstr(nm, "Dummy") || strstr(nm, "Bullet") || strstr(nm, "Boss")) return 0;   // (not one whole enemy, or a boss)
+                                       "Enemy_LikeLike", "Enemy_Lynel", "Enemy_Treant", "Enemy_Zombie_", "Enemy_Toby",
+                                       // (the same test: a Hinox, a Talus with its arms, a Frox, a cave boss: 96.5 to 98.6 %, no leak)
+                                       "Enemy_Giant", "Enemy_Golem", "Enemy_Mogurudo", "Enemy_CaveMaster" };
+    if (strstr(nm, "Swarm") || strstr(nm, "WeakPoint") || strstr(nm, "Dummy") || strstr(nm, "Bullet") || strstr(nm, "Boss") || strstr(nm, "Baby")) return 0;   // (not one whole enemy, or a boss)
     for (unsigned i = 0; i < sizeof pre / sizeof *pre; i++)
         if (!strncmp(nm, pre[i], strlen(pre[i]))) return (int)i + 1;
     // Test (TOTK_COOP_EN_KINDS=<prefix>[,<prefix>...]): more kinds by the start of their actor names, for trying a family.

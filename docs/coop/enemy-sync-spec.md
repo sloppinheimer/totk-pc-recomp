@@ -385,6 +385,55 @@ slot 0), and when slot 0 does not name this game's actor of the stated player it
 in a camp fight: copies went 2 -> 6 -> 12 with their owner's enemies, slot 0 on the stand-in; tables equal, no leak,
 position and command figures as before. Not seen: the head turning. Slot 8 is left alone (these verbs do not use it).
 
+**B.22 One target at a time, no flicker** (design 9.4; built, not seen: it needs two players about as far from an
+enemy). The game's own rule can swap an enemy's target between two players from one frame to the next (research G2
+section 7). In the game that runs the enemy, a change of target slot 0 from one player to another less than three
+seconds after its last change is put back: the slot is filled again with the player it had (main+0xa70a1c) at the
+enemy's next pre-calc, and STATE goes on naming that player. A change to no one, or to something that is no player,
+is left to the game.
+
+**B.23 Held effects, and the spawner** (research R16, R5 Q1; built, not seen).
+- A held effect (a Yiga footsoldier's `Sign`, `Vehicle_Magic`: ExecuteXLinkSearchAndEmitAndFade, enter main+0x24901b0,
+  leave main+0x24902e0) is told at its node's enter and leave; the copy's game makes the emits, keeps the two handles
+  and stops them by the node's own stop (main+0x6e34e8(the pair, -1)).
+- Each game's auto placement puts ambient enemies around its own player, so two players together got them twice,
+  each game's as the other's copies too. A game's push (main+0xa80f28, the name behind x3) is turned away while
+  another game's live enemy of the same name stands within 60 m of its Link.
+
+**B.24 Four more families** [m] (2026-11-17, the standing test of B.19): a Hinox (Giant: same command in 98.2 and
+98.6 % of samples), a Talus with its arms as enemies of their own (Golem: 96.5 and 98.4 %; nine actors bound), a
+Frox (Mogurudo: 98.3 %), a cave boss (CaveMaster: 98.2 %, 6.6 cm while moving): made in the other game, bound,
+followed, no leak, tables equal. They are in the default list; a baby Frox stays out. Not fought: a Hinox's parts
+and grab, a Talus's ore and its arms thrown, a Frox's swallow.
+
+**B.25 Camps across owners**: nothing more to build. A camp's node runs in the game that runs the camp actor and
+tells its members by messages (0x3ddc0006 to 0x3ddc000a; research R5 Q4); those messages are not replayed. A member
+another game runs is shown by its own state (pose, commands, brain verb, target), which is what this sync states.
+[open: a camp's cleared record, which no reading has found.]
+
+**B.26 The bench** (`tools/coop/en_bench.ps1`; section 15's `-Bench` cases were never built). Cases: `fight` (a camp
+fight: tables equal, no leak, copies within 1 cm standing, 12 cm moving, the same command in 95 % of samples),
+`wizzrobe` (shots made on the copy, the copy game's Link burned, the weather asked for), `handover` (a pause: the
+taken-over Wizzrobe in battle for every second logged), `quit` (the owner's game closed: taken over), `families`
+(each default family spawned and followed). A case whose event did not happen in the run is NOT JUDGED, not a pass.
+A copy seen for under six seconds is not judged. Run on the build of 2026-11-17 [m]: `fight` PASS (10 copies: 0.2 cm
+standing, 3 cm moving, the same command in 96.5 % at worst), `wizzrobe` PASS (6 shots stated and made on the copy,
+the copy game's Link burned; no weather attack came up), `handover` PASS (in battle for 20 of 20 seconds logged),
+`quit` PASS. Seen in it: a far cliff guard's copy played the game's far-wait clip (`WaitBattleLODMgr_Wait`) while its
+owner's enemy played `LookUp`, for the 2.5 s it was owned: the game's own far clip on a copy is not overridden.
+
+**B.27 A guarded blow shown to the owner's enemy** (research R17; OFF unless `TOTK_COOP_EN_PARRY=1`). In one game an
+attacker learns that its blow was guarded from a second list of its own SensorHit component ([comps+0x428]+0x58,
+entries of 0xa8 bytes, cleared and filled by the component's calc from the frame's contacts): the entry's class byte
++0x0b has bit 0 for guarded and bit 1 for guarded at the right moment, and the enemy's graphs ask whether any entry
+of the frame has it (QueryIsOnHitFlagGuardJust, main+0x2686148; main+0x2632958) to choose their repelled reaction.
+The class is worked out from the defender's own guard state, which only the defender's game has. Built: on an
+OUTCOME of class 1 or 3 the owner's game adds one entry with that class byte to its enemy's list at the enemy's calc,
+for three frames. Measured with the test setting `TOTK_COOP_EN_TEST_OUTCOME` [m]: the entries were added (30 times)
+and the attack pause set, but no repelled clip was played: the test tells the outcome at moments that are not the
+enemy's blows. The added entry's handles are not made (the slot's old bytes), and one reader of the list follows a
+handle, so it is off until the reaction is seen with a real guard and the handle is made properly.
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is

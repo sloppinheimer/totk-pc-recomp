@@ -611,7 +611,7 @@ int en_copy_hook(Cpu *c, uint64_t off) {
                key, (int)idx, flags, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], st);
         return 0;
     }
-    case 0x25aafec: case 0x21cdf44: case 0x1d71dfc: { int en_fx_hook(Cpu *c, uint64_t off); return en_fx_hook(c, off); }   // coop_enemy_fx.c
+    case 0x25aafec: case 0x21cdf44: case 0x1d71dfc: case 0x24901b0: case 0x24902e0: case 0xa80f28: { int en_fx_hook(Cpu *c, uint64_t off); return en_fx_hook(c, off); }   // coop_enemy_fx.c
     case 0x21cd650: { void en_moon_local(void); en_moon_local(); return 0; }   // the blood moon begins here (coop_enemy.c)
     case 0x1c78060: case 0x1b738e4: case 0x1b73be4: case 0xb28394: { int en_loot_hook(Cpu *c, uint64_t off); return en_loot_hook(c, off); }   // coop_enemy_loot.c
     case FN_BRAIN_VERB: {   // (x0 the brain, w1 the verb, w2 bit 0 force): a held brain keeps its owner's verb
@@ -827,6 +827,10 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         }
     }
     if (!off && !m->sw_on) {
+        {   // (its target put back to the player it had: B.22)
+            uint8_t back = atomic_exchange(&m->tgt_back, 0);
+            if (back && st == EM_OWNED) { uint8_t gv = m->grace_verb; m->grace_verb = 0, m->grace_tgt = back; brain_hold(c, actor, m, "its target put back"); m->grace_verb = gv; }
+        }
         en_hit_precalc(c, actor, m, 0);
         return;
     }
@@ -1130,6 +1134,21 @@ void en_copy_phase0(Cpu *c) {
                 s->hide = hm, s->vis = vb;
             }
             brain_read(e->actor, &s->verb, &s->tgt);
+            {   // One target at a time, no flicker (design 9.4; B.22). The game's own rule can swap between two players at
+                // about the same distance from one frame to the next (research G2 section 7). A change from one player to
+                // another less than three seconds after the last change is put back: the enemy keeps the player it had
+                // just turned to. A change to no one, or to something that is no player, is the game's own business.
+                uint8_t t = s->tgt;
+                int player = t && t != 0xff, was_player = e->tgt_cur && e->tgt_cur != 0xff;
+                if (t != e->tgt_cur) {
+                    if (player && was_player && now - e->tgt_since_ns < 3 * SEC && !en_test_skip('t')) {
+                        atomic_store(&m->tgt_back, e->tgt_cur);
+                        static _Atomic int said;
+                        if (atomic_fetch_add(&said, 1) < 40) rt_log("coop: en: target: %s %016llx turns from player %u to player %u %.1f s after its last change: put back", e->name, (unsigned long long)e->id.a, e->tgt_cur - 1, t - 1, (double)(now - e->tgt_since_ns) / 1e9);
+                        s->tgt = e->tgt_cur;
+                    } else e->tgt_cur = t, e->tgt_since_ns = now;
+                }
+            }
             {   // the battle-info component's words ([comps+0x140]: the flags at +0x38, the word at +0x40 in the low half and the
                 // int at +0x90 in the high; research R15: the life gauge, the marks and the battle music hang on it)
                 uint64_t bi = coop_rd_ptr(en_comps(e->actor) + 0x140);

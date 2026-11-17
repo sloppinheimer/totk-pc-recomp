@@ -69,8 +69,10 @@ typedef struct {
     int32_t show_hp; uint32_t show_dstate; uint8_t show_rag, show_hide, show_mem, show_verb, show_tgt;
     uint32_t eq_att[EN_EQ_N]; uint8_t eq_state[EN_EQ_N], eq_att_tries[EN_EQ_N]; uint32_t eq_state_frame;   // what is fused to each slot's thing at its owner's (name hash), and whether it is drawn (2) or put away (4)
     uint8_t throw_slot, throw_due; uint64_t throw_x3, throw_x4; uint8_t throw_req[0x30];   // a throw of its owner's enemy to make here (B.14)
+    _Atomic uint8_t tgt_back;   // the player (1 + net id) its target slot is to name again: a change too soon after the last (B.22)
     uint32_t show_binfo; uint8_t show_blink, show_bhave;   // its owner's battle-info flags and whether it is in the battle manager's list (B.20)
     uint8_t wx_type, show_wx; uint32_t wx_frame;   // the magic weather its graph last asked for (type + 1) and when; what its owner states
+    _Atomic uint8_t out_cls, out_frames;   // how another player took this enemy's blow (1 guarded, 3 at the right moment), to show its own sensor for a few frames (B.27)
     uint32_t out_id;      // the attack id of the copy's blow whose outcome on this game's Link was last told to its owner
     uint32_t fwd_id;      // the attack id of the contact last sent whole (one blow is sent once)
     uint32_t fwd_frame;   // the frame this game's player's contact on the copy was last sent whole to its owner (its lost life is then not sent as points too)
@@ -104,6 +106,7 @@ typedef struct {
     EnState cur;                      // an owned enemy as last read
     uint64_t read_ns, sent_ns, log_ns;
     // the record
+    uint8_t tgt_cur; uint64_t tgt_since_ns;   // which player its target slot names, and since when (B.22: no flicker)
     uint8_t attn[0x40], attn_have;   // the attention sender's client reason bytes, as this enemy's owner has them (B.16)
     uint32_t st_used, st_lost, st_held, eq_off, eq_att_off; float err_sum, err_max; uint32_t err_n;
 } En;

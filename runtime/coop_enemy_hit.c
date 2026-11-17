@@ -61,6 +61,29 @@ void en_hit_leave(uint64_t actor, EnCell *m) {
 
 void en_hit_precalc(Cpu *c, uint64_t actor, EnCell *m, int off) {
     uint64_t dc = dc_of(actor);
+    if (!off && atomic_load_explicit(&m->out_frames, memory_order_relaxed)) {
+        // Another player guarded this enemy's blow (B.27; research R17). In one game the attacker learns it from a list
+        // of its own SensorHit component ([comps+0x428]+0x58: a list object with capacity +8, array +0x10 and count +0x18
+        // of 0xa8-byte entries), which the component's calc clears and fills again from the frame's contacts; an
+        // entry's class byte +0x0b says guarded (bit 0) and at the right moment (bit 1), and the enemy's graphs ask
+        // "is any entry of this frame's guarded at the right moment" (QueryIsOnHitFlagGuardJust, main+0x2686148, and
+        // main+0x2632958) to choose their repelled reaction. This game's enemy struck only a stand-in and got no such
+        // entry: one is added here, at the enemy's calc, for three frames (whichever of the sensor's calc and the
+        // graph's node comes first, the graph sees it once). Only the class byte is written; the slot's handles are
+        // the list's own and are left as they are.
+        uint64_t sh = coop_rd_ptr(en_comps(actor) + 0x428), l2 = sh ? coop_rd_ptr(sh + 0x58) : 0, arr = l2 ? coop_rd_ptr(l2 + 0x10) : 0;
+        int32_t cap = 0, n = 0;
+        uint8_t cls = atomic_load(&m->out_cls), one = 1;
+        atomic_fetch_sub(&m->out_frames, 1);
+        if (arr && coop_rd(l2 + 8, &cap, 4) && coop_rd(l2 + 0x18, &n, 4) && n >= 0 && n < cap && cap <= 64) {
+            uint64_t e = arr + (uint64_t)n * 0xa8;
+            memcpy((void *)(uintptr_t)(e + 0x0b), &cls, 1), memcpy((void *)(uintptr_t)(e + 0x0a), &one, 1);
+            n++;
+            memcpy((void *)(uintptr_t)(l2 + 0x18), &n, 4);
+            static _Atomic int said;
+            if (atomic_fetch_add(&said, 1) < 30) rt_log("coop: en: outcome: %llx's own sensor is shown a blow %s (entry %d of %d)", (unsigned long long)actor, cls & 2 ? "guarded at the right moment" : "guarded", (int)n, (int)cap);
+        }
+    }
     if (atomic_load_explicit(&m->flinch, memory_order_relaxed)) {   // a flinch not of this game's making: asked as the damage step asks
         uint64_t rag = coop_rd_ptr(en_comps(actor) + 0x3e8);
         atomic_store(&m->flinch, 0);
@@ -142,6 +165,7 @@ void en_dead(En *e, const char *why) {
     en_entry_free(e);
 }
 
+typedef struct { Enid id; uint32_t cls, attack_id; } MOutcome;   // how a copy's blow on a game's own Link ended (B.15)
 void en_hit_phase0(void) {
     uint64_t me = coop_ctr_me(), now = en_now();
     {   // Test (TOTK_COOP_EN_TEST_KILL=<s>): that long after this game first ran an enemy, its one nearest this Link
@@ -183,6 +207,24 @@ void en_hit_phase0(void) {
             if (now - first_ns < (uint64_t)at * SEC) break;
             atomic_fetch_add(&en_map[e->cell].hit_dmg, pts), done = 1;
             rt_log("coop: en: test: a hit of %d points is made up on the copy of %s %016llx", pts, e->name, (unsigned long long)e->id.a);
+        }
+    }
+    {   // Test (TOTK_COOP_EN_TEST_OUTCOME=<s>,<class>): that long after this game first had a copy, the owner of its first
+        // live copy is told that copy's blow on this Link ended as <class> (1 guarded, 3 guarded at the right moment),
+        // every two seconds from then, ten times.
+        static int at = -1, cls, sent;
+        static uint64_t first_ns, last_ns;
+        if (at < 0) { const char *v = cfg_get("TOTK_COOP_EN_TEST_OUTCOME"); at = v ? atoi(v) : 0; const char *k = v ? strchr(v, ',') : NULL; cls = k ? atoi(k + 1) : 3; }
+        for (int i = 0; at && sent < 10 && i < EN_N; i++) {
+            En *e = &en_tab[i];
+            if (!e->used || e->owner == me || e->life != EN_LIVE || e->cell < 0) continue;
+            if (!first_ns) first_ns = now;
+            if (now - first_ns < (uint64_t)at * SEC || now - last_ns < 2 * SEC) break;
+            MOutcome o = {e->id, (uint32_t)cls, 0x7e570000u + (uint32_t)sent};
+            en_send(en_peer_id(e->owner), ENM_OUTCOME, &o, sizeof o);
+            last_ns = now, sent++;
+            rt_log("coop: en: test: the owner of %s %016llx is told its blow on this Link was %s", e->name, (unsigned long long)e->id.a, cls == 3 ? "guarded at the right moment" : "guarded");
+            break;
         }
     }
     for (int i = 0; i < EN_N; i++) {
@@ -233,7 +275,6 @@ void en_hit_phase0(void) {
 // How a copy's blow on this game's Link ended (enemy-sync-spec.md B.15), from the Link's hit update (coop_world.c): told
 // to the copy's owner once per blow. An enemy is found by the attacker actor, or by what it holds or shot.
 void coop_lock_wait(PlatMutex *m);   // coop_spawn.c
-typedef struct { Enid id; uint32_t cls, attack_id; } MOutcome;
 static _Atomic uint32_t n_out_sent, n_out_taken;
 void coop_enemy_outcome(uint64_t attacker, int cls, uint32_t attack_id) {
     uint64_t coop_enemy_holder(uint64_t actor);
@@ -265,6 +306,12 @@ void en_hit_msg(const CoopCtrMsg *m, int from) {
             uint64_t gb = coop_rd_ptr(en_comps(e->actor) + 0x268);
             float was = -1, to = 10.0f + 5.0f * (float)((en_now() >> 8) % 1000) / 1000.0f;
             if ((o->cls == 1 || o->cls == 3) && gb && coop_rd(gb + 0x3c, &was, 4)) memcpy((void *)(uintptr_t)(gb + 0x3c), &to, 4);
+            // (OFF unless TOTK_COOP_EN_PARRY=1: the entry was added 30 times in a two-game run and the enemy played no
+            // repelled clip, and the added entry's handles are whatever the list's unused slot held, which one reader
+            // of the list, main+0x1d2e95c, follows. Until the reaction is seen and the handle is made properly, not done.)
+            static int parry = -1;
+            if (parry < 0) { const char *pv = cfg_get("TOTK_COOP_EN_PARRY"); parry = pv && *pv == '1'; }
+            if (parry && (o->cls == 1 || o->cls == 3) && e->cell >= 0) atomic_store(&en_map[e->cell].out_cls, (uint8_t)o->cls), atomic_store(&en_map[e->cell].out_frames, 3);
             if (atomic_fetch_add(&n_out_taken, 1) < 60)
                 rt_log("coop: en: outcome: %s %016llx's blow on another player %s%s", e->name, (unsigned long long)e->id.a, o->cls == 0 ? "landed" : o->cls == 1 ? "was guarded" : o->cls == 3 ? "was guarded at the right moment" : o->cls == 4 ? "was avoided" : "ended in another way",
                        (o->cls == 1 || o->cls == 3) && gb ? ": its attack pause is set as after a guard" : "");

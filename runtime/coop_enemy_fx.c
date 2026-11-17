@@ -33,11 +33,14 @@ const char *coop_actor_name(uint64_t a, char *out, size_t n);
 int coop_obj_ident(uint64_t a, int *owner, uint32_t *id);                // coop_players.c
 uint64_t coop_obj_find(int owner, uint32_t id, const char *name);       // coop_players.c
 
-typedef struct { Enid id; uint8_t elink, slink, pad[6]; char key[48]; } MFx;
+typedef struct { Enid id; uint8_t elink, slink, mode, pad[5]; char key[48]; } MFx;   // mode: 0 a one-shot, 1 a held one starts, 2 it stops
 typedef struct { Enid id; int32_t obj_owner; uint32_t obj_id; char name[48]; } MPick;
 
 #define FXQ 32
-static struct { _Atomic int cell; uint8_t elink, slink; char key[48]; uint32_t frame; } fxq[FXQ];       // emits waiting for their copy's pre-calc (cell + 1; 0 free)
+// A held effect on a copy (a Yiga footsoldier's Sign, Vehicle_Magic): the two handles its emits gave, kept until its
+// owner's node leaves, when they are stopped by the node's own stop (main+0x6e34e8(the pair, -1: the resource's fade)).
+static struct { int cell; char key[48]; _Alignas(16) uint8_t pair[16]; } held[8];   // (the copy's own thread only: its pre-calc)
+static struct { _Atomic int cell; uint8_t elink, slink, mode; char key[48]; uint32_t frame; } fxq[FXQ];       // emits waiting for their copy's pre-calc (cell + 1; 0 free)
 static struct { _Atomic uint32_t frame; int32_t owner; uint32_t id; char name[48]; } pickq[8];         // ground weapons to delete here
 static _Atomic uint32_t n_fx_sent, n_fx_made, n_wx, n_pick_sent, n_pick_done;
 
@@ -71,6 +74,51 @@ int en_fx_hook(Cpu *c, uint64_t off) {
         }
         plat_mutex_unlock(&en_lock);
         return 0;
+    }
+    case 0x24901b0: case 0x24902e0: {   // a held emit's node enters (key cell +0x40, flags +0x50 and +0x58), and leaves
+        uint64_t node = c->x[0], inst = node > 0x10000 ? coop_rd_ptr(node + 8) : 0, own = inst ? coop_rd_ptr(inst + 8) : 0, actor = own ? coop_rd_ptr(own + 0x1f8) : 0;
+        EnCell *m = actor > 0x10000 ? en_cell_of(actor) : NULL;
+        if (!m || atomic_load_explicit(&m->state, memory_order_relaxed) != EM_OWNED) return 0;
+        uint64_t kc = coop_rd_ptr(node + 0x40) & ~3ull, kp = kc ? coop_rd_ptr(kc) : 0, ec = coop_rd_ptr(node + 0x50), sc = coop_rd_ptr(node + 0x58);
+        MFx f;
+        memset(&f, 0, sizeof f);
+        if (!kp || !coop_rd(kp, f.key, sizeof f.key - 1) || !f.key[0]) return 0;
+        for (char *q = f.key; *q; q++) if (*q < 0x20 || *q >= 0x7f) { *q = 0; break; }
+        if (ec) coop_rd(ec, &f.elink, 1);
+        if (sc) coop_rd(sc, &f.slink, 1);
+        f.mode = off == 0x24901b0 ? 1 : 2;
+        coop_lock_wait(&en_lock);
+        int16_t ei = atomic_load(&m->en);
+        if (ei >= 0 && en_tab[ei].used && f.key[0]) {
+            f.id = en_tab[ei].id;
+            en_send_all(ENM_FX, &f, sizeof f);
+            if (atomic_fetch_add(&n_fx_sent, 1) < 40) rt_log("coop: en: fx: %s's graph %s the held '%s': told to its copies", en_tab[ei].name, f.mode == 1 ? "starts" : "stops", f.key);
+        }
+        plat_mutex_unlock(&en_lock);
+        return 0;
+    }
+    case 0xa80f28: {   // the auto placement asks for an enemy near this game's player (x3: a pointer to its name's pointer)
+        // Each game places its own ambient enemies around its own player; two players together got them twice, each
+        // game's as the other's copies too (research R5 Q1). Not asked for here while another game's enemy of the same
+        // name already stands within 60 m of this game's Link.
+        uint64_t np = c->x[3] > 0x10000 ? coop_rd_ptr(c->x[3]) : 0, link = coop_player_actor(), me = coop_ctr_me();
+        char nm[48] = "";
+        float lp[3];
+        if (!np || !coop_rd(np, nm, sizeof nm - 1) || !link || !coop_rd(link + COOP_ACTOR_POS, lp, 12)) return 0;
+        int near = 0;
+        coop_lock_wait(&en_lock);
+        for (int i = 0; i < EN_N && !near; i++) {
+            En *e = &en_tab[i];
+            if (!e->used || e->owner == me || !e->owner || e->life != EN_LIVE || strcmp(e->name, nm)) continue;
+            float dx = e->pose[0] - lp[0], dz = e->pose[2] - lp[2];
+            near = dx * dx + dz * dz < 60.f * 60.f;
+        }
+        plat_mutex_unlock(&en_lock);
+        if (!near) return 0;
+        static _Atomic int said;
+        if (atomic_fetch_add(&said, 1) < 20) rt_log("coop: en: spawner: this game's auto placement of %s is not asked for: another game's stands within 60 m", nm);
+        c->x[0] = 0;
+        return 1;
     }
     case 0x21cdf44: {   // (x0 the weather manager, w1 the type, w2 reserve only, x3 the asking actor)
         uint64_t actor = c->x[3];
@@ -110,7 +158,7 @@ int en_fx_msg(const CoopCtrMsg *m) {
             for (int k = 0; k < FXQ; k++) {
                 int z = 0;
                 if (!atomic_compare_exchange_strong(&fxq[k].cell, &z, -1)) continue;
-                fxq[k].elink = f->elink, fxq[k].slink = f->slink, fxq[k].frame = coop_sess_frame_no();
+                fxq[k].elink = f->elink, fxq[k].slink = f->slink, fxq[k].mode = f->mode, fxq[k].frame = coop_sess_frame_no();
                 memcpy(fxq[k].key, f->key, sizeof f->key);
                 atomic_store(&fxq[k].cell, en_tab[i].cell + 1);
                 break;
@@ -143,7 +191,21 @@ void en_fx_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         if (atomic_load_explicit(&fxq[k].cell, memory_order_relaxed) != cell) continue;
         uint64_t xl = coop_rd_ptr(en_comps(actor) + 0x68), eu = xl ? coop_rd_ptr(xl + 0x70) : 0, su = xl ? coop_rd_ptr(xl + 0x78) : 0;
         memcpy(key, fxq[k].key, sizeof key);
-        if (frame - fxq[k].frame < 60) {
+        if (fxq[k].mode && frame - fxq[k].frame < 600) {   // a held one: its handles are kept, or it is stopped
+            int h = -1, fr = -1;
+            for (int j = 0; j < 8; j++) { if (held[j].cell == cell && !strcmp(held[j].key, key)) h = j; else if (!held[j].cell && fr < 0) fr = j; }
+            if (fxq[k].mode == 1 && h < 0 && fr >= 0) {
+                memset(held[fr].pair, 0, 16), held[fr].pair[0] = held[fr].pair[8] = 0xff, held[fr].pair[2] = held[fr].pair[3] = held[fr].pair[10] = held[fr].pair[11] = 0xff;
+                if (fxq[k].elink && eu) coop_guest_call(c, MOD_MAIN_BASE + 0xa98cf8, eu, (uint64_t)(uintptr_t)key, (uint64_t)(uintptr_t)held[fr].pair, 0);
+                if (fxq[k].slink && su) coop_guest_call(c, MOD_MAIN_BASE + 0xa98d00, su, (uint64_t)(uintptr_t)key, (uint64_t)(uintptr_t)(held[fr].pair + 8), 0);
+                held[fr].cell = cell, memcpy(held[fr].key, key, sizeof key);
+                rt_log("coop: en: fx: the copy %llx starts the held '%s', as its owner's graph did", (unsigned long long)actor, key);
+            } else if (fxq[k].mode == 2 && h >= 0) {
+                coop_guest_call(c, MOD_MAIN_BASE + 0x6e34e8, (uint64_t)(uintptr_t)held[h].pair, (uint64_t)(uint32_t)-1, 0, 0);
+                held[h].cell = 0;
+                rt_log("coop: en: fx: the copy %llx stops the held '%s', as its owner's graph did", (unsigned long long)actor, key);
+            }
+        } else if (frame - fxq[k].frame < 60) {
             if (fxq[k].elink && eu) { memset(handle, 0, sizeof handle), handle[0] = 0xff, handle[2] = handle[3] = 0xff; coop_guest_call(c, MOD_MAIN_BASE + 0xa98cf8, eu, (uint64_t)(uintptr_t)key, (uint64_t)(uintptr_t)handle, 0); }
             if (fxq[k].slink && su) { memset(handle, 0, sizeof handle), handle[0] = 0xff, handle[2] = handle[3] = 0xff; coop_guest_call(c, MOD_MAIN_BASE + 0xa98d00, su, (uint64_t)(uintptr_t)key, (uint64_t)(uintptr_t)handle, 0); }
             if (atomic_fetch_add(&n_fx_made, 1) < 40) rt_log("coop: en: fx: the copy %llx starts '%s' (effect %u, sound %u), as its owner's graph did", (unsigned long long)actor, key, fxq[k].elink && eu, fxq[k].slink && su);
