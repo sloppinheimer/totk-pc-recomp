@@ -327,7 +327,21 @@ Gate: the camp fight (`camp_melee.txt` for both Links) with the layer on and eve
 checker's list against the baseline above: attacks armed with and without the owner better than before (the play
 limit), nothing new in the once-a-second list.
 
-### 3. All slots and interrupts, for the Bokoblin family
+Gate run (2026-11-17, built from the step's four commits 0a88d075 to 7a54b8d7; 110 s, both Links fighting; pictures
+from both games show the fight, each player's stand-in in it, the same guard effect in both):
+- No crash, no FATAL. Refused in B (the copies' game), each logged once with its caller: a Shooter's prepare
+  (from main+0x2452110), shoot (main+0x258e710) and sleep (main+0x2560898). No refusal "let through" for another actor.
+- Attacks armed, much better (the play limit): with the owner 94, 100, 100, 100, 100, 100 and 90 % per copy (the
+  baseline with both fighting: 22 to 93 %), without the owner 0 or 1 % (baseline up to 62 %).
+- Worse: the copies game A showed of enemies game B ran moved with stutter 1.79, 1.97 and 4.74x and one place error
+  p95 of 0.33 m (targets 1.5x and 0.3 m; the copies B showed of A's enemies, 0.22 to 1.31x; the baseline with the
+  layer off, 0.91 to 1.29x). Whether the play limit or the layer with every verb
+  causes it is not known: the same run with the layer off tells.
+- Once a second, 9 differences held two seconds (the baseline, 8): new are two Bokoblins missing in B for 2 s and a
+  rotation 27 degrees apart for 2 s; the bow held in one game only again (20 s).
+- Blows: a Link's blow on an enemy in both games 17 times, in one only 7, another outcome once; one copy's blow on A's
+  Link with its owner (B) not armed.
+So the gate is not passed: no crash and the refusals work, arming is fixed, but movement got worse on one side.
 
 Also from step 1's runs: a run-time enemy whose actor went in one game (unloaded, or its own far delete) is never made
 again there while it lives on in another; the checker lists it as "missing".
