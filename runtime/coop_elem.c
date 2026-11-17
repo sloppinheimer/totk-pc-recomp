@@ -587,13 +587,19 @@ static int comp_hook(Cpu *c) {
             }
         }
     }
-    {   // The game's own "does not interact with the world" bit on a mirror's component, and off again when the actor is
-        // no mirror any more: an enemy's projectiles are made once and used again, and its owner may become this game.
+    {   // The game's own "does not interact with the world" bit is NOT set on a mirror's component (enemy-sync-spec.md
+        // B.1): the component's update turns it into the bit the element step reads to skip its whole contact step, this
+        // game's Link included, and a copy's flame or fireball then burned no player in any game (a play session,
+        // 2026-11-16). A mirror is kept from the world by the reaction hook (it reaches this game's Link alone) and the
+        // ground contact hook. TOTK_COOP_ELEM_TEST_MIRRORBIT=1 sets the bit as before, to compare. A bit set earlier
+        // is taken off when the actor is no mirror any more: projectiles are made once and used again.
         static _Atomic uint64_t marked[64];
+        static int bit = -1;
+        if (bit < 0) bit = cfg_get("TOTK_COOP_ELEM_TEST_MIRRORBIT") != NULL;
         uint64_t word;
         uint32_t k = (uint32_t)((comp >> 4) * 0x9e3779b1u) & 63;
         int mine = atomic_load_explicit(&marked[k], memory_order_relaxed) == comp;
-        if (mirror && coop_rd(comp + 0x20, &word, 8) && !(word >> 32 & 1)) {
+        if (bit && mirror && coop_rd(comp + 0x20, &word, 8) && !(word >> 32 & 1)) {
             atomic_fetch_or((_Atomic uint64_t *)(uintptr_t)(comp + 0x20), 1ull << 32);
             atomic_store_explicit(&marked[k], comp, memory_order_relaxed);
             atomic_fetch_add(&n_mirrors, 1);

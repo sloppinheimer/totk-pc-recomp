@@ -3537,6 +3537,11 @@ static void link_hit_test(uint64_t me) {
             rt_log("coop: test: linkhit %s at %.3f s: state %u, attacker id %u, flags %#x, type %u, power %u (%.2f), place %.2f %.2f %.2f; life %d",
                    i == COOP_MAX_PLAYERS ? "this Link" : "a co-op Link", frame_step_world_us() / 1e6, stt, w[0x28 / 4], w[0x30 / 4], w[0x38 / 4],
                    w[0x3c / 4], pw, hp[0], hp[1], hp[2], coop_life_of(a));
+            {   // what hit: the damage component's second reference (+0xb8), the weapon or the projectile
+                uint64_t r2 = coop_rd_ptr(dc + 0xb8), a2 = r2 ? coop_rd_ptr(r2 + 0x40) : 0;
+                char n2[48] = "";
+                rt_log("coop: test: linkhit by %s", a2 ? coop_actor_name(a2, n2, sizeof n2) : "nothing named");
+            }
             said++;
             if (said <= 6) {   // the whole record, and where the attacker's id and reference are on the attacker
                 uint32_t r[0x160 / 4];

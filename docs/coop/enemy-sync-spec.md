@@ -176,6 +176,65 @@ actor. `comps(a)` = [a+0x228]; `BSA(a)` = [comps+0x158]; `L(a)` (life) = [comps+
 component) = [comps+0x1c8]; `G(a)` (the animation player) = [[[comps+0x40]+0x18]+0x18]. An actor's generation is the
 u32 at actor+0x10, its state the byte at +0x24 (`ctn_gen_of`, `ctn_alive_as`).
 
+## B. What a copy does besides moving (2026-11-16)
+
+A copy's graphs do not run, so nothing its AI would do happens there unless this sync makes it happen. Found one case
+at a time so far (a shot, an unseen flight), then three more in one play session: a rod's flame not seen in the game
+that copies the Wizzrobe, no hurt from a copy's fireballs to that game's Link, a rain of fireballs that stopped and
+started with each change of owner. This section is the rule for all of them. Research: R8a, R8b, R8c, R9.
+
+**Not by replaying AI nodes** (R9). The eleven families' graphs use 1,367 node classes, at least 315 of them acting on
+the world, 138 of those in one family only; most take inputs worked out at the call from the target or the
+blackboard, 40 hold something between their enter and leave, and many must never be made twice (spawns, drops, death,
+movement, messages to other actors, a game's player-wide settings). A node cannot be run alone from stated values.
+
+**By the entries the nodes end in.** What acts on the world passes through a few component entries. The owner's game
+runs the call and states it with its data; the copy's game makes the same call on its own actor of the same place
+(the enemy, what its slot k holds, what is fused to that: `via` of section A). What is held (armed, a weather asked
+for) travels in STATE as a value, not as a start and an end.
+
+| Entry | Carries | State |
+| --- | --- | --- |
+| Shooter PREPARE main+0x1bf9af8, SHOOT main+0x1bfbc44 | every projectile | built (A) |
+| Play request main+0x4dc628 | every animation, and with it the animation's own events | built (A) |
+| Attack arm main+0x1bf20cc (attack component [comps+0x428], attack block) | a swing, an armed body part | B.3 |
+| ELink main+0xa98cf8, SLink main+0xa98d00 search-and-emit (user, key) | effects and sounds a node starts | B.5, by a list of keys |
+| Magic weather request main+0x21cdf44 (manager, type, reserve, actor) | a Wizzrobe's weather | B.5 |
+
+**B.1 Who decides what.** The game that runs an enemy decides what its attack does to the world: the ground, objects,
+other enemies. It states that (the element sync's cells and things; a hit on an enemy is the hit sync's). Every game
+decides what an attack does to its own Link, from its own actor of the attacker: a stand-in takes no hit anywhere
+(`coop_world.c contacts_filter`). So a copy's attack must be whole towards this game's Link and nothing towards the
+rest. The element sync's reaction hook already lets a shown-only actor's reaction reach this Link alone and its
+ground contact nothing; the "does not interact" bit it also set on a mirror's component (bit 32 of [comp+0x20])
+stops the element's whole contact step (the update main+0x30efa0 turns it into bit 33, which the element step
+main+0x18d32c4 reads), Link's included, and makes the element answer "not active". The bit is not set on a mirror.
+
+**B.2 An enemy's AI memory is state.** What a graph keeps in the actor's blackboard and acts on later is the enemy's,
+not the game's that happened to run it: a Wizzrobe's `IsMagicWeather` (set by the weather action at an animation
+event, cleared only when the brain goes back to wandering; while it is set the always-running graph asks for the
+weather every frame and shoots a fireball at a random interval, with no timer: R8c) stayed in the game that had run
+the summon. The keys a family's graphs set and read across actions are listed per family and travel in STATE; a game
+that takes an enemy over writes them to its own actor through the game's blackboard setter before its graphs run.
+First list: Wizzrobe `IsMagicWeather`, `IsShootMagicObj`. [open: the setter's call (main+0x740b68, R8c) is not read.]
+
+**B.3 Melee.** A swing is armed either by the node ExecuteSensorHitSetupAttack (main+0x2444d80) or by the attack
+component's own poll of the playing clips' AtCollision events (main+0x42ec98), which reads no AI state and arms 148
+of the 221 enemy actors (R8a, R9). [run] whether that poll runs on a copy and its swing takes this Link's life once.
+If it does, nothing is added for those; for the node-armed ones the owner states the arm (the attack block) and the
+copy makes it.
+
+**B.4 Never made on a copy**: spawns and deletes, drops, death (their own syncs), messages to other actors, a game's
+player-wide settings (GameBalance), UI, boss and event nodes, physics set-up, chemical switches, movement, lifting
+and throwing, camera shake.
+
+**B.5 Order.** B.1 (the bit) with a run that also says whether the flame is seen again; B.3's run; B.2; then effects
+and sounds by key and the weather request, each when a play session or a run shows it missing.
+
+**Not known**: whether the flame's missing picture is the bit (R8b: low to medium); whether a minutes-long rain is
+the game's own (R8c: probably; no timer in the data); what ends an arm (R9); which effect keys the animations
+already fire, so which a replay would double.
+
 ## 0. Scope and order of building
 
 Everything in D is in scope. The order, each step ending in its bench pass (section 15):

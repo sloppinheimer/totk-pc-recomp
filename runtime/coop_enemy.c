@@ -941,6 +941,15 @@ void coop_enemy_phase0(Cpu *c) {
     if (!atomic_load(&en_active)) { plat_mutex_unlock(&en_lock); return; }
     uint64_t now = en_now();
     uint32_t frame = coop_sess_frame_no();
+    {   // The record: this game's Link's life at each change (what an owner's and a copy's attacks take from it).
+        static int32_t was = -1;
+        static int said;
+        uint64_t link = coop_player_actor();
+        int coop_life_of(uint64_t a);   // coop_players.c
+        int32_t hp = link ? coop_life_of(link) : -1;
+        if (hp != was && hp >= 0 && was >= 0 && said++ < 300) rt_log("coop: en: this Link's life %d -> %d", was, hp);
+        if (hp >= 0) was = hp;
+    }
     for (int i = 0; i < EN_MAP_N; i++) {
         EnCell *m = &en_map[i];
         uint64_t a = atomic_load(&m->actor);
