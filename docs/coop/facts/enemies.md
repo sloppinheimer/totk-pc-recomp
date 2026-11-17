@@ -339,7 +339,7 @@ R22 Q5, enemy/verify/06; spec A ("Shots"), B.9, B.13, B.14, B.17, B.35, B.36, 5.
 | --- | --- | --- | --- |
 | Make an actor | main+0x599670 (create request) | x1 &name, x2 the create argument block, x3 the handle cell. 75 callers, most of them not enemy spawners (weapons, drops, projectiles, pouch, horses, props); tell them by return address. Layout of the block: engine.md | read |
 | Make equipment | main+0xaf100c | (component, slot, &name, w3, initial life, initial extra life, &attachment name, fade, ex-effect type, ex-effect value, flag, recorded extra life, flag, attachment life); calls the create at the owner's pose | read |
-| Equipment mode | main+0x4f59ec(component, slot, mode) | 0 create, 1 equip (draw), 2 drop (put away) | read |
+| Equipment mode | main+0x4f59ec(component, slot, mode) | 0 drop where it is (the drop record main+0x1b738e4 with a NaN transform), 1 draw (main+0x4f5700), 2 put away (main+0x4f5194); 1 and 2 make, delete and write nothing outside the holder (research enemy/gaps/R24; older notes gave 0 as "create") | read |
 | Drop a held thing | main+0x1b738e4 | a drop request with its velocity record (record +0xc0..+0xdc) | read |
 | Throw a held thing | main+0x1b73be4 | the same shape; the 4th and 5th arguments are flags (bit 0 of each); the 0x30-byte request is copied into the slot (+0xc0..) | read; what reads it there is open |
 | Remember a dropped or thrown weapon | main+0x1ce23c0 | so the enemy can fetch it again | read |
@@ -388,6 +388,39 @@ Corrects PLAN.md step 2 and research enemy/gaps/G8, which give main+0x1bb16a0 as
 "lifter throw": the pick-up is main+0x1d71dfc (research enemy/gaps/R16), and main+0x1ba7710 is the release setter
 shared by pick-up, throw and fall (research enemy/gaps/R20); a throw's entry is main+0x1ba796c.
 
+### 4.1 Refusing them while a copy's action runs
+
+What each caller an action's node reaches does when the call is skipped, and the answer that keeps it going (**read**,
+research enemy/gaps/R24 and R25: each function's callers read after the call; two spot-checked by the lead,
+main+0x4f59ec and main+0x25a0d2c). A node's result word is node+0x18: | 0x80000000 done, | 0xc0000000 failed, neither
+still running.
+
+| Function | Skip and answer | Why that answer |
+| --- | --- | --- |
+| Create main+0x599670 | x0 = 0; u32 at the caller's [sp+8] (error code out) = 1 if not null; the handle cell (x3) untouched | the game's own "manager closed" path; every node-reached caller ignores x0 or finds the handle empty |
+| Equipment create main+0xaf100c, static equipment main+0xc4961c | x0 = 0, at the entry (inside them is too late: they write the slot's bookkeeping first and set +0x4600 bit 45 on a failed create) | every node caller ignores x0; the copy gets the owner's equipment by the held-things rule |
+| Equipment mode main+0x4f59ec | mode 0 only (or leave it to the drop record) | modes 1 and 2 change the copy's own body |
+| Drop record main+0x1b738e4, throw record main+0x1b73be4 | void | they only write the slot's request; with flag A they also call main+0x1c95440, which writes the placement's game-data flag |
+| Remove main+0x1b70a04 | void | deletes the held weapon and kills its attachment |
+| Pick up main+0x1d71dfc | x0 = 1 (OneShotTargetEquipTarget is then done, as on the owner) | 0 is also safe but fails the node |
+| Lifter throw main+0x1ba796c | x0 = 1 (0 is the game's "nothing held") | not hooked yet; its only enemy node is denied |
+| Shooter prepare main+0x1bf8df4 | x0 = 0xffffffff (no record) | refuse at the entries, not main+0x1bf9af8 / main+0x1bfbc44, which the shot replay calls |
+| Shooter shoot main+0x1bfbaa4, main+0x1bf8f74, main+0x1bfbb28 | x0 = 0 | "no prepared record" |
+| Shooter sleep main+0x1bfa698, main+0x1bfa4e0, main+0x1bfa87c | x0 = 0 | the owner's sleeps come by the replay |
+| Death request main+0x1b4b738 and its wrapper main+0x1953184 | x0 = 1 ("started") | the copy's death comes from the owner's; 0 is also safe |
+| Drop now main+0x1b55b48, drop reserve main+0x1b55bb4 | void; x0 = 0 | drops a node makes without a death (OneShotDropDrop, not denied by class) |
+| placementSetDead main+0x195321c, the Bool64 setter main+0x2ab6dcc | void | kill flags and game data a node writes |
+| Noise main+0x1f40d34, terror main+0x4cac5c | void | not carried by the sync: heard only where made |
+
+The mod's own replays on a copy (equipment create, draw and put away, the throw, the shots and sleeps) run in
+`en_copy_precalc` before the action call, so a refusal keyed on the action's thread mark never touches them (**read**,
+R24, R25). Node classes that reach these and are not in `coop_enemy_act_deny.inc` (R24): CreateDynamicEquipment-
+IfUnequipped, CreateStaticEquipment and ...FromBB, EquipAndAttachmentByLevelSensor, EquipStandControl, OneShotDropDrop,
+ExecuteGenericRequestCreateActor, OneShotTargetEquipTarget, ExecuteOctarockStoneKeepPredation (deny it whole: its
+refused pick would still let its holder's entry go). Open (R24, R25): who reads the equipment user's +0x4600 bit 45 and
++0x4749; the ActorHolder entry's create; the lifter's actor offset; ExecuteShooterPrepare's leave; the answers of two
+sleep entries.
+
 ## 5. Animation of an enemy (was: spec 7.3, enemy-design 6.2-6.4)
 
 ### 5.1 The update and its play request
@@ -433,7 +466,12 @@ shared by pick-up, throw and fall (research enemy/gaps/R20); a throw's entry is 
 - Events are raised by the animation update alone: hold words went on and off with the clip while no graph ran.
   **measured** 2026-11-15, run 8.
 - Native consumers found: the attack arming main+0x42ec98 (section 7.2) and the bone control main+0x434fb0. Consumers
-  of sound, effect, trail, JstAvdRec and Ragdoll events: **open**. What a clock jump does to an event it jumps over:
+  of sound, effect, trail, JstAvdRec and Ragdoll events: **open**.
+- Writing a slot's clock (ctx+0x68) does not move its events: a copy's AtCollision came when its clip had played as
+  far as the owner's had at its arm, counted from the copy's own start, whatever its written clock said (77 of 77 armed
+  episodes in three camp fights). So a copy started late and caught up by a clock jump arms its attack late by that
+  much. **measured** 2026-11-17 (research enemy/gaps/R26, from the mismatch checker's records). Why the update keeps
+  event time apart from ctx+0x68, and whether main+0x1b569fc ("sets an absolute frame", section 5.1) moves both:
   **open**.
 
 ### 5.4 The animation blackboard

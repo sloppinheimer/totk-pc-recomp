@@ -289,6 +289,33 @@ class missing from the list is found.
 
 Done when: each function is read and blocked, and a scripted run with every verb on logs the refusals with no crash.
 
+Read (2026-11-17, research enemy/gaps/R24, R25, R26; facts/enemies.md 4.1 has each function's safe answer). The
+design, built as one piece:
+1. **Refusals.** At each function of facts/enemies.md 4.1, first thing in its hook: when `tl_act_actor` is set (and,
+   where the function names its actor, that actor is the marked one), skip the body with the answer the table gives
+   and log the function and return address once per pair. New hooks: the lifter throw main+0x1ba796c, drop now
+   main+0x1b55b48 and reserve main+0x1b55bb4, the noise and terror producers main+0x1f40d34 and main+0x4cac5c,
+   placementSetDead main+0x195321c's existing hook, the Bool64 setter main+0x2ab6dcc. main+0x1ba7710 and
+   main+0x1bb16a0 come off the hook list when nothing else uses them. The mod's own replays run outside the mark and
+   are untouched.
+2. **Deny list.** The nine classes R24 found missing (facts 4.1) go into `coop_enemy_act_deny.inc`;
+   OneShotEquipmentUserRequestChangeState stays off it.
+3. **Marks by actor** (SYNC-006). Each decision keyed on a thread mark checks the call's own actor: the node tick under
+   `tl_act_actor` compares the node's actor ([[[node+8]+8]+0x1f8]); the target reset main+0x24f0a9c compares [x0]
+   with the held actor instead of testing that `tl_grace_bsa` is set (today it leaks into every later calc on the
+   thread until the next enemy's, with no nesting needed). That holds whether or not one calc can run inside another,
+   which reading did not settle (R26).
+4. **The play limit** (both models, measured: most of the copies' extra and late arming, so late blows on the copy's
+   game's Link). `coop_enemy_copy.c slots_apply` stamps its 12-frame limit at every play, so a command that follows
+   another within 200 ms (Turn, then Attack) starts 200 ms late; the clock is then jumped to the owner's, which does
+   not move the clip's events (facts 5.3). Stamp the limit only when a play did not take. Catching up without a jump
+   across an event (main+0x1b569fc, read first) is left for after this step.
+
+Gate: the camp fight (`camp_melee.txt` for both Links) with the layer on and every verb on
+(`TOTK_COOP_EN_ACT=1`, `TOTK_COOP_EN_ACT_VERBS=all`): no crash, each refusal logged by function and caller, and the
+checker's list against the baseline above: attacks armed with and without the owner better than before (the play
+limit), nothing new in the once-a-second list.
+
 ### 3. All slots and interrupts, for the Bokoblin family
 
 Also from step 1's runs: a run-time enemy whose actor went in one game (unloaded, or its own far delete) is never made
