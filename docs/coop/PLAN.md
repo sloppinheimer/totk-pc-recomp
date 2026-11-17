@@ -113,16 +113,17 @@ Left, and where it goes:
   entry and fixed again (see its commit).
 - A protocol change for contraption ownership (SEC-007 in the report; no step yet). The session code keeps it to
   invited players.
+- With step 1's runs: SYNC-007, a contraption copy's device striking an enemy this game runs counts in both games.
+  Leaving it to the device's game (tried in e9b9ddcf, taken back) loses the blow when that game has not loaded the
+  enemy; the checker's life column shows which case happens.
 - Replaced by step 1's checker: the enemy bench's own bookkeeping (tables equal, shot counts), the empty enemy list of
   the sync audit.
 - `coop_hooks.h`: the enemy hooks 0x2314ab0, 0x42ec98, 0x1b87a9c, 0x195321c, 0xa70a1c, 0x4e603c, 0x4f59ec, 0xc448c8
   and 0x1b70a04 have no handler; step 2 is to use them and replaces 0x1bb16a0 and 0x1ba7710.
 - Small, when the files are next touched: duplicated helpers (quaternion conversions, FNV hashes, main-body lookups,
-  the equipment-slot walk, the "paused" tests, `coop_spawn.c`'s copies of `coop_game.c`'s reads and create; the
-  report's consolidation table); comments that still name removed files or tests (fewer than the 40 listed before);
+  the equipment-slot walk, the "paused" tests, the report's consolidation table); comments that still name removed files or tests (fewer than the 40 listed before);
   `coop_cfg_names.inc` holds 7 co-op names; 48 input scripts in
-  `tools/coop/` that no file names; the character stand-in's lightning flag (`charmod.py build_set`); the saved bench
-  change (`build/contraptions-uncommitted-2026-11-17.patch`); the untracked `map_hold.txt` and `menu_hold.txt`; the
+  `tools/coop/` that no file names; the character stand-in's lightning flag (`charmod.py build_set`); the untracked `map_hold.txt` and `menu_hold.txt`; the
   parked branches `claude/coop-arrow-tail-wip` and `claude/quizzical-poincare-8711f5`.
 
 ### 1. The mismatch checker

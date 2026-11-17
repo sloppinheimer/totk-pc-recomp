@@ -98,15 +98,13 @@ static void contacts_filter(uint64_t dc) {
                     if (atomic_fetch_add(&said_e, 1) < 20) rt_log("coop: contact on the copy of %s by another enemy (%s with %s): taken out (the game that runs the struck one counts it)", coop_actor_name(a, an, sizeof an), by ? coop_actor_name(by, bn, sizeof bn) : "-", w ? coop_actor_name(w, wn, sizeof wn) : "-");
                     continue;
                 }
-                // A device another game runs (followed here), or its shot, striking an enemy the sync shares: the game
-                // that runs the device sees the same blow on its own actor of that enemy and counts it there (on its
-                // copy, sent here as a hit when this game owns the enemy). Kept here too, the blow counted twice: on a
-                // copy its lost life went to the owner a second time; on an enemy this game owns it took the damage
-                // here and again from the hit message (code review, 2026-11-17).
+                // A device another game runs (followed here), or its shot, striking a copy: the game that runs the
+                // device sees the same blow and counts it; kept here too, the copy's lost life went to the owner a
+                // second time. (A followed device striking an enemy this game runs is still counted in both: [open]. It
+                // is not left to the device's game, which has no copy of the enemy when it has not loaded it, and the
+                // blow would then do nothing at all; a run settles which happens, PLAN.md step 0.)
                 int coop_ctn_emitter_of_followed(uint64_t a);   // coop_ctn.c
-                int en_cell_state(uint64_t actor);              // coop_enemy.c
-                int victim_owned = en_cell_state(a) == 4;       // (EM_OWNED: run here, a copy in another game)
-                if ((victim_copy || victim_owned) && ((w && coop_ctn_emitter_of_followed(w)) || (by && coop_ctn_emitter_of_followed(by)))) {
+                if (victim_copy && ((w && coop_ctn_emitter_of_followed(w)) || (by && coop_ctn_emitter_of_followed(by)))) {
                     static _Atomic int said_d;
                     char an[48];
                     if (atomic_fetch_add(&said_d, 1) < 10) rt_log("coop: contact on the copy of %s by a followed device: taken out (the game that runs the device counts it)", coop_actor_name(a, an, sizeof an));
