@@ -2937,10 +2937,22 @@ static void contacts_filter(uint64_t dc) {
         // every blow counted twice (two-game run, 2026-11-15).
         int en_cell_state(uint64_t actor);   // coop_enemy.c
         if (coop_enemy_new() && en_cell_state(a)) {
-            int keep = 0;
+            // On a COPY, the hits of other enemies are taken out too (an enemy's own blow or what it holds, and a
+            // projectile it shot, in this game a copy's or this game's own): the game that runs the struck enemy has
+            // the same blow on its own actor from its own actor of the attacker, and that one counts. Left in, the
+            // life this copy lost was sent to its owner as this game's player's hit, and the blow counted twice.
+            int coop_enemy_role(uint64_t actor), coop_enemy_shot_mirror(uint64_t proj);
+            uint64_t coop_enemy_holder(uint64_t actor);
+            int keep = 0, victim_copy = coop_enemy_role(a) == 2;
             for (int k = 0; k < cnt; k++) {
-                uint64_t e = base + (uint64_t)k * CONTACT_SZ, r2 = coop_rd_ptr(e + 0x80), by = r2 ? coop_rd_ptr(r2 + 0x40) : 0;
+                uint64_t e = base + (uint64_t)k * CONTACT_SZ, r1 = coop_rd_ptr(e + 0x68), r2 = coop_rd_ptr(e + 0x80), by = r2 ? coop_rd_ptr(r2 + 0x40) : 0, w = r1 ? coop_rd_ptr(r1 + 0x40) : 0;
                 if (ct_is_link(by) == 2) continue;
+                if (victim_copy && ((by && by != a && (coop_enemy_role(by) || coop_enemy_holder(by))) || (w && (coop_enemy_holder(w) || coop_enemy_shot_mirror(w))))) {
+                    static _Atomic int said_e;
+                    char an[48], bn[48], wn[48];
+                    if (atomic_fetch_add(&said_e, 1) < 20) rt_log("coop: contact on the copy of %s by another enemy (%s with %s): taken out (the game that runs the struck one counts it)", coop_actor_name(a, an, sizeof an), by ? coop_actor_name(by, bn, sizeof bn) : "-", w ? coop_actor_name(w, wn, sizeof wn) : "-");
+                    continue;
+                }
                 if (keep != k) memmove((void *)(uintptr_t)(base + (uint64_t)keep * CONTACT_SZ), (void *)(uintptr_t)e, CONTACT_SZ);
                 keep++;
             }
