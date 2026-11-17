@@ -225,6 +225,30 @@ against this baseline, the checker needs those (an enemy's effects by key, its a
 Lasting differences found in both runs, with or without the layer: a Guard Bokoblin's bow held in one game only, and
 (one run) an enemy each game ran as its own. One run each: no repeat.
 
+The baseline again with what an action does (2026-11-17, the same two runs after the checker learnt attacks armed,
+effects by key and blows; no FATAL; pictures show A fighting in the camp in both games, B watching from 30 to 40 m):
+
+| | layer off | layer on |
+|---|---|---|
+| attacks armed with the owner (four Bokoblins that fought) | 99, 93, 52, 100 % | 96, 86, 61, 89 % |
+| attacks armed on the copy without the owner | 1, 3, 47, 0 % | 24, 3, 42, 12 % |
+| blows between an enemy and A's Link in both games | 8 of 30 (22 in A only) | 10 of 28 (18 in A only) |
+| effects and sounds by key | none recorded in either game | none recorded in either game |
+| movement (lag, error p95, stutter) | 70 ms, 0.05 to 0.08 m, 1.10 to 1.51x | 70 ms, 0.03 to 0.04 m, 1.19 to 1.26x |
+
+- Arming is the first measure where the two models differ: with the layer on, copies arm attacks their owner did
+  not (up to 42 % of their armed frames; 24 % for the Dark Bokoblin, which agreed 99 % with the layer off). The
+  action's own arming nodes and the arm replay may both be arming: step 2 reads this first.
+- One Bokoblin (p5cb495b...) disagrees in both models (about half its armed frames): its attacks are armed on the copy
+  at other times than on its owner. Not read yet.
+- Blows: every blow listed in one game only is in A (where they happened) and not in B, whose Link was 30 to 40 m
+  off: B did not register the copy's blows on A's stand-in, nor the stand-in's on the copies, most of the time.
+  Whether that is what B shows (a blow that misses there) or the game not testing hits that far from its own Link is
+  not known; a run with B close to the fight tells.
+- Effects by key: the Bokoblins started none in this fight (the enemy sync logged none either), so the effect record
+  is not shown to work yet; a Fire Wizzrobe (its `WeatherFlash` is started by key, measured 2026-11-17) shows it.
+- One run each, no repeat.
+
 Step 1 is done by its "done when": the checker runs on a scripted pair, lists differences by actor and kind, finds the
 planted desync, and one run hosted from the Co-op tab.
 
