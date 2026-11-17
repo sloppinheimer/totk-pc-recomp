@@ -32,4 +32,30 @@ extern const uint32_t coop_skel_path[8];
 int coop_is_skeleton(uint64_t s);
 extern _Atomic uint64_t coop_pose_comp, coop_bindings_seen[16], coop_pose_binding;
 
+// A blow's contacts (coop_contact.c). brel: where the contact's body sat from the struck actor's main body, plus 1.
+#define CONTACT_SZ 0x1c0
+#define CONTACT_MAX 2
+typedef struct { uint32_t key, to, kind, n, brel[CONTACT_MAX]; uint8_t e[CONTACT_MAX][CONTACT_SZ]; } ContactPacket;
+_Static_assert(sizeof(ContactPacket) <= COOP_HIT_MAX, "ContactPacket fits a HIT packet");
+#define ECONTACT_KIND 0x4543   // "CE"
+#define ECONTACT_ARROW 0x4541  // "AE"
+void coop_contact_take(const ContactPacket *cp, int from);   // a "CE"/"AE" packet from player `from`
+uint64_t coop_actor_ref(uint64_t a);   // an actor's reference object (+0x40 the actor), 0 none found
+extern uint64_t coop_world_me;         // coop_world.c: this game's Link
+uint32_t coop_world_enemy_key(const char *name, const float home[3]);   // coop_world.c: the key of an actor placed nowhere
+uint32_t coop_world_name_hash(uint64_t a);                             // coop_world.c: an actor's name's hash
+int coop_actor_placed(uint64_t a);                                      // coop_world.c: an actor of the map's placement
+extern uint64_t coop_world_enemies[512];                                // coop_world.c: every live enemy here, as last listed
+extern int coop_world_n_enemies;
+int coop_life_of(uint64_t a);                                           // coop_world.c: an actor's life points, -1 without a life component
+
+// The sync of enemies made at run time (coop_spawn_sync.c).
+uint32_t coop_world_spawn_key(uint64_t a);   // 0: not an actor the spawn sync announced or made
+#define SPAWN_KIND 0x5053   // "SP"
+#define SPAWN_GONE 0x4753   // "SG"
+typedef struct { uint32_t key, to, kind, pad; char name[48]; float pos[3], rot[9]; } SpawnPacket;
+_Static_assert(sizeof(SpawnPacket) <= COOP_HIT_MAX, "SpawnPacket fits a HIT packet");
+void spawn_tick(Cpu *c);
+void spawn_take(Cpu *c, const SpawnPacket *sp, int from);
+
 #endif

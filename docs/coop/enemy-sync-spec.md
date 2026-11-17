@@ -442,10 +442,11 @@ other things, and it can only go once they are out). Moved as they were, no beha
 - the players' body poses and the stand-in that shows them, into `coop_standin_pose.c`;
 - the rotating ground's sync, into `coop_ground.c` (its packets still come in through the world file's reader of the
   HIT channel, which hands them to `ground_take`).
-`coop_world_int.h` declares what the split files and the world file share. Still in the world file, in the order they
-are to leave: the actor registry and keys, the contact packets and the hit-update dispatcher (which the new sync's
-blows travel by), the HIT channel's reader, the sync of actors made at run time (which gives the new sync its key for
-a night enemy or a spawner's), and then the older enemy sync itself, which is deleted last.
+- the contact packets a player's blow on a copy travels by, the contact filter and the hit-update dispatcher, into
+  `coop_contact.c`;
+- the sync of enemies made at run time and its key table, into `coop_spawn_sync.c`.
+`coop_world_int.h` declares what the split files and the world file share. The world file (about 1,450 lines) keeps
+the actor registry and keys, the HIT channel's reader, and research probes.
 
 **B.29 More families, and a weapon picked up from the ground.**
 - Taken by default now [m] (the standing test of B.19, command the same in that share of samples): a Gleeok
@@ -475,7 +476,8 @@ a night enemy or a spawner's), and then the older enemy sync itself, which is de
 - The audit file's `enemies` array is empty; `tools/coop/en_report.py` is the enemy sync's record.
 - What this loses until built: an enemy of a family this sync does not take (the dungeon bosses, Ganondorf and his
   phantoms, Kohga's constructs, the Goron mid-boss, the sand worm, swarms, weak-point part actors, a baby Frox) is
-  each game's own; on a copy, a blow by another game's Zonai device is no longer taken out of its contacts.
+  each game's own. (On a copy, a blow by a device another game runs is taken out of its contacts as before; a
+  followed device striking an enemy this game runs is counted in both games, as it was: [open].)
 - [m] before the code was cut, with only the defaults flipped: the bench's fight, wizzrobe and handover cases, tables
   equal, no leak. The state with the code cut builds and has not been run.
 
