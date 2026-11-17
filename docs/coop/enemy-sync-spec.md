@@ -297,6 +297,18 @@ thing again with what is fused to its owner's when its own has none, and draws o
 (main+0x4f59ec). [built; a swap, a fused thing and a sheathe not seen in a run.] Not built: a throw replayed on the
 copy, a picked-up thing taken from the copy's ground.
 
+**B.12 The blood moon** (research R13 section 5, G3 Q6; built, not seen in a run: no moon came up). At the moon's
+start in a game (main+0x21cd650) the life number goes up by one; every tombstone, resting record and entry of a
+placement's earlier life is dropped; the other games are told (MOON) and do the same. A game told of the moon within
+five minutes does not raise the number again when its own moon begins. Entries of enemies made at run time stay.
+[open: a tombstone whose save flag the moon does not reset (reset masks 208 and 80: cave and sky enemies) is dropped
+too, since the mask is not read; a game is not made to start its own moon when told of another's.]
+
+**B.13 A drop or a throw, at once** [m]. A drop (main+0x1b738e4) or a throw (main+0x1b73be4) by an enemy this game
+runs is told to the other games at the call (EQUIP), and their copies let go of that slot's thing at their next
+pre-calc instead of after the three looks of the held-things rule. The let-go thing is the owner's loose object
+(B.9). Not built: the throw made by the copy itself, so a thrown weapon hurts the copy game's Link.
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is
