@@ -153,7 +153,8 @@ static int coop_enemy_bones_put(Cpu *c, uint64_t a, const uint8_t *pa, const uin
     uint64_t sk = enemy_skeleton(a), recs = sk ? coop_rd_ptr(sk + 0x18) : 0, model = enemy_model(a);
     uint16_t have = 0, na = 0, nb = 0;
     memcpy(&na, pa, 2), memcpy(&nb, pb, 2);
-    if (!recs || !coop_rd(sk + 0x48, &have, 2) || have != na || na != nb) return 0;
+    // (a pose holds at most (1100 - 30) / 12 = 89 bones: a count above it, from another game, read past the buffers)
+    if (!recs || !coop_rd(sk + 0x48, &have, 2) || have != na || na != nb || na > (1100 - POSE_ROOT) / POSE_BONE) return 0;
     for (int b = 0; b < na; b++) {
         float qa[4], qb[4], q[4], ta[3], tb[3], R[9];
         bone_unpack(pa + POSE_ROOT + b * POSE_BONE, qa, ta), bone_unpack(pb + POSE_ROOT + b * POSE_BONE, qb, tb);
@@ -228,6 +229,7 @@ static int coop_enemy_bone_world(uint64_t a, int bone, float out[3]) {
 }
 
 #define POSE_MAX 1100
+_Static_assert(POSE_MAX == 1100, "coop_enemy_bones_put bounds the bone count by 1100 bytes");
 #define POSE_SLOTS 8
 #define POSE_KEY 0x706f7365ull
 typedef struct { uint64_t key; Enid id; uint32_t seq; uint16_t len, pad; uint8_t d[POSE_MAX]; } MPose;
@@ -308,6 +310,14 @@ void en_pose_phase0(void) {
         uint64_t age = 0;
         int len = id ? coop_ctr_latest(id, ENM_POSE, en_state_key(e->id) ^ POSE_KEY, &in, sizeof in, &age) : 0;
         if (len < (int)offsetof(MPose, d) + 30 || !enid_eq(in.id, e->id) || in.len > POSE_MAX || len != (int)offsetof(MPose, d) + in.len || age > 300000000ull) continue;
+        {   // the bones it says it holds are in it, and its root is a place and a turn (another game's packet: checked)
+            uint16_t nbones = 0;
+            float root[7];
+            memcpy(&nbones, in.d, 2), memcpy(root, in.d + 2, sizeof root);
+            int ok = in.len >= POSE_ROOT + nbones * POSE_BONE;
+            for (int k = 0; k < 7; k++) ok &= isfinite(root[k]) && fabsf(root[k]) < 1e5f;
+            if (!ok) continue;
+        }
         PoseSlot *s = slot_of(e->cell, 1);
         if (!s || (s->in_n && s->in_seq == in.seq)) continue;
         if (s->in_n) memcpy(s->in[0], s->in[1], POSE_MAX), s->in_ns[0] = s->in_ns[1];

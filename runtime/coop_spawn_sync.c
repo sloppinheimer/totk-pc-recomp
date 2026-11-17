@@ -282,6 +282,8 @@ void spawn_take(Cpu *c, const SpawnPacket *sp, int from) {
             return;   // (have it)
         }
     if (sp->kind != SPAWN_KIND || memchr(sp->name, 0, sizeof sp->name) == NULL || !spawn_kind(sp->name)) return;
+    for (int i = 0; i < 3; i++) if (!isfinite(sp->pos[i]) || fabsf(sp->pos[i]) > 1e5f) return;   // (a NaN place matched
+    for (int i = 0; i < 9; i++) if (!isfinite(sp->rot[i]) || fabsf(sp->rot[i]) > 1.01f) return;  // any enemy's below)
     for (int k = 0; k < 32; k++) if (made[k].state && made[k].key == sp->key) return;
     // This game's own spawner made one of that name at that place (both games run the same spawners): that one
     // takes the key, no second is made.

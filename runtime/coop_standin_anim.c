@@ -42,6 +42,17 @@ static uint64_t anim_caller_of(uint64_t a) {
 // slot +0xa8) is held at +0xc0 of a layer object the graph points to: [G+0x1a8]+0xc0 for a Link's whole-body layers,
 // [G+0x2c8]+0xc0 for the upper-body one (idle, walking and the bow; TOTK_COOP_TEST_ANIMSLOTS, 2026-11-07). The same
 // offset names the same mask in every game (both load Link's animation set), so it is what is sent. 0: not found.
+// The offsets a mask may be named by: the three layers facts/player.md lists and every one anim_bind_off found on this
+// game's own Link (bit off/8). A peer's offset (NetState.anim[].bind, .mask[].off) is used only when it is one of
+// them: any other offset made this game read through, and write into, whatever object it reached (code review,
+// 2026-11-17).
+static _Atomic uint64_t bind_ok[4] = {(1ull << (0x1a8 / 8 % 64)) | (1ull << (0x1f0 / 8 % 64)), 0, 0, 0};
+static int bind_allowed(uint16_t off) {
+    if (!off || off >= 0x800 || (off & 7)) return 0;
+    if (off == 0x2c8) return 1;
+    unsigned j = off / 8;
+    return (atomic_load_explicit(&bind_ok[j / 64], memory_order_relaxed) >> (j % 64)) & 1;
+}
 static uint16_t anim_bind_off(uint64_t g, uint64_t b) {
     static __thread struct { uint64_t g, b; uint16_t off; } cache[8];
     if (!g || !b) return 0;
@@ -53,10 +64,11 @@ static uint16_t anim_bind_off(uint64_t g, uint64_t b) {
             if (gw[j] > 0x100000000ull && gw[j] < 0x8000000000ull && coop_rd_ptr(gw[j] + 0xc0) == b) off = (uint16_t)(j * 8);
     static __thread int next;
     cache[next].g = g, cache[next].b = b, cache[next].off = off, next = (next + 1) & 7;
+    if (off) atomic_fetch_or_explicit(&bind_ok[off / 8 / 64], 1ull << (off / 8 % 64), memory_order_relaxed);
     return off;
 }
 static uint64_t anim_bind_at(uint64_t g, uint16_t off) {
-    uint64_t layer = g && off && off < 0x800 ? coop_rd_ptr(g + off) : 0;
+    uint64_t layer = g && bind_allowed(off) ? coop_rd_ptr(g + off) : 0;
     return layer ? coop_rd_ptr(layer + 0xc0) : 0;
 }
 // bind: the mask (0 none): passed as a record whose +8 is it, as the play reads it.

@@ -246,8 +246,12 @@ static void follow_host_weather(Cpu *c, int32_t host) {   // host -1: no host (a
 static int set_day_seconds(Cpu *c, float t) {
     uint64_t wm = coop_rd_ptr(MOD_MAIN_BASE + WM_SLOT);
     if (!wm) return 0;
-    while (t < 0) t += 86400.0f;
-    while (t >= 86400.0f) t -= 86400.0f;
+    // (fmodf, not subtraction loops: at +Inf or a float of about 2^41 and more, subtracting a day gave the same value
+    // back and the loop never ended; the host's time is also checked as it comes in, coop_net.c state_clean)
+    if (!isfinite(t)) return 0;
+    t = fmodf(t, 86400.0f);
+    if (t < 0) t += 86400.0f;
+    if (t >= 86400.0f) t = 0;
     __uint128_t v0 = c->v[0];
     uint32_t bits;
     memcpy(&bits, &t, 4);
@@ -1264,6 +1268,14 @@ static int copies_live[COOP_MAX_PLAYERS];   // per slot, its copies in state 3 (
 // A copy's actor is still the one made: alive (state 2..6) and of the copy's name. The game can free a copy's actor
 // (a paraglider's went away by itself) and give its memory to another; one not checked was still placed, woken and
 // deleted (code review, 2026-11-06).
+// A world object from the network with a usable place and rotation: finite, within 100 km of the map's middle (a
+// local place within 100 m of its frame), a rotation of length near 1 (senders normalise it, mat_quat).
+static int obj_sane(const CoopObj *o) {
+    float lim = o->flags & (COOP_OBJ_LOCAL | COOP_OBJ_ONLINK) ? 100.0f : 1e5f, l2 = 0;
+    for (int i = 0; i < 3; i++) if (!isfinite(o->pos[i]) || fabsf(o->pos[i]) > lim) return 0;
+    for (int i = 0; i < 4; i++) { if (!isfinite(o->q[i])) return 0; l2 += o->q[i] * o->q[i]; }
+    return l2 > 0.5f && l2 < 1.5f;
+}
 static int actor_is(uint64_t a, const char *name) {   // alive, and of that name (not another actor in its memory)
     int32_t st = 0;
     char nm[48];
@@ -3046,6 +3058,7 @@ static void objs_receive(Cpu *c) {
             memcpy(&o, pk + 4 + e * sizeof(CoopObj), sizeof o);
             if (!o.id) continue;
             o.name[sizeof o.name - 1] = 0;
+            if (o.name[0] && !obj_sane(&o)) continue;   // (a place or rotation that is not a number, or far off the map)
             int j = 0, free = -1;
             for (; j < COOP_OBJS && s->objs_want[j].id != o.id; j++)
                 if (free < 0 && !s->objs_want[j].id) free = j;
@@ -3887,10 +3900,16 @@ static void fused_from_world(uint64_t a) {
 }
 static uint64_t my_shield_fused;
 // The actor on a proxy's shield (found as on this Link's, every 10 reports) given its owner's scale each report.
+// The actor found is kept with its name and the stand-in it was found on, and is written only while it is still alive
+// under that name on that stand-in: the address alone was written after the actor was gone (a slot reused, the
+// stand-in made again, the shield changed), into whatever the game had put there (code review, 2026-11-17).
 static void proxy_fuse_scale(Slot *s, const float sc[3]) {
-    static uint64_t found[COOP_MAX_PLAYERS];
+    static uint64_t found[COOP_MAX_PLAYERS], found_on[COOP_MAX_PLAYERS];
+    static char found_name[COOP_MAX_PLAYERS][48];
     static int t[COOP_MAX_PLAYERS], said;
     int i = (int)(s - slots);
+    if (found_on[i] != s->actor) found[i] = 0, found_on[i] = s->actor;
+    if (found[i] && !actor_is(found[i], found_name[i])) found[i] = 0;
     uint64_t eq = s->actor ? eq_of_actor(s->actor) : 0;
     if (!eq || !eq_points_to(eq, s->actor)) return;
     uint64_t shield = eq_item(eq, 2);
@@ -3908,8 +3927,10 @@ static void proxy_fuse_scale(Slot *s, const float sc[3]) {
                    (unsigned long long)ss.best, sc[0]);
         }
         found[i] = ss.best;
+        found_name[i][0] = 0;
+        if (found[i] && !coop_actor_name(found[i], found_name[i], sizeof found_name[i])[0]) found[i] = 0;
     }
-    if (found[i]) memcpy((void *)(uintptr_t)(found[i] + 0x2e4), sc, 12);
+    if (found[i]) memcpy((void *)(uintptr_t)(found[i] + 0x2e4), sc, 12);   // (sc: finite, 0.01 to 10, coop_net.c state_clean)
 }   // the actor fused to this Link's shield (shield_fuse_tick), 0 none
 static void shield_fuse_tick(uint64_t me, uint64_t my_eq) {
     static int t, same, none;
