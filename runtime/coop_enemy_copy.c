@@ -589,7 +589,6 @@ static void held_rebuild(void) {
 
 // ---- The switch (S 5) --------------------------------------------------------------------------------------------------
 static __thread uint64_t tl_off_actor;   // the switched-off actor whose calc this thread entered last (the leak net)
-void en_copy_calc_other(void) { tl_off_actor = 0, tl_grace_bsa = 0, tl_grace_narrow = 0, tl_grace_cell = NULL; }   // (coop_enemy.c coop_enemy_calc)
 
 extern __thread uint64_t tl_act_actor;   // coop_enemy_act.c: the copy whose action request the mod is making
 int en_copy_hook(Cpu *c, uint64_t off) {

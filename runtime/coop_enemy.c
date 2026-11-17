@@ -207,9 +207,7 @@ static EnCell *map_touch(uint64_t actor) {
         if (blind < 0) { const char *e = cfg_get("TOTK_COOP_EN_TEST_BLIND"); blind = e ? atoi(e) : 0; }
         if (blind && (!session_ns || en_now() - session_ns < (uint64_t)blind * SEC)) return NULL;
     }
-    // (a plain load: the game is calling this actor's calc, so the actor is there; a checked read was a system call
-    // for every actor's calc each frame, with or without a session)
-    memcpy(&gen, (const void *)(uintptr_t)(actor + 0x10), 4);
+    if (!coop_rd(actor + 0x10, &gen, 4)) return NULL;
     EnCell *m = en_cell_of(actor);
     if (m) {
         if (atomic_load_explicit(&m->gen, memory_order_relaxed) == gen) return m;
@@ -1062,14 +1060,7 @@ int coop_enemy_calc(Cpu *c) {
             rt_log("coop: en: the net tick has not come round for %.1f s: it %s (stage %d)", (double)(now - in) / 1e9, out >= in ? "is not called" : "stands inside the enemy sync", atomic_load(&tick_stage));
     }
     EnCell *m = actor ? map_touch(actor) : NULL;
-    if (!m) {
-        // Another actor's calc on this thread: the copy's thread-local marks are cleared, so its node ticks are not
-        // compared with a copy's (two reads each) and a held brain's grace does not turn away this actor's target
-        // reset (code review, 2026-11-17).
-        void en_copy_calc_other(void);   // coop_enemy_copy.c
-        en_copy_calc_other();
-        return 0;
-    }
+    if (!m) return 0;
     atomic_store_explicit(&m->frame, coop_sess_frame_no(), memory_order_relaxed);
     en_copy_precalc(c, actor, m);
     return 0;
