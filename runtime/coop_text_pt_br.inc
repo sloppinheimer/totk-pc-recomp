@@ -7,7 +7,7 @@
     [UI_MENU_COOP_HOST] = "Criar uma sessão",
     [UI_MENU_COOP_HOST_DESC] = "Cria uma sessão cooperativa neste PC e entra nela. Na mesma rede, os outros entram com o endereço mostrado acima; pela internet, com o seu endereço de internet, depois que o roteador encaminhar a porta UDP 41900 para este PC.",
     [UI_MENU_COOP_JOIN] = "Entrar",
-    [UI_MENU_COOP_JOIN_DESC] = "Entra na sessão no endereço do anfitrião digitado acima: um endereço como 10.0.0.20 ou um nome, com :porta quando não for 41900, depois um espaço e o código da sessão que a aba Co-op do anfitrião mostra (10.0.0.20 K7Q2MX).",
+    [UI_MENU_COOP_JOIN_DESC] = "Entra na sessão no endereço do anfitrião digitado acima: um endereço como 10.0.0.20 ou um nome, com :porta quando não for 41900, depois um espaço e o código da sessão que a aba Co-op do anfitrião mostra (10.0.0.20 K7Q2MX4P).",
     [UI_MENU_COOP_LEAVE] = "Sair da sessão",
     [UI_MENU_COOP_LEAVE_DESC] = "Encerra o cooperativo neste PC: os Links dos outros jogadores somem. Se você for o anfitrião, a sessão acaba para todos.",
     [UI_MENU_COOP_IDLE] = "Fora de uma sessão cooperativa. Crie uma, ou digite o endereço do anfitrião e entre.",

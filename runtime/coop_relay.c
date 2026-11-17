@@ -38,6 +38,7 @@ static volatile int relay_gen;    // a new value stops the running relay thread
 static volatile int relay_port;   // nonzero while a relay runs here
 static volatile int relay_players;
 static char relay_code[COOP_CODE_LEN + 1];   // this session's code (set before the thread starts)
+static PlatMutex host_lock = PLAT_MUTEX_INIT;   // the router's forward opened by the relay thread, closed by Leave
 
 typedef struct { struct sockaddr_in addr; int id; char name[17]; uint64_t seen_ns; } Peer;
 
@@ -75,7 +76,9 @@ static void relay_thread(void *arg) {
     rt_log("coop relay: listening on UDP %d", port);
     // The router is asked to forward the port only once the relay has it: a relay that could not bind it left a
     // forward to whatever held the port, and Leave did not take it back (Leave now always does).
+    plat_mutex_lock(&host_lock);   // (with coop_end: a Leave between the test and the open left a forward nobody closed)
     if (relay_gen == gen) coop_upnp_open();
+    plat_mutex_unlock(&host_lock);
     Peer peers[COOP_MAX_PLAYERS];
     int np = 0;
     uint8_t buf[8192], out[8192];
@@ -178,23 +181,27 @@ void coop_relay_stop(void) {
 int coop_relay_port(void) { return relay_port; }
 const char *coop_relay_code(void) { return relay_port ? relay_code : ""; }
 
-// A new session code: 6 characters from an alphabet without look-alikes (0/O, 1/I), 30 bits for 6.
+// A new session code: COOP_CODE_LEN (8) characters from an alphabet without look-alikes (0/O, 1/I): 40 bits, so
+// guessing it over the internet takes years, not hours.
 // TOTK_COOP_HOST_CODE sets it (the test scripts, which join by script).
 static void new_code(void) {
     static const char abc[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     const char *fixed = cfg_get("TOTK_COOP_HOST_CODE");
     if (fixed && *fixed) {
-        snprintf(relay_code, sizeof relay_code, "%s", fixed);
-        for (int i = 0; relay_code[i]; i++) if (relay_code[i] >= 'a' && relay_code[i] <= 'z') relay_code[i] -= 32;
-        return;
+        int k = 0;   // (letters and digits only, upper case: what a join string can carry after its space)
+        for (; *fixed && k < COOP_CODE_LEN; fixed++)
+            if ((*fixed >= '0' && *fixed <= '9') || (*fixed >= 'A' && *fixed <= 'Z') || (*fixed >= 'a' && *fixed <= 'z'))
+                relay_code[k++] = (char)(*fixed >= 'a' ? *fixed - 32 : *fixed);
+        relay_code[k] = 0;
+        if (k) return;
     }
-    uint8_t r[6] = {0};
+    uint8_t r[COOP_CODE_LEN] = {0};
     if (!plat_random(r, sizeof r)) {   // (no system randomness: the clock, which is weaker but still unknown outside)
         uint64_t t = plat_now_ns() * 0x9e3779b97f4a7c15ull;
         memcpy(r, &t, sizeof r);
     }
-    for (int i = 0; i < 6; i++) relay_code[i] = abc[r[i] & 31];
-    relay_code[6] = 0;
+    for (int i = 0; i < COOP_CODE_LEN; i++) relay_code[i] = abc[r[i] & 31];
+    relay_code[COOP_CODE_LEN] = 0;
 }
 
 // This PC's addresses to give the other players: the one its traffic to the internet leaves from (a UDP "connect"
@@ -224,8 +231,10 @@ void coop_host(const char *name) {
 
 void coop_end(void) {
     coop_net_leave();
+    plat_mutex_lock(&host_lock);
     coop_upnp_close();   // (always: a forward asked for is taken back whether or not the relay ever bound the port)
     coop_relay_stop();
+    plat_mutex_unlock(&host_lock);
 }
 
 // Tests of the menu's actions without a menu: TOTK_COOP_TEST_HOST=<s>, TOTK_COOP_TEST_JOIN=<s>:<address>,

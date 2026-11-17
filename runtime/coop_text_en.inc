@@ -7,7 +7,7 @@
     [UI_MENU_COOP_HOST] = "Host a session",
     [UI_MENU_COOP_HOST_DESC] = "Starts a co-op session on this PC and joins it. On the same network the others join with the address shown above; over the internet, with your internet address, once your router forwards UDP port 41900 to this PC.",
     [UI_MENU_COOP_JOIN] = "Join",
-    [UI_MENU_COOP_JOIN_DESC] = "Joins the session at the host's address typed above: an address such as 10.0.0.20 or a name, with :port when it is not 41900, then a space and the session code the host's Co-op tab shows (10.0.0.20 K7Q2MX).",
+    [UI_MENU_COOP_JOIN_DESC] = "Joins the session at the host's address typed above: an address such as 10.0.0.20 or a name, with :port when it is not 41900, then a space and the session code the host's Co-op tab shows (10.0.0.20 K7Q2MX4P).",
     [UI_MENU_COOP_LEAVE] = "Leave the session",
     [UI_MENU_COOP_LEAVE_DESC] = "Ends co-op on this PC: the other players' Links go away. When you host, the session ends for everyone.",
     [UI_MENU_COOP_IDLE] = "Not in a co-op session. Host one, or type the host's address and join.",

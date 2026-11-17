@@ -3,6 +3,7 @@
 // this player. The game side (coop_spawn.c) publishes this player's state with coop_net_publish and reads the other
 // players' latest states with coop_net_remote; both only copy under a lock.
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -90,6 +91,38 @@ static int same_addr(const struct sockaddr_storage *a, socklen_t alen, const str
         return x->sin6_port == y->sin6_port && !memcmp(&x->sin6_addr, &y->sin6_addr, sizeof x->sin6_addr);
     }
     return 0;
+}
+
+// A player's state as it comes from the network, made safe to use before anything reads it: another player's game
+// may be modified or broken, and before this every reader took the floats, strings and offsets as sent (a time of day
+// of +Inf hung the game in coop_players.c set_day_seconds; NaN places went into the stand-in's matrix). 0: drop it.
+static int state_clean(NetState *st) {
+    for (int i = 0; i < 3; i++) if (!isfinite(st->pos[i]) || fabsf(st->pos[i]) > 1e5f) return 0;
+    for (int i = 0; i < 9; i++) if (!isfinite(st->rot[i]) || fabsf(st->rot[i]) > 1.01f) return 0;
+    if (!isfinite(st->day_seconds) || st->day_seconds < 0 || st->day_seconds > 86400.0f) st->day_seconds = -1;
+    int ok = 1;
+    for (int i = 0; i < 3; i++) ok &= isfinite(st->shield_pos[i]) && fabsf(st->shield_pos[i]) < 100.0f;
+    for (int i = 0; i < 4; i++) ok &= isfinite(st->shield_q[i]) && fabsf(st->shield_q[i]) <= 1.01f;
+    if (!ok) st->flags &= ~(1u << 11), memset(st->shield_pos, 0, sizeof st->shield_pos), memset(st->shield_q, 0, sizeof st->shield_q);
+    ok = 1;
+    for (int i = 0; i < 3; i++) ok &= isfinite(st->shield_fuse_scale[i]) && st->shield_fuse_scale[i] >= 0.01f && st->shield_fuse_scale[i] <= 10.0f;
+    if (!ok) memset(st->shield_fuse_scale, 0, sizeof st->shield_fuse_scale);
+    for (int i = 0; i < 3; i++) if (!isfinite(st->ride_off[i])) memset(st->ride_off, 0, sizeof st->ride_off), st->ride_owner = 0;
+    for (int i = 0; i < COOP_ANIM_SLOTS; i++) {
+        CoopAnim *a = &st->anim[i];
+        if (!isfinite(a->frame) || !isfinite(a->rate) || fabsf(a->frame) > 1e6f || fabsf(a->rate) > 1e3f) a->idx = 0xffff;
+        if (a->bind & 7) a->bind = 0;
+    }
+    for (int i = 0; i < COOP_ANIM_MASKS; i++) {
+        CoopMask *m = &st->mask[i];
+        if ((m->off & 7) || m->off >= 0x800 || m->nb > 16 || m->nw > 16) memset(m, 0, sizeof *m);
+    }
+    if (!isfinite(st->blur_frame) || !isfinite(st->blur_start) || !isfinite(st->blur_param)) st->blur_on = 0, st->blur_frame = st->blur_start = st->blur_param = 0;
+    if (st->world_us < -1 || st->world_us > (int64_t)1 << 50) st->world_us = -1;
+    for (int k = 0; k < 6; k++) st->gear[k][31] = 0;
+    for (int k = 0; k < 3; k++) st->fuse[k][31] = 0;
+    st->character[sizeof st->character - 1] = 0;
+    return 1;
 }
 
 static void net_thread(void *arg) {
@@ -223,7 +256,7 @@ static void net_thread(void *arg) {
         if ((joined && t_now - heard_ns > 6000000000ull) || (!joined && t_now - started_ns > 15000000000ull)) {
             if (net_gen != gen) break;   // (left already: the new session's error stays)
             snprintf(last_error, sizeof last_error, joined ? "the session ended (the host left or cannot be reached)"
-                                                           : "no answer from %s", host);
+                                                           : "no answer from %s (check the address and the session code after it)", host);
             rt_log("coop net: %s", last_error);
             if (net_gen == gen) {
                 net_active = 0, set_my_id(0);
@@ -253,9 +286,16 @@ static void net_thread(void *arg) {
                 plat_mutex_unlock(&lock);
             }
         } else if (kind == STATE && id >= 1 && id <= COOP_MAX_PLAYERS && n >= HEADER + (int)sizeof(NetState)) {
+            NetState in;
+            memcpy(&in, buf + HEADER, sizeof in);
+            if (!state_clean(&in)) {
+                static int said;
+                if (said++ < 5) rt_log("coop net: a state of player %d with a place or rotation that is not a number was dropped", id);
+                continue;
+            }
             plat_mutex_lock(&lock);
             if (!others[id].live) rt_log("coop net: player %d is here", id);
-            memcpy(&others[id].st, buf + HEADER, sizeof(NetState));
+            others[id].st = in;
             others[id].at_ns = plat_now_ns();
             set_live(id, 1);
             plat_mutex_unlock(&lock);

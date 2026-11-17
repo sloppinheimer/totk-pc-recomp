@@ -3,14 +3,14 @@
 ## Online (any number of players up to 8)
 1. Everyone loads a save, opens the menu (F1) and goes to the **Co-op** tab, and types a name.
 2. One player chooses **Host a session**. That game runs the relay itself (`runtime/coop_relay.c`) and joins it. The
-   tab then shows the address the others use on the same network with this session's **code** (six letters and
+   tab then shows the address the others use on the same network with this session's **code** (eight letters and
    digits, new at each Host), and asks the host's router (UPnP) to forward UDP
    port 41900 to this PC for players over the internet: when it works, the tab shows the internet address to give
    them. When the router has UPnP off, or the provider shares one address among customers (CGNAT, the tab says so),
    forward UDP 41900 by hand or use a virtual network (Tailscale, ZeroTier). The forward is removed on Leave. If the
    game is closed while hosting, a forward with the usual one-hour lease expires within the hour; a router that only
    takes a lease "until removed" keeps it until it is removed by hand.
-3. The others type that address, a space and the code under **Host's address** (`10.0.0.20 K7Q2MX`; the tab's copy
+3. The others type that address, a space and the code under **Host's address** (`10.0.0.20 K7Q2MX4P`; the tab's copy
    buttons copy both) and choose **Join**. The relay seats no one without the code, so a stranger who reaches the
    forwarded port cannot join. Players appear in each other's games
    as they connect and disappear when they leave (**Leave the session**, or closing the game). When the host leaves

@@ -1,6 +1,6 @@
 """Co-op relay: every game connects here over UDP and the relay forwards each player's state to the others.
 
-    python server/coop_relay.py [--port 41900] [--code K7Q2MX]
+    python server/coop_relay.py [--port 41900] [--code K7Q2MX4P]
 
 Packets (little-endian), all starting with the header  b'TKCO', version u8, type u8, player id u8, reserved u8:
   1 HELLO    client -> relay: name (16 bytes, NUL padded), then the session code (8 bytes, NUL padded). Answered
