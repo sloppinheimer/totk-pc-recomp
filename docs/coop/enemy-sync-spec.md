@@ -277,8 +277,10 @@ dying enemy's drop asks for (main+0x599670 called inside main+0x1c78060) and eac
 loot far from the owner's Link and every weapon near an enemy stayed in the owner's game alone. Seen: a Bokoblin's
 sword and its Item_Enemy_77 made in the owner's game and copied in the other. A copy's death record arms the kill
 counters' writer (main+0xb28394) as the owner's does; on a copy the record's done bit is set at its entry, so the
-shared counters go up once [built; the counter's value not read in a run]. Open: the save flags for a game with no
-actor at the placement; a camp's cleared record.
+shared counters go up once [built; the counter's value not read in a run]. A game with no actor at a dead enemy's
+placement is NOT given the save's defeated flag by this sync, on purpose: the co-op mod does not write one game's
+world progress into another's save unless `TOTK_COOP_SHARE_WORLD=1`, and with that on the flag already travels by
+value (research R13 section 1). Within a session the tombstone keeps the enemy away. Open: a camp's cleared record.
 
 **B.10 A player's blow on a copy, sent to its owner whole** (`coop_world.c`, the older sync's contact packets; OFF
 unless `TOTK_COOP_EN_FWD=1`). The points-only HIT gives the owner's enemy a flinch and no more: the reaction is
