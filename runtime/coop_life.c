@@ -204,8 +204,30 @@ static int g4_refuse(Cpu *c, const char *what, uint64_t actor, uint64_t arg) {
     return 1;
 }
 
+// Test (TOTK_COOP_TEST_FOELOG=1, research R23): each delete or death request of the enemy TOTK_COOP_TEST_SPAWN made,
+// with its reason or kind (x1) and the caller chain: the AI's far delete (main+0x2534d0c in the chain), the lifetime
+// function's (main+0x9550f0: returns 0x955a20, 0x955ef0, the deferred runner 0x2fc560, 0x2fd080) or a death first.
+static void foe_end_log(Cpu *c, uint64_t off) {
+    static int on = -1;
+    static _Atomic int said;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_FOELOG") != NULL;
+    uint64_t coop_spawn_test_foe(void);   // coop_spawn.c
+    uint64_t foe = on ? coop_spawn_test_foe() : 0;
+    if (!foe) return;
+    uint64_t a = c->x[0];
+    if (off == DEATH_COMPONENT) a = coop_rd_ptr(c->x[0] + 0x18);
+    if (a != foe || atomic_fetch_add(&said, 1) >= 40) return;
+    uint64_t lr[4];
+    lr_chain(c, lr);
+    rt_log("coop: test: foe end: %s main+%#llx x1 %llu at %.2f s, from main+%#llx <- %#llx <- %#llx <- %#llx",
+           off == DELETE_REQUEST ? "delete" : off == DELETE_DEFER ? "delete (deferred)" : off == DEATH_REQUEST ? "death" : "death (component)",
+           (unsigned long long)off, (unsigned long long)c->x[1], frame_step_world_us() / 1e6, (unsigned long long)lr[0], (unsigned long long)lr[1],
+           (unsigned long long)lr[2], (unsigned long long)lr[3]);
+}
+
 int coop_life_hook(Cpu *c, uint64_t addr) {
     uint64_t off = addr - MOD_MAIN_BASE;
+    if (off == DELETE_REQUEST || off == DELETE_DEFER || off == DEATH_REQUEST || off == DEATH_COMPONENT) foe_end_log(c, off);
     // A bond made or broken here: the builds recorded at once (coop_ctn.c). Before the x3 branch, which returns for the
     // break addresses (review 1 findings 68 and 79: breaks never reached it).
     if (off == BOND_MAKER || off == 0x1cf54d4 || off == 0x2999fe8 || off == 0x1c042bc || off == 0x2995024) {

@@ -91,7 +91,11 @@ int coop_player_places(float (*pos)[3], float (*rot)[9], int *ids, uint64_t *act
 // Test (TOTK_COOP_TEST_FOELOG=1): every second, the enemy TOTK_COOP_TEST_SPAWN made: its awareness words (component
 // +0x158, the words coop_world.c AWARE_OFF sends: 0xc182 unaware, 0xc082 aware in the first), its distance to this
 // PC's Link and to the first other player's stand-in, and the life of both (a stand-in fought by it loses life
-// only in its owner's game: contacts_filter), so a test can tell whom it noticed and went for.
+// only in its owner's game: contacts_filter), so a test can tell whom it noticed and went for; and its brain verb
+// ([BSA+0x58], BSA = component +0x158) and its home pose (actor+0x284, the place QueryEnemyGetHomeOrNestPosition-
+// AndRotation main+0x262f020 returns for an actor with no nest; research R23): why a test-spawned Bokoblin leaves
+// after about 5 s (PLAN.md step 0). coop_life.c logs its delete and death requests (coop_spawn_test_foe).
+uint64_t coop_spawn_test_foe(void) { return foe; }   // (any thread: a stale value only names an actor that is gone)
 static void foe_log(void) {
     static int on = -1;
     if (on < 0) on = cfg_get("TOTK_COOP_TEST_FOELOG") != NULL;
@@ -103,6 +107,10 @@ static void foe_log(void) {
     uint32_t w[6] = {0};
     uint64_t aw = rd_ptr(rd_ptr(foe + 0x228) + 0x158);
     for (int i = 0; aw && i < 6; i++) rd(aw + off[i], &w[i], 4);
+    uint32_t verb = 0;
+    float home[3] = {0};
+    if (aw) rd(aw + 0x58, &verb, 4);
+    rd(foe + 0x284, home, 12);
     float fp[3], mp[3], ps[COOP_MAX_PLAYERS][3], rs[COOP_MAX_PLAYERS][9];
     uint64_t me = player_actor(), acts[COOP_MAX_PLAYERS];
     int ids[COOP_MAX_PLAYERS], n = coop_player_places(ps, rs, ids, acts, COOP_MAX_PLAYERS);
@@ -115,8 +123,9 @@ static void foe_log(void) {
     float ap[3] = {0};   // the stand-in's own actor position: not its owner's place in the first test (enemies may sense it there)
     if (n > 0 && acts[0]) rd(acts[0] + ACTOR_POS, ap, 12);
     rt_log("coop: test: foe %s at %.1f %.1f %.1f (world %.0f s): awareness %x %x %x %x %x %x; %.1f m from this Link, "
-           "%.1f m from player %d's stand-in (its actor position %.1f %.1f %.1f)", actor_name(foe, nm, sizeof nm), fp[0], fp[1],
-           fp[2], us / 1e6, w[0], w[1], w[2], w[3], w[4], w[5], dme, dst, n > 0 ? ids[0] : 0, ap[0], ap[1], ap[2]);
+           "%.1f m from player %d's stand-in (its actor position %.1f %.1f %.1f); brain verb %u, home %.1f %.1f %.1f",
+           actor_name(foe, nm, sizeof nm), fp[0], fp[1], fp[2], us / 1e6, w[0], w[1], w[2], w[3], w[4], w[5], dme, dst, n > 0 ? ids[0] : 0,
+           ap[0], ap[1], ap[2], verb, home[0], home[1], home[2]);
 }
 static void spawn(Cpu *c, int k) {
     if (k == 2) dump_resident("before the Player request");
