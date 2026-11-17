@@ -1966,8 +1966,14 @@ static const char *const deny_pre[] = {"Player", "Armor_", "Accessory_", "Player
                             // the other game
                             "UltraHand_Connection_Effect"};
 
-static int deny_name(const char *nm) {
+static int deny_prefix(const char *nm) {   // (the prefixes alone: what a fused material is checked against)
+    if (is_beam(nm)) return 0;   // (PlayerBeam: a Master Sword's beam, sent on purpose though it starts with "Player")
     for (size_t i = 0; i < sizeof deny_pre / sizeof *deny_pre; i++) if (!strncmp(nm, deny_pre[i], strlen(deny_pre[i]))) return 1;
+    return 0;
+}
+static int deny_name(const char *nm) {
+    if (is_beam(nm)) return 0;
+    if (deny_prefix(nm)) return 1;
     // Helpers that go with this Link and are not things in the world: EventCamera and CameraXLinkControl were sent
     // as moved objects (pair test, 2026-11-05).
     // (Not for Zonai devices: SpObj_ControlStick, the steering stick, has "Control" in it and was never sent.)
@@ -2646,21 +2652,22 @@ static void destroy_watch(uint64_t me) {
 // Within m metres of the stand-in of player `from` (LIVE here), as a place another game reports about its own Link's
 // surroundings must be: its notices about this game's placed objects were taken anywhere (code review, 2026-11-17).
 static int near_sender(int from, const float p[3], float m) {
-    const Slot *s = slot_for(SRC_NET, from);
-    float sp[3];
-    if (!s || s->state != LIVE || !s->actor || !coop_rd(s->actor + COOP_ACTOR_POS, sp, 12)) return 0;
+    NetState st;   // (the place it last reported, not its stand-in's: that lags behind a warp, or is being made again)
+    uint64_t age;
+    if (!coop_net_remote(from, &st, &age)) return 0;
+    const float *sp = st.pos;
     float d2 = 0;
     for (int k = 0; k < 3; k++) d2 += (p[k] - sp[k]) * (p[k] - sp[k]);
     return d2 <= m * m;
 }
 static void destroy_apply(Cpu *c, const CoopObj *o, int from) {
-    {   // at most 4 a second from each player, as its sender sends at most 4 a scan (destroy_watch)
+    {   // at most 30 a second from each player (its sender sends at most 4 a scan, a scan every 10 ticks)
         static uint64_t since[COOP_MAX_PLAYERS + 1];
         static int n[COOP_MAX_PLAYERS + 1];
         uint64_t now = plat_now_ns();
         if (from < 1 || from > COOP_MAX_PLAYERS || deny_name(o->name)) return;
         if (now - since[from] > 1000000000ull) since[from] = now, n[from] = 0;
-        if (n[from]++ >= 4) return;
+        if (n[from]++ >= 30) return;
     }
     KeyFind kf = {0};
     kf.key[0] = o->id & ~COOP_OBJ_KEYED, kf.name[0] = o->name, kf.n = 1;
@@ -4524,7 +4531,7 @@ void coop_players_tick(Cpu *c) {
             const char *bare = k > 2 && s->gear_want[k][0] ? coop_char_bare(s->character, k - 3) : NULL;
             if (bare) snprintf(s->gear_want[k], sizeof s->gear_want[k], "%s", bare), s->dye_want[k] = -1;
             if (k < 3) memcpy(s->fuse_want[k], st.fuse[k], 32), s->fuse_want[k][31] = 0;
-            if (k < 3 && deny_name(s->fuse_want[k])) s->fuse_want[k][0] = 0;
+            if (k < 3 && deny_prefix(s->fuse_want[k])) s->fuse_want[k][0] = 0;
             if (k < 3) s->out_want = (s->out_want & ~(1 << k)) | (int)((st.flags >> (8 + k)) & 1) << k;
             if (k == 0) s->attack_want = (int)(st.flags >> 13 & 1);
         }
