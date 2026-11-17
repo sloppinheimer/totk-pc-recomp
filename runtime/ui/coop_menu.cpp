@@ -33,16 +33,6 @@ extern "C" void coop_overlay_draw(float w, float h, float scale, bool menu_open)
 extern "C" const char *coop_overlay_shot(uint64_t frame) {
     const char *shot = coop_markers_shot(frame);   // TOTK_COOP_TEST_MARKSHOTS (tests)
     if (!shot) shot = coop_notices_shot();   // (after the markers': it overwrote their shot, merge 53e62d1)
-    // TOTK_COOP_TEST_TAGSHOT=<frame>: that frame's swapchain image, overlay and all, to TOTK_MENU_TEST_DIR (tests)
-    static long long tag_shot = -2;
-    if (tag_shot == -2) tag_shot = cfg_get("TOTK_COOP_TEST_TAGSHOT") ? atoll(cfg_get("TOTK_COOP_TEST_TAGSHOT")) : -1;
-    if (!shot && tag_shot > 0 && frame >= (uint64_t)tag_shot) {
-        static char tpath[512];
-        const char *dir = cfg_get("TOTK_MENU_TEST_DIR");
-        snprintf(tpath, sizeof tpath, "%s/tag-%llu.png", dir ? dir : ".", (unsigned long long)frame);
-        shot = tpath;
-        tag_shot = -1;
-    }
     return shot;
 }
 

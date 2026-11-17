@@ -25,11 +25,10 @@ uint32_t menu_font_gen(void);      // ui/menu.cpp: vk_tags_font's generation of 
 
 static_assert(sizeof(ImDrawVert) == sizeof(VkTagVert) && sizeof(ImDrawIdx) == 2, "vk_tags.c reads ImGui's vertices");
 
-// Something to draw: a session with others in it (or the self test).
+// Something to draw: a session with others in it.
 extern "C" bool coop_tags_wanted(void) {
     const char *off = cfg_get("TOTK_COOP_TAGS");
     if (off && !strcmp(off, "off")) return false;
-    if (cfg_get("TOTK_COOP_TEST_TAGSELF")) return true;
     int ids[COOP_MAX_PLAYERS];
     char names[COOP_MAX_PLAYERS][17];
     return *coop_net_target() && coop_net_players(ids, names, COOP_MAX_PLAYERS) > 0;
@@ -76,11 +75,6 @@ extern "C" void coop_tags_draw(float w, float h, float scale, bool menu_open) {
     }
     CoopTag tags[COOP_MAX_PLAYERS + 1];
     int n = coop_name_tags(tags, COOP_MAX_PLAYERS + 1, h > 0 ? w / h : 16.0f / 9.0f);
-    static int t;
-    if (cfg_get("TOTK_COOP_TEST_TAGSELF") && ++t % 120 == 0)
-        for (int i = 0; i < n; i++)
-            rt_log("coop: tag %s at %.3f %.3f of %.0fx%.0f, %.1f m (%s)", tags[i].name, tags[i].x, tags[i].y, w, h,
-                   tags[i].dist, vk_tags_live() ? "in the frame" : "overlay");
     if (vk_tags_live()) {
         hand_over(tags, n, h, scale);
         return;

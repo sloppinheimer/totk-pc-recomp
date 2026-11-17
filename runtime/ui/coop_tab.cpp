@@ -346,12 +346,6 @@ extern "C" void tab_coop(float scale) {
     }
     characters_section(scale);
     opt_text(UI_MENU_COOP_NOTE);
-    static bool test_kbd;   // TOTK_COOP_TEST_KBD: the keyboard opens on the name the first time the tab shows (tests)
-    if (!test_kbd && cfg_get("TOTK_COOP_TEST_KBD")) {
-        test_kbd = true, kb_buf = g_name, kb_cap = sizeof g_name;   // =inline: the text box a mouse or keyboard gets
-        if (!strcmp(cfg_get("TOTK_COOP_TEST_KBD"), "inline")) inline_id = "##coop_name";
-        else ImGui::OpenPopup("##coop_kbd");
-    }
     keyboard(scale);
     opt_end();
 }
