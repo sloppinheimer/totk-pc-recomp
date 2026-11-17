@@ -33,7 +33,12 @@
 
 int coop_ab_log_on(void) {   // (coop_ent_hooks.c coop_phase0_hook reads it too)
     static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_TEST_ABLOG"); on = e && *e && *e != '0'; }
+    // (the tests that need it switch it on too: their scripts name only TOTK_COOP_TEST_ABHIT, _ABSTICK or _ABPLACE,
+    // and with those alone the tests did nothing)
+    if (on < 0) {
+        const char *e = cfg_get("TOTK_COOP_TEST_ABLOG");
+        on = (e && *e && *e != '0') || cfg_get("TOTK_COOP_TEST_ABHIT") || cfg_get("TOTK_COOP_TEST_ABSTICK") || cfg_get("TOTK_COOP_TEST_ABPLACE");
+    }
     return on;
 }
 

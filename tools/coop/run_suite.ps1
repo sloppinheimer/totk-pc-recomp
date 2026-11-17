@@ -26,7 +26,10 @@ $pass = 0; $fail = 0
 foreach ($c in $cases) {
     if ($Only -and ($Only -split ',') -notcontains $c.n) { continue }
     foreach ($k in $c.env.Keys) { Set-Item "Env:$k" $c.env[$k] }
+    # (the last case's logs and audits go first: a game that did not start left them, and they were judged again)
+    Remove-Item $A, $B, 'build\v143\logs\audit.jsonl', (Join-Path $BDir 'logs\audit.jsonl') -ErrorAction SilentlyContinue
     powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'run_pair.ps1') -Seconds $c.s -ScriptA "tools\coop\$($c.a)" -ScriptB "tools\coop\$($c.b)" -BDir $BDir | Out-Null
+    $pair_ok = $LASTEXITCODE -eq 0
     foreach ($k in $c.env.Keys) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
     $missing = @()
     foreach ($w in $c.want) {
@@ -42,9 +45,9 @@ foreach ($c in $cases) {
     $fatal = @(Select-String -Path $A, $B -Pattern 'FATAL' | ForEach-Object { "$(Split-Path -Leaf (Split-Path -Parent (Split-Path -Parent $_.Path))): $($_.Line)" })
     $audit = & (Join-Path $root '.venv\Scripts\python.exe') (Join-Path $PSScriptRoot 'sync_audit.py') 'build\v143\logs\audit.jsonl' (Join-Path $BDir 'logs\audit.jsonl')
     $audit_ok = $LASTEXITCODE -eq 0
-    if (!$missing -and !$fatal -and $audit_ok) { $pass++; "PASS $($c.n)  ($($audit[0]))" }
+    if ($pair_ok -and !$missing -and !$fatal -and $audit_ok) { $pass++; "PASS $($c.n)  ($($audit[0]))" }
     else {
-        $fail++; "FAIL $($c.n)"; $missing | ForEach-Object { "  missing $_" }; $fatal | ForEach-Object { "  $_" }
+        $fail++; "FAIL $($c.n)"; if (!$pair_ok) { "  run_pair.ps1 failed" }; $missing | ForEach-Object { "  missing $_" }; $fatal | ForEach-Object { "  $_" }
         if (!$audit_ok) { $audit | ForEach-Object { "  audit: $_" } }
     }
 }

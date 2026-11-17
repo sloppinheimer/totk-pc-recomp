@@ -1,4 +1,4 @@
-# The enemy sync's bench (docs/coop/enemy-sync.md, section 15): a fixed set of two-game cases on the camp save, each
+# The enemy sync's bench (docs/coop/enemy-sync.md, "Checks"): a fixed set of two-game cases on the camp save, each
 # judged from the two games' logs, with one line per case and PASS or FAIL.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\coop\en_bench.ps1 [-Cases fight,wizzrobe,handover,quit] [-Out build\bench]
@@ -10,8 +10,8 @@
 #   handover  game A pauses in a menu while a Fire Wizzrobe fights: game B takes it over and it stays in battle
 #   quit      game B runs a Fire Wizzrobe and is closed: game A takes it over and it stays in battle
 #   families  one actor of each family taken by default is made beside game A's Link, standing: bound, followed
-# The bars (section 15): tables equal at the end; no leak; position error (95th percentile) 12 cm while moving and 1 cm
-# standing; the same animation command in 95 % of samples. A case that needs something that did not happen in the run
+# The bars: tables equal at the end; no leak; position error of the copy's actor against its owner's (95th percentile)
+# 12 cm while moving and 1 cm standing; the same animation command in 95 % of samples. A case that needs something that did not happen in the run
 # (no weather attack, no change of owner) says so and counts as not judged, not as a pass.
 param([string]$Cases = "fight,wizzrobe,handover,quit", [string]$Out = "build\bench", [switch]$Judge)   # -Judge: no runs, the logs already in -Out are judged again
 $ErrorActionPreference = 'Stop'
@@ -23,6 +23,8 @@ $idle = 'tools\coop\idle.txt'
 
 function Run-Pair([string]$tag, [int]$seconds, [string]$scriptA, [string]$scriptB, [string]$envA, [string]$envB, [int]$quitB = 0) {
     if ($Judge) { return }
+    # (run_pair clears only the settings it is given: a case's settings stayed for the cases after it, in this process)
+    foreach ($k in 'TOTK_COOP_TEST_SPAWN', 'TOTK_COOP_EN_HANDOVER', 'TOTK_COOP_TEST_LINKHIT') { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
     $e = 'TOTK_COOP_ENEMY=1;TOTK_COOP_ELEM=1'
     & (Join-Path $root 'tools\coop\run_pair.ps1') -Seconds $seconds -ScriptA $scriptA -ScriptB $scriptB -Profile build\profile-v143-camp `
         -EnvA "$e;$envA" -EnvB "$e;$envB" -QuitBAfter $quitB | Out-Null
@@ -45,7 +47,7 @@ function Report([string]$tag) {
         if ([double]$g[3].Value -gt $worstMove) { $worstMove = [double]$g[3].Value }
         if ([double]$g[4].Value -lt $worstCmd) { $worstCmd = [double]$g[4].Value }
     }
-    $bad = 'EXCEPTION|rt_trap|access violation'   # (not the start-up lines about the crash reporter and the shader cache)
+    $bad = 'FATAL|EXCEPTION|rt_trap|access violation'   # (FATAL: every fatal end the runtime writes; not the start-up lines about the crash reporter)
     $crash = (Count $a $bad) + (Count $b $bad)
     [pscustomobject]@{ equal = $equal; leaks = $leaks; rows = $rows; still = $worstStill; move = $worstMove; cmd = $worstCmd; crash = $crash; few = $few; a = $a; b = $b }
 }
@@ -107,3 +109,4 @@ foreach ($case in ($Cases -split ',')) {
 "The enemy sync's bench (logs in $Out):"
 $results
 if ($results | Where-Object { $_ -match ' FAIL ' }) { exit 1 }
+if (-not ($results | Where-Object { $_ -match ' PASS ' })) { "nothing was judged"; exit 2 }   # (all NOT JUDGED is not a pass)

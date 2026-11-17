@@ -357,6 +357,15 @@ For finding a fault (tests):
 | `TOTK_COOP_EN_TEST_SHOTS=1` | log Shooter entries |
 | `TOTK_COOP_TEST_FAR_COPY=<s>[,name]` | a made-up SPAWN, to test `far_sweep` |
 
+## Checks
+
+`tools/coop/en_bench.ps1` runs fixed two-game cases on the camp save and judges each from both games' logs with
+`tools/coop/en_report.py`: the two tables equal at the end, no leak, the copy's actor within 1 cm of its owner's
+enemy standing and 12 cm moving (95th percentile, measured where the copy's actor stands, `en_copy_precalc`'s
+`coop: en: pos:` lines, `TOTK_COOP_DEBUG=1`), the same animation command in 95 % of samples. A FATAL line fails a
+case; a case whose event did not happen is "not judged", and a run with nothing judged exits 2. The tables and the
+shot counts are the sync's own records; PLAN.md step 1's mismatch checker is to replace them with both games' state.
+
 ## Built but off or not confirmed
 
 ### The action layer (`TOTK_COOP_EN_ACT=1`, off)

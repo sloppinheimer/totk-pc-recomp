@@ -1,4 +1,4 @@
-"""The enemy sync's report for two games' logs of one session on one PC (docs/coop/enemy-sync.md, 14 and 15).
+"""The enemy sync's report for two games' logs of one session on one PC (docs/coop/enemy-sync.md, "Checks").
 
     python tools/coop/en_report.py <log of game A> <log of game B>
 
@@ -89,7 +89,7 @@ def pair(owner, copy, who):
             o = at(os_, keys, c['ns'])
             if not o or not c['asked']:
                 continue
-            e = dist(c['asked'], o['p'])
+            e = dist(c['p'], o['p'])   # where the copy's actor stands, not where the sync asked it to be
             (err_move if o['speed'] > 0.3 else err_still).append(e)
             off.append(dist(c['p'], c['asked']))
             cmd_n += 1

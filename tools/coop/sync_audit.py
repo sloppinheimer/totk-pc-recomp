@@ -181,6 +181,7 @@ def main():
         return 2
     seen = defaultdict(list)   # (kind, subject) -> [(t, text)] per pair index
     pairs = 0
+    joined = 0   # pairs in which both games had joined (an id): the only ones check_way compares
     bi = 0
     prev = (None, None)
     for ai, a in enumerate(A):
@@ -195,6 +196,7 @@ def main():
             seen[(kind, subj)].append((pairs, t, text))
         prev = (a, b)
         pairs += 1
+        joined += a.get('id', 0) > 0 and b.get('id', 0) > 0
     # held for two pairs in a row
     kinds = defaultdict(list)
     for (kind, subj), hits in seen.items():
@@ -217,6 +219,11 @@ def main():
         for subj, runs in sorted(items, key=lambda x: x[1][0][1]):
             for i, (_, t, text) in enumerate(runs if show_all else runs[:1]):
                 print(f'  {t - t0:7.1f} s  {text}' + ('' if show_all or len(runs) == 1 else f'  (x{len(runs)})'))
+    # Nothing compared is not a pass: two audits that never met in time, or games that never joined, printed
+    # "no mismatches" and exited 0 (code review, 2026-11-17).
+    if joined < 10:
+        print(f'not judged: only {joined} paired snapshots with both games joined (10 needed)')
+        return 2
     print('no mismatches' if not failures else f'{failures} kind(s) of mismatch')
     return 1 if failures else 0
 

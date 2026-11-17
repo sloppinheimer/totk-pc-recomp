@@ -85,6 +85,10 @@ typedef struct {
     uint64_t shield_actor;             // the proxy's shield while shield_place puts it there (its own update skipped)
     float shield_local[3], shield_rot[9];   // where, in the owner's frame (NetState flags bit 11)
     int8_t dye_want[COOP_GEAR_SLOTS], dye_have[COOP_GEAR_SLOTS];   // the armor's dye colour, the same way (-1 none)
+    // What the game's create was last given for the stand-in's item (coop_players_gear, read from the call's own
+    // arguments): what the audit compares with the owner's, not what this code meant to ask (fuse_have, dye_have)
+    char fuse_made[3][32];
+    int8_t dye_made[COOP_GEAR_SLOTS];
     int out_want, out_have;            // puppet mode: bits 0..2 weapon, bow, shield in the owner's hands; as last made
     int attack_want;                   // the owner's weapon attack is on (NetState flags bit 13; the stand-in's)
     float phys_pos[3];                 // puppet mode: where its physics step put it (before placement), for snap
@@ -479,6 +483,12 @@ int coop_players_gear(Cpu *c, uint64_t addr) {
     const char *want = strcmp(s->gear_want[k], GEAR_NONE) ? s->gear_want[k] : "";
     if (k > 2 && addr == MOD_MAIN_BASE + 0xc4961c && want[0]) c->x[3] = (uint64_t)(uint32_t)(int32_t)s->dye_want[k];   // the owner's dye
     if (k <= 2 && addr == MOD_MAIN_BASE + GEAR_WEAPON_CREATE && want[0]) c->x[6] = gear_string(s->att_str[k], s->fuse_want[k]);   // its material
+    if (k > 2 && addr == MOD_MAIN_BASE + 0xc4961c) s->dye_made[k] = (int8_t)(int32_t)c->x[3];   // (as the create gets them)
+    if (k <= 2 && addr == MOD_MAIN_BASE + GEAR_WEAPON_CREATE) {
+        uint64_t ap = coop_rd_ptr(c->x[6]);
+        memset(s->fuse_made[k], 0, sizeof s->fuse_made[k]);
+        if (ap) coop_rd(ap, s->fuse_made[k], sizeof s->fuse_made[k] - 1);
+    }
     if (!strcmp(want, name) || (!want[0] && k > 2)) return 0;   // armor always has a piece: none is the save's default
     c->x[2] = gear_string(s->gear_str[k], want);
     rt_log("coop: slot %d's Link gets %s in gear slot %d (this save has %s)", (int)(s - slots), want[0] ? want : "nothing",
@@ -537,6 +547,7 @@ static Slot *slot_new(int source, int net_id) {
             memset(s->fuse_want, 0, sizeof s->fuse_want), memset(s->fuse_have, 0, sizeof s->fuse_have);
             memset(s->objs_want, 0, sizeof s->objs_want), memset(s->mir, 0, sizeof s->mir);
             memset(s->dye_want, -1, sizeof s->dye_want), memset(s->dye_have, -1, sizeof s->dye_have);
+            memset(s->fuse_made, 0, sizeof s->fuse_made), memset(s->dye_made, -1, sizeof s->dye_made);
             s->out_want = 0, s->out_have = -1, s->have_phys = 0, s->top_last = -1e9f, s->have_body = 0, s->shield_actor = 0, s->shield_placed = 0;
             s->live_ticks = 0;
             s->character[0] = 0, s->standin[0] = 0;
@@ -4094,8 +4105,8 @@ static void audit_tick(Cpu *c, uint64_t me, const CoopObj *sent, int n_sent, con
         first = 0;
         audit_vec(f, "p", q);
         audit_gear(f, "gear", g, COOP_GEAR_SLOTS);
-        audit_gear(f, "fuse", s->fuse_have, 3);
-        fprintf(f, ",\"dye\":[%d,%d,%d,%d,%d,%d]}", s->dye_have[0], s->dye_have[1], s->dye_have[2], s->dye_have[3], s->dye_have[4], s->dye_have[5]);
+        audit_gear(f, "fuse", s->fuse_made, 3);   // (what the create was given, coop_players_gear: not what was meant)
+        fprintf(f, ",\"dye\":[%d,%d,%d,%d,%d,%d]}", s->dye_made[0], s->dye_made[1], s->dye_made[2], s->dye_made[3], s->dye_made[4], s->dye_made[5]);
     }
     // the objects this game sends, at their real place
     fputs("],\"sent\":[", f);
