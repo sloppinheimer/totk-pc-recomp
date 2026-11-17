@@ -1,13 +1,17 @@
-// Co-op shared world: one game's enemies on the other games' screens.
+// Co-op shared world: what the games' syncs share about the actors of the world.
 //
-// Every live actor passes the per-actor calc (main+0x41bb20) each frame; coop_actor_seen records it with the world
-// time it was last seen and where it was first seen. An enemy (actor name "Enemy_...") is known in every game by
-// its name and that first position: placed enemies are created at the same spot in every game on a save (checked
-// to 0.1 m), and the map's own placement hash was not found in the actor (re-notes).
-//
-// Each enemy near more than one Link is run by one game, the one that has had it longest; the others show its place,
-// pose, life and death and send it their hits (peer_tick and the enemy puppets, below). Enemies near no other Link
-// are each game's own.
+// - The actor registry: every live actor passes the per-actor calc (main+0x41bb20) each frame; coop_actor_seen records
+//   it with the world time it was last seen and where it was first seen. An actor is known in every game by its
+//   name and the map's placement hash, or, placed nowhere, by its name and that first place.
+// - The spawn sync: an enemy made at run time (placed nowhere in the map) is announced to the other games, which make
+//   one with the same key; that key is the enemy's identity in the enemy sync (coop_enemy.c, coop_world_spawn_key).
+// - A player's blow on another game's enemy: the contact is sent to the game that runs the enemy ("CE"/"AE"
+//   packets), which adds it to its enemy's hit update (coop_hit_update, contacts_filter); the enemy sync says whose
+//   an enemy is.
+// - The HIT channel's reader (peer_tick), which hands each packet to its sync.
+// - Probes and tests of the research that found these.
+// The enemies themselves are synced by coop_enemy.c and its files (docs/coop/enemy-sync-spec.md). The older enemy
+// sync that lived here, and the horses and animals that rode on it, are gone (spec B.30).
 #include <math.h>
 #include <stddef.h>
 #include <stdatomic.h>
@@ -18,7 +22,6 @@
 #include "cfg.h"
 #include "coop_far.h"
 #include "coop_game.h"
-#include "coop_mounts.h"
 #include "coop_net.h"
 #include "coop_notices.h"
 #include "coop_world_int.h"
@@ -26,9 +29,6 @@
 #include "layout.h"
 #include "platform/platform.h"
 
-#define SYNC_M 120.0f          // the enemies a game runs this close to another Link are sent
-#define SNAP_M 1.5f            // an enemy another game runs (no poses) is put at its place past this
-#define DEAD_KEEP_US 5000000   // an enemy that died here is reported dead this long to all
 
 // ---- the actors this game updates
 #define SEEN_N 16384
@@ -307,58 +307,23 @@ static uint32_t cell_key(int cell, uint64_t a, const char *nm) {
     }
     return actor_key(a, nm, seen[cell].home);
 }
-// An enemy this game updates, with its key (0 if not an enemy).
+// An enemy this game updates, with its key (0 if not an enemy); for the probes below.
 static uint32_t enemy_of(int cell, uint64_t a, char *nm, size_t n) {
     coop_actor_name(a, nm, n);
     return strncmp(nm, "Enemy_", 6) ? 0 : cell_key(cell, a, nm);
 }
-// Whether this file's enemy sync runs (docs/coop/enemy-sync-spec.md 16.4): not with TOTK_COOP_ENEMY_OLD=0, and never
-// for an enemy of a kind the enemy sync of coop_enemy.c takes while that one is on (TOTK_COOP_ENEMY=1). For such an
-// enemy this file takes, sends, announces, makes and holds nothing; the other kinds of enemy, and horses and
-// animals, go on through the same tables (follow[], mine_known[], the WORLD packet).
-int coop_enemy_new(void);              // coop_enemy.c
-int coop_enemy_kind(const char *nm);   // coop_enemy.c: nonzero, a kind that sync takes
-int coop_enemy_old(void) {
-    static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_ENEMY_OLD"); on = !(e && *e == '0'); }
-    return on;
-}
-// (An enemy of such a kind made at run time still goes through this file's spawn sync, which announces it and makes
-// the other games' actors for it; the key it gives is that enemy's identity in coop_enemy.c: coop_world_spawn_key.)
-static int old_off(uint64_t a, const char *nm) {
-    (void)a;
-    return !strncmp(nm, "Enemy_", 6) && (!coop_enemy_old() || (coop_enemy_new() && coop_enemy_kind(nm)));
-}
-// An actor the sync takes, enemy or (TOTK_COOP_MOUNTS=1) horse or animal (coop_world_kind, coop_mounts.c), with its
-// key; 0 none. The enemy model below runs them all: whose each is, the hand-over, the copies' easing and life.
-static uint32_t synced_of(int cell, uint64_t a, char *nm, size_t n, int *kind) {
-    coop_actor_name(a, nm, n);
-    int k = coop_world_kind(nm);
-    if (kind) *kind = k;
-    if (k == COOP_KIND_ENEMY && old_off(a, nm)) return 0;
-    return k ? cell_key(cell, a, nm) : 0;
-}
+int coop_enemy_new(void);   // coop_enemy.c: the enemy sync is on
 
-// Two enemies of one name made in the same half metre have one key: one game put both on the other's one enemy, which
-// kept one per key (code review, 2026-11-06). Such a key is left out of the sync in both games: counted first
-// over the live enemies (dup_count), then skipped.
-static struct { uint32_t key; int n; } dup_keys[512];
-static int dup_n;
 static float dist3(const float a[3], const float b[3]);
-// Every live enemy here, synced or not (refreshed with dup_count): coop_enemy_within.
+// Every live enemy here, refreshed each world tick (dup_count): coop_enemy_within, and the spawn sync's scan.
 static uint64_t all_enemies[512];
 static int n_all_enemies;
 static void dup_one(int cell, uint64_t a, void *arg) {
-    (void)arg;
+    (void)arg, (void)cell;
     char nm[64];
-    int kind = 0;
-    uint32_t key = synced_of(cell, a, nm, sizeof nm, &kind);
-    if (kind == COOP_KIND_ENEMY && n_all_enemies < 512) all_enemies[n_all_enemies++] = a;   // (also with the old sync off)
-    if (!key) return;
-    for (int i = 0; i < dup_n; i++) if (dup_keys[i].key == key) { dup_keys[i].n++; return; }
-    if (dup_n < 512) dup_keys[dup_n].key = key, dup_keys[dup_n++].n = 1;
+    if (!strncmp(coop_actor_name(a, nm, sizeof nm), "Enemy_", 6) && n_all_enemies < 512) all_enemies[n_all_enemies++] = a;
 }
-static void dup_count(void) { dup_n = 0, n_all_enemies = 0, each_live(dup_one, NULL); }
+static void dup_count(void) { n_all_enemies = 0, each_live(dup_one, NULL); }
 // Whether a live enemy of this game (synced or not) stands within m of p: a weapon there is in its hand (or was), not
 // a thing lying in the world (coop_players.c, prop_fn). Night's Stalkoblins are made in each game on its own and not
 // synced; one's sword was sent as a moved object and its copy hung in the air in the other game (a play session,
@@ -370,10 +335,6 @@ int coop_enemy_within(const float p[3], float m) {
         if (!coop_rd(all_enemies[i] + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || !coop_rd(all_enemies[i] + COOP_ACTOR_POS, q, 12)) continue;
         if (dist3(p, q) < m) return 1;
     }
-    return 0;
-}
-static int dup_key(uint32_t key) {
-    for (int i = 0; i < dup_n; i++) if (dup_keys[i].key == key) return dup_keys[i].n > 1;
     return 0;
 }
 
@@ -600,27 +561,6 @@ int coop_is_coop_life(uint64_t comp) {
     for (int i = 0; comp && i < COOP_MAX_PLAYERS; i++)
         if (atomic_load_explicit(&coop_life_comps[i], memory_order_relaxed) == comp) return 1;
     return 0;
-}
-uint64_t coop_nearest_link_data(uint64_t enemy) {
-    int n = atomic_load_explicit(&near_n, memory_order_relaxed);
-    uint64_t me = atomic_load_explicit(&near_me, memory_order_relaxed);
-    if (!n || !me || enemy == me) return 0;
-    char nm[8];
-    coop_actor_name(enemy, nm, sizeof nm);
-    if (strncmp(nm, "Enemy_", 6)) return 0;
-    float e[3], p[3];
-    if (!coop_rd(enemy + COOP_ACTOR_POS, e, 12) || !coop_rd(me + COOP_ACTOR_POS, p, 12)) return 0;
-    float best = (e[0] - p[0]) * (e[0] - p[0]) + (e[1] - p[1]) * (e[1] - p[1]) + (e[2] - p[2]) * (e[2] - p[2]);
-    best = sqrtf(best) - 1.0f;   // a co-op Link must be over 1 m nearer: no flicker between two players at one distance
-    uint64_t pick = 0;
-    for (int i = 0; i < n; i++) {
-        uint64_t a = atomic_load_explicit(&near_links[i].actor, memory_order_relaxed);
-        uint64_t d = atomic_load_explicit(&near_links[i].data, memory_order_relaxed);
-        if (!a || !d || !coop_rd(a + COOP_ACTOR_POS, p, 12)) continue;
-        float dist = sqrtf((e[0] - p[0]) * (e[0] - p[0]) + (e[1] - p[1]) * (e[1] - p[1]) + (e[2] - p[2]) * (e[2] - p[2]));
-        if (dist < best) best = dist, pick = d;
-    }
-    return pick;
 }
 
 // Test (TOTK_COOP_TEST_MODELSCAN=<s>): once, that many seconds into the world, where each Link's position is kept
@@ -1074,600 +1014,18 @@ static void as_play_test(Cpu *c, uint64_t me) {
     rt_log("coop: test: asplay %s slot %d on the co-op Link's manager %llx (this Link's %llx at comp +%#x +%#x +%#x): returned %llu",
            nm, slot, (unsigned long long)x, (unsigned long long)mgr, comp, off, off2, (unsigned long long)r);
 }
-static uint64_t audit_skeleton(uint64_t a);
-static int pup_ready_key(uint32_t key);
-static int pup_bound_to(uint32_t key, uint64_t actor);
-// The sync audit (coop_players.c, audit_tick): the enemies this game updates within SYNC_M of any Link, as a JSON
-// array of key, place, life and whether it is dead (life 0 or going away).
-typedef struct { FILE *f; float links[COOP_MAX_PLAYERS + 1][3]; int nl, n; } AuditScan;
-static void audit_one(int cell, uint64_t a, void *arg) {
-    AuditScan *as = arg;
-    char nm[64];
-    uint32_t key = enemy_of(cell, a, nm, sizeof nm);
-    float p[3];
-    int32_t st = 0;
-    if (!key || !coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(a + COOP_ACTOR_STATE, &st, 4)) return;
-    int near = 0;
-    for (int i = 0; i < as->nl && !near; i++) {
-        float dx = p[0] - as->links[i][0], dz = p[2] - as->links[i][2];
-        near = dx * dx + dz * dz < SYNC_M * SYNC_M;
-    }
-    if (!near) return;
-    int life = life_of(a);
-    // Its body's shape, to compare the pose across games: its highest bone above its root bone and the farthest any
-    // bone is from the root sideways (the skeleton's final matrices +0x20, 0x40 a bone, translation at 12..14).
-    float top = 0, reach = 0;
-    uint64_t sk = audit_skeleton(a), wm = sk ? coop_rd_ptr(sk + 0x20) : 0;
-    uint16_t nb = 0;
-    static float w[400][16];
-    if (wm && coop_rd(sk + 0x48, &nb, 2) && nb > 0 && nb <= 400 && coop_rd(wm, w, (size_t)nb * 0x40))
-        for (int b = 1; b < nb; b++) {
-            float dy = w[b][13] - w[0][13], dx = w[b][12] - w[0][12], dz = w[b][14] - w[0][14], r = sqrtf(dx * dx + dz * dz);
-            if (dy > top) top = dy;
-            if (r > reach) reach = r;
-        }
-    fprintf(as->f, "%s{\"key\":%u,\"name\":\"%s\",\"life\":%d,\"dead\":%d,\"dup\":%d,\"p\":[%.3f,%.3f,%.3f],\"top\":%.3f,\"reach\":%.3f,\"pup\":%d}",
-            as->n++ ? "," : "", key, nm, life, life == 0 || st > 6, dup_key(key), p[0], p[1], p[2], top, reach, pup_ready_key(key));
-}
+// The sync audit's "enemies" (coop_players.c, audit_tick): an empty array. The enemy sync writes its own record to the
+// log, which tools/coop/en_report.py compares across the games.
 void coop_audit_enemies(FILE *f, uint64_t me) {
-    static AuditScan as;
-    as.f = f, as.n = 0;
-    as.nl = coop_player_positions(as.links, COOP_MAX_PLAYERS);
-    if (me && coop_rd(me + COOP_ACTOR_POS, as.links[as.nl], 12)) as.nl++;
-    dup_count();
-    fputc('[', f);
-    if (!coop_enemy_old()) { fputc(']', f); return; }   // (the enemy sync writes its own record: tools/coop/en_report.py)
-    each_live(audit_one, &as);
-    fputc(']', f);
+    (void)me;
+    fputs("[]", f);
 }
 
-// ---- enemies shared between the games
-// Each synced enemy is run by one game, its owner: the game that has had it longest (the time since this game first
-// saw it run, sent as age_ms; within 2 s of each other, the lower player id). So a player who was fighting alone keeps
-// the fight as it was when the others arrive (the tester's call, 2026-11-06: "whoever was there"). The other games freeze
-// their own one and show the owner's place and body pose (enemy puppets, below); without poses (more enemies than
-// EPOSE_MAX near), they put it at the owner's place when it drifts. A game keeps following an owner while the owner
-// reports the enemy; when it no longer does (that player left the area, so its game let the enemy go), the game runs
-// its own from where it stands, and so becomes the owner for the others.
-// Every game sends about 10 times a second the enemies it runs within SYNC_M of another player's Link, and those it
-// saw die: the last 5 s always, older ones of this session when another Link is within SYNC_M of where it stood, so
-// an enemy killed while alone stays dead when the others come. A game's hit on an enemy it does not run goes to the
-// owner (a HIT packet addressed to it), which takes the damage from its own.
-typedef struct { uint32_t key; uint16_t life, flags; float pos[3], rot[9]; uint32_t age_ms; } NetEnemy;   // flags bit 0: dead
-_Static_assert(sizeof(NetEnemy) == 60, "NetEnemy wire size");
-#define MAX_SENT 28
-#define MAX_DEAD_SENT 10
-#define CLAIM_TIE_MS 2000
-typedef struct { uint16_t count, reserved; NetEnemy e[MAX_SENT]; } WorldPacket;
-typedef struct { uint32_t key; int32_t damage; uint32_t to; } HitPacket;   // to: the owner's player id
-// An enemy's hit on a player's proxy here, for that player (to): the enemy's key and the damage (quarter hearts).
-// Told from a HitPacket by its size.
-// Then nslots LinkHitSlot: the 8-byte slots of the hit's record (damage component +0x1a0..+0x300) the hit changed,
-// with how a pointer is moved into the other game (how).
-enum { LH_RAW, LH_DC, LH_ACTOR, LH_ATTACKER };
-typedef struct { uint8_t slot, how, pad[6]; uint64_t v; } LinkHitSlot;
-#define LH_SLOTS (0x160 / 8)
-// info: the hit as the game delivered it to the proxy (main+0x31dbc0's third argument, HIT_INFO bytes; coop_hit_delivered),
-// info_len 0 when none was seen.
-#define HIT_INFO 0xe8
-typedef struct {
-    uint32_t key; int32_t damage; uint32_t to, kind, flags, nslots, info_len;
-    uint32_t atk_off;    // where the hit's attack (main+0x31dbc0's x1) sits in the proxy's damage component, 0 elsewhere
-    uint8_t info[HIT_INFO];
-    LinkHitSlot s[LH_SLOTS];
-} LinkHitPacket;
-_Static_assert(sizeof(LinkHitPacket) <= COOP_HIT_MAX, "LinkHitPacket fits a HIT packet");
-#define LINKHIT_KIND 0x4c48   // "HL"
-
-// The enemies this game runs, as last seen (for the hits on them, their deaths and their poses); d2 the square of the
-// distance to the nearest other Link.
-#define KNOWN_N 512
-static struct { uint32_t key; uint64_t actor; int life; int64_t at_us; float home[3], d2; } mine_known[KNOWN_N];
-// Enemies seen to die here this session, with where they first stood (an entry is dropped when this game runs that
-// enemy alive again: a blood moon brought it back).
-#define KILLED_N 512
-static struct { uint32_t key; float home[3]; int64_t died_us; } killed[KILLED_N];
-// Whether p is within m of a live enemy this game runs that another Link may see (mine_known): an arrow made there is
-// that enemy's shot (coop_players.c, arrow_track_fn).
-int coop_near_my_enemy(const float p[3], float m) {
-    // (An enemy the sync of coop_enemy.c runs is not asked: its arrows are not sent as objects, its copies shoot their
-    // own when it does: coop_enemy_shot.c.)
-    for (int i = 0; i < KNOWN_N; i++) {
-        if (!mine_known[i].key || !mine_known[i].actor || mine_known[i].life <= 0) continue;
-        float q[3];
-        if (!coop_rd(mine_known[i].actor + COOP_ACTOR_POS, q, 12)) continue;
-        float d2 = (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]);
-        if (d2 < m * m) return 1;
-    }
-    return 0;
-}
-static void killed_add(uint32_t key, const float home[3]) {
-    int f = 0;
-    for (int i = 0; i < KILLED_N; i++) {
-        if (killed[i].key == key) { f = i; break; }
-        if (killed[i].died_us < killed[f].died_us) f = i;   // free (0) or the oldest
-    }
-    killed[f].key = key, memcpy(killed[f].home, home, 12), killed[f].died_us = frame_step_world_us();
-}
-// Per enemy this game does not run: whose it is (player id; 0 this game's), and the life last set or seen here.
-// handed: the player this game handed it to (handover_to), until their game says it runs it (or HANDOVER_WAIT_US
-// passes); moved_us: when its owner last changed here.
-typedef struct { uint32_t key; int owner, last, handed; int64_t at_us, handed_us, moved_us; } Follow;
-#define FOLLOW_N 512
-static Follow follow[FOLLOW_N];
-static Follow *follow_of(uint32_t key) {
-    int free_i = -1;
-    int64_t now = frame_step_world_us();
-    for (int i = 0; i < FOLLOW_N; i++) {
-        if (follow[i].key == key) { follow[i].at_us = now; return &follow[i]; }
-        if (free_i < 0 && (!follow[i].key || now - follow[i].at_us > 30000000)) free_i = i;
-    }
-    if (free_i < 0) free_i = (int)(key % FOLLOW_N);
-    follow[free_i].key = key, follow[free_i].owner = 0, follow[free_i].last = -1, follow[free_i].at_us = now;
-    follow[free_i].handed = 0, follow[free_i].handed_us = 0, follow[free_i].moved_us = now;
-    return &follow[free_i];
-}
-// Each other player's latest world packet.
-static WorldPacket remote_pk[COOP_MAX_PLAYERS + 1];
-static int remote_ok[COOP_MAX_PLAYERS + 1];
-
-static int enemy_puppets_on(void) {
-    static int on = -1;   // TOTK_COOP_ENEMY_PUPPET=0: no frozen copies, only put at the owner's place (control)
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_ENEMY_PUPPET"); on = !(e && *e == '0'); }
-    return on;
-}
-static void pup_bind(uint32_t key, int owner, uint64_t actor);
-static void pup_release(uint32_t key);
-static int pup_find(uint32_t key);
-static int enemy_native(void);
-static int pup_ready_key(uint32_t key);
-
-typedef struct {
-    Cpu *c; WorldPacket pk; float others[COOP_MAX_PLAYERS][3], me[3];
-    int ids[COOP_MAX_PLAYERS], no, me_id, have_me, live_max, snaps, puppets, mounts_sent;
-    uint64_t now_ns;
-} PeerScan;
-// Horses and animals take at most this many of a world packet's MAX_SENT entries (a ridden horse always goes), so
-// the enemies keep their room.
-#define MOUNTS_SENT_MAX 8
-// The hand-over (TOTK_COOP_ENEMY_HANDOVER, on unless 0): an enemy this game runs goes to the game of another player
-// whose Link is HANDOVER_GAIN_M nearer to it than this game's, within HANDOVER_M of it, and at most once in
-// HANDOVER_HOLD_US. An enemy fights the one player of the game that runs it: a second Player actor there (the other
-// player's co-op Link) is never noticed, nor an actor of our own made from the Player's parameters, or from a pigeon's
-// with the Player's or a Sage's perception emitter and affiliation, put on the co-op Link each tick (a Bokoblin next to
-// one stayed unaware; docs/coop/proxy-plan.md, 2026-11-07). So the enemy is run
-// where the player it should fight is, as TotK Online does (its server gives each actor to the nearest player's game;
-// read for behaviour only). The player who was there keeps the fight while their Link is about as near as the other.
-#define HANDOVER_M 30.0f
-#define HANDOVER_GAIN_M 5.0f
-#define HANDOVER_HOLD_US 5000000
-#define HANDOVER_WAIT_US 3000000
-#define HANDOVER_CLAIM_M 3.0f   // (between two games' claims: smaller than HANDOVER_GAIN_M, so no hand-over undoes it)
+// ---- what the contact code and the spawn sync share
 static float dist3(const float a[3], const float b[3]) {
     return sqrtf((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
 }
-static int handover_on(void) {
-    static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_ENEMY_HANDOVER"); on = !(e && *e == '0'); }
-    return on;
-}
-// The player id of the other Link this enemy at p should go to, 0 when it stays here.
-static int handover_to(const PeerScan *s, const float p[3], float *mine_m, float *theirs_m) {
-    if (!s->have_me || !handover_on()) return 0;
-    float dm = sqrtf((p[0] - s->me[0]) * (p[0] - s->me[0]) + (p[1] - s->me[1]) * (p[1] - s->me[1]) + (p[2] - s->me[2]) * (p[2] - s->me[2]));
-    int best = 0;
-    float bd = 1e30f;
-    for (int i = 0; i < s->no; i++) {
-        const float *o = s->others[i];
-        float d = sqrtf((p[0] - o[0]) * (p[0] - o[0]) + (p[1] - o[1]) * (p[1] - o[1]) + (p[2] - o[2]) * (p[2] - o[2]));
-        if (d < bd) bd = d, best = s->ids[i];
-    }
-    *mine_m = dm, *theirs_m = bd;
-    return best && bd < HANDOVER_M && bd + HANDOVER_GAIN_M < dm ? best : 0;
-}
-static int near_other(const PeerScan *s, const float p[3], float *d2_out) {
-    float best = 1e30f;
-    for (int i = 0; i < s->no; i++) {
-        float dx = p[0] - s->others[i][0], dz = p[2] - s->others[i][2], d2 = dx * dx + dz * dz;
-        if (d2 < best) best = d2;
-    }
-    if (d2_out) *d2_out = best;
-    return best < SYNC_M * SYNC_M;
-}
-// An enemy's part that is an actor of its own: a Frox's eyes (Enemy_Mogurudo_WeakPoint beside Enemy_Mogurudo_Junior),
-// a Stone Talus's ore (Enemy_Golem_WeakPoint), a Stalnox's eye (Enemy_Giant_Bone_Eye), a Stalkoblin's head. Each was
-// handed over as an enemy of its own: a Frox's eyes went to one game and its body stayed with the other, so an arrow
-// in the eye knocked it down in the eyes' game only. A part is run by the game that runs
-// its body: the nearest enemy within PART_BODY_M whose name starts as the part's does before its suffix (and is no
-// part), as last scanned; never handed over by itself.
-#define PART_BODY_M 25.0f
-static int part_prefix(const char *nm, char *out, size_t n) {
-    static const char *const suffix[] = {"_WeakPoint", "_Eye", "_Head"};
-    for (int i = 0; i < 3; i++) {
-        const char *at = strstr(nm, suffix[i]);
-        if (at && at > nm) {
-            snprintf(out, n, "%.*s", (int)(at - nm), nm);
-            return 1;
-        }
-    }
-    return 0;
-}
-typedef struct { uint64_t a; float p[3]; char nm[48]; int owner; } PartBody;
-static PartBody bodies[2][128];
-static int nbodies[2], bodies_cur;   // [bodies_cur] fills in this scan; the other is the last scan's
-static const PartBody *part_body(const char *prefix, const float at[3]) {
-    const PartBody *best = NULL;
-    float bd = PART_BODY_M;
-    size_t pl = strlen(prefix);
-    const PartBody *b = bodies[!bodies_cur];
-    for (int i = 0; i < nbodies[!bodies_cur]; i++) {
-        float d = dist3(b[i].p, at);
-        // (not a Baby Frox, whose name starts the same)
-        if (d < bd && !strncmp(b[i].nm, prefix, pl) && !strstr(b[i].nm, "_Baby")) bd = d, best = &b[i];
-    }
-    return best;
-}
-static void peer_one(int cell, uint64_t a, void *arg) {
-    PeerScan *s = arg;
-    char nm[64];
-    int kind = 0;
-    uint32_t key = synced_of(cell, a, nm, sizeof nm, &kind);
-    const char *kw = coop_world_kind_word(kind);
-    if (!key || dup_key(key)) return;
-    // Listed for a second after its last update, it may be gone (and its memory another's): written to only while
-    // alive (code review, 2026-11-06).
-    int32_t st = 0;
-    if (!coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2) return;
-    int life = life_of(a);
-    if (life < 0) return;   // (no life yet, just made: sent as life 0 the others set theirs to 0; code review, 2026-11-06)
-    uint32_t my_age = (uint32_t)((s->now_ns - seen[cell].first_ns) / 1000000ull);
-    // The other games' word on it: dead there, or who runs it and for how long.
-    int dead_from = 0, n_claims = 0, claim_id[COOP_MAX_PLAYERS];
-    const NetEnemy *claim[COOP_MAX_PLAYERS];
-    for (int id = 1; id <= COOP_MAX_PLAYERS; id++) {
-        if (!remote_ok[id]) continue;
-        for (int i = 0; i < remote_pk[id].count; i++) {
-            const NetEnemy *e = &remote_pk[id].e[i];
-            if (e->key != key) continue;
-            if (e->flags & 1) dead_from = id;
-            else if (n_claims < COOP_MAX_PLAYERS) claim_id[n_claims] = id, claim[n_claims++] = e;
-            break;
-        }
-    }
-    Follow *f = follow_of(key);
-    if (dead_from) {   // dead there: life 0 here, and the game's own death follows (it runs its own update again)
-        if (life > 0 && st <= 6) {
-            set_life(a, 0);
-            rt_log("coop: %s %s %08x died in player %d's game", kw, nm, key, dead_from);
-        }
-        f->owner = 0, f->last = 0;
-        pup_release(key);
-        return;
-    }
-    if (st > 6) return;
-    // Far from every player (coop_far.c): not followed for anyone and not sent; the game's own (TotK Online's server
-    // lets go of a map actor 1000 m from every player; a copy made here for another game is deleted by far_sweep).
-    float far_d = 0;
-    if (coop_far_actor(a, &far_d)) {
-        if (f->owner || pup_find(key) >= 0)
-            rt_log("coop: far: %s %s %08x is %.0f m from every player: not followed (was player %d's)", kw, nm, key, far_d, f->owner);
-        f->owner = 0, f->handed = 0, f->last = -1;
-        pup_release(key);
-        return;
-    }
-    // Whose it is: kept with the owner it has while that one still reports it; else the longest-held claim.
-    int keep = 0;
-    for (int i = 0; i < n_claims && f->owner; i++) keep |= claim_id[i] == f->owner;
-    int64_t wnow = frame_step_world_us();
-    // A ridden horse is its rider's game's (coop_mounts.c), whoever had it, and not handed over while ridden nor in the
-    // HANDOVER_HOLD_US after.
-    int rider = kind == COOP_KIND_HORSE ? coop_mount_rider(key, s->me_id) : 0;
-    if (rider) {
-        int want = rider == s->me_id ? 0 : rider;
-        if (f->owner != want || f->handed)
-            rt_log("coop: %s %s %08x is ridden by player %d: run %s", kw, nm, key, rider, want ? "by their game" : "here");
-        if (f->owner != want && want) f->last = -1;
-        f->owner = want, f->handed = 0, f->moved_us = wnow;
-        keep = 1;
-    }
-    // An enemy's part: run where its body is.
-    char pfx[48];
-    float part_at[3];
-    int is_part = part_prefix(nm, pfx, sizeof pfx) && coop_rd(a + COOP_ACTOR_POS, part_at, 12);
-    const PartBody *body = is_part ? part_body(pfx, part_at) : NULL;
-    if (body && !rider) {
-        if (f->owner != body->owner || f->handed) {
-            rt_log("coop: %s %s %08x is a part of %s: run %s", kw, nm, key, body->nm, body->owner ? "by its body's game" : "here, with its body");
-            if (body->owner) f->last = -1;
-        }
-        f->owner = body->owner, f->handed = 0, f->moved_us = wnow;
-        keep = 1;
-    }
-    if (keep && f->handed == f->owner) f->handed = 0;   // they run it now
-    // Handed to another game a moment ago: theirs while that game takes it up.
-    if (!keep && f->handed && f->owner == f->handed && wnow - f->handed_us < HANDOVER_WAIT_US) keep = 1;
-    if (!keep && f->handed) {
-        rt_log("coop: %s %s %08x: player %d did not take it up", kw, nm, key, f->handed);
-        f->handed = 0;
-        f->moved_us = wnow + 25000000;   // (their game may not have it: not offered again for 30 s)
-    }
-    if (!keep) {
-        int best = s->me_id;
-        uint32_t best_age = my_age;
-        for (int i = 0; i < n_claims; i++) {
-            uint32_t ag = claim[i]->age_ms;
-            int older = ag > best_age + CLAIM_TIE_MS, tie = !older && best_age <= ag + CLAIM_TIE_MS;
-            if (older || (tie && claim_id[i] < best)) best = claim_id[i], best_age = ag;
-        }
-        // Claimed by more than one game: the one whose Link is HANDOVER_CLAIM_M nearer to it than every other's (within
-        // HANDOVER_M) keeps it, before the longest-held. A game whose Link was 30 m off let its enemies go and took
-        // them back as they went in and out of the part of the world it updates; each time the nearer player's game
-        // went from its own one, fighting, to the far game's, which had stood still: one stayed knocked down and could
-        // not be locked on to for a while.
-        float ep[3];
-        if (n_claims && handover_on() && s->have_me && coop_rd(a + COOP_ACTOR_POS, ep, 12)) {
-            int ids[COOP_MAX_PLAYERS + 1], nid = 0, near_id = 0;
-            float d[COOP_MAX_PLAYERS + 1], dn = 1e30f, d2nd = 1e30f;
-            ids[nid] = s->me_id, d[nid++] = dist3(ep, s->me);
-            for (int i = 0; i < n_claims; i++)
-                for (int k = 0; k < s->no; k++)
-                    if (s->ids[k] == claim_id[i] && nid <= COOP_MAX_PLAYERS) ids[nid] = claim_id[i], d[nid++] = dist3(ep, s->others[k]);
-            for (int i = 0; i < nid; i++) {
-                if (d[i] < dn) d2nd = dn, dn = d[i], near_id = ids[i];
-                else if (d[i] < d2nd) d2nd = d[i];
-            }
-            if (near_id && dn < HANDOVER_M && dn + HANDOVER_CLAIM_M < d2nd) best = near_id;
-        }
-        int was = f->owner;
-        f->owner = best == s->me_id ? 0 : best;
-        if (f->owner != was && f->moved_us < wnow) f->moved_us = wnow;
-        if (f->owner != was)
-            rt_log("coop: %s %s %08x is %s (held here %.1f s%s)", kw, nm, key, f->owner ? "run by another game" : "run here",
-                   my_age / 1e3, f->owner ? "" : was ? "; its owner let it go" : "");
-        if (f->owner) f->last = -1;
-    }
-    if (!is_part && nbodies[bodies_cur] < 128) {   // a body its parts can follow (next scan)
-        PartBody *pb = &bodies[bodies_cur][nbodies[bodies_cur]];
-        if (coop_rd(a + COOP_ACTOR_POS, pb->p, 12)) pb->a = a, snprintf(pb->nm, sizeof pb->nm, "%s", nm), pb->owner = f->owner, nbodies[bodies_cur]++;
-    }
-    if (!rider && !body && !f->owner && life > 0 && wnow - f->moved_us > HANDOVER_HOLD_US) {   // this game's: to a nearer player's?
-        float p[3], dm = 0, dt = 0;
-        int to = coop_rd(a + COOP_ACTOR_POS, p, 12) ? handover_to(s, p, &dm, &dt) : 0;
-        if (to) {
-            f->owner = f->handed = to, f->handed_us = f->moved_us = wnow, f->last = -1;
-            rt_log("coop: %s %s %08x handed to player %d (their Link %.1f m from it, mine %.1f m)", kw, nm, key, to, dt, dm);
-        }
-    }
-    if (!f->owner) {   // this game's: reported while another Link is near
-        pup_release(key);
-        // Known whether near another Link or not: one killed while this player was alone is then reported dead to the
-        // others when they come.
-        float p[3], d2 = 1e30f;
-        if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
-        if (near_other(s, p, &d2) && s->pk.count < s->live_max &&
-            (kind == COOP_KIND_ENEMY || rider || s->mounts_sent < MOUNTS_SENT_MAX)) {
-            if (kind != COOP_KIND_ENEMY) s->mounts_sent++;
-            NetEnemy e = {.key = key, .age_ms = my_age};
-            memcpy(e.pos, p, 12);
-            coop_rd(a + COOP_ACTOR_ROT, e.rot, 36);
-            e.life = (uint16_t)(life > 65535 ? 65535 : life);
-            if (life == 0) e.flags |= 1;
-            s->pk.e[s->pk.count++] = e;
-        }
-        // Alive again here after it died here: brought back (a blood moon), no longer reported dead.
-        if (life > 0)
-            for (int i = 0; i < KILLED_N; i++)
-                if (killed[i].key == key && frame_step_world_us() - killed[i].died_us > 10000000) killed[i].key = 0;
-        int64_t now = frame_step_world_us();
-        int free_i = -1;
-        for (int i = 0; i < KNOWN_N; i++) {
-            if (mine_known[i].key == key) { free_i = i; break; }
-            if (free_i < 0 && !mine_known[i].key) free_i = i;
-        }
-        if (free_i >= 0) {
-            mine_known[free_i].key = key, mine_known[free_i].actor = a, mine_known[free_i].life = life;
-            mine_known[free_i].at_us = now, mine_known[free_i].d2 = d2;
-            if (home_is(cell, a)) memcpy(mine_known[free_i].home, seen[cell].home, 12);
-        }
-        return;
-    }
-    // Another game's.
-    const NetEnemy *e = NULL;
-    for (int i = 0; i < n_claims; i++) if (claim_id[i] == f->owner) e = claim[i];
-    if (!e) return;
-    // Test (TOTK_COOP_FAKEHIT=<n>): at 20 s and 30 s into the world, the first enemy another game runs loses n life here.
-    static int fake = -1, fake_done;
-    if (fake < 0) { const char *fk = getenv("TOTK_COOP_FAKEHIT"); fake = fk ? atoi(fk) : 0; }
-    int64_t w = frame_step_world_us();
-    if (fake > 0 && fake_done < 2 && w > (fake_done ? 30000000 : 20000000) && life > 0) {
-        set_life(a, life - fake), life = life - fake < 0 ? 0 : life - fake, fake_done++;
-        rt_log("coop: test: enemy %s %08x loses %d here", nm, key, fake);
-    }
-    // This game's hits: life lost since the owner's value was last set here goes to the owner.
-    if (f->last >= 0 && life < f->last) {
-        HitPacket hp = {key, f->last - life, (uint32_t)f->owner};
-        coop_net_hit_send(&hp, sizeof hp);
-        rt_log("coop: hit %s %s %08x for %d, sent to player %d", kw, nm, key, hp.damage, f->owner);
-    }
-    if (life != (int)e->life && (f->last < 0 || life >= f->last)) set_life(a, e->life), life = e->life;
-    f->last = life;
-    // Not made a frozen copy while this game is in a load (or a menu), nor in its first 2 s after it, nor before this
-    // game has seen it run 3 s: player 2's game warped to where player 1 stood, froze three of player 1's enemies at
-    // once (held here 1.3 s, its clock standing) and stayed on the loading screen for minutes (a play session,
-    // 2026-11-07; that the freeze held the load up is a guess). Meanwhile it runs its own update, put at the owner's
-    // place when it drifts.
-    int coop_runs_for_ms(void);   // coop_players.c
-    if (pup_bound_to(key, a) || (coop_runs_for_ms() >= 2000 && my_age >= 3000)) pup_bind(key, f->owner, a);
-    if (enemy_puppets_on() && pup_ready_key(key)) { s->puppets++; return; }   // posed from the owner's (enemy puppets)
-    if (enemy_native() && pup_bound_to(key, a)) { s->puppets++; return; }    // eased to the owner's place (native_follow)
-    float p[3];
-    if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
-    float dx = p[0] - e->pos[0], dy = p[1] - e->pos[1], dz = p[2] - e->pos[2];
-    if (dx * dx + dy * dy + dz * dz > SNAP_M * SNAP_M) {
-        float m[12];
-        for (int r = 0; r < 3; r++) {
-            for (int k = 0; k < 3; k++) m[r * 4 + k] = e->rot[r * 3 + k];
-            m[r * 4 + 3] = e->pos[r];
-        }
-        coop_guest_call(s->c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, a, (uint64_t)(uintptr_t)m, 0, 0);
-        s->snaps++;
-    }
-}
-
-static void epose_send_tick(void);
-static void epose_take_tick(Cpu *c);
-static uint64_t pup_me;
-static void enemy_weapon_test(void);
-static void enemy_hit_test(void);
-
-// The Weapon_ actors this game updates that are no Link's (an enemy's weapon), refreshed with the enemy scan.
-static uint64_t weaps[128];
-static int nweaps;
-static void weap_collect(int cell, uint64_t a, void *arg) {
-    (void)cell, (void)arg;
-    char nm[48];
-    int coop_is_players_item(uint64_t a);   // coop_players.c
-    if (nweaps < 128 && !strncmp(coop_actor_name(a, nm, sizeof nm), "Weapon_", 7) && !coop_is_players_item(a)) weaps[nweaps++] = a;
-}
-// The key of an enemy this game updates (0: not one, or not seen).
-static uint32_t key_of_actor(uint64_t actor) {
-    uint32_t h = (uint32_t)((actor >> 4) * 2654435761u) & (SEEN_N - 1);
-    for (int k = 0; k < 32; k++, h = (h + 1) & (SEEN_N - 1))
-        if (atomic_load_explicit(&seen[h].actor, memory_order_relaxed) == actor) {
-            char nm[64];
-            return synced_of((int)h, actor, nm, sizeof nm, NULL);
-        }
-    return 0;
-}
-// An enemy's hit on a player's proxy here goes to that player. The game's hit leaves a record in the proxy's damage
-// component ([actor+0x228]+0x2f8, +0x1a0..; re-notes "The hit's mark on the device"): +0x1a4 nonzero the frame it
-// lands, +0x1a8 the damage in quarter hearts (on this Link, 1 and 4 for a loss of 1 and 4: TOTK_COOP_TEST_LINKHIT,
-// 2026-11-06), +0x1c0 the attacker's reference (+0x40 its actor). The proxy takes none of it (its life update does
-// not run), and the enemy that hit it is frozen in its owner's game, so the owner's Link was never hurt (the same
-// test: 14 hits on the proxy, its owner's life unchanged).
-// main+0x31dbc0 (x0 a damage component's hit receiver, +0x190; x1 the attack; x2 the hit: +0 the damage, +0x14 its kind
-// (the record's state is 1 << kind), +0x20 a handle on the attacker (+8 its reference, +0x10 that reference's serial),
-// +0x38.. directions, +0xe0 flags) writes a hit into the receiver: the game's own delivery, found by a write watch on
-// a Link's hit state (TOTK_COOP_TEST_HITWATCH, 2026-11-06), called from the hit functions such as main+0x1cd497c.
-// When the receiver is a proxy's, the hit is kept here for link_hits_send to send to that proxy's player.
-#define RCV_N COOP_MAX_PLAYERS
-static _Atomic uint64_t proxy_rcv[RCV_N];   // the proxies' receivers, set by link_hits_send
-static _Atomic int proxy_id[RCV_N];         // their players
-static struct { _Atomic uint32_t seq; uint8_t info[HIT_INFO]; uint64_t atk, dc; } rcv_hit[RCV_N];
-void coop_hit_delivered(Cpu *c) {
-    uint64_t r = c->x[0], h = c->x[2];
-    if (!r || !h) return;
-    for (int i = 0; i < RCV_N; i++)
-        if (atomic_load_explicit(&proxy_rcv[i], memory_order_relaxed) == r) {
-            // the hit functions call it up to three times a hit; the one with damage and a kind (12 none) is the hit
-            int32_t d[6];
-            static int chain_on = -1;   // Test (TOTK_COOP_TEST_HITCHAIN=1): the guest call chain of the hit, 8 times
-            static _Atomic int chain_said;
-            if (chain_on < 0) chain_on = cfg_get("TOTK_COOP_TEST_HITCHAIN") != NULL;
-            if (chain_on && coop_rd(h, d, sizeof d) && d[0] > 0 && d[5] != 12 && atomic_fetch_add(&chain_said, 1) < 8) {
-                char chain[400];
-                int m = snprintf(chain, sizeof chain, "coop: test: hitchain lr main+%llx, frames", (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
-                uint64_t fp = c->x[29];
-                for (int k = 0; k < 16 && fp && m < 380; k++) {
-                    uint64_t next = coop_rd_ptr(fp), ret = coop_rd_ptr(fp + 8);
-                    if (!ret) break;
-                    m += snprintf(chain + m, sizeof chain - m, " %llx", (unsigned long long)(ret - MOD_MAIN_BASE));
-                    if (next <= fp) break;
-                    fp = next;
-                }
-                rt_log("%s", chain);
-            }
-            if (coop_rd(h, d, sizeof d) && d[0] > 0 && d[5] != 12 && coop_rd(h, rcv_hit[i].info, HIT_INFO))
-                rcv_hit[i].atk = c->x[1], rcv_hit[i].dc = r - 0x190, atomic_fetch_add(&rcv_hit[i].seq, 1);
-            return;
-        }
-}
-static int contact_on(void);
-static int enemy_native(void);
-// When a contact went to each player (plat_now_ns): a hit on that player's proxy within CONTACT_COVER_NS of one is
-// the contact's, so its hit replay is not sent (link_hits_send); a hit with no contact (one the contact list does not
-// carry) still goes as the hit replay.
-#define CONTACT_COVER_NS 400000000ull
-static _Atomic uint64_t contact_sent_ns[COOP_MAX_PLAYERS + 1];
-static void link_hits_send(void) {
-    if (enemy_native() || !coop_enemy_old()) {   // none: the copy in the hit player's game hits that player itself (review, 2026-11-07)
-        for (int i = 0; i < RCV_N; i++) atomic_store(&proxy_rcv[i], 0);
-        return;
-    }
-    uint64_t acts[COOP_MAX_PLAYERS];
-    int ids[COOP_MAX_PLAYERS], n = coop_player_actors(acts, ids, COOP_MAX_PLAYERS);
-    static uint32_t rcv_seen[RCV_N];
-    for (int i = 0; i < RCV_N; i++) {
-        // (none with the native enemy model: an enemy's hits on a proxy here are its copy's in that player's game)
-        uint64_t dc = i < n && !enemy_native() ? coop_rd_ptr(coop_rd_ptr(acts[i] + 0x228) + 0x2f8) : 0;
-        atomic_store(&proxy_rcv[i], dc ? dc + 0x190 : 0);
-        atomic_store(&proxy_id[i], i < n ? ids[i] : 0);
-    }
-    static uint64_t last_actor[COOP_MAX_PLAYERS];
-    static uint32_t last_state[COOP_MAX_PLAYERS];
-    static uint64_t idle[COOP_MAX_PLAYERS][LH_SLOTS];   // the record as it stood before the hit
-    for (int i = 0; i < n; i++) {
-        uint64_t dc = coop_rd_ptr(coop_rd_ptr(acts[i] + 0x228) + 0x2f8);
-        uint64_t rs[LH_SLOTS];
-        if (!dc || !coop_rd(dc + 0x1a0, rs, sizeof rs)) continue;
-        uint32_t w[0x28 / 4];
-        memcpy(w, rs, sizeof w);
-        uint32_t st = w[1], was = last_actor[i] == acts[i] ? last_state[i] : st;
-        int fresh = last_actor[i] != acts[i];
-        last_actor[i] = acts[i], last_state[i] = st;
-        if (!st) { memcpy(idle[i], rs, sizeof rs); rcv_seen[i] = atomic_load(&rcv_hit[i].seq); continue; }
-        if (st == was || fresh) continue;
-        uint64_t ref;
-        memcpy(&ref, &w[0x20 / 4], 8);
-        uint64_t att = ref ? coop_rd_ptr(ref + 0x40) : 0;
-        int32_t dmg = (int32_t)w[2];
-        char nm[64] = "";
-        if (att) coop_actor_name(att, nm, sizeof nm);
-        uint32_t key = strncmp(nm, "Enemy_", 6) ? 0 : key_of_actor(att);
-        static int said;
-        if (said++ < 40)
-            rt_log("coop: %s %08x hit player %d's Link here for %d%s", nm[0] ? nm : "something", key, ids[i], dmg,
-                   key && dmg > 0 ? ", sent to them" : "");
-        if (!key || dmg <= 0 || dmg > 4000) continue;
-        if (contact_on() && ids[i] > 0 && ids[i] <= COOP_MAX_PLAYERS && plat_now_ns() - atomic_load(&contact_sent_ns[ids[i]]) < CONTACT_COVER_NS)
-            continue;   // its contact went to them: their game makes the hit itself
-        // The record's slots the hit changed, pointers made relative to the proxy's damage component or actor, or
-        // marked as the attacker's reference, so the player's game can write the same hit into its own Link.
-        static LinkHitPacket lh;
-        memset(&lh, 0, sizeof lh);
-        lh.key = key, lh.damage = dmg, lh.to = (uint32_t)ids[i], lh.kind = LINKHIT_KIND;
-        memcpy(&lh.flags, (const uint8_t *)rs + 0x30, 4);   // the record's flags (+0x1d0; past w, which holds +0x1a0..+0x1c8)
-        if (i < RCV_N && atomic_load(&rcv_hit[i].seq) != rcv_seen[i]) {
-            memcpy(lh.info, rcv_hit[i].info, HIT_INFO), lh.info_len = HIT_INFO;
-            uint64_t ao = rcv_hit[i].atk - rcv_hit[i].dc;
-            lh.atk_off = rcv_hit[i].atk > rcv_hit[i].dc && ao < 0x2000 ? (uint32_t)ao : 0;
-            rcv_seen[i] = atomic_load(&rcv_hit[i].seq);
-            static int said_info;
-            if (said_info++ < 4) {
-                char line[1200];
-                int m = snprintf(line, sizeof line, "coop: the hit as delivered to player %d's proxy:", ids[i]);
-                for (int k = 0; k < HIT_INFO / 8 && m < 1160; k++) {
-                    uint64_t v;
-                    memcpy(&v, lh.info + 8 * k, 8);
-                    m += snprintf(line + m, sizeof line - m, " %02x:%llx", 8 * k, (unsigned long long)v);
-                }
-                rt_log("%s", line);
-            }
-        }
-        for (int k = 0; k < LH_SLOTS; k++) {
-            if (rs[k] == idle[i][k]) continue;
-            LinkHitSlot *e = &lh.s[lh.nslots++];
-            uint64_t v = rs[k];
-            e->slot = (uint8_t)k;
-            if (v == ref) e->how = LH_ATTACKER, e->v = 0;
-            else if (v >= dc && v < dc + 0x2000) e->how = LH_DC, e->v = v - dc;
-            else if (v >= acts[i] && v < acts[i] + 0x3000) e->how = LH_ACTOR, e->v = v - acts[i];
-            else e->how = LH_RAW, e->v = v;
-        }
-        coop_net_hit_send(&lh, (int)(offsetof(LinkHitPacket, s) + lh.nslots * sizeof(LinkHitSlot)));
-    }
-}
-static uint64_t pup_ready_actor(uint32_t key);
+static uint64_t pup_me;   // this game's Link (set each world tick)
 // An actor's reference object (+0x40 the actor), from a pointer in the actor's first 0x1000 bytes: what a hit record
 // names its attacker by. 0 none found.
 static uint64_t actor_ref(uint64_t a) {
@@ -1677,224 +1035,22 @@ static uint64_t actor_ref(uint64_t a) {
         if (w[i] > 0x100000000ull && w[i] < 0x8000000000ull && coop_rd_ptr(w[i] + 0x40) == a) return w[i];
     return 0;
 }
-// A hit written into this Link's record waits to be taken by its own update; if its life has not gone down by then,
-// the damage is taken off it directly.
-static struct { int frames, life, damage; uint32_t key; } lh_wait;
-static _Atomic int lh_guarded;   // (defined with lh_dc below)
-static void link_hit_check(uint64_t me) {
-    if (!lh_wait.frames || --lh_wait.frames) return;
-    if (atomic_exchange(&lh_guarded, 0)) {   // blocked: nothing to take
-        rt_log("coop: the hit by enemy %08x was guarded by this Link (life %d)", lh_wait.key, life_of(me));
-        return;
-    }
-    void coop_hit_drop(void);
-    coop_hit_drop();   // a hit still waiting for this Link's update is not delivered after the damage was taken here
-    int life = life_of(me);
-    // (only an unchanged life: one gone up was a fairy or a meal, not a hit left untaken; 2 -> 20 by a fairy, then
-    // 3 more taken here, 2026-11-06)
-    if (life == lh_wait.life && life > 0) {
-        int now = life - lh_wait.damage < 0 ? 0 : life - lh_wait.damage;
-        set_life(me, now);
-        rt_log("coop: the hit by enemy %08x was not taken from its record here: life %d -> %d directly", lh_wait.key, life, now);
-    } else rt_log("coop: the hit by enemy %08x was taken by this Link (life %d -> %d)", lh_wait.key, lh_wait.life, life);
-}
-// A hit on this Link's proxy in another game, by an enemy that game runs: taken here, when this game shows that
-// enemy as that game's (it follows it: its own one does not attack). The life goes down by the damage; no knock-back
-// or flinch. TOTK_COOP_LINKHIT_RECORD=1 (a test) writes the hit's record into this Link's damage component instead,
-// with this game's frozen copy of the enemy as the attacker: its update did not take it (life unchanged 12 frames
-// later, twice; 2026-11-06), as a fan given another's record (re-notes): the hit goes somewhere else too. The damage
-// is then taken off directly.
-// The hit delivered here as the game delivers one (main+0x31dbc0 on this Link's receiver), from the one the owner's
-// game delivered to this Link's proxy, the attacker handle cleared (TOTK_COOP_LINKHIT_ATTACKER=1: this game's frozen
-// copy of the enemy). The attack (x1, which this game does not have) is read only by the guard check (main+0x1cceaac:
-// the listener's vtable +0xe0, then the attack's +0x70 through main+0x1979130 and main+0x1cb6558 to a "guarded" byte);
-// a blank one whose +0x70 and +0x30 point at itself, with the stop bits those two loops test (+0x4a, +0x183), reads as
-// not guarded. (Flag +0xe0 bit 3 is that check's result, a guarded hit: set, the Link blocked every hit; 2026-11-06.)
-// This Link's update then takes it as its own: damage, knock-back, flinch.
-// It is delivered from inside that update, on its thread, as main+0x300a30 (x0 the damage component: its hit update)
-// begins (coop_hit_update): delivered from this tick, while the update ran on another thread, the two changed the
-// receiver's lists at once and the update crashed on a broken object at +0x1238 (twice, 2026-11-06). 1 when queued.
-static _Alignas(16) uint8_t lh_info[HIT_INFO], lh_atk[0x400];
-static _Atomic uint64_t lh_dc;   // the damage component a hit waits for, 0 none
-static _Atomic int lh_guarded;   // the last hit delivered was guarded (flag +0xe0 bit 3 after the delivery)
-static _Atomic uint64_t lh_x1;   // the attack it is delivered with
-// Contact replay (TOTK_COOP_LINKHIT_CONTACT=1, a test): the hit is built in the hit player's own game from the
-// contact, as the game builds one. A body's hits are built in its damage component's hit update, main+0x300a30 (the
-// call chain of a hit on a proxy: TOTK_COOP_TEST_HITCHAIN, 2026-11-06), from the contacts waiting in the list at
-// [dc+0x1910]+0x50 (count +0x18, capacity +8, 0x1c0-byte records from +0x10; main+0x1cd0c80 runs main+0x1cd263c on
+// A body's hits are built in its damage component's hit update, main+0x300a30, from the contacts waiting in the list
+// at [dc+0x1910]+0x50 (count +0x18, capacity +8, 0x1c0-byte records from +0x10; main+0x1cd0c80 runs main+0x1cd263c on
 // each): the attack's power (+0xa0), its kind (+0x90), the attacker's handles (+0x60, +0x78 with +0x94 bit 0), and
-// the receiving body's own state, through main+0x1cd1b1c, which can cancel the hit (damage 0): a raised shield. So
-// the owner's game sends the contacts waiting on a proxy as its hit update begins, and the player's game adds them
-// to its own Link's list as that Link's hit update begins; its own update builds the hit, guard and all.
-#define CONTACT_KIND 0x4c43   // "CL"
+// the receiving body's own state, through main+0x1cd1b1c, which can cancel the hit (damage 0): a raised shield.
 #define CONTACT_SZ 0x1c0
 #define CONTACT_MAX 2
 // brel: where the contact's body (+0x58) sat from the proxy's main body (enemy_body), plus 1; 0 not near it (a Link's
 // is that body +0xb558, guarding or not, both Links, every run: TOTK_COOP_TEST_CONTACTS, 2026-11-06).
 typedef struct { uint32_t key, to, kind, n, brel[CONTACT_MAX]; uint8_t e[CONTACT_MAX][CONTACT_SZ]; } ContactPacket;
 _Static_assert(sizeof(ContactPacket) <= COOP_HIT_MAX, "ContactPacket fits a HIT packet");
-// TOTK_COOP_LINKHIT_CONTACT=0: the hit replay only. Off with the native enemy model unless set: there the copy of an
-// enemy fighting this game's Link hits it itself, in this game (sent as well, a hit counted twice).
-static int contact_on(void) {
-    static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_LINKHIT_CONTACT"); on = e ? *e != '0' : !enemy_native(); }
-    return on;
-}
 static uint64_t contact_list(uint64_t dc) {
     uint64_t o = coop_rd_ptr(dc + 0x1910);
     return o ? coop_rd_ptr(o + 0x50) : 0;
 }
-static uint32_t key_of_actor(uint64_t a);
 static uint64_t enemy_body(uint64_t a);
-static uint64_t pup_ready_actor(uint32_t key);
 static uint64_t actor_ref(uint64_t a);
-static void contact_send(uint64_t dc, int to) {
-    uint64_t l = contact_list(dc);
-    int32_t cnt = 0, cap = 0;
-    uint64_t base = 0;
-    if (!l || !coop_rd(l + 0x18, &cnt, 4) || cnt <= 0 || !coop_rd(l + 8, &cap, 4) || !(base = coop_rd_ptr(l + 0x10))) return;
-    static ContactPacket cp;   // (one proxy's hit update at a time: the update runs them in turn)
-    static uint32_t last_id[RCV_N];
-    memset(&cp, 0, offsetof(ContactPacket, e));
-    cp.to = (uint32_t)to, cp.kind = CONTACT_KIND;
-    for (int k = 0; k < cnt && cp.n < CONTACT_MAX; k++) {
-        uint8_t *e = cp.e[cp.n];
-        if (!coop_rd(base + (uint64_t)(k < cap ? k : 0) * CONTACT_SZ, e, CONTACT_SZ)) break;
-        uint32_t id;
-        memcpy(&id, e + 0x38, 4);
-        // the attacker: either handle (+0x60 the weapon and +0x78 its holder, or +0x60 the enemy itself)
-        uint64_t att = 0;
-        char nm[64] = "";
-        for (int hk = 0; hk < 2 && strncmp(nm, "Enemy_", 6); hk++) {
-            uint64_t ref;
-            memcpy(&ref, e + (hk ? 0x80 : 0x68), 8);
-            att = ref ? coop_rd_ptr(ref + 0x40) : 0;
-            nm[0] = 0;
-            if (att) coop_actor_name(att, nm, sizeof nm);
-        }
-        static int said;
-        if (said++ < 3) {
-            char line[1400];
-            int m = snprintf(line, sizeof line, "coop: test: contact on player %d's proxy by %s:", to, nm[0] ? nm : "?");
-            for (int w = 0; w < CONTACT_SZ / 8 && m < 1360; w++) {
-                uint64_t v;
-                memcpy(&v, e + 8 * w, 8);
-                if (v) m += snprintf(line + m, sizeof line - m, " %02x:%llx", 8 * w, (unsigned long long)v);
-            }
-            rt_log("%s", line);
-        }
-        if (strncmp(nm, "Enemy_", 6)) continue;   // an enemy's, this game's to run
-        int slot = to > 0 && to <= RCV_N ? to - 1 : 0;
-        if (id && id == last_id[slot]) continue;   // sent already (a contact waits there over several frames)
-        last_id[slot] = id;
-        cp.key = key_of_actor(att);
-        uint64_t body;
-        memcpy(&body, e + 0x58, 8);
-        uint64_t mb0 = enemy_body(coop_rd_ptr(dc + 0x198));
-        cp.brel[cp.n] = body && mb0 && body >= mb0 && body - mb0 < 0x20000 ? (uint32_t)(body - mb0) + 1 : 0;
-        cp.n++;
-    }
-    if (cp.n) {
-        coop_net_hit_send(&cp, (int)(offsetof(ContactPacket, e) + cp.n * CONTACT_SZ));
-        if (to > 0 && to <= COOP_MAX_PLAYERS) atomic_store(&contact_sent_ns[to], plat_now_ns());
-    }
-}
-static _Alignas(16) uint8_t ct_in[CONTACT_MAX][CONTACT_SZ];
-static _Atomic int ct_n;                  // contacts waiting for this Link's hit update
-static uint32_t ct_brel[CONTACT_MAX], ct_key;
-static _Atomic uint64_t ct_dc;            // this Link's damage component they wait for
-// This Link's guard. Its component +0x3b8's word +0x160 has bit 28 while ZL is held and bit 22 with the sword
-// drawn (0x10000401 ZL with the sword on the back and no enemy, 0x400401 drawn, 0x10400401 both), +0x84 of its
-// component +0x158 is 0x41 while ZL is held, and the actor's +0x328 has bit 1 only with both, the shield raised
-// (0x32e00000 -> 0x32e00002): game B's own Link in the three states (TOTK_COOP_TEST_LINKDUMP, 2026-11-07).
-static int shield_raised(uint64_t actor) {
-    uint64_t tab = coop_rd_ptr(actor + 0x228), c1 = tab ? coop_rd_ptr(tab + 0x3b8) : 0;
-    uint32_t f = 0, a = 0;
-    if (!c1 || !coop_rd(c1 + 0x160, &f, 4) || !coop_rd(actor + 0x328, &a, 4)) return 0;
-    return (f >> 28 & 1) && (f >> 22 & 1) && (a >> 1 & 1);
-}
-static const char *guard_state(uint64_t actor, char *buf, size_t n) {
-    uint64_t tab = coop_rd_ptr(actor + 0x228), c1 = tab ? coop_rd_ptr(tab + 0x3b8) : 0, c2 = tab ? coop_rd_ptr(tab + 0x158) : 0;
-    uint64_t eq = tab ? coop_rd_ptr(tab + 0x230) : 0;
-    uint32_t f = 0, act = 0, ef = 0;
-    if (c1) coop_rd(c1 + 0x160, &f, 4);
-    if (c2) coop_rd(c2 + 0x84, &act, 4);
-    if (eq) coop_rd(eq + 0x4600, &ef, 4);
-    uint32_t a328 = 0;
-    coop_rd(actor + 0x328, &a328, 4);
-    snprintf(buf, n, "shield %s (%#x, actor +0x328 %#x, action %#x, equipment +0x4600 %#x)", shield_raised(actor) ? "raised" : "not raised",
-             f, a328, act, ef);
-    return buf;
-}
-static void contact_add(uint64_t dc) {
-    uint64_t me_actor = coop_rd_ptr(dc + 0x198);
-    int n = atomic_exchange(&ct_n, 0);
-    if (!n) return;
-    uint64_t l = contact_list(dc);
-    int32_t cnt = 0, cap = 0;
-    uint64_t base = 0;
-    if (!l || !coop_rd(l + 0x18, &cnt, 4) || !coop_rd(l + 8, &cap, 4) || !(base = coop_rd_ptr(l + 0x10))) {
-        rt_log("coop: test: contact: this Link has no contact list (%llx)", (unsigned long long)l);
-        return;
-    }
-    for (int k = 0; k < n && cnt < cap; k++, cnt++) {
-        uint8_t *e = ct_in[k];
-        // the attacker's handles (+0x60, +0x78: +8 the reference, +0x10 its serial): this game's frozen copy of the
-        // enemy for each one that was set (its weapon's as well, for now), none without a copy
-        static int att_on = -1;   // TOTK_COOP_CONTACT_ATTACKER=0: both left empty
-        if (att_on < 0) { const char *ev = cfg_get("TOTK_COOP_CONTACT_ATTACKER"); att_on = !(ev && *ev == '0'); }
-        uint64_t cref = att_on ? actor_ref(pup_ready_actor(ct_key)) : 0;
-        uint32_t cser = 0xffffffffu;
-        if (cref) coop_rd(cref + 0x48, &cser, 4);
-        for (int hk = 0; hk < 2; hk++) {
-            uint64_t was, r = cref;
-            uint32_t sr = cser;
-            memcpy(&was, e + (hk ? 0x80 : 0x68), 8);
-            if (!was) r = 0, sr = 0xffffffffu;
-            memcpy(e + (hk ? 0x80 : 0x68), &r, 8), memcpy(e + (hk ? 0x88 : 0x70), &sr, 4);
-        }
-        // the body touched: the same place from this Link's main body, else none
-        uint64_t mb = ct_brel[k] && enemy_body(me_actor) ? enemy_body(me_actor) + ct_brel[k] - 1 : 0;
-        memcpy(e + 0x58, &mb, 8);
-        // Test (TOTK_COOP_CONTACT_SHIELD=1): mark the contact as one that met the shield (+0x0b 1: the only byte apart
-        // from places and directions between a guarding Link's blocked contact and its proxy's, same swing, 2026-11-06)
-        static int sh = -1;
-        if (sh < 0) { const char *ev = cfg_get("TOTK_COOP_CONTACT_SHIELD"); sh = ev && *ev == '1'; }
-        if (sh) e[0x0b] = 1;
-        // The block (TOTK_COOP_CONTACT_GUARDBIT=1, a test): the Player's hit filter cancels a hit when its equipment
-        // component's +0x4600 has bit 17 (main+0x319120 from main+0x1cca59c), which the game sets when an attack
-        // meets the raised shield; a replayed contact meets nothing here. So with this Link's shield up (guard_state)
-        // and the attacker in front of it (within 60 degrees of its facing), the bit is set: 26 hits, life kept at 14
-        // (with the shield up and without the bit: 14 -> 10 -> 6; 2026-11-06). Whether the block's reaction plays
-        // is not checked.
-        // (off by default: the "shield up" bit may be ZL held alone, the shield on the back in frames at a block, and
-        // the hit is cancelled with no reaction; 2026-11-06)
-        static int gb = -1;
-        if (gb < 0) { const char *ev = cfg_get("TOTK_COOP_CONTACT_GUARDBIT"); gb = ev && *ev == '1'; }
-        if (gb) {
-            uint64_t tab = coop_rd_ptr(me_actor + 0x228), c1 = tab ? coop_rd_ptr(tab + 0x3b8) : 0, eq = tab ? coop_rd_ptr(tab + 0x230) : 0;
-            uint64_t att = pup_ready_actor(ct_key);
-            uint32_t f = 0, ef = 0;
-            float lp[3], lr[9], ap[3];
-            int front = 0;
-            if (att && coop_rd(me_actor + COOP_ACTOR_POS, lp, 12) && coop_rd(me_actor + COOP_ACTOR_ROT, lr, 36) && coop_rd(att + COOP_ACTOR_POS, ap, 12)) {
-                float dx = ap[0] - lp[0], dz = ap[2] - lp[2], d = sqrtf(dx * dx + dz * dz);
-                front = d < 1e-3f || (lr[2] * dx + lr[8] * dz) / d > 0.5f;
-            }
-            (void)c1, (void)f;
-            int up = shield_raised(me_actor);
-            if (eq && front && up && coop_rd(eq + 0x4600, &ef, 4)) ef |= 1u << 17, memcpy((void *)(uintptr_t)(eq + 0x4600), &ef, 4);
-            static int said;
-            if (said++ < 20) rt_log("coop: contact guard at %.2f s: shield %s, attacker %s: %s", frame_step_world_us() / 1e6, up ? "raised" : "not raised",
-                                    !att ? "not here" : front ? "in front" : "not in front", eq && front && up ? "blocked" : "not blocked");
-        }
-        memcpy((void *)(uintptr_t)(base + (uint64_t)cnt * CONTACT_SZ), e, CONTACT_SZ);
-    }
-    memcpy((void *)(uintptr_t)(l + 0x18), &cnt, 4);
-    char gs[80];
-    rt_log("coop: test: contact: %d added to this Link's list (now %d; %s; body %s, attacker %s)", n, cnt, guard_state(me_actor, gs, sizeof gs),
-           ct_brel[0] ? "from its main body" : "none", actor_ref(pup_ready_actor(ct_key)) ? "this game's copy" : "none");
-}
 // Test (TOTK_COOP_TEST_CONTACTS=1): every damage component's hit update with contacts waiting: its actor (dc+0x198),
 // and each contact's kind (+0x90), power (+0xa0), body (+0x58) and attacker handles' actors; 40 lines.
 static void contacts_test(uint64_t dc) {
@@ -1951,15 +1107,7 @@ static void contacts_test(uint64_t dc) {
         }
     }
 }
-// TotK Online (read for behaviour only) deletes, in each game, the contacts with an actor another game runs, so a hit
-// is counted in one game only: the owner's, where the attacker's stand-in swings too. Here, on the copy of an enemy
-// another game runs (native model), the contacts waiting for its hit update whose attacker (handle +0x80's actor) is
-// a Link, this one or a co-op Link, and whose weapon (handle +0x68's) is a Weapon_ are taken out of the list before
-// the hit is built: this Link's sword lands in the owner's game from its co-op Link there (and so is not also sent as
-// the copy's lost life, peer_one), and a co-op Link's sword was its player's hit, already counted in the owner's game.
-// The copy's reaction is its owner's action (coop_enemy_action). Arrows, bombs and the rest stay (their damage goes
-// to the owner as lost life). TOTK_COOP_CONTACT_FILTER=0: none taken out.
-static int ct_is_copy(uint64_t a);   // (below the copies' table)
+// Whose Link an actor is: 1 this game's, 2 a co-op Link (another player's stand-in here), 0 neither.
 static int ct_is_link(uint64_t a) {
     if (!a) return 0;
     if (a == pup_me) return 1;
@@ -1992,10 +1140,9 @@ static CeSlot ce_in[CE_SLOTS];
 static _Atomic int ce_waiting;   // slots in use (ce_add looks only when some are)
 static __thread uint32_t tl_ce_attack;   // the attack id of the contact being queued (the enemy sync sends one blow once)
 static int ce_owner_of(uint64_t a, uint32_t *key) {
-    { int coop_enemy_contact_route(uint64_t actor, uint32_t *key, uint32_t attack_id); int o = coop_enemy_new() ? coop_enemy_contact_route(a, key, tl_ce_attack) : 0; if (o) return o < 0 ? 0 : o; }   // coop_enemy.c
-    *key = key_of_actor(a);
-    for (int k = 0; *key && k < FOLLOW_N; k++) if (follow[k].key == *key) return follow[k].owner;
-    return 0;
+    int coop_enemy_contact_route(uint64_t actor, uint32_t *key, uint32_t attack_id);   // coop_enemy.c: who runs it; below 0, not sent
+    int o = coop_enemy_new() ? coop_enemy_contact_route(a, key, tl_ce_attack) : 0;
+    return o < 0 ? 0 : o;
 }
 static void ce_queue(ContactPacket *out, uint64_t a, uint64_t e, uint32_t kind) {   // out: this hit update's, of kind
     uint32_t key = 0;
@@ -2019,12 +1166,11 @@ uint64_t coop_eq_row_ref(uint64_t actor, int row);   // coop_players.c
 // A CE packet from player `from` (the hit update of its enemy adds it: ce_add).
 static void ce_take(const ContactPacket *cp, int from) {
     uint64_t now = plat_now_ns();
-    if (!cp->n || cp->n > CONTACT_MAX || (!coop_enemy_old() && !coop_enemy_new())) return;
+    if (!cp->n || cp->n > CONTACT_MAX || !coop_enemy_new()) return;
     uint64_t a = 0, co[COOP_MAX_PLAYERS];
     int fresh = 0;
-    { uint64_t coop_enemy_contact_actor(uint32_t key, int from); if (coop_enemy_new()) a = coop_enemy_contact_actor(cp->key, from), fresh = a != 0; }   // coop_enemy.c
+    { uint64_t coop_enemy_contact_actor(uint32_t key, int from); a = coop_enemy_contact_actor(cp->key, from), fresh = a != 0; }   // coop_enemy.c
     int ids[COOP_MAX_PLAYERS], nc = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
-    for (int i = 0; i < KNOWN_N && !a; i++) if (mine_known[i].key == cp->key) a = mine_known[i].actor;
     uint64_t by = 0;
     for (int i = 0; i < nc; i++) if (ids[i] == from) by = co[i];
     uint64_t dc = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x2f8) : 0;
@@ -2116,7 +1262,7 @@ static void ce_add_one(uint64_t dc, CeSlot *sl) {
 static void contacts_filter(uint64_t dc) {
     static int on = -1;
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_CONTACT_FILTER"); on = !(e && *e == '0'); }
-    if (!on || !enemy_native() || !coop_net_on()) return;
+    if (!on || !coop_net_on()) return;
     uint64_t a = coop_rd_ptr(dc + 0x198), l, base;
     int32_t cnt = 0, cap = 0;
     // (the list first: it is empty in most hit updates, and the copy check reads more; the count clamped to the
@@ -2189,43 +1335,6 @@ static void contacts_filter(uint64_t dc) {
             return;
         }
     }
-    if (!ct_is_copy(a)) return;
-    int out = 0, keep = 0;
-    ContactPacket ce_out, ce_arrows;
-    memset(&ce_out, 0, offsetof(ContactPacket, e)), memset(&ce_arrows, 0, offsetof(ContactPacket, e));
-    for (int k = 0; k < cnt; k++) {
-        uint64_t e = base + (uint64_t)k * CONTACT_SZ, r1 = coop_rd_ptr(e + 0x68), r2 = coop_rd_ptr(e + 0x80);
-        uint64_t w = r1 ? coop_rd_ptr(r1 + 0x40) : 0, by = r2 ? coop_rd_ptr(r2 + 0x40) : 0;
-        char wn[48] = "", an[48] = "";
-        if (w) coop_actor_name(w, wn, sizeof wn);
-        size_t wl = strlen(wn);
-        int arrow = wl >= 5 && !strcmp(wn + wl - 5, "Arrow");   // NormalArrow, FireArrow, ...
-        int who = ct_is_link(by), drop = who && (!strncmp(wn, "Weapon_", 7) || (arrow && who == 1));
-        // A beam, a flame or a cannon ball of a device this game only follows: the game that runs the device has the
-        // same emitter on the same enemy, and that one counts (coop_ctn.c coop_ctn_emitter_of_followed).
-        int coop_ctn_emitter_of_followed(uint64_t a);
-        int emitter = !drop && ((w && coop_ctn_emitter_of_followed(w)) || (by && coop_ctn_emitter_of_followed(by)));
-        if (emitter) {
-            static _Atomic int said_e;
-            if (atomic_fetch_add(&said_e, 1) < 10) rt_log("coop: contact on the copy of %s by a followed device's %s: taken out (the game that runs the device counts it)", coop_actor_name(a, an, sizeof an), wn[0] ? wn : "emitter");
-            out++;
-            continue;
-        }
-        static _Atomic int said;
-        if (atomic_fetch_add(&said, 1) < 40)
-            rt_log("coop: contact on the copy of %s by %s with %s (kind %u): %s", coop_actor_name(a, an, sizeof an),
-                   who == 1 ? "this Link" : who == 2 ? "a co-op Link" : "something else", wn[0] ? wn : "-", LD8(e + 0x90),
-                   drop ? "taken out (its owner's game counts it)" : "kept");
-        if (drop) {
-            if (who == 1) ce_queue(arrow ? &ce_arrows : &ce_out, a, e, arrow ? ECONTACT_ARROW : ECONTACT_KIND);
-            out++;
-            continue;
-        }
-        if (keep != k) memmove((void *)(uintptr_t)(base + (uint64_t)keep * CONTACT_SZ), (void *)(uintptr_t)e, CONTACT_SZ);
-        keep++;
-    }
-    if (out) memcpy((void *)(uintptr_t)(l + 0x18), &keep, 4);
-    ce_flush(&ce_out), ce_flush(&ce_arrows);
 }
 // ---- a hit's contact replayed on a Zonai device (research, TOTK_COOP_TEST_DEVHIT). dev_contact keeps the first contact
 // a hit leaves on a device's damage component (its waiting list, as for an enemy) and, once coop_dev_hit names another
@@ -2288,108 +1397,6 @@ void coop_hit_update(Cpu *c) {
     contacts_test(c->x[0]);
     ce_add(c->x[0]);
     contacts_filter(c->x[0]);
-    if (contact_on()) {
-        uint64_t x0 = c->x[0];
-        if (x0 && x0 == atomic_load(&ct_dc)) contact_add(x0);
-        for (int i = 0; i < RCV_N; i++)
-            if (x0 && atomic_load_explicit(&proxy_rcv[i], memory_order_relaxed) == x0 + 0x190) contact_send(x0, atomic_load(&proxy_id[i]));
-    }
-    uint64_t dc = atomic_load_explicit(&lh_dc, memory_order_acquire);
-    if (!dc || c->x[0] != dc || !atomic_compare_exchange_strong(&lh_dc, &dc, 0)) return;
-    uint64_t keep[31];
-    memcpy(keep, c->x, sizeof keep);
-    rt_call(c, MOD_MAIN_BASE + 0x31dbc0, 3, dc + 0x190, atomic_load(&lh_x1), (uint64_t)(uintptr_t)lh_info);
-    memcpy(c->x, keep, sizeof keep);
-    atomic_store(&lh_guarded, lh_info[0xe0] >> 3 & 1);
-}
-void coop_hit_drop(void) {
-    uint64_t dc = atomic_exchange(&lh_dc, 0);
-    if (dc) rt_log("coop: the hit waiting for this Link's update was dropped (its update did not run)");
-}
-static int link_hit_deliver(Cpu *c, const LinkHitPacket *lh, uint64_t me, uint64_t att) {
-    (void)c;
-    uint64_t dc = coop_rd_ptr(coop_rd_ptr(me + 0x228) + 0x2f8);
-    if (!dc || lh->info_len != HIT_INFO || atomic_load(&lh_dc)) return 0;
-    uint8_t *h = lh_info;
-    memcpy(h, lh->info, HIT_INFO);
-    // TOTK_COOP_LINKHIT_ATTACKER=1: the handle names this game's frozen copy of the enemy; else none (a test)
-    static int att_on = -1;
-    if (att_on < 0) { const char *e = cfg_get("TOTK_COOP_LINKHIT_ATTACKER"); att_on = e && *e == '1'; }
-    uint64_t ref = att_on ? actor_ref(att) : 0;
-    uint64_t r8 = ref;
-    uint32_t serial = 0xffffffffu;
-    if (ref) coop_rd(ref + 0x48, &serial, 4);
-    memcpy(h + 0x28, &r8, 8);
-    memcpy(h + 0x30, &serial, 4);
-    h[0xe0] &= (uint8_t)~8;
-    // A raised shield does not block these hits (the tester's worry, 2026-11-06). A blocked hit reaches main+0x31dbc0
-    // with damage 0 and nothing else of it different (this Link's own hits with its shield up), so the block is made
-    // where the hit is built, from the attack's contact with the shield, before the delivery; not by the guard check
-    // the delivery runs (main+0x1cd380c from main+0x1cceaac: never guarded with this Link's own attack object), nor by
-    // this Link's listener (vtable +0x48, main+0x1cca59c: damage 3 -> 3 with its shield up), nor by the proxy's own
-    // update with ZL let through in the owner's game. docs/coop/proxy-plan.md: the contact replayed instead.
-    uint8_t *atk = lh_atk;
-    memset(atk, 0, sizeof lh_atk);
-    uint64_t self = (uint64_t)(uintptr_t)atk;
-    memcpy(atk + 0x70, &self, 8), memcpy(atk + 0x30, &self, 8);
-    atk[0x4a] = 1, atk[0x183] = 1;
-    // The "attack" is the hit body's own object in its damage component (dc+0x18d0 for a Link; +8 that body's life,
-    // 14, 11, 8 as the hits landed; +0xb8 its actor): this Link's object at the same place, as the game passes it;
-    // the blank one when that is not there.
-    uint64_t own = lh->atk_off && lh->atk_off < 0x2000 ? dc + lh->atk_off : 0;
-    if (own && coop_rd_ptr(own + 0xb8) != me) own = 0;
-    atomic_store(&lh_x1, own ? own : self);
-    int32_t d[6];
-    memcpy(d, h, sizeof d);
-    rt_log("coop: delivering the hit here: damage %d, kind %d, attacker %s; the attack %s (+%#x)", d[0], d[5],
-           ref ? "this game's copy" : "none", own ? "this Link's own" : "blank", lh->atk_off);
-    atomic_store_explicit(&lh_dc, dc, memory_order_release);
-    return 1;
-}
-static void link_hit_take(Cpu *c, const LinkHitPacket *lh, int from, uint64_t me) {
-    if (enemy_native() || !coop_enemy_old()) return;   // (a sender with the old model: its copy here hits this Link itself)
-    const Follow *f = NULL;
-    for (int k = 0; k < FOLLOW_N; k++) if (follow[k].key == lh->key) f = &follow[k];
-    if (!me || !f || f->owner != from) {
-        rt_log("coop: player %d says enemy %08x hit this Link for %d; not taken (this game runs that enemy)", from, lh->key, lh->damage);
-        return;
-    }
-    int life = life_of(me);
-    if (life <= 0) return;
-    static int deliver_on = -1;
-    if (deliver_on < 0) { const char *e = cfg_get("TOTK_COOP_LINKHIT_DELIVER"); deliver_on = !(e && *e == '0'); }
-    int dl = deliver_on && !lh_wait.frames ? link_hit_deliver(c, lh, me, pup_ready_actor(lh->key)) : 0;
-    if (dl) atomic_store(&lh_guarded, 0);
-    if (dl) {
-        lh_wait.frames = 12, lh_wait.life = life, lh_wait.damage = lh->damage, lh_wait.key = lh->key;
-        rt_log("coop: enemy %08x hit this Link in player %d's game for %d: delivered here as the game's own hit", lh->key, from, lh->damage);
-        return;
-    }
-    static int rec_on = -1;
-    if (rec_on < 0) { const char *e = cfg_get("TOTK_COOP_LINKHIT_RECORD"); rec_on = e && *e == '1'; }
-    uint64_t att = pup_ready_actor(lh->key), ref = rec_on ? actor_ref(att) : 0;
-    uint64_t dc = coop_rd_ptr(coop_rd_ptr(me + 0x228) + 0x2f8);
-    uint32_t cur = 1;
-    if (dc) coop_rd(dc + 0x1a4, &cur, 4);
-    if (ref && dc && !cur && lh->nslots && lh->nslots <= LH_SLOTS && !lh_wait.frames) {
-        const LinkHitSlot *first = NULL;
-        for (int pass = 0; pass < 2; pass++)   // slot 0 (with the state word +0x1a4) last: the update takes it then
-            for (uint32_t k = 0; k < lh->nslots; k++) {
-                const LinkHitSlot *e = &lh->s[k];
-                if (e->slot >= LH_SLOTS || (pass == 0) == (e->slot == 0)) continue;
-                uint64_t v = e->how == LH_ATTACKER ? ref : e->how == LH_DC ? dc + e->v : e->how == LH_ACTOR ? me + e->v : e->v;
-                memcpy((void *)(uintptr_t)(dc + 0x1a0 + e->slot * 8), &v, 8);
-                if (!first) first = e;
-            }
-        lh_wait.frames = 12, lh_wait.life = life, lh_wait.damage = lh->damage, lh_wait.key = lh->key;
-        rt_log("coop: enemy %08x hit this Link in player %d's game for %d: its record (%u slots) written here, the attacker this game's copy",
-               lh->key, from, lh->damage, lh->nslots);
-        return;
-    }
-    int now = life - lh->damage < 0 ? 0 : life - lh->damage;
-    set_life(me, now);
-    rt_log("coop: enemy %08x hit this Link in player %d's game for %d (life %d -> %d%s)", lh->key, from, lh->damage, life, now,
-           !rec_on ? "" : !ref ? "; no copy of it here to hit with" : cur ? "; a hit of its own was being taken" : "");
 }
 // Test (TOTK_COOP_TEST_HITWATCH=<from>-<to>[@<off>]): from that many seconds into the world to the other, a write
 // watch (coop_watch_win.c) on this Link's damage component at +<off> (default 0x1a4, the hit record's state word), 8
@@ -2480,7 +1487,6 @@ static void actor_dump(uint64_t a, const char *what, int n) {
     snprintf(path, sizeof path, "%s/%sdump_%d_%d.bin", dir ? dir : ".", what, coop_net_id(), n);
     rt_log("coop: test: %sdump %s at %.1f s: %s", what, path, frame_step_world_us() / 1e6, plat_file_write(path, buf, sizeof buf) ? "written" : "not written");
 }
-static uint64_t pup_ready_actor(uint32_t key);
 static void link_dump_test(uint64_t me) {
     static int on = -1, done;
     static double at[4];
@@ -2491,11 +1497,11 @@ static void link_dump_test(uint64_t me) {
         on = nat > 0;
     }
     if (!on || done >= nat || frame_step_world_us() / 1e6 < at[done]) return;
-    {   // and the nearest Enemy_ this game runs or follows (TOTK_COOP_TEST_LINKDUMP_KEY=<hex key>: that one)
+    {   // and the live enemy of that key (TOTK_COOP_TEST_LINKDUMP_KEY=<hex key>)
         const char *ks = cfg_get("TOTK_COOP_TEST_LINKDUMP_KEY");
         uint32_t want = ks ? (uint32_t)strtoul(ks, NULL, 16) : 0;
-        uint64_t en = want ? pup_ready_actor(want) : 0;
-        for (int i = 0; !en && want && i < KNOWN_N; i++) if (mine_known[i].key == want) en = mine_known[i].actor;
+        uint64_t en = 0;
+        for (int i = 0; !en && want && i < n_all_enemies; i++) if (coop_actor_world_key(all_enemies[i]) == want) en = all_enemies[i];
         if (en) actor_dump(en, "enemy", done);
         if (en) {   // where the enemy holds this Link: its actor or its reference, in its first 0x3000 bytes and its components
             uint64_t ref = actor_ref(me), tab = coop_rd_ptr(en + 0x228);
@@ -2530,13 +1536,13 @@ static void link_dump_test(uint64_t me) {
     rt_log("coop: test: linkdump %s at %.1f s: %s", path, frame_step_world_us() / 1e6, plat_file_write(path, buf, sizeof buf) ? "written" : "not written");
     done++;
 }
-static void enemy_poke_test(void);   // (after pups)
 // ---- enemies made at run time, made in the other games too (TotK Online's way: it registers every actor the game
 // hands over from its create queue, 1.2.1 main+0xcd7d40, and the other games make one by name; read for behaviour).
 // The game hands a new actor over at main+0x89841c (ActorCreateInfo::getActor returning to main+0x898420; found from
 // the 1.2.1 site by its code). An Enemy_ with no map placement (its placement hash, [actor+0x370]+0x88 in 1.2.1, 0) is
 // sent to the others (SPAWN_KIND: its key, name, place, rotation), and each makes one there with that key; when it goes
 // away here without dying (unloaded), SPAWN_GONE deletes the others' (a death goes by the enemy sync).
+static int spawn_kind(const char *nm) { return !strncmp(nm, "Enemy_", 6); }   // what the spawn sync announces and makes: enemies
 #define SPAWN_KIND 0x5053   // "SP"
 #define SPAWN_GONE 0x4753   // "SG"
 typedef struct { uint32_t key, to, kind, pad; char name[48]; float pos[3], rot[9]; } SpawnPacket;
@@ -2559,10 +1565,10 @@ void coop_actor_created(uint64_t a) {   // coop_spawn.c, from the getActor hook 
         if (on && !dup && atomic_fetch_add(&said, 1) < 200) {
             int i = atomic_fetch_add(&nseen, 1);
             if (i < 200) snprintf(seen[i], sizeof seen[i], "%s", nm);
-            rt_log("coop: test: born %llx '%s' kind %d at %.1f s", (unsigned long long)a, nm, coop_world_spawn_kind(nm), frame_step_world_us() / 1e6);
+            rt_log("coop: test: born %llx '%s' kind %d at %.1f s", (unsigned long long)a, nm, spawn_kind(nm), frame_step_world_us() / 1e6);
         }
     }
-    if (!coop_world_spawn_kind(nm) || (!coop_enemy_old() && !strncmp(nm, "Enemy_", 6))) return;
+    if (!spawn_kind(nm)) return;   // (an enemy too, whichever enemy sync is on: its key here is its identity there)
     unsigned i = atomic_fetch_add(&born_n, 1) % BORN_N;
     atomic_store_explicit(&born[i].actor, 0, memory_order_release);
     atomic_store_explicit(&born[i].at_ns, plat_now_ns(), memory_order_relaxed);
@@ -2603,7 +1609,6 @@ static void far_sweep(Cpu *c) {
         }
         float d = 0;
         if (!coop_far_actor(a, &d)) continue;
-        pup_release(made_held[k].key);   // (no longer frozen and driven: its own update runs to go away)
         coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, a, COOP_DELETE_REASON, 0, 0);
         for (int i = 0; i < KEYED_N; i++)
             if (atomic_load(&keyed[i].actor) == a) atomic_store(&keyed[i].actor, 0);
@@ -2698,18 +1703,10 @@ static int spawn_send(uint64_t a, const char *nm) {
     rt_log("coop: spawn sync: %s %08x made here at %.1f %.1f %.1f: sent to the others", nm, sp.key, p[0], p[1], p[2]);
     return 1;
 }
-// Whether another game reports an enemy of that key (its world packet, alive or dead): it has one already.
-static int peer_reports(uint32_t key) {
-    for (int id = 1; key && id <= COOP_MAX_PLAYERS; id++) {
-        if (!remote_ok[id]) continue;
-        for (int i = 0; i < remote_pk[id].count; i++) if (remote_pk[id].e[i].key == key) return 1;
-    }
-    return 0;
-}
-// Twice a second: each live enemy here (dup_count's list) seen in SCAN_SETTLE scans running goes to spawn_send,
-// unless another game already reports its key or runs it (an enemy both games made at one place has one key in
-// both: two games each sending theirs made a copy of the other's, two Bokoblins in each; the suite's hits case,
-// 2026-11-07). The wait (2 s) lets the others' world packets (10 a second) come first. Needs another player here.
+// Twice a second: each live enemy here (dup_count's list) seen in SCAN_SETTLE scans running goes to spawn_send, which
+// sends only one that is placed nowhere in the map and has no key yet. An enemy both games made at one place has one
+// key in both: the game that gets the other's packet keeps its own under that key and makes no second (spawn_take).
+// Needs another player here.
 #define SCAN_SETTLE 4
 static void spawn_scan(void) {
     static uint64_t last;
@@ -2729,11 +1726,7 @@ static void spawn_scan(void) {
         int32_t st = 0;
         char nm[48];
         if (!coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || keyed_of(a)) continue;
-        if (!coop_world_spawn_kind(coop_actor_name(a, nm, sizeof nm)) || !coop_enemy_old()) continue;
-        uint32_t key = key_of_actor(a);
-        Follow *f = NULL;
-        for (int k = 0; key && k < FOLLOW_N && !f; k++) if (follow[k].key == key && follow[k].owner) f = &follow[k];
-        if (f || peer_reports(key)) continue;   // the other games have it
+        if (!spawn_kind(coop_actor_name(a, nm, sizeof nm))) continue;
         int was = 0;
         for (int k = 0; k < nseen; k++) if (seen[k] == a) was = seen_n[k];
         if (was + 1 >= SCAN_SETTLE) { spawn_send(a, nm); continue; }
@@ -2756,7 +1749,7 @@ static void spawn_tick(Cpu *c) {
         char nm[48];
         int32_t st = 0;
         coop_actor_name(a, nm, sizeof nm);
-        int ready = coop_world_spawn_kind(nm) && coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6;
+        int ready = spawn_kind(nm) && coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6;
         if (!ready && now - at < 3000000000ull) continue;
         uint64_t want = a;   // taken (unless another was handed over into the slot meanwhile)
         if (!atomic_compare_exchange_strong(&born[i].actor, &want, 0) || !ready) continue;
@@ -2786,7 +1779,7 @@ static void spawn_tick(Cpu *c) {
         uint64_t a = spawned_mine[k].actor;
         int32_t st = 0;
         char nm[48];
-        int alive = coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6 && coop_world_spawn_kind(coop_actor_name(a, nm, sizeof nm));
+        int alive = coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6 && spawn_kind(coop_actor_name(a, nm, sizeof nm));
         if (alive && keyed_of(a) == spawned_mine[k].key) continue;
         if (!alive || life_of(a) != 0) {
             SpawnPacket sp = {.key = spawned_mine[k].key, .kind = SPAWN_GONE};
@@ -2810,7 +1803,7 @@ static void spawn_take(Cpu *c, const SpawnPacket *sp, int from) {
             }
             return;   // (have it)
         }
-    if (sp->kind != SPAWN_KIND || memchr(sp->name, 0, sizeof sp->name) == NULL || !coop_world_spawn_kind(sp->name) || (!coop_enemy_old() && !strncmp(sp->name, "Enemy_", 6))) return;
+    if (sp->kind != SPAWN_KIND || memchr(sp->name, 0, sizeof sp->name) == NULL || !spawn_kind(sp->name)) return;
     for (int k = 0; k < 32; k++) if (made[k].state && made[k].key == sp->key) return;
     // This game's own spawner made one of that name at that place (both games run the same spawners): that one
     // takes the key, no second is made.
@@ -2837,1327 +1830,44 @@ static void spawn_take(Cpu *c, const SpawnPacket *sp, int from) {
         return;
     }
 }
-// For coop_mounts.c: each synced actor that is not an enemy, and who runs a key.
-typedef struct { void (*fn)(uint64_t, const char *, uint32_t, int, void *); void *arg; } MountScan;
-static void mount_one(int cell, uint64_t a, void *arg) {
-    MountScan *m = arg;
-    char nm[48];
-    int kind = 0;
-    int32_t st = 0;
-    uint32_t key = synced_of(cell, a, nm, sizeof nm, &kind);
-    if (key && kind != COOP_KIND_ENEMY && !dup_key(key) && coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6)
-        m->fn(a, nm, key, kind, m->arg);
-}
-void coop_world_each_mount(void (*fn)(uint64_t actor, const char *name, uint32_t key, int kind, void *arg), void *arg) {
-    if (!coop_mounts_on()) return;
-    MountScan m = {fn, arg};
-    each_live(mount_one, &m);
-}
-int coop_world_owner_of(uint32_t key) {
-    for (int i = 0; i < FOLLOW_N; i++) if (follow[i].key == key) return follow[i].owner;
-    return -1;
-}
+// Each frame with another player in the session: the HIT channel's packets are handed to their owners (the shared
+// world progress, the rotating ground, a player's blow sent to the game that runs the enemy, the spawn sync, the
+// travel notice), then the spawn sync's own tick; about 10 times a second the list of live enemies is made again.
 static void peer_tick(Cpu *c, uint64_t me) {
     pup_me = me;
-    coop_mounts_tick(c, me);
-    enemy_poke_test();
     link_dump_test(me);
     guard_scan_test(me);
     hit_watch_test(me);
-    link_hit_check(me);
     void coop_autobuild_tick(Cpu *c, uint64_t me);   // coop_autobuild.c
     coop_autobuild_tick(c, me);
-    int my_id = coop_net_id();
-    // Hits from the others on the enemies this game runs: the damage taken from this game's one.
-    HitPacket hp;
-    int from = 0, n;
-    static LinkHitPacket lhp;
-    while ((n = coop_net_hit_take(&lhp, sizeof lhp, &from)) != 0) {
+    int my_id = coop_net_id(), from = 0, n;
+    static _Alignas(16) uint8_t in[COOP_HIT_MAX];
+    while ((n = coop_net_hit_take(in, sizeof in, &from)) != 0) {
         int coop_gamedata_take(const void *data, int n, int from);   // coop_gamedata.c: shared world progress
-        if (coop_gamedata_take(&lhp, n, from)) continue;
-        {   // contact replay (a test)
-            const ContactPacket *cp = (const ContactPacket *)&lhp;
-            if (n >= (int)offsetof(GroundPacket, g) && ((const GroundPacket *)&lhp)->kind == GROUND_KIND) {
-                ground_take((const GroundPacket *)&lhp, n);
-                continue;
-            }
-            if (n >= (int)offsetof(ContactPacket, e) && (cp->kind == ECONTACT_KIND || cp->kind == ECONTACT_ARROW) && (int)cp->to == my_id && cp->n <= CONTACT_MAX &&
-                n == (int)(offsetof(ContactPacket, e) + cp->n * CONTACT_SZ)) {
-                ce_take(cp, from);
-                continue;
-            }
-            if (n >= (int)offsetof(ContactPacket, e) && cp->kind == CONTACT_KIND) {
-                if (contact_on() && (int)cp->to == my_id && cp->n && cp->n <= CONTACT_MAX &&
-                    n == (int)(offsetof(ContactPacket, e) + cp->n * CONTACT_SZ) && !atomic_load(&ct_n)) {
-                    uint64_t mdc = coop_rd_ptr(coop_rd_ptr(me + 0x228) + 0x2f8);
-                    memcpy(ct_in, cp->e, cp->n * CONTACT_SZ);
-                    memcpy(ct_brel, cp->brel, sizeof ct_brel), ct_key = cp->key;
-                    atomic_store(&ct_dc, mdc);
-                    atomic_store(&ct_n, (int)cp->n);
-                    rt_log("coop: test: contact by enemy %08x from player %d: %u waiting for this Link's hit update", cp->key, from, cp->n);
-                }
-                continue;
-            }
-        }
-        {
-            const SpawnPacket *sp = (const SpawnPacket *)&lhp;
-            if (n == (int)sizeof(SpawnPacket) && (sp->kind == SPAWN_KIND || sp->kind == SPAWN_GONE)) { spawn_take(c, sp, from); continue; }
-        }
-        if (n == (int)sizeof(CoopTravelPacket) && ((const CoopTravelPacket *)&lhp)->kind == COOP_TRAVEL_KIND) {   // coop_notices.c
-            coop_notice_travel_take((const CoopTravelPacket *)&lhp, n, from);
-            continue;
-        }
-        if (n >= (int)offsetof(LinkHitPacket, s) && lhp.kind == LINKHIT_KIND && lhp.nslots <= LH_SLOTS &&
-            n == (int)(offsetof(LinkHitPacket, s) + lhp.nslots * sizeof(LinkHitSlot))) {
-            // (a hit its sender covered with a contact is not sent: link_hits_send)
-            if ((int)lhp.to == my_id && lhp.damage > 0 && lhp.damage <= 4000) link_hit_take(c, &lhp, from, me);
-            continue;
-        }
-        memcpy(&hp, &lhp, sizeof hp);
-        if (n != (int)sizeof hp || (int)hp.to != my_id) continue;
-        // (a damage that is not 1..65535 is not a hit: a negative one healed, a huge one overflowed; code review)
-        if (hp.damage <= 0 || hp.damage > 65535) continue;
-        for (int i = 0; i < KNOWN_N; i++)
-            if (mine_known[i].key == hp.key && mine_known[i].actor) {
-                // still that enemy: alive and an Enemy_ (its entry outlives it by up to 0.4 s)
-                int32_t est = 0;
-                char enm[64];
-                if (!coop_rd(mine_known[i].actor + COOP_ACTOR_STATE, &est, 4) || est < 2 || est > 6 ||
-                    !coop_world_kind(coop_actor_name(mine_known[i].actor, enm, sizeof enm)))
-                    break;
-                int life = life_of(mine_known[i].actor);
-                if (life > 0) {
-                    set_life(mine_known[i].actor, life - hp.damage);
-                    rt_log("coop: player %d hit enemy %08x for %d (life %d -> %d)", from, hp.key, hp.damage, life,
-                           life - hp.damage < 0 ? 0 : life - hp.damage);
-                }
-                break;
-            }
+        if (coop_gamedata_take(in, n, from)) continue;
+        const ContactPacket *cp = (const ContactPacket *)in;
+        const SpawnPacket *sp = (const SpawnPacket *)in;
+        if (n >= (int)offsetof(GroundPacket, g) && ((const GroundPacket *)in)->kind == GROUND_KIND) ground_take((const GroundPacket *)in, n);
+        else if (n >= (int)offsetof(ContactPacket, e) && (cp->kind == ECONTACT_KIND || cp->kind == ECONTACT_ARROW) && (int)cp->to == my_id && cp->n <= CONTACT_MAX &&
+                 n == (int)(offsetof(ContactPacket, e) + cp->n * CONTACT_SZ))
+            ce_take(cp, from);
+        else if (n == (int)sizeof(SpawnPacket) && (sp->kind == SPAWN_KIND || sp->kind == SPAWN_GONE)) spawn_take(c, sp, from);
+        else if (n == (int)sizeof(CoopTravelPacket) && ((const CoopTravelPacket *)in)->kind == COOP_TRAVEL_KIND)   // coop_notices.c
+            coop_notice_travel_take((const CoopTravelPacket *)in, n, from);
     }
-    epose_take_tick(c);
     spawn_tick(c);
-    epose_send_tick();
-    link_hits_send();
-    enemy_weapon_test();
-    enemy_hit_test();
     static int t;
-    if (++t % 3) return;   // the rest about 10 times a second
-    for (int id = 1; id <= COOP_MAX_PLAYERS; id++) {
-        uint64_t age = 0;
-        int len = id == my_id ? 0 : coop_net_world(id, &remote_pk[id], sizeof remote_pk[id], &age);
-        remote_ok[id] = len >= 4 && age < 1000000000ull && 4 + remote_pk[id].count * (int)sizeof(NetEnemy) <= len;
-    }
-    static PeerScan s;
-    memset(&s.pk, 0, sizeof s.pk);
-    s.c = c, s.me_id = my_id, s.snaps = 0, s.puppets = 0, s.mounts_sent = 0, s.now_ns = plat_now_ns();
-    s.no = coop_player_positions_ids(s.others, s.ids, COOP_MAX_PLAYERS);
-    s.have_me = me && coop_rd(me + COOP_ACTOR_POS, s.me, 12);
-    // The dead to report: the last 5 s, and older ones of this session near another Link (up to MAX_DEAD_SENT).
-    int64_t now = frame_step_world_us();
-    uint32_t dead_keys[MAX_DEAD_SENT];
-    int nd = 0;
-    for (int pass = 0; pass < 2; pass++)
-        for (int i = 0; i < KILLED_N && nd < MAX_DEAD_SENT; i++) {
-            if (!killed[i].key) continue;
-            int recent = now - killed[i].died_us < DEAD_KEEP_US;
-            if (pass == 0 ? !recent : recent || !near_other(&s, killed[i].home, NULL)) continue;
-            dead_keys[nd++] = killed[i].key;
-        }
-    s.live_max = MAX_SENT - nd;
-    nweaps = 0;
-    each_live(weap_collect, NULL);
-    dup_count();
-    bodies_cur = !bodies_cur, nbodies[bodies_cur] = 0;   // (part_body reads the last scan's)
-    each_live(peer_one, &s);
-    // Enemies this game ran that are no longer seen: gone; those whose life was 0 when last seen died here.
-    for (int i = 0; i < KNOWN_N; i++) {
-        if (!mine_known[i].key || now - mine_known[i].at_us < 400000) continue;
-        if (mine_known[i].life == 0) killed_add(mine_known[i].key, mine_known[i].home);
-        mine_known[i].key = 0, mine_known[i].actor = 0;
-    }
-    for (int d = 0; d < nd && s.pk.count < MAX_SENT; d++) {
-        NetEnemy e = {.key = dead_keys[d], .flags = 1};
-        s.pk.e[s.pk.count++] = e;
-    }
-    if (s.no) coop_net_world_send(&s.pk, 4 + s.pk.count * (int)sizeof(NetEnemy));
-    static int tl, snaps, puppets;
-    snaps += s.snaps, puppets = s.puppets;
-    if (++tl % 100 == 0) {
-        int theirs = 0;
-        for (int id = 1; id <= COOP_MAX_PLAYERS; id++) theirs += remote_ok[id] ? remote_pk[id].count : 0;
-        rt_log("coop: enemies: %d sent, %d from the others; %d posed from their owner, %d put back in the last 10 s", s.pk.count,
-               theirs, puppets, snaps);
-        snaps = 0;
-    }
+    if (++t % 3 == 0) dup_count();
 }
 
-// ---- enemy puppets: an enemy another game runs, frozen here and shown as the owner's
-// The owner sends, for its enemies near another Link (the EPOSE_MAX nearest), an EPOSE packet each frame (every third
-// beyond EPOSE_NEAR_M): the enemy's place and rotation and its body skeleton's local records (+0x18, 0x60 a bone),
-// packed as a Link's (coop_proxy_pack_mine, without its final-matrix step). Here the enemy's own one runs no calc and
-// none of its update phases once two poses have come (coop_enemy_puppet_calc / _phase, from coop_spawn.c's hooks); in
-// place of its update phase main+0x245030 it is put at the owner's place and pose of EPOSE_DELAY_MS ago, blended
-// between the two around it, as the proxy is (proxy_drive in coop_players.c): actor place, model world matrix, the
-// records, the model push, and its physics body put there (main+0x25a450, which takes on a body whose actor does not
-// run). Poses missing for PUP_STALE_NS: its own update runs again.
-// Its weapons: an enemy's weapon is an actor of its own, which put itself on the hand a frame late and could be taken
-// from the frozen enemy's hand, as an arrow's copy could. No pointer from a held
-// weapon to its holder was found, so they go by place: the owner sends with each pose the Weapon_ actors within
-// EPOSE_ITEM_M of the enemy that are no Link's (coop_is_players_item), by name and world place; here the Weapon_ of
-// that name nearest that place is frozen as the enemy is and put there right after the enemy's model push, with its
-// body kept 300 m under it so it cannot be taken. One the owner no longer sends (dropped and left behind, or the enemy
-// let go here) runs its own update again from where it is, its body put back first.
-#define EPOSE_MAX 12
-#define EPOSE_NEAR_M 40.0f
-#define PUP_N 32
-#define PUP_HIST 6
-#define PUP_BONES 330
-#define PUP_STALE_NS 600000000ull
-#define EPOSE_ITEMS 3
-#define EPOSE_ITEM_M 2.5f
-// then nitems EItem, then the pose (n | 0x8000, scaled count, bones)
-// t_ns: when the owner took it (its plat_now_ns), so the poses are blended at the owner's own pace (stamped when they
-// came, a few ms unevenly, the blend shook: 2 mm a frame on a Chuchu's copy that moved 0.1 mm, and none with one pose
-// held; 2026-11-06).
-// aware: the enemy's awareness words (AWARE_OFF in its component AWARE_COMP), has_aware 1 when read.
-// An enemy's copy never notices the Link of the game that follows it (its AI is stopped), so that game showed the
-// Sneakstrike prompt beside an enemy fighting its player, and its Link put its sword away. When the enemy notices a
-// Link, its component at +0x228 table entry +0x158 changes: +0x24 0xc182 -> 0xc082, +0x58 and +0x60 0x12 -> 0xc,
-// +0x64 and +0x70 0 -> 1, +0x84 0x28 -> 0x83 (the owner's Bokoblin just spawned and fighting, the copy keeping the
-// first: TOTK_COOP_TEST_LINKDUMP, 2026-11-06). Those words, put on the copy each tick (TOTK_COOP_TEST_ENEMYPOKE),
-// took the prompt away, the game said "We are under threat" and its Link drew its sword. So the owner sends them
-// with each pose and the copy takes them (pup_aware_apply).
-#define AWARE_COMP 0x158
-#define AWARE_N 6
-static const uint16_t AWARE_OFF[AWARE_N] = {0x24, 0x58, 0x60, 0x64, 0x70, 0x84};
-typedef struct {
-    uint32_t key; float pos[3], rot[9]; uint8_t nitems, has_aware, pad[2]; uint64_t t_ns; uint32_t aware[AWARE_N];
-} EPoseHead;
-typedef struct { uint32_t hash; float pos[3], rot[9]; } EItem;   // hash: its name's (name_hash_of)
-// The native enemy model (enemy_native, TotK Online's way; read for behaviour only): pad[0] EPOSE_NATIVE, the packet
-// is the header (the enemy's place and rotation) and, with EPOSE_ACTION, an EAction after it; no items, no bones.
-#define EPOSE_NATIVE 2
-#define EPOSE_ACTION 1
-// An enemy's action request as the game made it (main+0x50ad74's x1, 0x58 bytes: three Vec3, ids, a pointer at +0x38
-// to its name when +0x40 is 1, an action id at +0x4c) and its mode (w2); name: that name, copied.
-#define EACT_REQ 0x58
-typedef struct { uint8_t mode, has_name, pad[2]; char name[32]; uint8_t req[EACT_REQ]; } EAction;
-_Static_assert(sizeof(EAction) == 0x7c && 88 + 0x7c <= COOP_EPOSE_MAX, "EAction fits an EPOSE packet");
-static int enemy_native(void) {   // TOTK_COOP_ENEMY_MODEL=puppet: frozen copies posed bone by bone (the old model)
-    static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_ENEMY_MODEL"); on = !(e && !strcmp(e, "puppet")); }
-    return on;
-}
-_Static_assert(sizeof(EPoseHead) == 88 && sizeof(EItem) == 52 && 88 + EPOSE_ITEMS * 52 == 244, "EPOSE header size (COOP_EPOSE_MAX)");
-typedef struct {
-    uint64_t ns, src_ns;   // ns: here (src_ns, the owner's, moved onto this clock); src_ns: the owner's
-    float pos[3], q[4];
-    int n, ni;
-    uint32_t ih[EPOSE_ITEMS];
-    float ip[EPOSE_ITEMS][3], iq[EPOSE_ITEMS][4];
-    float bq[PUP_BONES][4], bt[PUP_BONES][3], bs[PUP_BONES][3];
-} PupRec;
-static struct {
-    _Atomic uint64_t actor;   // this game's one, while it follows its owner (pup_bind)
-    _Atomic int ready;        // frozen and driven from the poses
-    uint32_t key;
-    int owner;
-    unsigned count;
-    uint64_t last_ns;
-    _Atomic uint64_t weap[EPOSE_ITEMS];   // this game's weapons of it, frozen and put in its hand (0 none)
-    uint32_t weap_hash[EPOSE_ITEMS];
-    uint32_t aware[AWARE_N];   // the owner's awareness words, latest (have_aware)
-    int have_aware;
-    // native model: the owner's latest action (under pup_lock); esc_s: how long the copy's own state bit has been set
-    // (enemy_action_hook); name: the action's name where the copy's request points
-    EAction act;
-    int has_act;
-    float esc_s;
-    uint64_t esc_ns;
-    int esc_bit;   // the bit as the last request found it
-    char act_name[32];
-    PupRec r[PUP_HIST];
-} pups[PUP_N];
-// Test (TOTK_COOP_TEST_ENEMYPOKE=<comp>:<off>=<value>[;...]): every tick, those 32-bit words written into each
-// frozen enemy copy's component (+0x228 table entry <comp>): an aware enemy's state put on a copy, to find what makes
-// this game's Link see it as fighting it (no Sneakstrike prompt, the shield up).
-static void enemy_poke_test(void) {
-    static int n = -1;
-    static uint32_t cm[16], of[16], va[16];
-    if (n < 0) {
-        n = 0;
-        const char *e = cfg_get("TOTK_COOP_TEST_ENEMYPOKE");
-        while (e && *e && n < 16) {
-            unsigned a1, a2, a3;
-            if (sscanf(e, "%x:%x=%x", &a1, &a2, &a3) != 3) break;
-            cm[n] = a1, of[n] = a2, va[n] = a3, n++;
-            e = strchr(e, ';');
-            if (e) e++;
-        }
-        if (n) rt_log("coop: test: enemypoke %d words", n);
-    }
-    for (int p = 0; n && p < PUP_N; p++) {
-        uint64_t a = atomic_load(&pups[p].ready) ? atomic_load(&pups[p].actor) : 0, tab = a ? coop_rd_ptr(a + 0x228) : 0;
-        for (int k = 0; tab && k < n; k++) {
-            uint64_t o = coop_rd_ptr(tab + cm[k]);
-            if (o) memcpy((void *)(uintptr_t)(o + of[k]), &va[k], 4);
-        }
-    }
-}
-
-// Weapons let go (their enemy no longer posed here) whose body is still to be put back, by epose_take_tick.
-static uint64_t weap_free[64];
-static int weap_free_n;
-static PlatMutex pup_lock = PLAT_MUTEX_INIT;
-static int pup_find(uint32_t key) {
-    for (int i = 0; i < PUP_N; i++) if (pups[i].key == key) return i;
-    return -1;
-}
-static void pup_bind(uint32_t key, int owner, uint64_t actor) {
-    int i = pup_find(key);
-    if (i < 0 || pups[i].owner != owner) return;
-    atomic_store(&pups[i].actor, actor);
-}
-static void pup_release(uint32_t key) {
-    int i = pup_find(key);
-    if (i < 0) return;
-    plat_mutex_lock(&pup_lock);
-    if (atomic_load(&pups[i].ready)) rt_log("coop: enemy %08x: its own update runs again", key);
-    atomic_store(&pups[i].ready, 0), atomic_store(&pups[i].actor, 0);
-    for (int j = 0; j < EPOSE_ITEMS; j++) {
-        uint64_t w = atomic_exchange(&pups[i].weap[j], 0);
-        if (w && weap_free_n < 64) weap_free[weap_free_n++] = w;
-    }
-    pups[i].key = 0, pups[i].count = 0;
-    plat_mutex_unlock(&pup_lock);
-}
-static uint64_t pup_ready_actor(uint32_t key) {   // this game's frozen copy of it, 0 none
-    int i = pup_find(key);
-    return i >= 0 && atomic_load(&pups[i].ready) ? atomic_load(&pups[i].actor) : 0;
-}
-static int pup_bound_to(uint32_t key, uint64_t actor) {   // already this actor's copy
-    int i = pup_find(key);
-    return i >= 0 && atomic_load(&pups[i].actor) == actor;
-}
-static int pup_ready_key(uint32_t key) {
-    int i = pup_find(key);
-    return i >= 0 && atomic_load(&pups[i].ready);
-}
-static void mat_quat(const float r[9], float q[4]) {   // rows; q x y z w
-    float trc = r[0] + r[4] + r[8];
-    if (trc > 0) { float s = sqrtf(trc + 1) * 2; q[3] = s / 4, q[0] = (r[7] - r[5]) / s, q[1] = (r[2] - r[6]) / s, q[2] = (r[3] - r[1]) / s; }
-    else if (r[0] > r[4] && r[0] > r[8]) { float s = sqrtf(1 + r[0] - r[4] - r[8]) * 2; q[3] = (r[7] - r[5]) / s, q[0] = s / 4, q[1] = (r[1] + r[3]) / s, q[2] = (r[2] + r[6]) / s; }
-    else if (r[4] > r[8]) { float s = sqrtf(1 + r[4] - r[0] - r[8]) * 2; q[3] = (r[2] - r[6]) / s, q[0] = (r[1] + r[3]) / s, q[1] = s / 4, q[2] = (r[5] + r[7]) / s; }
-    else { float s = sqrtf(1 + r[8] - r[0] - r[4]) * 2; q[3] = (r[3] - r[1]) / s, q[0] = (r[2] + r[6]) / s, q[1] = (r[5] + r[7]) / s, q[2] = s / 4; }
-}
-static void quat_mat(const float q[4], float r[9]) {
-    float x = q[0], y = q[1], z = q[2], w = q[3];
-    r[0] = 1 - 2 * (y * y + z * z), r[1] = 2 * (x * y - z * w), r[2] = 2 * (x * z + y * w);
-    r[3] = 2 * (x * y + z * w), r[4] = 1 - 2 * (x * x + z * z), r[5] = 2 * (y * z - x * w);
-    r[6] = 2 * (x * z - y * w), r[7] = 2 * (y * z + x * w), r[8] = 1 - 2 * (x * x + y * y);
-}
-static void qblend(const float a[4], const float b[4], float f, float out[4]) {
-    float dot = 0, l = 0;
-    for (int k = 0; k < 4; k++) dot += a[k] * b[k];
-    float sg = dot < 0 ? -1.0f : 1.0f;
-    for (int k = 0; k < 4; k++) out[k] = a[k] * (1 - f) + b[k] * sg * f, l += out[k] * out[k];
-    l = sqrtf(l);
-    for (int k = 0; k < 4; k++) out[k] = l > 0 ? out[k] / l : k == 3;
-}
-static uint64_t enemy_model(uint64_t a) { return coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x8) + 0x28); }
-// An actor's body skeleton from its model: model +0x18 +0 +0x58 +0xb0 (found by enemy_skel_probe on a Chuchu (25
-// bones), a Bokoblin (76) and a Link (127, the one coop_skel_path finds); a Link's path from the actor finds none on an
-// enemy, 2026-11-06).
-static uint64_t enemy_skeleton(uint64_t a) {
-    static const uint32_t path[4] = {0x18, 0, 0x58, 0xb0};
-    uint64_t sk = enemy_model(a);
-    for (int i = 0; i < 4 && sk; i++) sk = coop_rd_ptr(sk + path[i]);
-    return sk && coop_is_skeleton(sk) ? sk : 0;
-}
+// An actor's main physics body ([[comps+0x50]+0x20]+0x150): a contact names the body it struck, and one sent to
+// another game says where that body sat from this one.
 static uint64_t enemy_body(uint64_t a) {
     uint64_t phys = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x50), ctl = phys ? coop_rd_ptr(phys + 0x20) : 0;
     return ctl ? coop_rd_ptr(ctl + 0x150) : 0;
 }
-static uint64_t audit_skeleton(uint64_t a) { return enemy_skeleton(a); }
-// Test (TOTK_COOP_TEST_ENEMYWEAPON=1): for each enemy this game runs, the Weapon_ actors within 3 m, and the offsets
-// in each one's first 0x1000 bytes that hold the enemy's actor, its model or its body skeleton: how a held weapon
-// knows its holder (play test, 2026-11-06: an enemy puppet's weapon lags and can be taken from its hand).
-typedef struct { uint64_t enemy; float at[3]; } WeapScan;
-static void weap_one(uint64_t a, void *arg) {
-    WeapScan *ws = arg;
-    char nm[48];
-    coop_actor_name(a, nm, sizeof nm);
-    if (strncmp(nm, "Weapon_", 7)) return;
-    float p[3];
-    if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
-    float dx = p[0] - ws->at[0], dy = p[1] - ws->at[1], dz = p[2] - ws->at[2];
-    if (dx * dx + dy * dy + dz * dz > 9) return;
-    uint64_t model = enemy_model(ws->enemy), sk = enemy_skeleton(ws->enemy);
-    static uint64_t w[0x1000 / 8];
-    if (!coop_rd(a, w, sizeof w)) return;
-    char line[600];
-    int m = 0;
-    for (int i = 0; i < 0x1000 / 8 && m < 560; i++) {
-        uint64_t v = w[i];
-        if (v == ws->enemy) m += snprintf(line + m, sizeof line - m, " +%#x=actor", i * 8);
-        else if (v && v == model) m += snprintf(line + m, sizeof line - m, " +%#x=model", i * 8);
-        else if (v && v == sk) m += snprintf(line + m, sizeof line - m, " +%#x=skeleton", i * 8);
-        else if (v > ws->enemy && v < ws->enemy + 0x1000) m += snprintf(line + m, sizeof line - m, " +%#x=actor+%#llx", i * 8, (unsigned long long)(v - ws->enemy));
-    }
-    line[m] = 0;
-    char en[48];
-    rt_log("coop: test: enemy weapon: %s %llx, %.2f m from %s %llx:%s", nm, (unsigned long long)a, sqrtf(dx * dx + dy * dy + dz * dz),
-           coop_actor_name(ws->enemy, en, sizeof en), (unsigned long long)ws->enemy, m ? line : " (no pointer to it)");
-}
-// Test (TOTK_COOP_TEST_ENEMYHIT=1): the hit record on each enemy this game runs (as pup_hits logs it on a frozen
-// one), with its life then and 0.3 s later: what the record's numbers are in life.
-static void enemy_hit_test(void) {
-    static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_ENEMYHIT") != NULL;
-    if (!on) return;
-    static struct { uint64_t a; uint32_t st; int life, wait, said; } eh[16];
-    for (int i = 0; i < KNOWN_N; i++) {
-        uint64_t a = mine_known[i].actor;
-        if (!mine_known[i].key || !a) continue;
-        int s = (int)(mine_known[i].key % 16);
-        if (eh[s].a != a) memset(&eh[s], 0, sizeof eh[s]), eh[s].a = a;
-        uint64_t dc = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x2f8);
-        uint32_t w[0x40 / 4];
-        if (!dc || !coop_rd(dc + 0x1a0, w, sizeof w)) continue;
-        if (eh[s].wait && --eh[s].wait == 0)
-            rt_log("coop: test: enemy %08x life %d -> %d 0.3 s after the hit", mine_known[i].key, eh[s].life, life_of(a));
-        if (w[1] && w[1] != eh[s].st && eh[s].said++ < 20) {
-            uint64_t ref;
-            memcpy(&ref, &w[0x20 / 4], 8);
-            uint64_t att = ref ? coop_rd_ptr(ref + 0x40) : 0;
-            char nm[48] = "";
-            if (att) coop_actor_name(att, nm, sizeof nm);
-            eh[s].life = life_of(a), eh[s].wait = 9;
-            rt_log("coop: test: enemy %08x (run here) was hit by %s: word %d, flags %#x, life %d", mine_known[i].key, nm, (int)w[2], w[0x30 / 4], eh[s].life);
-        }
-        eh[s].st = w[1];
-    }
-}
-static void enemy_weapon_test(void) {
-    static int on = -1, t, said;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_ENEMYWEAPON") != NULL;
-    if (!on || ++t % 300 || said++ > 6) return;
-    for (int i = 0; i < KNOWN_N; i++) {
-        if (!mine_known[i].key || !mine_known[i].actor) continue;
-        WeapScan ws = {mine_known[i].actor};
-        if (!coop_rd(ws.enemy + COOP_ACTOR_POS, ws.at, 12)) continue;
-        coop_actors_live(weap_one, &ws);
-    }
-}
-// The g3d skeletons reachable from an enemy whose skeleton enemy_skeleton does not find (pointers followed up to 6
-// deep, 0x400 bytes each, from its model and from the actor), with the offsets on the way, logged once per enemy name
-// (up to 4 names).
-static void enemy_skel_walk(const char *who, uint64_t obj, int depth, const char *path, int *found) {
-    if (depth > 6 || *found >= 8) return;
-    uint64_t buf[0x400 / 8];
-    if (!coop_rd(obj, buf, sizeof buf)) return;
-    for (int i = 0; i < 0x400 / 8 && *found < 6; i++) {
-        uint64_t q = buf[i];
-        if (q < 0x100000000ull || q >= 0x8000000000ull || !first_visit(q)) continue;
-        char p2[160];
-        snprintf(p2, sizeof p2, "%s+%#x", path, i * 8);
-        if (coop_is_skeleton(q)) {
-            uint16_t n = 0;
-            coop_rd(q + 0x48, &n, 2);
-            rt_log("coop: test: enemy %s skeleton at %s -> %llx: %u bones", who, p2, (unsigned long long)q, n);
-            (*found)++;
-            continue;
-        }
-        enemy_skel_walk(who, q, depth + 1, p2, found);
-    }
-}
-static void enemy_skel_probe(uint64_t a) {
-    static char done[4][48];
-    static int nd;
-    char nm[48];
-    coop_actor_name(a, nm, sizeof nm);
-    for (int i = 0; i < nd; i++) if (!strcmp(done[i], nm)) return;
-    if (nd >= 4) return;
-    snprintf(done[nd++], sizeof done[0], "%s", nm);
-    memset(visited, 0, sizeof visited);
-    int found = 0;
-    uint64_t model = enemy_model(a);
-    if (model) enemy_skel_walk(nm, model, 3, "model", &found);   // from its model (actor +0x228 +0x8 +0x28), 4 deep
-    memset(visited, 0, sizeof visited);
-    enemy_skel_walk(nm, a, 0, "actor", &found);
-    rt_log("coop: test: enemy %s: %d skeletons found (model %llx)", nm, found, (unsigned long long)model);
-}
-// Each enemy kind's bone parents (as find_parents finds a Link's): for each bone, the earlier bone whose final matrix
-// times this bone's record gives this bone's final matrix most closely. Kept by name and bone count once 3/4 of the
-// bones match within 2 mm; tried again every 30 calls until then.
-#define EPAR_N 24
-static struct { uint32_t name; int n, tries, ok; int16_t par[PUP_BONES]; } epar[EPAR_N];
-static PlatMutex epar_lock = PLAT_MUTEX_INIT;
-static const int16_t *enemy_parents(uint64_t a, int n, const float (*w)[16], const float (*rec)[24]) {
-    uint32_t nh = name_hash_of(a);
-    plat_mutex_lock(&epar_lock);
-    int s = -1;
-    for (int i = 0; i < EPAR_N && s < 0; i++) if (epar[i].name == nh && epar[i].n == n) s = i;
-    for (int i = 0; i < EPAR_N && s < 0; i++) if (!epar[i].name) s = i, epar[i].name = nh, epar[i].n = n;
-    const int16_t *out = NULL;
-    if (s >= 0 && !epar[s].ok && epar[s].tries++ % 30 == 0) {
-        int good = 0;
-        for (int i = 1; i < n; i++) {
-            int best = 0;
-            float be = 1e9f;
-            for (int p = 0; p < i; p++) {
-                float e = coop_pose_fk_error(w, rec, i, p);
-                if (e < be) be = e, best = p;
-            }
-            epar[s].par[i] = (int16_t)best, good += be < 2e-3f;
-        }
-        epar[s].par[0] = -1;
-        epar[s].ok = good >= (n - 1) * 3 / 4;
-        char nm[48];
-        if (epar[s].ok || epar[s].tries % 300 == 1)
-            rt_log("coop: enemy %s: bone parents %s: %d of %d bones match their parent within 2 mm", coop_actor_name(a, nm, sizeof nm),
-                   epar[s].ok ? "found" : "not yet", good, n - 1);
-    }
-    if (s >= 0 && epar[s].ok) out = epar[s].par;
-    plat_mutex_unlock(&epar_lock);
-    return out;
-}
-// The owner: an enemy's place and its skeleton's records packed into out; its length, 0 when it has no skeleton found.
-static int epose_pack_native(uint64_t a, uint32_t key, uint8_t *out, int max);
-static int epose_pack(uint64_t a, uint32_t key, uint8_t *out, int max) {
-    if (enemy_native()) return epose_pack_native(a, key, out, max);
-    EPoseHead h = {.key = key, .t_ns = plat_now_ns()};
-    {
-        uint64_t aw = coop_rd_ptr(coop_rd_ptr(a + 0x228) + AWARE_COMP);
-        int ok = aw != 0;
-        for (int k = 0; ok && k < AWARE_N; k++) ok = coop_rd(aw + AWARE_OFF[k], &h.aware[k], 4);
-        h.has_aware = (uint8_t)ok;
-        // Test (TOTK_COOP_TEST_AWARELOG=1): each change of an enemy's awareness words where it runs, so a test can
-        // tell when it noticed someone (0xc082 aware, 0xc182 not; pup_aware_apply).
-        static int on = -1;
-        if (on < 0) { const char *e = cfg_get("TOTK_COOP_TEST_AWARELOG"); on = e && *e == '1'; }
-        if (on && ok) {
-            static PlatMutex lk = PLAT_MUTEX_INIT;
-            static struct { uint32_t key, w0, w5; } seen[32];
-            static int said;
-            plat_mutex_lock(&lk);
-            int s = -1;
-            for (int i = 0; i < 32 && s < 0; i++) if (seen[i].key == key || !seen[i].key) s = i;
-            if (s >= 0 && (seen[s].key != key || seen[s].w0 != h.aware[0] || seen[s].w5 != h.aware[AWARE_N - 1]) && said++ < 200) {
-                char nm[48];
-                float p[3] = {0};
-                coop_rd(a + COOP_ACTOR_POS, p, 12);
-                rt_log("coop: test: my enemy %s %08x at %.1f %.1f %.1f: awareness %x %x %x %x %x %x", coop_actor_name(a, nm, sizeof nm), key,
-                       p[0], p[1], p[2], h.aware[0], h.aware[1], h.aware[2], h.aware[3], h.aware[4], h.aware[5]);
-                seen[s].key = key, seen[s].w0 = h.aware[0], seen[s].w5 = h.aware[AWARE_N - 1];
-            }
-            plat_mutex_unlock(&lk);
-        }
-    }
-    uint64_t sk = enemy_skeleton(a), recs = sk ? coop_rd_ptr(sk + 0x18) : 0;
-    uint16_t n = 0;
-    static __thread float rec[PUP_BONES][24];
-    static __thread float fin[PUP_BONES][16];
-    uint64_t wmx = sk ? coop_rd_ptr(sk + 0x20) : 0;
-    if (!recs || !wmx || !coop_rd(sk + 0x48, &n, 2) || n == 0 || n > PUP_BONES || (int)sizeof h + 4 + n * POSE_BONE > max ||
-        !coop_rd(recs, rec, (size_t)n * 0x60) || !coop_rd(wmx, fin, (size_t)n * 0x40) || !coop_rd(a + COOP_ACTOR_POS, h.pos, 12) ||
-        !coop_rd(a + COOP_ACTOR_ROT, h.rot, 36)) {
-        static int said;
-        char nm[64];
-        if (said++ < 6) rt_log("coop: enemy %s %08x: no body skeleton found (skeleton %llx, %u bones)", coop_actor_name(a, nm, sizeof nm), key,
-                               (unsigned long long)sk, n);
-        if (!sk) enemy_skel_probe(a);
-        return 0;
-    }
-    // Each record from the final matrices (R = Ap^-1 Ai S^-1, t = Ap^-1 (ti - tp)), as coop_proxy_pack_mine does for
-    // a Link: the records alone miss what later steps put on the final matrices (feet on the ground), and may be in
-    // the middle of being rebuilt when read (sent as they were, the copy jerked 4 to 9 mm a frame where the enemy's
-    // own body moved 1.5 to 2.5 mm; 2026-11-06). Off unless TOTK_COOP_EPOSE_FINAL=1: it did not lower that, and a
-    // Chuchu's bones matched no parents (8 of 24), so its copy's shape went 0.1 m off.
-    static int finals = -1;
-    if (finals < 0) { const char *e = cfg_get("TOTK_COOP_EPOSE_FINAL"); finals = e && *e == '1'; }
-    const int16_t *par = finals ? enemy_parents(a, n, (const float (*)[16])fin, (const float (*)[24])rec) : NULL;
-    for (int i = 1; par && i < n; i++) {
-        float Ap[3][3], tp[3], Ai[3][3], ti[3], Ip[3][3];
-        coop_pose_w_of(fin[par[i]], Ap, tp), coop_pose_w_of(fin[i], Ai, ti);
-        if (!coop_pose_inv3(Ap, Ip)) continue;
-        for (int r = 0; r < 3; r++)
-            for (int cl = 0; cl < 3; cl++) {
-                float v = 0;
-                for (int k = 0; k < 3; k++) v += Ip[r][k] * Ai[k][cl];
-                float sc = rec[i][4 + cl];
-                rec[i][8 + cl * 4 + r] = fabsf(sc) > 1e-6f ? v / sc : v;
-            }
-        for (int r = 0; r < 3; r++) {
-            float v = 0;
-            for (int k = 0; k < 3; k++) v += Ip[r][k] * (ti[k] - tp[k]);
-            rec[i][20 + r] = v;
-        }
-    }
-    // its weapons: the Weapon_ actors near it that are no Link's
-    EItem items[EPOSE_ITEMS];
-    for (int i = 0; i < nweaps && h.nitems < EPOSE_ITEMS; i++) {
-        EItem it;
-        int32_t wst = 0;
-        if (!coop_rd(weaps[i] + COOP_ACTOR_STATE, &wst, 4) || wst < 2 || wst > 6 || !coop_rd(weaps[i] + COOP_ACTOR_POS, it.pos, 12) ||
-            !coop_rd(weaps[i] + COOP_ACTOR_ROT, it.rot, 36))
-            continue;
-        float dx = it.pos[0] - h.pos[0], dy = it.pos[1] - h.pos[1], dz = it.pos[2] - h.pos[2];
-        if (dx * dx + dy * dy + dz * dz > EPOSE_ITEM_M * EPOSE_ITEM_M) continue;
-        it.hash = name_hash_of(weaps[i]);
-        {   // Test (TOTK_COOP_TEST_WEAPLAG=1): how far the weapon's actor place is from where its model is drawn
-            // (model +0x1f8, rows | place), and how far the model moved since the last frame: every 120 samples.
-            static int on = -1;
-            if (on < 0) { const char *e = cfg_get("TOTK_COOP_TEST_WEAPLAG"); on = e && *e == '1'; }
-            uint64_t wmod = on ? enemy_model(weaps[i]) : 0;
-            float mm[12];
-            if (wmod && coop_rd(wmod + 0x1f8, mm, sizeof mm)) {
-                static PlatMutex lk = PLAT_MUTEX_INIT;
-                static float last[3], sum_d, max_d, sum_v, max_v;
-                static int n;
-                static uint64_t last_w;
-                plat_mutex_lock(&lk);
-                float mp[3] = {mm[3], mm[7], mm[11]};
-                float d = sqrtf((mp[0] - it.pos[0]) * (mp[0] - it.pos[0]) + (mp[1] - it.pos[1]) * (mp[1] - it.pos[1]) + (mp[2] - it.pos[2]) * (mp[2] - it.pos[2]));
-                float v = last_w == weaps[i] ? sqrtf((mp[0] - last[0]) * (mp[0] - last[0]) + (mp[1] - last[1]) * (mp[1] - last[1]) + (mp[2] - last[2]) * (mp[2] - last[2])) : 0;
-                memcpy(last, mp, 12), last_w = weaps[i];
-                sum_d += d, sum_v += v, max_d = fmaxf(max_d, d), max_v = fmaxf(max_v, v);
-                if (++n == 120) {
-                    char wn[48];
-                    rt_log("coop: test: weapon %s: actor place from its drawn place mean %.1f cm (max %.1f); drawn place moved %.1f cm a frame (max %.1f)",
-                           coop_actor_name(weaps[i], wn, sizeof wn), sum_d / n * 100, max_d * 100, sum_v / n * 100, max_v * 100);
-                    n = 0, sum_d = max_d = sum_v = max_v = 0;
-                }
-                plat_mutex_unlock(&lk);
-            }
-        }
-        items[h.nitems++] = it;
-    }
-    int hl = (int)sizeof h + h.nitems * (int)sizeof(EItem);
-    if (hl + 4 + n * POSE_BONE > max) return 0;
-    memcpy(out, &h, sizeof h), memcpy(out + sizeof h, items, (size_t)h.nitems * sizeof(EItem));
-    uint8_t *o = out + hl;
-    int at = 4 + n * POSE_BONE, nsc = 0, lim = max - hl;
-    for (int b = 0; b < n; b++) {
-        const float *f = rec[b];
-        float R[9] = {f[8], f[12], f[16], f[9], f[13], f[17], f[10], f[14], f[18]}, q[4];   // rows, from the record's columns
-        mat_quat(R, q);
-        float len = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
-        int big = 0;
-        for (int k = 0; k < 4; k++) { q[k] = len > 0 ? q[k] / len : (k == 3); if (fabsf(q[k]) > fabsf(q[big])) big = k; }
-        float sign = q[big] < 0 ? -1.0f : 1.0f;
-        int16_t v[6];
-        for (int k = 0, j = 0; k < 4; k++) if (k != big) v[j++] = coop_pose_q16(q[k] * sign, 32767.0f);
-        v[0] = (int16_t)((v[0] & ~3) | big);
-        v[3] = coop_pose_q16(f[20], 4096), v[4] = coop_pose_q16(f[21], 4096), v[5] = coop_pose_q16(f[22], 4096);
-        memcpy(o + 4 + b * POSE_BONE, v, POSE_BONE);
-        if (fabsf(f[4] - 1) > 1e-3f || fabsf(f[5] - 1) > 1e-3f || fabsf(f[6] - 1) > 1e-3f) {
-            if (at + 14 > lim) return 0;
-            uint16_t bi = (uint16_t)b;
-            memcpy(o + at, &bi, 2), memcpy(o + at + 2, f + 4, 12), at += 14, nsc++;
-        }
-    }
-    uint16_t hdr = (uint16_t)(n | 0x8000), ns = (uint16_t)nsc;
-    memcpy(o, &hdr, 2), memcpy(o + 2, &ns, 2);
-    return hl + at;
-}
-// The enemies whose pose goes out (epose_send_tick picks them), and their latest pose packed at their calc's start.
-static struct {
-    _Atomic uint64_t actor;
-    uint32_t key;
-    PlatMutex lock;
-    uint8_t buf[COOP_EPOSE_MAX];
-    int len, fresh;
-} ewant[EPOSE_MAX] = {[0 ... EPOSE_MAX - 1] = {.lock = PLAT_MUTEX_INIT}};
-static void jit_note(uint32_t key, int side, uint64_t sk);
-static void epose_calc_start(uint64_t a) {
-    static int tickpack = -1;
-    if (tickpack < 0) tickpack = cfg_get("TOTK_COOP_EPOSE_TICKPACK") != NULL;
-    for (int k = 0; k < EPOSE_MAX && !tickpack; k++) {
-        if (atomic_load_explicit(&ewant[k].actor, memory_order_relaxed) != a) continue;
-        static __thread uint8_t tmp[COOP_EPOSE_MAX];
-        int len = epose_pack(a, ewant[k].key, tmp, sizeof tmp);
-        jit_note(ewant[k].key, 0, enemy_skeleton(a));
-        plat_mutex_lock(&ewant[k].lock);
-        if (len && atomic_load(&ewant[k].actor) == a) memcpy(ewant[k].buf, tmp, len), ewant[k].len = len, ewant[k].fresh = 1;
-        plat_mutex_unlock(&ewant[k].lock);
-        return;
-    }
-}
-// Jitter watch: an enemy's body top (its highest bone above the root, final matrices) frame to frame, in the game
-// that runs it (side 0, at its calc's start) and on its frozen copy (side 1, at its drive's start: the last frame's
-// result). The mean of the change's change (jerk) per frame, logged every 300 frames: smooth motion keeps it small.
-static void jit_note(uint32_t key, int side, uint64_t sk) {
-    static struct { uint32_t key; float a, b, pa[3], pb[3]; int have; double sum, psum, bsum; float max, pmax, bmax; int n;
-                    float ba[PUP_BONES][3], bb[PUP_BONES][3]; int nb; } jt[2][8];
-    static PlatMutex jl = PLAT_MUTEX_INIT;
-    uint64_t wm = sk ? coop_rd_ptr(sk + 0x20) : 0;
-    uint16_t nb = 0;
-    static __thread float w[PUP_BONES][16];
-    if (!wm || !coop_rd(sk + 0x48, &nb, 2) || !nb || nb > PUP_BONES || !coop_rd(wm, w, (size_t)nb * 0x40)) return;
-    float top = -1e9f, p[3] = {0};
-    for (int b = 1; b < nb; b++) if (w[b][13] - w[0][13] > top) top = w[b][13] - w[0][13];
-    for (int k = 0; k < 3; k++) p[k] = w[0][12 + k];   // the root bone's place (the actor's, as the model has it)
-    plat_mutex_lock(&jl);
-    int i = (int)(key % 8);
-    if (jt[side][i].key != key) memset(&jt[side][i], 0, sizeof jt[side][i]), jt[side][i].key = key;
-    if (jt[side][i].have >= 2) {
-        float j = fabsf(top - 2 * jt[side][i].b + jt[side][i].a);
-        jt[side][i].sum += j, jt[side][i].n++;
-        if (j > jt[side][i].max) jt[side][i].max = j;
-        float pj = 0;
-        for (int k = 0; k < 3; k++) { float d = p[k] - 2 * jt[side][i].pb[k] + jt[side][i].pa[k]; pj += d * d; }
-        pj = sqrtf(pj), jt[side][i].psum += pj;
-        if (pj > jt[side][i].pmax) jt[side][i].pmax = pj;
-        if (jt[side][i].nb == nb) {   // every bone's place from the root, its change's change: the mean over the bones
-            double s = 0;
-            for (int b = 1; b < nb; b++) {
-                float e = 0;
-                for (int k = 0; k < 3; k++) {
-                    float v = w[b][12 + k] - w[0][12 + k], d = v - 2 * jt[side][i].bb[b][k] + jt[side][i].ba[b][k];
-                    e += d * d;
-                }
-                s += sqrtf(e);
-            }
-            float m = (float)(s / (nb - 1));
-            jt[side][i].bsum += m;
-            if (m > jt[side][i].bmax) jt[side][i].bmax = m;
-        }
-        if (jt[side][i].n == 300) {
-            rt_log("coop: enemy %08x jitter %s: bones' jerk per frame mean %.1f mm (worst frame %.1f); body top %.1f mm (max %.1f)", key,
-                   side ? "on its frozen copy" : "where it runs", jt[side][i].bsum / 300 * 1000, jt[side][i].bmax * 1000,
-                   jt[side][i].sum / 300 * 1000, jt[side][i].max * 1000);
-            jt[side][i].sum = 0, jt[side][i].psum = 0, jt[side][i].bsum = 0, jt[side][i].n = 0, jt[side][i].max = 0, jt[side][i].pmax = 0,
-            jt[side][i].bmax = 0;
-        }
-    }
-    jt[side][i].a = jt[side][i].b, jt[side][i].b = top, jt[side][i].have++;
-    memcpy(jt[side][i].pa, jt[side][i].pb, 12), memcpy(jt[side][i].pb, p, 12);
-    memcpy(jt[side][i].ba, jt[side][i].bb, sizeof jt[side][i].ba);
-    for (int b = 0; b < nb; b++) for (int k = 0; k < 3; k++) jt[side][i].bb[b][k] = w[b][12 + k] - w[0][12 + k];
-    jt[side][i].nb = nb;
-    plat_mutex_unlock(&jl);
-}
-static void epose_send_tick(void) {
-    if (!enemy_puppets_on() || !coop_enemy_old()) return;
-    static unsigned frame;
-    frame++;
-    int idx[KNOWN_N], n = 0;
-    for (int i = 0; i < KNOWN_N; i++)
-        if (mine_known[i].key && mine_known[i].actor && mine_known[i].life > 0 && mine_known[i].d2 < SYNC_M * SYNC_M) idx[n++] = i;
-    for (int i = 1; i < n; i++)   // nearest another Link first
-        for (int j = i; j > 0 && mine_known[idx[j]].d2 < mine_known[idx[j - 1]].d2; j--) { int t = idx[j]; idx[j] = idx[j - 1], idx[j - 1] = t; }
-    // The ones to send are packed at the start of their own calc (coop_enemy_puppet_calc, epose_calc_start), from the
-    // last frame's records as its update left them: packed here, in this tick, they were read while the enemy's update
-    // ran on a worker thread, some bones of this frame and some of the last, and its copy jiggled (a play session,
-    // 2026-11-06).
-    for (int k = 0; k < EPOSE_MAX; k++) {
-        uint64_t a = k < n ? mine_known[idx[k]].actor : 0;
-        if (atomic_load(&ewant[k].actor) != a) {
-            plat_mutex_lock(&ewant[k].lock);
-            atomic_store(&ewant[k].actor, a), ewant[k].key = a ? mine_known[idx[k]].key : 0, ewant[k].len = 0, ewant[k].fresh = 0;
-            plat_mutex_unlock(&ewant[k].lock);
-        }
-    }
-    static uint8_t buf[COOP_EPOSE_MAX];
-    int sent = 0;
-    for (int k = 0; k < n && k < EPOSE_MAX; k++) {
-        int i = idx[k];
-        if (mine_known[i].d2 > EPOSE_NEAR_M * EPOSE_NEAR_M && (frame + (unsigned)k) % 3) continue;
-        int len = 0;
-        static int tickpack = -1;   // TOTK_COOP_EPOSE_TICKPACK=1: packed here in the tick, as before (control)
-        if (tickpack < 0) tickpack = cfg_get("TOTK_COOP_EPOSE_TICKPACK") != NULL;
-        if (tickpack) {
-            len = epose_pack(mine_known[i].actor, mine_known[i].key, buf, sizeof buf);
-            jit_note(mine_known[i].key, 0, enemy_skeleton(mine_known[i].actor));
-        } else {
-            plat_mutex_lock(&ewant[k].lock);
-            if (ewant[k].fresh && ewant[k].len) memcpy(buf, ewant[k].buf, ewant[k].len), len = ewant[k].len, ewant[k].fresh = 0;
-            plat_mutex_unlock(&ewant[k].lock);
-        }
-        if (len) coop_net_epose_send(buf, len), sent++;
-    }
-    static int said;
-    if (sent && !said++) rt_log("coop: enemy poses go out (%d enemies this frame)", sent);
-}
-static int pup_decode(const uint8_t *in, int len, PupRec *r) {
-    EPoseHead h;
-    if (len < (int)sizeof h) return 0;
-    memcpy(&h, in, sizeof h);
-    if (h.pad[0] & EPOSE_NATIVE) {   // the native model's: its place and rotation only (the action: epose_take_tick)
-        memcpy(r->pos, h.pos, 12), mat_quat(h.rot, r->q), r->src_ns = h.t_ns, r->n = 0, r->ni = 0;
-        return 1;
-    }
-    if (len < (int)sizeof h + 4) return 0;
-    in += sizeof h, len -= (int)sizeof h;
-    if (h.nitems > EPOSE_ITEMS || len < h.nitems * (int)sizeof(EItem) + 4) return 0;
-    r->ni = h.nitems;
-    for (int k = 0; k < h.nitems; k++) {
-        EItem it;
-        memcpy(&it, in + k * sizeof it, sizeof it);
-        r->ih[k] = it.hash, memcpy(r->ip[k], it.pos, 12), mat_quat(it.rot, r->iq[k]);
-    }
-    in += h.nitems * sizeof(EItem), len -= h.nitems * (int)sizeof(EItem);
-    uint16_t n = 0, nsc = 0;
-    memcpy(&n, in, 2), memcpy(&nsc, in + 2, 2);
-    n &= 0x7fff;
-    if (n == 0 || n > PUP_BONES || 4 + n * POSE_BONE > len) return 0;
-    memcpy(r->pos, h.pos, 12), mat_quat(h.rot, r->q), r->src_ns = h.t_ns;
-    for (int b = 0; b < n; b++) {
-        int16_t v[6];
-        memcpy(v, in + 4 + b * POSE_BONE, POSE_BONE);
-        int big = v[0] & 3;
-        float sum = 0;
-        for (int k = 0, j = 0; k < 4; k++) if (k != big) { r->bq[b][k] = v[j++] / 32767.0f; sum += r->bq[b][k] * r->bq[b][k]; }
-        r->bq[b][big] = sum < 1 ? sqrtf(1 - sum) : 0;
-        r->bt[b][0] = v[3] / 4096.0f, r->bt[b][1] = v[4] / 4096.0f, r->bt[b][2] = v[5] / 4096.0f;
-        r->bs[b][0] = r->bs[b][1] = r->bs[b][2] = 1;
-    }
-    for (int k = 0; k < nsc; k++) {
-        int at = 4 + n * POSE_BONE + k * 14;
-        if (at + 14 > len) break;
-        uint16_t bi = 0;
-        memcpy(&bi, in + at, 2);
-        if (bi < n) memcpy(r->bs[bi], in + at + 2, 12);
-    }
-    r->n = n;
-    return 1;
-}
-// Poses that came: into their enemy's history (a slot taken for a new one when this game follows that owner for it).
-// A weapon let go: its body (kept 300 m under it) put back where it is, then its own update runs again.
-static void weap_let_go(Cpu *c, uint64_t w) {
-    int32_t st = 0;
-    _Alignas(16) float m[12], p[3], r[9];
-    if (!coop_rd(w + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || !coop_rd(w + COOP_ACTOR_POS, p, 12) || !coop_rd(w + COOP_ACTOR_ROT, r, 36)) return;
-    for (int i = 0; i < 3; i++) {
-        for (int k = 0; k < 3; k++) m[i * 4 + k] = r[i * 3 + k];
-        m[i * 4 + 3] = p[i];
-    }
-    uint64_t body = enemy_body(w);
-    if (body) coop_guest_call(c, MOD_MAIN_BASE + 0x25a450, body, (uint64_t)(uintptr_t)m, 0, 0);
-    coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, w, (uint64_t)(uintptr_t)m, 0, 0);
-}
-static int weap_bound(uint64_t w) {
-    for (int i = 0; i < PUP_N; i++)
-        for (int j = 0; j < EPOSE_ITEMS; j++) if (atomic_load_explicit(&pups[i].weap[j], memory_order_relaxed) == w) return 1;
-    return 0;
-}
-// A ready enemy puppet's weapons: each one the owner sends bound to this game's nearest of that name; one no longer
-// sent let go.
-static void pup_weapons(Cpu *c, int k) {
-    const PupRec *r = pups[k].count ? &pups[k].r[(pups[k].count - 1) % PUP_HIST] : NULL;
-    for (int j = 0; j < EPOSE_ITEMS; j++) {   // let go: no longer sent, or gone
-        uint64_t w = atomic_load(&pups[k].weap[j]);
-        if (!w) continue;
-        int sent = 0;
-        for (int q = 0; r && q < r->ni; q++) sent |= r->ih[q] == pups[k].weap_hash[j];
-        int32_t st = 0;
-        int alive = coop_rd(w + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6;
-        if (sent && alive) continue;
-        atomic_store(&pups[k].weap[j], 0);
-        if (alive) weap_let_go(c, w);
-        rt_log("coop: enemy %08x: its weapon %llx is its own again (%s)", pups[k].key, (unsigned long long)w, alive ? "no longer sent" : "gone");
-    }
-    for (int q = 0; r && q < r->ni; q++) {
-        int have = 0, free_j = -1;
-        for (int j = 0; j < EPOSE_ITEMS; j++) {
-            if (atomic_load(&pups[k].weap[j]) && pups[k].weap_hash[j] == r->ih[q]) have = 1;
-            if (free_j < 0 && !atomic_load(&pups[k].weap[j])) free_j = j;
-        }
-        if (have || free_j < 0) continue;
-        uint64_t best = 0;
-        float bd = 3.0f * 3.0f;
-        for (int i = 0; i < nweaps; i++) {
-            float p[3];
-            if (name_hash_of(weaps[i]) != r->ih[q] || weap_bound(weaps[i]) || !coop_rd(weaps[i] + COOP_ACTOR_POS, p, 12)) continue;
-            float dx = p[0] - r->ip[q][0], dy = p[1] - r->ip[q][1], dz = p[2] - r->ip[q][2], d = dx * dx + dy * dy + dz * dz;
-            if (d < bd) bd = d, best = weaps[i];
-        }
-        if (!best) continue;
-        pups[k].weap_hash[free_j] = r->ih[q];
-        atomic_store(&pups[k].weap[free_j], best);
-        char nm[48];
-        rt_log("coop: enemy %08x: its weapon %s %llx (%.2f m from the owner's) is put in its hand from the owner's", pups[k].key,
-               coop_actor_name(best, nm, sizeof nm), (unsigned long long)best, sqrtf(bd));
-    }
-}
-// A hit on a frozen enemy here (it runs no update, so it takes none): the record the game leaves in its damage
-// component (as on a proxy, link_hits_send). This Link's arrows and bombs (a hit by it without the melee flag
-// 0x100000: a sword's had 0x180001, an arrow's 0x80000; 2026-11-06) go to its owner as a hit of the record's damage
-// (+0x1a8: on a Link the quarter hearts lost; 90 for a normal arrow, 45 for the Master Sword here). A sword's is not
-// sent: the proxy's swing in the owner's game lands it there already.
-static uint64_t pup_me;   // this Link (peer_tick)
-static void pup_hits(int k) {
-    static uint32_t last[PUP_N];
-    static uint64_t last_a[PUP_N];
-    uint64_t a = atomic_load(&pups[k].actor);
-    uint64_t dc = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x2f8) : 0;
-    uint32_t w[0x40 / 4];
-    if (!dc || !coop_rd(dc + 0x1a0, w, sizeof w)) return;
-    uint32_t st = w[1], was = last_a[k] == a ? last[k] : st;
-    last[k] = st, last_a[k] = a;
-    if (!st || st == was) return;
-    uint64_t ref;
-    memcpy(&ref, &w[0x20 / 4], 8);
-    uint64_t att = ref ? coop_rd_ptr(ref + 0x40) : 0;
-    char nm[64] = "";
-    if (att) coop_actor_name(att, nm, sizeof nm);
-    int dmg = (int)w[2], melee = (w[0x30 / 4] & 0x100000) != 0, mine = att && att == pup_me;
-    int send = mine && !melee && dmg > 0 && dmg <= 65535;
-    static int said;
-    if (said++ < 40)
-        rt_log("coop: enemy %08x (frozen here) was hit by %s for %d (flags %#x)%s", pups[k].key, mine ? "this Link" : nm[0] ? nm : "?", dmg,
-               w[0x30 / 4], send ? ", sent to its owner" : melee && mine ? " (a sword: its owner's game has it from the proxy)" : "");
-    if (send) {
-        HitPacket hp = {pups[k].key, dmg, (uint32_t)pups[k].owner};
-        coop_net_hit_send(&hp, sizeof hp);
-    }
-}
-// The owner's awareness words onto each frozen copy (EPoseHead's aware). TOTK_COOP_ENEMY_AWARE=0: not.
-static void pup_aware_apply(void) {
-    static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_ENEMY_AWARE"); on = !(e && *e == '0'); }
-    for (int k = 0; on && k < PUP_N; k++) {
-        uint64_t a = atomic_load(&pups[k].ready) && pups[k].have_aware ? atomic_load(&pups[k].actor) : 0;
-        uint64_t aw = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + AWARE_COMP) : 0;
-        if (!aw) continue;
-        for (int j = 0; j < AWARE_N; j++) memcpy((void *)(uintptr_t)(aw + AWARE_OFF[j]), &pups[k].aware[j], 4);
-        static uint32_t last[AWARE_N];
-        static uint64_t last_ns;
-        uint64_t now = plat_now_ns();
-        if (memcmp(last, pups[k].aware, sizeof last) || now - last_ns > 2000000000ull) {   // a change, or every 2 s
-            memcpy(last, pups[k].aware, sizeof last), last_ns = now;
-            static int said;
-            if (said++ < 60)
-                rt_log("coop: enemy %08x awareness from its owner at %.1f s: %x %x %x %x %x %x", pups[k].key, frame_step_world_us() / 1e6,
-                       pups[k].aware[0], pups[k].aware[1], pups[k].aware[2], pups[k].aware[3], pups[k].aware[4], pups[k].aware[5]);
-        }
-    }
-}
-// ---- the native enemy model (TotK Online's way, read for behaviour only; docs/coop/proxy-plan.md). An enemy another
-// game runs is not frozen here: its own update and AI run, it is eased to the owner's place each tick (p += (owner's -
-// p) * min(10 * dt, 1), the rotation set), its life is the owner's (peer_one), and whenever its AI makes an action
-// request (main+0x50ad74, 1.2.1 main+0xa29340: tools/coop/xver_match.py and the code), the owner's last one is put in
-// its place. So the copy plays the owner's actions with its own animation, and holds its own weapon.
-#define ENEMY_UPDATE_TRANS 0x2af6004   // engine::actor::ActorBase::updateTrans(actor, const Vector3 &, int), 1.2.1 0xe8daf0
-#define ENEMY_UPDATE_ROT 0x2af6094     // engine::actor::ActorBase::updateRotation(actor, const Matrix33 &, int), 1.2.1 0xe655d8
-static void native_follow(Cpu *c, int k) {
-    uint64_t a = atomic_load(&pups[k].actor);
-    int32_t st = 0;
-    float p[3];
-    if (!a || !coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || !coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
-    plat_mutex_lock(&pup_lock);
-    const PupRec *r = &pups[k].r[(pups[k].count - 1) % PUP_HIST];
-    float t[3], q[4];
-    memcpy(t, r->pos, 12), memcpy(q, r->q, 16);
-    plat_mutex_unlock(&pup_lock);
-    static uint64_t last[PUP_N];
-    uint64_t now = plat_now_ns();
-    float dt = last[k] ? (float)((now - last[k]) / 1e9) : 1.0f / 30;
-    last[k] = now;
-    if (dt > 1) dt = 1;
-    // (all the way when it is over SNAP_M off: knocked back in its owner's game, the copy, whose sword hits are taken
-    // out here (contacts_filter), was over 2 m behind for a few seconds, the sync audit, 2026-11-07)
-    float gap2 = (t[0] - p[0]) * (t[0] - p[0]) + (t[1] - p[1]) * (t[1] - p[1]) + (t[2] - p[2]) * (t[2] - p[2]);
-    float f = gap2 > SNAP_M * SNAP_M ? 1 : fminf(10 * dt, 1);
-    _Alignas(16) float np[4] = {p[0] + (t[0] - p[0]) * f, p[1] + (t[1] - p[1]) * f, p[2] + (t[2] - p[2]) * f, 0};
-    _Alignas(16) float m[9];
-    quat_mat(q, m);
-    coop_guest_call(c, MOD_MAIN_BASE + ENEMY_UPDATE_ROT, a, (uint64_t)(uintptr_t)m, 0, 0);
-    coop_guest_call(c, MOD_MAIN_BASE + ENEMY_UPDATE_TRANS, a, (uint64_t)(uintptr_t)np, 0, 0);
-    static int said;
-    if (!said++) rt_log("coop: native enemies: %08x eased to its owner's place (%.2f m off)", pups[k].key,
-                        sqrtf((t[0] - p[0]) * (t[0] - p[0]) + (t[1] - p[1]) * (t[1] - p[1]) + (t[2] - p[2]) * (t[2] - p[2])));
-}
-// The owner's side: each enemy's last action request, by actor (the hook runs on the enemies' threads).
-static struct { uint64_t actor; uint32_t nh; EAction a; uint64_t ns; } act_mine[64];   // nh: its name's hash
-static PlatMutex act_lock = PLAT_MUTEX_INIT;
-static int epose_pack_native(uint64_t a, uint32_t key, uint8_t *out, int max) {
-    EPoseHead h = {.key = key, .t_ns = plat_now_ns()};
-    if (!coop_rd(a + COOP_ACTOR_POS, h.pos, 12) || !coop_rd(a + COOP_ACTOR_ROT, h.rot, 36)) return 0;
-    h.pad[0] = EPOSE_NATIVE;
-    int len = (int)sizeof h;
-    plat_mutex_lock(&act_lock);
-    uint32_t nh = name_hash_of(a);
-    for (int i = 0; i < 64; i++)   // (the same actor, not another at its address: its name, and an action of the last 2 s)
-        if (act_mine[i].actor == a && act_mine[i].nh == nh && h.t_ns - act_mine[i].ns < 2000000000ull &&
-            len + (int)sizeof(EAction) <= max) {
-            memcpy(out + sizeof h, &act_mine[i].a, sizeof(EAction)), len += (int)sizeof(EAction), h.pad[0] |= EPOSE_ACTION;
-            break;
-        }
-    plat_mutex_unlock(&act_lock);
-    memcpy(out, &h, sizeof h);
-    return len;
-}
-// main+0x50ad74 (x0 an object whose +0x18 is the actor, x1 the 0x58-byte request, w2 its mode): on this game's enemy
-// the request is kept to be sent; on another game's (a copy, native model) the owner's last one replaces it, unless
-// the copy's own state bit (component 8 -> +0x18 -> +0x18, byte +0x124 bit 5: TotK Online's escape, meaning unknown)
-// has been set for over 0.25 s. A dead enemy (life 0) plays its own.
-#define ENEMY_ACTION 0x50ad74
-void coop_enemy_action(Cpu *c) {
-    if (!enemy_native() || !coop_net_on() || !coop_enemy_old()) return;
-    uint64_t obj = c->x[0], req = c->x[1], a = obj ? coop_rd_ptr(obj + 0x18) : 0;
-    if (!a || !req) return;
-    char nm[48];
-    if (!coop_world_action_kind(coop_actor_name(a, nm, sizeof nm)) || life_of(a) == 0) return;
-    static _Atomic int said_seen;
-    if (atomic_fetch_add(&said_seen, 1) < 3) rt_log("coop: native enemies: %s makes an action request (mode %u)", nm, (unsigned)c->x[2]);
-    // a copy: the owner's
-    for (int k = 0; k < PUP_N; k++) {
-        if (atomic_load_explicit(&pups[k].actor, memory_order_relaxed) != a) continue;
-        plat_mutex_lock(&pup_lock);
-        int have = pups[k].has_act && pups[k].count && plat_now_ns() - pups[k].last_ns < PUP_STALE_NS;
-        // the escape: the copy's own state while its bit has been set 0.25 s
-        uint64_t s = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 8 * 8) + 0x18) + 0x18);
-        uint8_t b = 0;
-        uint64_t now = plat_now_ns();
-        int bit = s && coop_rd(s + 0x124, &b, 1) && (b & 0x20);
-        if (bit && pups[k].esc_bit && pups[k].esc_ns) pups[k].esc_s += (float)((now - pups[k].esc_ns) / 1e9);
-        else if (!bit) pups[k].esc_s = 0;
-        pups[k].esc_bit = bit, pups[k].esc_ns = now;
-        if (have && pups[k].esc_s <= 0.25f) {
-            memcpy((void *)(uintptr_t)req, pups[k].act.req, EACT_REQ);
-            if (pups[k].act.has_name) {
-                memcpy(pups[k].act_name, pups[k].act.name, sizeof pups[k].act_name);
-                pups[k].act_name[31] = 0;
-                uint64_t np = (uint64_t)(uintptr_t)pups[k].act_name;
-                memcpy((void *)(uintptr_t)(req + 0x38), &np, 8);
-            }
-            c->x[2] = pups[k].act.mode;
-            static _Atomic int said;
-            if (atomic_fetch_add(&said, 1) < 6)
-                rt_log("coop: native enemies: %s %08x plays its owner's action %s (id %u, mode %u)", nm, pups[k].key,
-                       pups[k].act.has_name ? pups[k].act.name : "-", *(uint32_t *)(pups[k].act.req + 0x4c), pups[k].act.mode);
-        }
-        plat_mutex_unlock(&pup_lock);
-        return;
-    }
-    // this game's: kept (it goes out with the enemy's next pose packet, epose_pack_native)
-    EAction e = {.mode = (uint8_t)c->x[2]};
-    coop_rd(req, e.req, EACT_REQ);
-    uint64_t np = 0;
-    uint8_t has = 0;
-    memcpy(&np, e.req + 0x38, 8), has = e.req[0x40];
-    if (has == 1 && np) {
-        for (int i = 0; i < 31; i++) {
-            char ch = 0;
-            if (!coop_rd(np + (uint64_t)i, &ch, 1) || !ch) break;
-            e.name[i] = ch;
-        }
-        e.has_name = 1;
-    }
-    memset(e.req + 0x38, 0, 8);   // (a pointer of this game's: the copy's points to its own copy of the name)
-    plat_mutex_lock(&act_lock);
-    int f = -1;
-    uint64_t oldest = UINT64_MAX;
-    for (int i = 0; i < 64; i++) {
-        if (act_mine[i].actor == a) { f = i; break; }
-        if (act_mine[i].ns < oldest) oldest = act_mine[i].ns, f = i;
-    }
-    act_mine[f].actor = a, act_mine[f].nh = name_hash_of(a), act_mine[f].a = e, act_mine[f].ns = plat_now_ns();
-    plat_mutex_unlock(&act_lock);
-}
-static void epose_take_tick(Cpu *c) {
-    if (!coop_enemy_old()) return;
-    pup_aware_apply();
-    for (int i = 0; i < weap_free_n; i++) if (!weap_bound(weap_free[i])) weap_let_go(c, weap_free[i]);
-    weap_free_n = 0;
-    static uint8_t in[COOP_EPOSE_MAX];
-    int from = 0, len;
-    uint64_t age = 0, now = plat_now_ns();
-    while ((len = coop_net_epose_take(in, sizeof in, &from, &age)) != 0) {
-        if (len < (int)sizeof(EPoseHead)) continue;
-        uint32_t key;
-        memcpy(&key, in, 4);
-        int i = pup_find(key);
-        if (i < 0) {
-            Follow *f = NULL;
-            for (int k = 0; k < FOLLOW_N; k++) if (follow[k].key == key) f = &follow[k];
-            if (!f || f->owner != from) continue;   // not one this game follows that player for
-            uint64_t oldest = UINT64_MAX;
-            for (int k = 0; k < PUP_N; k++) {
-                uint64_t l = pups[k].key ? pups[k].last_ns : 0;
-                if (l < oldest) oldest = l, i = k;
-            }
-            if (pups[i].key && now - pups[i].last_ns < PUP_STALE_NS) continue;   // all in use
-            if (pups[i].key) pup_release(pups[i].key);
-            plat_mutex_lock(&pup_lock);
-            pups[i].key = key, pups[i].owner = from, pups[i].count = 0, atomic_store(&pups[i].actor, 0);
-            pups[i].has_act = 0, pups[i].esc_s = 0, pups[i].esc_ns = 0, pups[i].esc_bit = 0;
-            plat_mutex_unlock(&pup_lock);
-        }
-        if (pups[i].owner != from) continue;
-        plat_mutex_lock(&pup_lock);
-        PupRec *r = &pups[i].r[pups[i].count % PUP_HIST];
-        if (pup_decode(in, len, r)) {
-            EPoseHead hh;
-            memcpy(&hh, in, sizeof hh);
-            pups[i].have_aware = hh.has_aware;
-            if (hh.has_aware) memcpy(pups[i].aware, hh.aware, sizeof pups[i].aware);
-            if ((hh.pad[0] & EPOSE_ACTION) && len >= (int)(sizeof hh + sizeof(EAction)))
-                memcpy(&pups[i].act, in + sizeof hh, sizeof(EAction)), pups[i].has_act = 1;
-            else if (hh.pad[0] & EPOSE_NATIVE) pups[i].has_act = 0;   // (none from the owner: the copy plays its own)
-            // The owner's clock onto this one: the smallest (arrival - owner's time) seen, the packet that came
-            // quickest, rising slowly so a drift between the clocks is followed.
-            static int64_t off[COOP_MAX_PLAYERS + 1];
-            static int off_ok[COOP_MAX_PLAYERS + 1];
-            int64_t d = (int64_t)(now - age) - (int64_t)r->src_ns;
-            if (from >= 1 && from <= COOP_MAX_PLAYERS) {
-                if (!off_ok[from] || d < off[from]) off[from] = d, off_ok[from] = 1;
-                else off[from] += (d - off[from]) / 1024;
-                r->ns = (uint64_t)((int64_t)r->src_ns + off[from]);
-            } else r->ns = now - age;
-            pups[i].count++, pups[i].last_ns = now;
-        }
-        plat_mutex_unlock(&pup_lock);
-    }
-    // Ready: bound to this game's one, with two poses, the last one fresh.
-    for (int k = 0; k < PUP_N; k++) {
-        if (!pups[k].key) continue;
-        int ok = atomic_load(&pups[k].actor) && pups[k].count >= 2 && now - pups[k].last_ns < PUP_STALE_NS;
-        if (enemy_native()) {   // never frozen: its own update runs, eased to the owner's place (native_follow)
-            if (ok) native_follow(c, k);
-            ok = 0;
-        }
-        int was = atomic_load(&pups[k].ready);
-        if (ok != was) {
-            char nm[64] = "";
-            uint64_t a = atomic_load(&pups[k].actor);
-            if (a) coop_actor_name(a, nm, sizeof nm);
-            rt_log("coop: enemy %s %08x %s", nm, pups[k].key,
-                   ok ? "is posed from its owner's (its own update stops here)" : "no longer gets poses (its own update runs again)");
-            atomic_store(&pups[k].ready, ok);
-        }
-        if (ok) pup_weapons(c, k), pup_hits(k);
-        else
-            for (int j = 0; j < EPOSE_ITEMS; j++) {
-                uint64_t w = atomic_exchange(&pups[k].weap[j], 0);
-                if (w) weap_let_go(c, w);
-            }
-        if (!ok && pups[k].count && now - pups[k].last_ns > 5 * PUP_STALE_NS) pup_release(pups[k].key);
-    }
-}
-static int pup_of_actor(uint64_t a) {
-    if (!a) return -1;
-    for (int i = 0; i < PUP_N; i++)
-        if (atomic_load_explicit(&pups[i].ready, memory_order_relaxed) && atomic_load_explicit(&pups[i].actor, memory_order_relaxed) == a) return i;
-    return -1;
-}
-static int epose_delay_ms(void) {
-    static int d = -1;
-    if (d < 0) { const char *e = cfg_get("TOTK_COOP_ENEMY_DELAY_MS"); d = e ? atoi(e) : 100; }
-    return d;
-}
-// The writer hook (main+0x283c750, x1 the skeleton): 1 when it is a frozen enemy's (the call is skipped).
-static _Atomic uint64_t pup_skel[PUP_N];
-int coop_enemy_puppet_skel(uint64_t skel, uint64_t lr) {
-    if (!skel || !coop_enemy_old()) return 0;
-    for (int i = 0; i < PUP_N; i++)
-        if (atomic_load_explicit(&pup_skel[i], memory_order_relaxed) == skel && atomic_load_explicit(&pups[i].ready, memory_order_relaxed)) {
-            static _Atomic int said;
-            if (atomic_fetch_add(&said, 1) == 0)
-                rt_log("coop: an enemy puppet's own pose build skipped (main+0x283c750, from main+%#llx)", (unsigned long long)(lr - MOD_MAIN_BASE));
-            return 1;
-        }
-    return 0;
-}
-static _Atomic uint64_t pup_model[PUP_N];
-// Test: the other writers of a body skeleton's matrices (re-notes, write watch: main+0x289620, 0x2925e0, 0x43e450;
-// and the animation binding main+0x2e9c80) called with an argument naming a frozen enemy's skeleton or model (or
-// pointing into them): logged once each; TOTK_COOP_TEST_PUPSKIP=1 skips them.
-int coop_enemy_puppet_writer(uint64_t addr, const uint64_t *x, uint64_t lr) {
-    static int skip = -1;
-    if (!coop_enemy_old()) return 0;
-    if (skip < 0) skip = cfg_get("TOTK_COOP_TEST_PUPSKIP") != NULL;
-    for (int i = 0; i < PUP_N; i++) {
-        if (!atomic_load_explicit(&pups[i].ready, memory_order_relaxed)) continue;
-        uint64_t sk = atomic_load_explicit(&pup_skel[i], memory_order_relaxed), md = atomic_load_explicit(&pup_model[i], memory_order_relaxed);
-        for (int k = 0; k < 4; k++) {
-            uint64_t v = x[k];
-            int hit = v && (v == sk || v == md);
-            if (!hit && addr == MOD_MAIN_BASE + 0x2e9c80 && v) {   // a binding: [+8] +8 its model (coop_spawn.c's log)
-                uint64_t a = coop_rd_ptr(v + 8), b = a ? coop_rd_ptr(a + 8) : 0;
-                hit = b && (b == md || b == sk);
-            }
-            if (!hit) continue;
-            static _Atomic uint32_t said[4];
-            int w = addr == MOD_MAIN_BASE + 0x289620 ? 0 : addr == MOD_MAIN_BASE + 0x2925e0 ? 1 : addr == MOD_MAIN_BASE + 0x43e450 ? 2 : 3;
-            if (atomic_fetch_add(&said[w], 1) == 0)
-                rt_log("coop: test: main+%#llx is called on an enemy puppet (x%d its %s; from main+%#llx)%s", (unsigned long long)(addr - MOD_MAIN_BASE), k,
-                       v == sk ? "skeleton" : v == md ? "model" : "model's binding", (unsigned long long)(lr - MOD_MAIN_BASE), skip ? ", skipped" : "");
-            return skip;
-        }
-    }
-    return 0;
-}
-static int pup_weapon_of(uint64_t a) {
-    if (!a) return 0;
-    for (int i = 0; i < PUP_N; i++)
-        if (atomic_load_explicit(&pups[i].ready, memory_order_relaxed))
-            for (int j = 0; j < EPOSE_ITEMS; j++) if (atomic_load_explicit(&pups[i].weap[j], memory_order_relaxed) == a) return 1;
-    return 0;
-}
-// The calc hook: 1 when the actor is a frozen enemy puppet or one of its weapons (its calc is skipped).
-int coop_enemy_puppet_calc(uint64_t actor) {
-    if (!coop_enemy_old()) return 0;
-    if (pup_of_actor(actor) >= 0 || pup_weapon_of(actor)) return 1;
-    epose_calc_start(actor);
-    return 0;
-}
-// An update phase of an enemy puppet (1: taken; main+0x245030 is replaced by the drive, the others skipped).
-int coop_enemy_puppet_phase(Cpu *c, uint64_t addr) {
-    if (!coop_enemy_old()) return 0;
-    uint64_t a = c->x[0];
-    int i = pup_of_actor(a);
-    if (i < 0) return pup_weapon_of(a);   // a puppet's weapon: no phase (put in the hand in its enemy's drive)
-    if (addr != MOD_MAIN_BASE + 0x245030) return 1;
-    static __thread PupRec out;
-    uint64_t t = plat_now_ns() - (uint64_t)epose_delay_ms() * 1000000ull;
-    uint64_t sk = enemy_skeleton(a), recs = sk ? coop_rd_ptr(sk + 0x18) : 0;
-    uint16_t have = 0;
-    if (sk) coop_rd(sk + 0x48, &have, 2);
-    jit_note(pups[i].key, 1, sk);
-    atomic_store(&pup_skel[i], sk), atomic_store(&pup_model[i], enemy_model(a));
-    int ok = 0;
-    plat_mutex_lock(&pup_lock);
-    unsigned cnt = pups[i].count, n = cnt < PUP_HIST ? cnt : PUP_HIST;
-    if (pups[i].key && n) {
-        const PupRec *A = NULL, *B = NULL, *newest = &pups[i].r[(cnt - 1) % PUP_HIST];
-        if (t >= newest->ns || n == 1) A = B = newest;
-        else
-            for (unsigned k = 1; k < n && !A; k++) {
-                const PupRec *pb = &pups[i].r[(cnt - k) % PUP_HIST], *pa = &pups[i].r[(cnt - k - 1) % PUP_HIST];
-                if (pa->ns <= t) A = pa, B = pb;
-            }
-        if (!A) A = B = &pups[i].r[(cnt - n) % PUP_HIST];
-        static int hold = -1;   // TOTK_COOP_TEST_EPOSE_HOLD=1: the first pose kept, unblended (is the jitter ours?)
-        if (hold < 0) hold = cfg_get("TOTK_COOP_TEST_EPOSE_HOLD") != NULL;
-        if (hold) {   // (a copy: the history's slots are written over by the next poses)
-            static PupRec held[PUP_N];
-            static uint32_t held_key[PUP_N];
-            if (held_key[i] != pups[i].key) held[i] = *newest, held_key[i] = pups[i].key;
-            A = B = &held[i];
-        }
-        float f = A != B && B->ns > A->ns && t > A->ns ? (float)((double)(t - A->ns) / (double)(B->ns - A->ns)) : 0;
-        if (f > 1) f = 1;
-        for (int k = 0; k < 3; k++) out.pos[k] = A->pos[k] + (B->pos[k] - A->pos[k]) * f;
-        qblend(A->q, B->q, f, out.q);
-        out.n = 0;
-        if (A->n == B->n && A->n == have) {
-            for (int b = 0; b < A->n; b++) {
-                qblend(A->bq[b], B->bq[b], f, out.bq[b]);
-                for (int k = 0; k < 3; k++) out.bt[b][k] = A->bt[b][k] + (B->bt[b][k] - A->bt[b][k]) * f, out.bs[b][k] = f < 0.5f ? A->bs[b][k] : B->bs[b][k];
-            }
-            out.n = A->n;
-        }
-        out.ni = 0;   // its weapons, as both poses have them
-        for (int q = 0; q < B->ni; q++)
-            for (int p = 0; p < A->ni; p++)
-                if (A->ih[p] == B->ih[q]) {
-                    out.ih[out.ni] = B->ih[q];
-                    for (int k = 0; k < 3; k++) out.ip[out.ni][k] = A->ip[p][k] + (B->ip[q][k] - A->ip[p][k]) * f;
-                    qblend(A->iq[p], B->iq[q], f, out.iq[out.ni]);
-                    out.ni++;
-                    break;
-                }
-        ok = 1;
-    }
-    plat_mutex_unlock(&pup_lock);
-    if (!ok) return 1;
-    float rot[9];
-    quat_mat(out.q, rot);
-    _Alignas(16) float m[12];
-    for (int r = 0; r < 3; r++) {
-        for (int k = 0; k < 3; k++) m[r * 4 + k] = rot[r * 3 + k];
-        m[r * 4 + 3] = out.pos[r];
-    }
-    memcpy((void *)(uintptr_t)(a + COOP_ACTOR_POS), out.pos, 12);
-    memcpy((void *)(uintptr_t)(a + COOP_ACTOR_ROT), rot, 36);
-    uint64_t model = enemy_model(a);
-    if (model) {
-        memcpy((void *)(uintptr_t)(model + 0x1f8), m, sizeof m);
-        ST8(model + 0x240, LD8(model + 0x240) | 1);
-    }
-    if (recs && out.n)   // a local record (0x60): scale +0x10, the rotation's columns at +0x20 / +0x30 / +0x40, translation +0x50
-        for (int b = 0; b < out.n; b++) {
-            float *rec = (float *)(uintptr_t)(recs + (uint64_t)b * 0x60), R[9];
-            quat_mat(out.bq[b], R);
-            for (int k = 0; k < 3; k++) rec[4 + k] = out.bs[b][k], rec[20 + k] = out.bt[b][k];
-            for (int cl = 0; cl < 3; cl++) for (int k = 0; k < 3; k++) rec[8 + cl * 4 + k] = R[k * 3 + cl];
-        }
-    if (model) coop_guest_call(c, MOD_MAIN_BASE + 0x24cc30, model, 0, 0, 0);
-    uint64_t body = enemy_body(a);
-    if (body) coop_guest_call(c, MOD_MAIN_BASE + 0x25a450, body, (uint64_t)(uintptr_t)m, 0, 0);
-    for (int j = 0; j < EPOSE_ITEMS; j++) {   // its weapons, after the push: in its hand as on the owner's
-        uint64_t w = atomic_load(&pups[i].weap[j]);
-        int q = -1;
-        for (int k = 0; w && k < out.ni; k++) if (out.ih[k] == pups[i].weap_hash[j]) q = k;
-        if (q < 0) continue;
-        float wr[9];
-        _Alignas(16) float wm[12];
-        quat_mat(out.iq[q], wr);
-        for (int r = 0; r < 3; r++) {
-            for (int k = 0; k < 3; k++) wm[r * 4 + k] = wr[r * 3 + k];
-            wm[r * 4 + 3] = out.ip[q][r];
-        }
-        memcpy((void *)(uintptr_t)(w + COOP_ACTOR_POS), out.ip[q], 12);
-        memcpy((void *)(uintptr_t)(w + COOP_ACTOR_ROT), wr, 36);
-        uint64_t wmod = enemy_model(w);
-        {   // Test (TOTK_COOP_TEST_WEAPLAG=1): whether the weapon's drawn place (model +0x1f8) is still the one put
-            // there a frame before when it is placed again (something else writing it: its own update), every 120.
-            static int on = -1;
-            if (on < 0) { const char *e = cfg_get("TOTK_COOP_TEST_WEAPLAG"); on = e && *e == '1'; }
-            static float put[3];
-            static uint64_t put_w;
-            static float sum, mx, sum_step;
-            static int n;
-            float now[12];
-            if (on && wmod && coop_rd(wmod + 0x1f8, now, sizeof now)) {
-                if (put_w == w) {
-                    float d = sqrtf((now[3] - put[0]) * (now[3] - put[0]) + (now[7] - put[1]) * (now[7] - put[1]) + (now[11] - put[2]) * (now[11] - put[2]));
-                    float st = sqrtf((wm[3] - put[0]) * (wm[3] - put[0]) + (wm[7] - put[1]) * (wm[7] - put[1]) + (wm[11] - put[2]) * (wm[11] - put[2]));
-                    sum += d, mx = fmaxf(mx, d), sum_step += st;
-                    if (++n == 120) {
-                        rt_log("coop: test: copy weapon: drawn place moved from where it was put %.1f cm on average (max %.1f) before it was put again; "
-                               "put %.1f cm a frame from the last", sum / n * 100, mx * 100, sum_step / n * 100);
-                        n = 0, sum = mx = sum_step = 0;
-                    }
-                }
-                put[0] = wm[3], put[1] = wm[7], put[2] = wm[11], put_w = w;
-            }
-        }
-        if (wmod) {
-            memcpy((void *)(uintptr_t)(wmod + 0x1f8), wm, sizeof wm);
-            ST8(wmod + 0x240, LD8(wmod + 0x240) | 1);
-            coop_guest_call(c, MOD_MAIN_BASE + 0x24cc30, wmod, 0, 0, 0);
-        }
-        uint64_t wb = enemy_body(w);
-        wm[7] -= 300.0f;   // its body out of reach: taken from the frozen enemy's hand, it was the player's
-        if (wb) coop_guest_call(c, MOD_MAIN_BASE + 0x25a450, wb, (uint64_t)(uintptr_t)wm, 0, 0);
-    }
-    static _Atomic int said, said_nb;
-    if (atomic_fetch_add(&said, 1) == 0)
-        rt_log("coop: an enemy puppet is driven (skeleton %llx, %u bones, model %llx, body %llx)", (unsigned long long)sk, have,
-               (unsigned long long)model, (unsigned long long)body);
-    if (!out.n && atomic_fetch_add(&said_nb, 1) < 4) rt_log("coop: an enemy puppet's pose has another bone count than its skeleton (%u here)", have);
-    return 1;
-}
 
 void coop_world_tick(Cpu *c, uint64_t me) {
-    {   // The enemy tables start again with a session, and when this Link becomes another actor (a save loaded): kept,
-        // enemies made again at the same place within 5 s were still reported dead and died at once, and old lives
-        // made hits that were not (code review, 2026-11-06).
-        static int was_on;
-        static uint64_t was_me;
-        int on = coop_net_on();
-        if ((on && !was_on) || (me && was_me && me != was_me)) {
-            memset(killed, 0, sizeof killed), memset(mine_known, 0, sizeof mine_known), memset(follow, 0, sizeof follow);
-            for (int i = 0; i < PUP_N; i++) if (pups[i].key) pup_release(pups[i].key);
-            rt_log("coop: enemy tables cleared (%s)", on && !was_on ? "a session began" : "this Link is another actor");
-        }
-        was_on = on;
-        if (me) was_me = me;
-    }
     refscan(me);
     as_play_test(c, me);
     target_swap(me);
@@ -4429,9 +2139,6 @@ void coop_world_tick(Cpu *c, uint64_t me) {
     if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "enemy"); }
     if (on && ++t % 300 == 0) { probe_me = me; each_live(probe_one, NULL); }
     if (coop_world_role()) peer_tick(c, me);
-    // Alone, the horse tests still run (coop_mounts_tick: the put, the fake ride and the position log), so a mount can
-    // be tried in one game with no co-op peer: TOTK_COOP_MOUNTS=1 and TOTK_COOP_TEST_MOUNT_PUT=<s> without a player id.
-    else coop_mounts_tick(c, me);
     void coop_anim_slots_test(uint64_t me);   // (below)
     coop_anim_slots_test(me);
     void coop_anim_copy_test(Cpu *c, uint64_t me);   // (below)
@@ -4449,11 +2156,3 @@ void coop_world_tick(Cpu *c, uint64_t me) {
     if (coop_world_role()) ground_tick(c, me);
 }
 
-// An enemy another game runs (contacts_filter): a copy following its owner, or one this game has seen run elsewhere
-// before it follows (pup_bind waits for its first 3 s here).
-static int ct_is_copy(uint64_t a) {
-    for (int k = 0; a && k < PUP_N; k++) if (atomic_load_explicit(&pups[k].actor, memory_order_relaxed) == a) return 1;
-    uint32_t key = a ? key_of_actor(a) : 0;
-    for (int k = 0; key && k < FOLLOW_N; k++) if (follow[k].key == key) return follow[k].owner != 0;
-    return 0;
-}

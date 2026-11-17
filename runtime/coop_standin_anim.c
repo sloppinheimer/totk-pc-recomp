@@ -11,7 +11,6 @@
 #include "cfg.h"
 #include "coop_far.h"
 #include "coop_game.h"
-#include "coop_mounts.h"
 #include "coop_net.h"
 #include "coop_notices.h"
 #include "coop_world_int.h"

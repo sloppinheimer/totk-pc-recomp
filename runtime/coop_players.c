@@ -15,7 +15,6 @@
 #include "coop_chars.h"
 #include "coop_far.h"
 #include "coop_game.h"
-#include "coop_mounts.h"
 #include "coop_net.h"
 #include "coop_notices.h"
 #include "host.h"
@@ -1225,21 +1224,8 @@ static int owner_smoothed(Slot *s, float m[12]) {
     return 1;
 }
 static void owner_matrix_raw(Slot *s, float m[12]);
-// Where the owner's Link is here. A rider of a horse (ride_owner COOP_RIDE_MOUNT) at its place on this game's copy
-// of that horse (coop_mounts.c coop_mount_place), which the native model eases after the owner's horse, so the
-// stand-in, co-op Link or PlayerPuppet, sits on that copy and not at its owner's delayed place beside it.
-static void owner_matrix(Slot *s, float m[12]) {
-    owner_matrix_raw(s, m);
-    float rp[3];
-    if (s->ride_owner == COOP_RIDE_MOUNT && coop_mount_place(s->ride_id, s->ride_off, rp)) m[3] = rp[0], m[7] = rp[1], m[11] = rp[2];
-}
-// The remote player whose state says they ride the horse of that key (coop_mounts.c), 0 none.
-int coop_player_riding_mount(uint32_t key) {
-    for (int i = 0; i < COOP_MAX_PLAYERS; i++)
-        if (slots[i].state == LIVE && slots[i].source == SRC_NET && slots[i].ride_owner == COOP_RIDE_MOUNT && slots[i].ride_id == key)
-            return slots[i].net_id;
-    return 0;
-}
+// Where the owner's Link is here.
+static void owner_matrix(Slot *s, float m[12]) { owner_matrix_raw(s, m); }
 static void owner_matrix_raw(Slot *s, float m[12]) {
     if (owner_smoothed(s, m)) return;
     float ahead = 0;
@@ -1569,12 +1555,8 @@ static void arrow_track_fn(uint64_t a, void *arg) {
         if (!my_arrows[i].actor) {
             my_arrows[i].actor = a, my_arrows[i].mine = arrow_tick - zr_tick <= 90 && d2 < 9 && d2 < dco, my_arrows[i].seen = arrow_tick;
             my_arrows[i].fused_to = 0, my_arrows[i].shot = 0, my_arrows[i].gone = 0, my_arrows[i].enemy = 0;
-            // An arrow made within 3 m of an enemy this game runs, at least 1 m from every Link (a Link's quiver
-            // arrows are made 0.45 m from it at load): that enemy's, sent so the other games see it (they saw none:
-            // A play session, 2026-11-07).
-            int coop_near_my_enemy(const float p[3], float m);   // coop_world.c
-            if (!my_arrows[i].mine && arrow_tick >= 30 && d2 >= 1 && dco >= 1 && coop_near_my_enemy(p, 3))
-                my_arrows[i].mine = 1, my_arrows[i].enemy = 1, my_arrows[i].shot = 1;
+            // (An enemy's arrow is not this mirror's: the enemy sync makes a copy's shot from its owner's shoot request,
+            // coop_enemy_shot.c.)
             my_arrows[i].id = my_arrows[i].mine ? next_arrow_id++ : 0;
             snprintf(my_arrows[i].name, sizeof my_arrows[i].name, "%s", nm);
             if (my_arrows[i].mine) rt_log("coop: my arrow %u is %s (%llx)", my_arrows[i].id, nm, (unsigned long long)a);
@@ -2261,9 +2243,8 @@ static int prop_skip(const char *nm) {
     if (is_beam(nm)) return 0;
     // A horse's parts: its mane (every Horse_ actor is a Horse_Link_Mane*), saddle and reins. Each game's horse has
     // its own; sent as moved objects, a horse's mane hung in the air beside the other Link (suite case mount,
-    // 2026-11-07). With TOTK_COOP_MOUNTS=1 the horse itself is the shared world's (coop_mounts.c), not a moved object.
+    // 2026-11-07).
     if (!strncmp(nm, "Horse_", 6) || !strncmp(nm, "GameRomHorseSaddle_", 19) || !strncmp(nm, "GameRomHorseReins_", 18)) return 1;
-    if (coop_mounts_on() && !strncmp(nm, "GameRomHorse", 12)) return 1;
     // (Parasail, the Link's paraglider, was left out here: a copy of it seemed to take the other game down with the
     // Ultrahand crash, which was the beam's race (beam_hook). It is sent in its Link's frame: COOP_OBJ_ONLINK.)
     // Sage_: the sages' companion spirits, and Weapon_Bow_128, Tulin's bow, which follow the Link: sent as moved
@@ -5792,11 +5773,6 @@ void coop_players_tick(Cpu *c) {
         read_weather(c, me);
         st.weather = weather_now;
         st.ride_owner = (uint8_t)ride_owner_now, st.ride_id = ride_id_now, memcpy(st.ride_off, ride_off_now, 12);
-        {   // on a horse (coop_mounts.c): that, in place of an object
-            uint32_t mk;
-            float mo[3];
-            if (coop_mount_riding(&mk, mo)) st.ride_owner = COOP_RIDE_MOUNT, st.ride_id = mk, memcpy(st.ride_off, mo, 12);
-        }
         const char *fw = cfg_get("TOTK_COOP_FAKEWEATHER");   // test: report this weather type instead
         if (fw && *fw) st.weather = atoi(fw);
         void coop_anim_pack(uint64_t me, CoopAnim *out);   // coop_world.c: the stand-in's animation
@@ -5941,8 +5917,7 @@ void coop_players_tick(Cpu *c) {
         memcpy(s->want_pos, st.pos, 12), memcpy(s->want_rot, st.rot, 36), s->have_want = 1;
         s->ride_owner = st.ride_owner, s->ride_id = st.ride_id, memcpy(s->ride_off, st.ride_off, 12);
         if (s->ride_owner) {   // a ride offset that is not a number, or a horse rider over 4 m from the horse's origin
-            // (a saddle sits about 1 m from it), rides nothing: it would go into the stand-in's matrix as is, and a
-            // horse ride also hands that horse to the sender's game (coop_world.c peer_one, coop_mount_rider)
+            // (a saddle sits about 1 m from it), rides nothing: it would go into the stand-in's matrix as is
             float mx = 0;
             int ok = 1;
             for (int j = 0; j < 3; j++) ok &= isfinite(s->ride_off[j]), mx = fmaxf(mx, fabsf(s->ride_off[j]));

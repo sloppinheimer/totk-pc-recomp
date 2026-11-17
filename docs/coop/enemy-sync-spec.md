@@ -457,6 +457,28 @@ a night enemy or a spawner's), and then the older enemy sync itself, which is de
   the weapon's place, and the copy's game finds its own actor of that name within 2.5 m of it among all its actors
   (`coop_actors_all`) and takes it off its ground, as it does a dropped one. Built, not seen.
 
+**B.30 The older enemy sync is gone** (2026-11-17).
+- The enemy sync is on unless `TOTK_COOP_ENEMY=0`. `TOTK_COOP_ENEMY_OLD` and `TOTK_COOP_ENEMY_MODEL` mean nothing now.
+- Removed from `coop_world.c` (4,459 lines to about 2,150): the owner choice and hand-over by nearness, the WORLD
+  packets and the dead list, the place and action streams (EPOSE), the frozen-copy model, the lost-life and
+  enemy-to-Link hit replays, the target redirect, and their tests. Removed from `coop_net.c`: the WORLD and EPOSE
+  channels (their packet kinds 6 and 10 stay reserved). Removed from `coop_spawn.c`: the calls into all of these; the
+  addresses stay hooked and do nothing (taking them out of the hook list is a full rebuild, left for later).
+- Kept in `coop_world.c`: the actor registry and keys, the sync of actors made at run time (now for every enemy:
+  its key is the enemy's identity here), the contact packets a player's blow on a copy travels by and the hit-update
+  dispatcher, the HIT channel's reader, and research probes.
+- Horses and animals (`TOTK_COOP_MOUNTS=1`, written and never run) rode on the removed code and are removed with it
+  (`coop_mounts.c`); a remote rider's stand-in is placed as any other. To be built again on this sync's design.
+- An enemy's arrow is no longer sent by the object mirror's "made near an enemy this game runs" rule: a copy's shot
+  is made from its owner's shoot request (section B.3).
+- The far-copy rule's "a player is here but has sent no state" sign is now the session heartbeat, not a WORLD packet.
+- The audit file's `enemies` array is empty; `tools/coop/en_report.py` is the enemy sync's record.
+- What this loses until built: an enemy of a family this sync does not take (the dungeon bosses, Ganondorf and his
+  phantoms, Kohga's constructs, the Goron mid-boss, the sand worm, swarms, weak-point part actors, a baby Frox) is
+  each game's own; on a copy, a blow by another game's Zonai device is no longer taken out of its contacts.
+- [m] before the code was cut, with only the defaults flipped: the bench's fight, wizzrobe and handover cases, tables
+  equal, no leak. The state with the code cut builds and has not been run.
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is

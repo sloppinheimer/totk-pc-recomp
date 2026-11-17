@@ -31,7 +31,7 @@ void coop_lock_wait(PlatMutex *m);   // coop_spawn.c
 
 int coop_enemy_new(void) {
     static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_ENEMY"); on = e && *e == '1'; }
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_ENEMY"); on = !(e && *e == '0'); }   // on unless TOTK_COOP_ENEMY=0 (spec B.30)
     return on;
 }
 

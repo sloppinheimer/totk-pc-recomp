@@ -42,17 +42,8 @@ static volatile int net_gen;          // a new value stops the running network t
 static volatile int net_active;       // a network thread runs (joined or joining)
 static char target[256], my_name[17];   // the relay host[:port], this player's name; set before a thread starts
 static char last_error[160];           // why the last join failed ("" none)
-// The shared world: the latest WORLD packet out (the enemies this game runs) and in from each player, and HIT packets
-// both ways (a game's damage to another's enemies), queued.
-#define WORLD_MAX 1800
-static uint8_t world_out[WORLD_MAX];   // lock
-static int world_out_len, world_out_new;   // lock
-static struct { uint8_t d[WORLD_MAX]; int len; uint64_t at_ns; } world_in[COOP_MAX_PLAYERS + 1];   // lock; by id
-// Enemy poses (EPOSE packets, coop_world.c): queued both ways.
-#define EPQ_OUT 24
-#define EPQ_IN 96
-static struct { uint8_t d[COOP_EPOSE_MAX]; int len, from; uint64_t at_ns; } epose_out[EPQ_OUT], epose_in[EPQ_IN];   // lock
-static int epose_out_n, epose_in_n;   // lock
+// HIT packets both ways, queued (coop_world.c hands them to their syncs). Kinds 6 (WORLD) and 10 (EPOSE) were the
+// older enemy sync's; a packet of either is dropped.
 // The skeleton pose (coop_world.c packs it): this player's latest out, each other player's latest in.
 static uint8_t pose_out[COOP_POSE_MAX];   // lock
 static int pose_out_len, pose_out_new;   // lock
@@ -167,36 +158,20 @@ static void net_thread(void *arg) {
                 sendto(s, (const char *)buf, HEADER + 16, 0, res->ai_addr, (int)res->ai_addrlen);
             }
         }
-        if (my_id) {   // the world packet (host, about 10 a second) and queued hits, as they come
-            uint8_t w[HEADER + WORLD_MAX];
-            int wl = 0, nh = 0;
+        if (my_id) {   // queued hits, as they come
+            uint8_t w[HEADER + COOP_HIT_MAX];
+            int nh = 0;
             static struct { uint8_t d[COOP_HIT_MAX]; int len; } hits[HITQ];
             plat_mutex_lock(&lock);
-            if (world_out_new) memcpy(w + HEADER, world_out, world_out_len), wl = world_out_len, world_out_new = 0;
             for (int i = 0; i < hit_out_n; i++) memcpy(hits[i].d, hit_out[i].d, hit_out[i].len), hits[i].len = hit_out[i].len;
             nh = hit_out_n, hit_out_n = 0;
             plat_mutex_unlock(&lock);
-            if (wl) header(w, WORLD), sendto(s, (const char *)w, HEADER + wl, 0, res->ai_addr, (int)res->ai_addrlen);
             uint8_t pp[HEADER + COOP_POSE_MAX];
             int pl = 0;
             plat_mutex_lock(&lock);
             if (pose_out_new) memcpy(pp + HEADER, pose_out, pose_out_len), pl = pose_out_len, pose_out_new = 0;
             plat_mutex_unlock(&lock);
             if (pl) header(pp, POSE), sendto(s, (const char *)pp, HEADER + pl, 0, res->ai_addr, (int)res->ai_addrlen);
-            {   // enemy poses: every queued packet
-                static uint8_t ep[HEADER + COOP_EPOSE_MAX];
-                for (;;) {
-                    int el = 0;
-                    plat_mutex_lock(&lock);
-                    if (epose_out_n) {
-                        memcpy(ep + HEADER, epose_out[0].d, epose_out[0].len), el = epose_out[0].len;
-                        memmove(epose_out, epose_out + 1, (size_t)(epose_out_n - 1) * sizeof epose_out[0]), epose_out_n--;
-                    }
-                    plat_mutex_unlock(&lock);
-                    if (!el) break;
-                    header(ep, EPOSE), sendto(s, (const char *)ep, HEADER + el, 0, res->ai_addr, (int)res->ai_addrlen);
-                }
-            }
             {   // world objects: every queued packet
                 static uint8_t ob[HEADER + COOP_OBJS_PACKET_MAX];
                 for (;;) {
@@ -279,17 +254,6 @@ static void net_thread(void *arg) {
             others[id].at_ns = plat_now_ns();
             set_live(id, 1);
             plat_mutex_unlock(&lock);
-        } else if (kind == WORLD && id >= 1 && id <= COOP_MAX_PLAYERS && n - HEADER <= WORLD_MAX) {
-            plat_mutex_lock(&lock);
-            memcpy(world_in[id].d, buf + HEADER, n - HEADER), world_in[id].len = n - HEADER, world_in[id].at_ns = plat_now_ns();
-            plat_mutex_unlock(&lock);
-        } else if (kind == EPOSE && id >= 1 && id <= COOP_MAX_PLAYERS && n - HEADER <= COOP_EPOSE_MAX) {
-            plat_mutex_lock(&lock);
-            if (epose_in_n == EPQ_IN)   // full (the game did not take them): the oldest goes
-                memmove(epose_in, epose_in + 1, (size_t)(EPQ_IN - 1) * sizeof epose_in[0]), epose_in_n--;
-            memcpy(epose_in[epose_in_n].d, buf + HEADER, n - HEADER), epose_in[epose_in_n].len = n - HEADER;
-            epose_in[epose_in_n].from = id, epose_in[epose_in_n].at_ns = plat_now_ns(), epose_in_n++;
-            plat_mutex_unlock(&lock);
         } else if (kind == POSE && id >= 1 && id <= COOP_MAX_PLAYERS && n - HEADER <= COOP_POSE_MAX) {
             plat_mutex_lock(&lock);
             memcpy(pose_in[id].d, buf + HEADER, n - HEADER), pose_in[id].len = n - HEADER, pose_in[id].at_ns = plat_now_ns();
@@ -335,12 +299,12 @@ void coop_net_leave(void) {
     set_my_id(0);
     plat_mutex_lock(&lock);
     for (int i = 0; i <= COOP_MAX_PLAYERS; i++) set_live(i, 0);
-    mine_set = 0, hit_out_n = hit_in_n = 0, objs_out_n = objs_in_n = 0, epose_out_n = epose_in_n = 0;
+    mine_set = 0, hit_out_n = hit_in_n = 0, objs_out_n = objs_in_n = 0;
     ctr_out_n = ctr_in_n = 0;
-    // (and what was waiting to go or came for the last session: its world and pose went first in the next one,
-    // code review 2026-11-06)
-    world_out_new = 0, pose_out_new = 0;
-    for (int i = 0; i <= COOP_MAX_PLAYERS; i++) pose_in[i].len = 0, pose_in[i].at_ns = 0, world_in[i].len = 0, others[i].name[0] = 0;
+    // (and what was waiting to go or came for the last session: its pose went first in the next one, code review
+    // 2026-11-06)
+    pose_out_new = 0;
+    for (int i = 0; i <= COOP_MAX_PLAYERS; i++) pose_in[i].len = 0, pose_in[i].at_ns = 0, others[i].name[0] = 0;
     plat_mutex_unlock(&lock);
 }
 
@@ -395,43 +359,6 @@ int coop_net_remote(int id, NetState *out, uint64_t *age_ns) {
     }
     plat_mutex_unlock(&lock);
     return live;
-}
-
-void coop_net_world_send(const void *data, int len) {
-    if (len < 0 || len > WORLD_MAX) return;
-    plat_mutex_lock(&lock);
-    memcpy(world_out, data, len), world_out_len = len, world_out_new = 1;
-    plat_mutex_unlock(&lock);
-}
-
-int coop_net_world(int id, void *out, int max, uint64_t *age_ns) {
-    if (id < 1 || id > COOP_MAX_PLAYERS) return 0;
-    plat_mutex_lock(&lock);
-    int n = world_in[id].len <= max ? world_in[id].len : 0;
-    if (n) memcpy(out, world_in[id].d, n), *age_ns = plat_now_ns() - world_in[id].at_ns;
-    plat_mutex_unlock(&lock);
-    return n;
-}
-
-void coop_net_epose_send(const void *data, int len) {
-    if (len <= 0 || len > COOP_EPOSE_MAX) return;
-    plat_mutex_lock(&lock);
-    if (epose_out_n < EPQ_OUT) memcpy(epose_out[epose_out_n].d, data, len), epose_out[epose_out_n].len = len, epose_out_n++;
-    plat_mutex_unlock(&lock);
-}
-
-int coop_net_epose_take(void *out, int max, int *from, uint64_t *age_ns) {
-    plat_mutex_lock(&lock);
-    int n = 0;
-    if (epose_in_n) {
-        n = epose_in[0].len <= max ? epose_in[0].len : 0;
-        if (n) memcpy(out, epose_in[0].d, n);
-        *from = epose_in[0].from, *age_ns = plat_now_ns() - epose_in[0].at_ns;
-        memmove(epose_in, epose_in + 1, (size_t)(epose_in_n - 1) * sizeof epose_in[0]), epose_in_n--;
-        if (!n) n = -1;
-    }
-    plat_mutex_unlock(&lock);
-    return n;
 }
 
 void coop_net_pose_send(const void *data, int len) {

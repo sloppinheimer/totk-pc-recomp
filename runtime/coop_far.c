@@ -21,6 +21,7 @@
 #include "coop_far.h"
 #include "coop_game.h"
 #include "coop_net.h"
+#include "coop_sess.h"
 #include "host.h"
 #include "layout.h"
 #include "platform/platform.h"
@@ -45,7 +46,8 @@ float coop_far_m(void) {
 // Nothing is far while a player's place is not known (unsure), since what this game holds for that player may stand
 // beside them:
 // - a player whose last state is more than 3 s old (a load, a stall);
-// - a player who sends world packets but no state yet (coop_net lists a player only from its first state);
+// - a player whose heartbeat comes (coop_sess_peer) but no state yet (coop_net lists a player only from its first
+//   state);
 // - for 10 s after a player comes or goes (and after the first look), while the first states, the Links here and the
 //   copies made for a new player settle. Without these, a game just joined was not counted, and everything held for
 //   it was let go of (code review, 2026-11-07).
@@ -55,7 +57,6 @@ static uint64_t at_ns;
 static int me_known;
 
 #define FAR_STATE_OLD_NS 3000000000ull
-#define FAR_WORLD_OLD_NS 5000000000ull
 #define FAR_SETTLE_NS 10000000000ull
 
 static void places(void) {
@@ -73,14 +74,13 @@ static void places(void) {
     uint32_t live = 0;
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++) {
         static NetState st;
-        static uint8_t world[2048];   // (coop_net's WORLD_MAX is 1800)
         uint64_t age;
         if (id == coop_net_id()) continue;
         if (coop_net_remote(id, &st, &age)) {
             live |= 1u << id;
             if (age > FAR_STATE_OLD_NS || !isfinite(st.pos[0]) || !isfinite(st.pos[1]) || !isfinite(st.pos[2])) unsure = 1;
             else memcpy(at[nat++], st.pos, 12);
-        } else if (coop_net_world(id, world, sizeof world, &age) && age < FAR_WORLD_OLD_NS)
+        } else if (coop_sess_peer(id) != COOP_SESS_GONE)
             unsure = 1;
     }
     static uint32_t was_live;

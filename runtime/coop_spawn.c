@@ -285,7 +285,6 @@ int coop_pose_after_writer(const uint64_t *args, int n);
 int coop_puppet_before_writer(uint64_t pose, uint64_t skel);   // coop_world.c: pose out / a player's pose in
 void coop_trace_tick(uint64_t me);   // coop_trace.c
 void coop_actor_seen(uint64_t actor);   // coop_world.c
-uint64_t coop_nearest_link_data(uint64_t enemy);   // coop_world.c: a co-op Link's perception data when nearer, else 0
 static int prof3;
 // TOTK_COOP_PROF=4: inside an enemy's calc (enemy_calc), the functions entered with x0 = this PC's Link or its reference
 // object, with their call site: where enemy AI uses the player it fetched.
@@ -1102,9 +1101,9 @@ int coop_hook(Cpu *c, uint64_t addr) {
     }
     // the SwordBlur component's update (coop_world.c): a stand-in's runs with its owner's WeaponBlur event
     if (addr == MOD_MAIN_BASE + 0x275954) { int coop_blur_hook(Cpu *c, uint64_t addr); return coop_blur_hook(c, addr); }
-    if (addr == MOD_MAIN_BASE + 0x31dbc0) { void coop_hit_delivered(Cpu *c); coop_hit_delivered(c); return 0; }   // coop_world.c
+    if (addr == MOD_MAIN_BASE + 0x31dbc0) return 0;   // (a hit's delivery: hooked for the older enemy sync's replay, which is gone)
     if (addr == MOD_MAIN_BASE + 0x300a30) { void coop_hit_update(Cpu *c); coop_hit_update(c); return 0; }        // coop_world.c
-    if (addr == MOD_MAIN_BASE + 0x50ad74) { void coop_enemy_action(Cpu *c); coop_enemy_action(c); return 0; }    // coop_world.c
+    if (addr == MOD_MAIN_BASE + 0x50ad74) return 0;   // (an action request: the enemy sync saw it first, above)
     if (addr == MOD_MAIN_BASE + 0x96c1ac) { void coop_markers_screen(uint64_t); coop_markers_screen(c->x[0]); return 0; }   // coop_markers.c: the AppMap screen's set-up
     // main+0x1d1fc70 (x0 an actor link): the 1.4.3 copy of the function TotK Online makes return 1 for PlayerPuppet
     // (1.2.1 main+0x1736dec; the same code, matched by hand 2026-11-07; read for behaviour only). It is bow code, not
@@ -1174,8 +1173,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // them: its ragdoll and tips ran there, outside the calc flag) (2026-11-04).
     if (addr == MOD_MAIN_BASE + 0x245030 || addr == MOD_MAIN_BASE + 0x2f9910 || addr == MOD_MAIN_BASE + 0x194fd7c) {
         { int en_pose_phase(Cpu *c, uint64_t addr); if (en_pose_phase(c, addr)) return 1; }   // coop_enemy_pose.c: a copy shown in its owner's ragdoll pose
-        int coop_enemy_puppet_phase(Cpu *c, uint64_t addr);   // coop_world.c: an enemy puppet's phases (driven, or skipped)
-        if (coop_enemy_puppet_phase(c, addr)) return 1;
         return coop_players_phase(c, addr);
     }
     // main+0x2e9c80 (animation binding): Havok's pose into a g3d model. For the co-op Link's model the copied pose
@@ -1204,14 +1201,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // An enemy puppet's skeleton (coop_world.c): its local matrices are the owner's pose, written by its drive; built
     // here from its own frozen animation as well, the two took turns and the copy jiggled (a play session; held on
     // one pose, a Chuchu's copy moved 2 mm a frame where the Chuchu moved 0.1 mm, 2026-11-06).
-    if (addr == MOD_MAIN_BASE + 0x283c750) {
-        int coop_enemy_puppet_skel(uint64_t skel, uint64_t lr);   // coop_world.c
-        if (coop_enemy_puppet_skel(c->x[1], c->x[30])) return 1;
-    }
-    if (addr == MOD_MAIN_BASE + 0x289620 || addr == MOD_MAIN_BASE + 0x2925e0 || addr == MOD_MAIN_BASE + 0x43e450 || addr == MOD_MAIN_BASE + 0x2e9c80) {
-        int coop_enemy_puppet_writer(uint64_t addr, const uint64_t *x, uint64_t lr);   // coop_world.c: test
-        if (coop_enemy_puppet_writer(addr, c->x, c->x[30])) return 1;
-    }
     // Puppet mode: main+0x283c750 (x0 the input pose, x1 the SkeletonObj) builds a body's local matrices. This
     // Link's input goes out; a co-op Link's is replaced by its player's before it runs (2026-11-05).
     if (addr == MOD_MAIN_BASE + 0x283c750) {
@@ -1423,33 +1412,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // updates main+0x446a84 / main+0x49f5f8) keeps the receiver's component in x19, whose +0x18 is its actor. For an
     // enemy whose nearest Link is a co-op one, the manager holds that Link's data for this call only: enemies then
     // sense, chase and attack the player nearest to them (coop_world.c coop_nearest_link).
-    if (addr == MOD_MAIN_BASE + 0x45b930) {
-        static int redirect = -1;   // off by default: it did not change whom enemies attack (re-notes); TOTK_COOP_ENEMY_REDIRECT=1
-        if (redirect < 0) redirect = cfg_get("TOTK_COOP_ENEMY_REDIRECT") != NULL;
-        if (!redirect) return 0;
-        static __thread int inside45;
-        if (inside45) return 0;
-        uint64_t mgr = rd_ptr(MOD_MAIN_BASE + 0x3a6ea80), actor = rd_ptr(c->x[19] + 0x18);
-        uint64_t other = mgr && actor ? coop_nearest_link_data(actor) : 0;
-        if (!other) return 0;
-        static _Atomic uint32_t redirects, checks;
-        uint32_t r = atomic_fetch_add(&redirects, 1);
-        if (!(r & 1023)) rt_log("coop: perception: %u checks taken to a co-op Link so far", r + 1);
-        (void)checks;
-        // One swap at a time: two receivers' checks on two threads could leave [mgr+0x58] on a co-op Link's data
-        // for good (code review, 2026-11-06).
-        static PlatMutex perc_lock = PLAT_MUTEX_INIT;
-        coop_lock_wait(&perc_lock);
-        uint64_t mine = rd_ptr(mgr + 0x58);
-        inside45 = 1;
-        ST64(mgr + 0x58, other);
-        c->pc = addr;
-        rt_dispatch(c);
-        ST64(mgr + 0x58, mine);
-        inside45 = 0;
-        plat_mutex_unlock(&perc_lock);
-        return 1;
-    }
+    if (addr == MOD_MAIN_BASE + 0x45b930) return 0;   // (hooked for a test that held a co-op Link's data there for the call: gone with the older enemy sync)
     if (addr == MOD_MAIN_BASE + 0x49f5f8) {
         static int on = -1;
         if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "emit"); }
@@ -1542,8 +1505,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
     if (addr == MOD_MAIN_BASE + 0xc4961c || addr == MOD_MAIN_BASE + 0xaf100c) return coop_players_gear(c, addr);
     if (addr == MOD_MAIN_BASE + ACTOR_CALC) {
         coop_actor_seen(c->x[0]);   // every live actor passes here each frame (coop_world.c)
-        int coop_enemy_puppet_calc(uint64_t actor);   // coop_world.c: an enemy another game runs, frozen here
-        if (coop_enemy_puppet_calc(c->x[0])) return 1;
     if (prof4 && !enemy_calc && c->x[0]) {   // an enemy's calc, bracketed for the profiler
         char en[16];
         actor_name(c->x[0], en, sizeof en);
