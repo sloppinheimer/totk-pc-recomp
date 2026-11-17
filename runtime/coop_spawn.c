@@ -275,13 +275,6 @@ static void log_callers(Cpu *c) {
 int coop_in_remote_calc(void);   // coop_players.c
 int coop_players_phase(Cpu *c, uint64_t addr);   // coop_players.c: another update phase of a co-op Link
 int coop_is_coop_life(uint64_t comp);   // coop_world.c: a co-op Link's life component
-int coop_pose_is_target(uint64_t binding);   // coop_world.c: main+0x2e9c80 poses the co-op Link's model
-void coop_pose_copy_now(void);   // coop_world.c: the copied pose onto it
-int coop_pose_wanted(void);   // coop_world.c: a co-op Link to copy a pose onto
-void coop_pose_saw(uint64_t binding);   // coop_world.c: an animation binding main+0x2e9c80 posed
-void coop_pose_before_anim(uint64_t binding);
-int coop_pose_arg_match(const uint64_t *args, int n);
-int coop_pose_after_writer(const uint64_t *args, int n);
 int coop_puppet_before_writer(uint64_t pose, uint64_t skel);   // coop_world.c: pose out / a player's pose in
 void coop_trace_tick(uint64_t me);   // coop_trace.c
 void coop_actor_seen(uint64_t actor);   // coop_world.c
@@ -682,10 +675,7 @@ void coop_fn_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
 
 
 // ---- entry hooks (cpu.h COOP_HOOKED)
-#define GET_CONTROLLER 0x37ccc0
 #define INPUT_COPY 0x37d330   // (input object, controller): the per-frame update (main+0x37c944) fills its consumers
-// getController's callers: return address, index, calls since the last report. Filled from any game thread.
-static struct { _Atomic uint64_t lr; _Atomic uint32_t index, calls; } gc_callers[64];
 
 #define ACTOR_CALC 0x41bb20   // per-actor update from the actor job (main+0x2f175c), x0 = actor (profiler, 2026-11-03)
 static __thread int in_calc;      // this thread runs ACTOR_CALC through the wrapper
@@ -1131,19 +1121,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
     }
     // ActorCreateInfo::getActor (main+0x50d6bc) from the create queue (returning to main+0x898420): an actor the game
     // hands over; run here, then its result goes to the spawn sync (coop_world.c coop_actor_created)
-    if (addr == MOD_MAIN_BASE + 0x50d6bc) {   // Test (TOTK_COOP_TEST_GETACTOR=1): which call sites run, every 1000 calls
-        static int on = -1;
-        if (on < 0) on = cfg_get("TOTK_COOP_TEST_GETACTOR") != NULL;
-        static struct { _Atomic uint64_t lr; _Atomic uint32_t n; } site[32];
-        static _Atomic uint32_t total;
-        for (int i = 0; on && i < 32; i++) {
-            uint64_t have = atomic_load(&site[i].lr), lr = c->x[30];
-            if (have == lr || (!have && atomic_compare_exchange_strong(&site[i].lr, &have, lr))) { atomic_fetch_add(&site[i].n, 1); break; }
-        }
-        if (on && (atomic_fetch_add(&total, 1) + 1) % 50 == 1)
-            for (int i = 0; i < 32 && atomic_load(&site[i].lr); i++)
-                rt_log("coop: test: getActor from main+%#llx: %u calls", (unsigned long long)(atomic_load(&site[i].lr) - MOD_MAIN_BASE), atomic_load(&site[i].n));
-    }
     // (the create queues that hand actors over this way in 1.4.3, each "status 3, getActor(handle, 0, 0), handle
     // cleared" as 1.2.1's main+0xcd7d40: main+0x50d364 (the async create manager's, most of them), 0x61a8b4,
     // 0x6609b4, 0x89841c; TOTK_COOP_TEST_GETACTOR counted the sites, 2026-11-07)
@@ -1175,32 +1152,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
         { int en_pose_phase(Cpu *c, uint64_t addr); if (en_pose_phase(c, addr)) return 1; }   // coop_enemy_pose.c: a copy shown in its owner's ragdoll pose
         return coop_players_phase(c, addr);
     }
-    // main+0x2e9c80 (animation binding): Havok's pose into a g3d model. For the co-op Link's model the copied pose
-    // (TOTK_COOP_TEST_SKELCOPY) goes over its own right after, so its own animation does not undo it (2026-11-05).
-    static int skelcopy = -1;   // (looked up once: it was on every call, code review 2026-11-06)
-    if (skelcopy < 0 && addr == MOD_MAIN_BASE + 0x2e9c80) skelcopy = cfg_get("TOTK_COOP_TEST_SKELCOPY") != NULL;
-    if (addr == MOD_MAIN_BASE + 0x2e9c80 && skelcopy > 0 && coop_pose_wanted()) {
-        // the distinct models it poses once the co-op Link is there (up to 24), for the target check
-        static _Atomic uint64_t seen[24];
-        coop_pose_saw(c->x[0]);
-        uint64_t a = rd_ptr(c->x[0] + 8), b = a ? rd_ptr(a + 8) : 0, h = rd_ptr(c->x[0]);
-        for (int i = 0; b && i < 24; i++) {
-            uint64_t have = atomic_load(&seen[i]);
-            if (have == b) break;
-            if (!have && atomic_compare_exchange_strong(&seen[i], &have, b)) {
-                rt_log("coop: test: animation binding %llx (vtable main+%#llx) -> %llx -> %llx%s", (unsigned long long)c->x[0],
-                       (unsigned long long)(h - MOD_MAIN_BASE), (unsigned long long)a, (unsigned long long)b,
-                       coop_pose_is_target(c->x[0]) ? " (the co-op Link's)" : "");
-                break;
-            }
-        }
-    }
-    // The later writers of a body skeleton's world matrices (write watch, re-notes): main+0x283c750, 0x289620,
-    // 0x2925e0, 0x43e450. When one is called for the co-op Link's skeleton or model (an argument names it), the
-    // copied pose goes on after it (TOTK_COOP_TEST_SKELCOPY) (2026-11-05).
-    // An enemy puppet's skeleton (coop_world.c): its local matrices are the owner's pose, written by its drive; built
-    // here from its own frozen animation as well, the two took turns and the copy jiggled (a play session; held on
-    // one pose, a Chuchu's copy moved 2 mm a frame where the Chuchu moved 0.1 mm, 2026-11-06).
     // Puppet mode: main+0x283c750 (x0 the input pose, x1 the SkeletonObj) builds a body's local matrices. This
     // Link's input goes out; a co-op Link's is replaced by its player's before it runs (2026-11-05).
     if (addr == MOD_MAIN_BASE + 0x283c750) {
@@ -1226,53 +1177,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
             if (atomic_fetch_add(&said_p, 1) == 0) rt_log("coop: puppet mode: a player's pose went onto their co-op Link (second run)");
         } else *c = after;
         in4 = 0;
-        return 1;
-    }
-    if ((addr == MOD_MAIN_BASE + 0x283c750 || addr == MOD_MAIN_BASE + 0x289620 || addr == MOD_MAIN_BASE + 0x2925e0 ||
-         addr == MOD_MAIN_BASE + 0x43e450) && coop_pose_wanted()) {
-        static __thread int in2;
-        int m = in2 ? 0 : coop_pose_arg_match(c->x, 4);
-        uint64_t args[4] = {c->x[0], c->x[1], c->x[2], c->x[3]};
-        if (!in2 && addr == MOD_MAIN_BASE + 0x283c750) {   // every part of the co-op Link (body, head, hair...)
-            in2 = 1;
-            c->pc = addr;
-            rt_dispatch(c);
-            in2 = 0;
-            if (coop_pose_after_writer(args, 4)) {
-                static _Atomic int said_parts;
-                if (atomic_fetch_add(&said_parts, 1) == 0) rt_log("coop: test: part poses copied after main+0x283c750");
-            } else if (m) {
-                coop_pose_copy_now();
-                static _Atomic int said_body;
-                if (atomic_fetch_add(&said_body, 1) == 0) rt_log("coop: test: pose copied after main+0x283c750 (body)");
-            }
-            return 1;
-        }
-        if (m) {
-            in2 = 1;
-            c->pc = addr;
-            rt_dispatch(c);
-            in2 = 0;
-            coop_pose_copy_now();
-            static _Atomic int said[4];
-            int w = addr == MOD_MAIN_BASE + 0x283c750 ? 0 : addr == MOD_MAIN_BASE + 0x289620 ? 1 : addr == MOD_MAIN_BASE + 0x2925e0 ? 2 : 3;
-            if (atomic_fetch_add(&said[w], 1) == 0)
-                rt_log("coop: test: pose copied after main+%#llx (x%d is the co-op Link's #%d)", (unsigned long long)(addr - MOD_MAIN_BASE), (m - 1) / 8, (m - 1) % 8);
-            return 1;
-        }
-    }
-    if (addr == MOD_MAIN_BASE + 0x2e9c80 && coop_pose_is_target(c->x[0])) {
-        static __thread int in;
-        const char *mode = cfg_get("TOTK_COOP_TEST_SKELCOPY");
-        if (in || !mode || !strcmp(mode, "tick")) return 0;
-        coop_pose_before_anim(c->x[0]);
-        in = 1;
-        c->pc = addr;
-        rt_dispatch(c);
-        in = 0;
-        if (!strcmp(mode, "after")) coop_pose_copy_now();   // =after: the skeleton copy after it as well
-        static _Atomic int applied;
-        if (atomic_fetch_add(&applied, 1) == 0) rt_log("coop: test: the copied pose goes on after the co-op Link's animation");
         return 1;
     }
     if (addr == MOD_MAIN_BASE + 0x2192c50 && !coop_in_remote_calc()) {
@@ -1400,107 +1304,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
                    ldr_describe(c->x[30], from, sizeof from));
         return 1;
     }
-    // main+0x1a30670 (actor system, out link, &name): the one actor of that name (the resident "Player" for AI that
-    // wants the player, e.g. QueryTestGetPlayerActor). TOTK_COOP_TRACE=player counts its callers for "Player".
-    // main+0x446a84 (emitter object: +0x18 its actor, +0x70 what main+0x45b930 gets): one perception emitter's
-    // update. TOTK_COOP_TRACE=emit counts the calls per Link and logs the objects once.
-    // main+0x49f5f8 (emitter component: +0x18 its actor, +0x70 its data, +0x88 a sub-object whose virtual +0x10 says
-    // skip): the per-actor calc's emitter update (main+0x41bb20). TOTK_COOP_TRACE=emit: per Link, the calls and the
-    // skip check's answer.
-    // main+0x45b930: one perception receiver's check of the player. It takes the player emitter's data from the
-    // perception manager [main+0x3a6ea80] +0x58 (this Link's, the one player the game knows). Its caller (the emitter
-    // updates main+0x446a84 / main+0x49f5f8) keeps the receiver's component in x19, whose +0x18 is its actor. For an
-    // enemy whose nearest Link is a co-op one, the manager holds that Link's data for this call only: enemies then
-    // sense, chase and attack the player nearest to them (coop_world.c coop_nearest_link).
-    if (addr == MOD_MAIN_BASE + 0x49f5f8) {
-        static int on = -1;
-        if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "emit"); }
-        if (on) {
-            static _Atomic int raw;
-            if (atomic_fetch_add(&raw, 1) < 8) {
-                uint64_t o = c->x[0];
-                char line[512];
-                int n = snprintf(line, sizeof line, "coop: emitter2 %llx:", (unsigned long long)o);
-                for (int k = 0; k < 0x30; k += 8) {
-                    char nm[16];
-                    uint64_t v = rd_ptr(o + k);
-                    n += snprintf(line + n, sizeof line - n, " +%#x=%llx(%s)", k, (unsigned long long)v, actor_name(v, nm, 16));
-                }
-                rt_log("%s; this Link %llx", line, (unsigned long long)player_actor_cached);
-            }
-            uint64_t o = c->x[0], act = rd_ptr(o + 0x18);
-            char nm[16];
-            actor_name(act, nm, sizeof nm);
-            if (!strcmp(nm, "Player")) {
-                int mine = act == player_actor_cached;
-                static _Atomic uint32_t calls[2];
-                static _Atomic int shown[2];
-                atomic_fetch_add(&calls[mine], 1);
-                if (atomic_fetch_add(&shown[mine], 1) < 3) {
-                    uint64_t sub = o + 0x88, fn = rd_ptr(rd_ptr(sub) + 0x10);
-                    uint64_t skip = guest_call(c, fn, sub, 0, 0, 0);
-                    char d[96];
-                    rt_log("coop: player emitter update for %s Link: component %llx, data %llx, skip check %s says %llu",
-                           mine ? "this" : "a co-op", (unsigned long long)o, (unsigned long long)rd_ptr(o + 0x70),
-                           ldr_describe(fn, d, sizeof d), (unsigned long long)(skip & 1));
-                }
-                static uint64_t last;
-                uint64_t now = plat_now_ns();
-                if (now - last > 10000000000ull) {
-                    last = now;
-                    rt_log("coop: player emitter updates in 10 s: this Link %u, co-op Links %u", atomic_exchange(&calls[1], 0), atomic_exchange(&calls[0], 0));
-                }
-            }
-        }
-        return 0;
-    }
-    if (addr == MOD_MAIN_BASE + 0x446a84) {
-        static int on = -1;
-        if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "emit"); }
-        if (on) {
-            uint64_t o = c->x[0], act = rd_ptr(o + 0x18);
-            static _Atomic int raw;
-            if (atomic_fetch_add(&raw, 1) < 6) {
-                char n1[16], n2[16], n3[16];
-                rt_log("coop: emitter object %llx: +0x10 %llx (%s / [+0x150] %s), +0x18 %llx (%s), +0x70 %llx; this Link %llx", (unsigned long long)o,
-                       (unsigned long long)rd_ptr(o + 0x10), actor_name(rd_ptr(o + 0x10), n1, 16), actor_name(rd_ptr(rd_ptr(o + 0x10) + 0x150), n2, 16),
-                       (unsigned long long)act, actor_name(act, n3, 16), (unsigned long long)rd_ptr(o + 0x70), (unsigned long long)player_actor_cached);
-            }
-            char nm[16];
-            actor_name(act, nm, sizeof nm);
-            if (!strcmp(nm, "Player")) {
-                int mine = act == player_actor_cached;
-                static _Atomic uint32_t calls[2];
-                static _Atomic int shown[2];
-                atomic_fetch_add(&calls[mine], 1);
-                if (atomic_fetch_add(&shown[mine], 1) < 2) {
-                    uint64_t comp = rd_ptr(rd_ptr(act + 0x228) + 0x378);
-                    rt_log("coop: emitter update for %s Link %llx: object %llx (+0x70 %llx), perception comp %llx (+0x30 %llx)",
-                           mine ? "this" : "a co-op", (unsigned long long)act, (unsigned long long)o,
-                           (unsigned long long)rd_ptr(o + 0x70), (unsigned long long)comp, (unsigned long long)rd_ptr(comp + 0x30));
-                }
-                static uint64_t last;
-                uint64_t now = plat_now_ns();
-                if (now - last > 10000000000ull) {
-                    last = now;
-                    rt_log("coop: emitter updates in 10 s: this Link %u, co-op Links %u", atomic_exchange(&calls[1], 0), atomic_exchange(&calls[0], 0));
-                }
-            }
-        }
-        return 0;
-    }
-    if (addr == MOD_MAIN_BASE + 0x1a30670) {
-        static int on = -1;
-        if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "player"); }
-        if (on) {
-            char nm[16] = "";
-            rd(rd_ptr(c->x[2]), nm, 15);
-            static _Atomic int seen_n;
-            if (atomic_fetch_add(&seen_n, 1) < 20) rt_log("coop: named lookup of '%s'", nm);
-            if (!strcmp(nm, "Player")) p3_hit(c->x[30], 0, enemy_calc);
-        }
-        return 0;
-    }
     if (addr == MOD_MAIN_BASE + 0xc4961c || addr == MOD_MAIN_BASE + 0xaf100c) return coop_players_gear(c, addr);
     if (addr == MOD_MAIN_BASE + ACTOR_CALC) {
         coop_actor_seen(c->x[0]);   // every live actor passes here each frame (coop_world.c)
@@ -1546,37 +1349,9 @@ int coop_hook(Cpu *c, uint64_t addr) {
         }
         return 0;
     }
-    if (addr != MOD_MAIN_BASE + GET_CONTROLLER) return 0;
-    uint64_t lr = c->x[30];
-    uint32_t index = (uint32_t)c->x[1];
-    for (int i = 0; i < 64; i++) {
-        uint64_t have = atomic_load_explicit(&gc_callers[i].lr, memory_order_relaxed);
-        if (!have && atomic_compare_exchange_strong(&gc_callers[i].lr, &have, lr)) {
-            atomic_store(&gc_callers[i].index, index);
-            char name[48] = "";
-            uint64_t np = rd_ptr(c->x[2]);
-            if (np) rd(np, name, sizeof name - 1);
-            rt_log("coop: getController first called from main+%llx, index %u, user '%s'",
-                   (unsigned long long)(lr - MOD_MAIN_BASE), index, name);
-        }
-        if (have == lr || atomic_load_explicit(&gc_callers[i].lr, memory_order_relaxed) == lr) {
-            atomic_fetch_add_explicit(&gc_callers[i].calls, 1, memory_order_relaxed);
-            return 0;
-        }
-    }
     return 0;
 }
 
-static void report_callers(void) {
-    char line[1024];
-    int n = snprintf(line, sizeof line, "coop: getController calls in the last ~5 s:");
-    for (int i = 0; i < 64 && gc_callers[i].lr && n < (int)sizeof line - 48; i++) {
-        uint32_t k = atomic_exchange(&gc_callers[i].calls, 0);
-        if (k) n += snprintf(line + n, sizeof line - n, " main+%llx(i%u)x%u",
-                             (unsigned long long)(gc_callers[i].lr - MOD_MAIN_BASE), gc_callers[i].index, k);
-    }
-    rt_log("%s", line);
-}
 
 // TOTK_COOP_TEST_KFRIDE=<t>,<mode>,<speed> (contraption-sync.md, Phase 0 item 1), with TOTK_COOP_TEST_SPAWN putting a
 // part beside the Link a few seconds before: the part (slot 1's) is held 1.2 m above the flat ground of the fan tests
@@ -1803,8 +1578,6 @@ void coop_tick(struct Cpu *c) {
     player_actor_cached = player_actor();
     coop_trace_tick(player_actor_cached);   // coop_trace.c: TOTK_COOP_TRACE_AT
     if (prof4) resident_named("Player", &prof4_ref);
-    static int report_ticks;
-    if (trace_on && ++report_ticks % 300 == 0) report_callers();   // input tracing only
     static int prev;
     // The numpad test keys (an apple, a Korok, ... made beside this Link) only with TOTK_COOP_TEST_KEYS=1: one was
     // pressed by chance in a play session (2026-11-15) and a Korok stood beside the Link.

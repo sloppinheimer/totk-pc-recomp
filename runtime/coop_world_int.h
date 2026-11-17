@@ -26,11 +26,9 @@ void coop_pose_w_of(const float *m, float A[3][3], float t[3]);
 int coop_pose_inv3(const float a[3][3], float o[3][3]);
 float coop_pose_fk_error(const float (*w)[16], const float (*rec)[24], int i, int p);
 void coop_puppet_tick(uint64_t me);
-void coop_find_pose_binding(uint64_t actor);
-// coop_world.c: a Link's path from the actor to its body skeleton, the skeleton test, and what the pose tests found.
+// coop_world.c: a Link's path from the actor to its body skeleton, and the skeleton test.
 extern const uint32_t coop_skel_path[8];
 int coop_is_skeleton(uint64_t s);
-extern _Atomic uint64_t coop_pose_comp, coop_bindings_seen[16], coop_pose_binding;
 
 // A blow's contacts (coop_contact.c). brel: where the contact's body sat from the struck actor's main body, plus 1.
 #define CONTACT_SZ 0x1c0

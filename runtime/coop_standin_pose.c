@@ -490,37 +490,3 @@ int coop_puppet_before_writer(uint64_t pose, uint64_t skel) {
     }
     return 0;
 }
-int coop_pose_wanted(void) { return atomic_load_explicit(&coop_pose_comp, memory_order_relaxed) != 0; }
-int coop_pose_is_target(uint64_t binding) {
-    return binding && binding == atomic_load_explicit(&coop_pose_binding, memory_order_relaxed);
-}
-void coop_find_pose_binding(uint64_t actor) {
-    if (atomic_load(&coop_pose_binding)) return;
-    static uint64_t w[0x4000 / 8], cw[0x1000 / 8];
-    if (!coop_rd(actor, w, sizeof w)) return;
-    uint64_t table = coop_rd_ptr(actor + 0x228);
-    for (int i = 0; i < 16; i++) {
-        uint64_t b = atomic_load(&coop_bindings_seen[i]);
-        if (!b) continue;
-        for (int j = 0; j < 0x4000 / 8; j++)
-            if (w[j] == b) { atomic_store(&coop_pose_binding, b); rt_log("coop: test: the co-op Link's animation binding %llx at actor+%#x", (unsigned long long)b, j * 8); return; }
-        for (int k = 0; table && k < 0x100; k++) {
-            uint64_t comp = coop_rd_ptr(table + k * 8);
-            if (comp < 0x100000000ull || comp >= 0x8000000000ull || !coop_rd(comp, cw, sizeof cw)) continue;
-            for (int j = 0; j < 0x1000 / 8; j++)
-                if (cw[j] == b) {
-                    atomic_store(&coop_pose_binding, b);
-                    rt_log("coop: test: the co-op Link's animation binding %llx at comp[+%#x]+%#x", (unsigned long long)b, k * 8, j * 8);
-                    return;
-                }
-        }
-    }
-    // Not referenced there: by elimination, for this test (this Link's binding is posed from the start, before the
-    // co-op Link exists, so it is the first one seen; the next one is the co-op Link's).
-    uint64_t second = atomic_load(&coop_bindings_seen[1]);
-    if (second) {
-        atomic_store(&coop_pose_binding, second);
-        rt_log("coop: test: the co-op Link's animation binding %llx, by elimination (this Link's %llx)", (unsigned long long)second,
-               (unsigned long long)atomic_load(&coop_bindings_seen[0]));
-    }
-}
