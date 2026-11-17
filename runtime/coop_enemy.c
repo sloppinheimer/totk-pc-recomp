@@ -156,7 +156,7 @@ static uint32_t en_key32(Enid id) {
     for (int i = 0; i < 4; i++) h = (h ^ (uint8_t)(id.b >> (i * 8))) * 16777619u;
     return h ? h : 1;
 }
-int coop_enemy_contact_route(uint64_t actor, uint32_t *key) {
+int coop_enemy_contact_route(uint64_t actor, uint32_t *key, uint32_t attack_id) {
     // OFF unless TOTK_COOP_EN_FWD=1: with it, the enemy struck by the other player flew into the sky in the game that
     // runs it (a play test with pictures, 2026-11-16). What of the sent contact entry launches it is not found; until
     // then a blow goes as lost life (HIT), as before.
@@ -167,8 +167,10 @@ int coop_enemy_contact_route(uint64_t actor, uint32_t *key) {
     int16_t ei = m ? atomic_load(&m->en) : -1;
     if (!m || ei < 0 || atomic_load(&m->state) != EM_COPY || !en_tab[ei].used || en_tab[ei].life != EN_LIVE) return 0;
     *key = en_key32(en_tab[ei].id);
-    m->fwd_frame = coop_sess_frame_no();
-    return en_peer_id(en_tab[ei].owner);
+    uint32_t fr = coop_sess_frame_no();
+    int again = attack_id && m->fwd_id == attack_id && fr - m->fwd_frame < 90;   // (the same blow, still in the list: sent once)
+    m->fwd_frame = fr, m->fwd_id = attack_id;
+    return again ? -1 : en_peer_id(en_tab[ei].owner);
 }
 uint64_t coop_enemy_contact_actor(uint32_t key, int from) {
     uint64_t me = coop_ctr_me(), a = 0;

@@ -2809,11 +2809,12 @@ static void ground_take(const GroundPacket *p, int n) {
 #define CE_WAIT_NS 1000000000ull
 #define CE_SLOTS 16
 static PlatMutex ce_lock = PLAT_MUTEX_INIT;
-typedef struct { _Atomic int n; uint64_t dc, by, weap, at_ns; uint32_t brel[CONTACT_MAX]; _Alignas(16) uint8_t e[CONTACT_MAX][CONTACT_SZ]; } CeSlot;
+typedef struct { _Atomic int n; int fresh; uint64_t dc, by, weap, by_actor, at_ns; uint32_t brel[CONTACT_MAX]; _Alignas(16) uint8_t e[CONTACT_MAX][CONTACT_SZ]; } CeSlot;
 static CeSlot ce_in[CE_SLOTS];
 static _Atomic int ce_waiting;   // slots in use (ce_add looks only when some are)
+static __thread uint32_t tl_ce_attack;   // the attack id of the contact being queued (the enemy sync sends one blow once)
 static int ce_owner_of(uint64_t a, uint32_t *key) {
-    { int coop_enemy_contact_route(uint64_t actor, uint32_t *key); int o = coop_enemy_new() ? coop_enemy_contact_route(a, key) : 0; if (o) return o; }   // coop_enemy.c
+    { int coop_enemy_contact_route(uint64_t actor, uint32_t *key, uint32_t attack_id); int o = coop_enemy_new() ? coop_enemy_contact_route(a, key, tl_ce_attack) : 0; if (o) return o < 0 ? 0 : o; }   // coop_enemy.c
     *key = key_of_actor(a);
     for (int k = 0; *key && k < FOLLOW_N; k++) if (follow[k].key == *key) return follow[k].owner;
     return 0;
@@ -2842,7 +2843,8 @@ static void ce_take(const ContactPacket *cp, int from) {
     uint64_t now = plat_now_ns();
     if (!cp->n || cp->n > CONTACT_MAX || (!coop_enemy_old() && !coop_enemy_new())) return;
     uint64_t a = 0, co[COOP_MAX_PLAYERS];
-    { uint64_t coop_enemy_contact_actor(uint32_t key, int from); if (coop_enemy_new()) a = coop_enemy_contact_actor(cp->key, from); }   // coop_enemy.c
+    int fresh = 0;
+    { uint64_t coop_enemy_contact_actor(uint32_t key, int from); if (coop_enemy_new()) a = coop_enemy_contact_actor(cp->key, from), fresh = a != 0; }   // coop_enemy.c
     int ids[COOP_MAX_PLAYERS], nc = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
     for (int i = 0; i < KNOWN_N && !a; i++) if (mine_known[i].key == cp->key) a = mine_known[i].actor;
     uint64_t by = 0;
@@ -2864,7 +2866,10 @@ static void ce_take(const ContactPacket *cp, int from) {
     }
     if (sl) {
         memcpy(sl->e, cp->e, cp->n * CONTACT_SZ), memcpy(sl->brel, cp->brel, sizeof sl->brel);
-        sl->dc = dc, sl->by = by_ref, sl->weap = weap, sl->at_ns = now;
+        // (the enemy sync's: both handles name the stand-in itself. The game takes the knock-back's direction from
+        // the live place of the actor behind the first handle, in all three axes: the stand-in's weapon object does
+        // not stand at the stand-in's hand in this game, and the struck enemy flew into the sky; research R14.)
+        sl->dc = dc, sl->by = by_ref, sl->weap = fresh ? by_ref : weap, sl->by_actor = by, sl->fresh = fresh, sl->at_ns = now;
         atomic_store(&sl->n, (int)cp->n), atomic_fetch_add(&ce_waiting, 1);
     }
     plat_mutex_unlock(&ce_lock);
@@ -2886,12 +2891,13 @@ static void ce_add(uint64_t dc) {   // every packet waiting for this enemy, in t
 static void ce_add_one(uint64_t dc, CeSlot *sl) {
     uint8_t ein[CONTACT_MAX][CONTACT_SZ];
     uint32_t brel[CONTACT_MAX];
-    uint64_t by, weap;
+    uint64_t by, weap, by_actor;
+    int fresh;
     plat_mutex_lock(&ce_lock);
     int n = atomic_load(&sl->n);
     if (!n || dc != sl->dc) { plat_mutex_unlock(&ce_lock); return; }
     memcpy(ein, sl->e, (size_t)n * CONTACT_SZ), memcpy(brel, sl->brel, sizeof brel);
-    by = sl->by, weap = sl->weap;
+    by = sl->by, weap = sl->weap, by_actor = sl->by_actor, fresh = sl->fresh;
     atomic_store(&sl->n, 0), atomic_fetch_sub(&ce_waiting, 1);
     plat_mutex_unlock(&ce_lock);
     uint64_t a = coop_rd_ptr(dc + 0x198), l = contact_list(dc), base;
@@ -2908,6 +2914,15 @@ static void ce_add_one(uint64_t dc, CeSlot *sl) {
         }
         uint64_t mb = enemy_body(a), body = brel[k] && mb ? mb + brel[k] - 1 : mb;
         memcpy(e + 0x58, &body, 8);
+        if (fresh) {   // what else of the entry is the sending game's own (R14 section 4)
+            float sp[3] = {0};
+            uint32_t id;
+            memset(e + 0x18, 0, 0x20);                                   // the two contact-side copies with their pointers
+            memset(e + 0x1a4, 0, 8);                                     // the stealth id
+            memcpy(&id, e + 0x38, 4), id |= 0x40000000u, memcpy(e + 0x38, &id, 4);   // (the attack id, out of this game's own ids' way)
+            if (by_actor && coop_rd(by_actor + COOP_ACTOR_POS, sp, 12)) memcpy(e + 0xb0, sp, 12);   // the attacker's place: the stand-in's here
+            e[0x94] |= 1;                                                // (the first handle is the attacker itself)
+        }
         memcpy((void *)(uintptr_t)(base + (uint64_t)cnt * CONTACT_SZ), e, CONTACT_SZ);
     }
     memcpy((void *)(uintptr_t)(l + 0x18), &cnt, 4);
@@ -2965,7 +2980,9 @@ static void contacts_filter(uint64_t dc) {
                     if (w) coop_actor_name(w, wn2, sizeof wn2);
                     size_t wl2 = strlen(wn2);
                     int arrow2 = wl2 >= 5 && !strcmp(wn2 + wl2 - 5, "Arrow");
+                    tl_ce_attack = 0, coop_rd(e + 0x38, &tl_ce_attack, 4);
                     ce_queue(arrow2 ? &ce_new_arrows : &ce_new, a, e, arrow2 ? ECONTACT_ARROW : ECONTACT_KIND);
+                    tl_ce_attack = 0;
                 }
                 if (victim_copy && ((by && by != a && (coop_enemy_role(by) || coop_enemy_holder(by))) || (w && (coop_enemy_holder(w) || coop_enemy_shot_mirror(w))))) {
                     static _Atomic int said_e;
