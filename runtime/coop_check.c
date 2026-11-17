@@ -105,6 +105,7 @@ static void snap_actor(FILE *f, int first, const EnCell *m, uint64_t a, const ch
     char cmd[EN_SLOT_N][40];
     float clk[EN_SLOT_N];
     int ns = en_read_anim(a, cmd, clk);
+    for (int i = 0; i < ns; i++) if (!isfinite(clk[i])) clk[i] = -1;
     fputs(",\"anim\":[", f);
     for (int i = 0; i < ns; i++) {
         fprintf(f, "%s[", i ? "," : "");
@@ -155,6 +156,7 @@ void coop_check_tick(Cpu *c, uint64_t me) {
         if (a <= 1 || !coop_rd(a + 0x10, &g, 4) || g != gen) continue;   // (the cell's actor is gone or another now)
         float pose[7];
         en_pose_of(a, pose);
+        for (int k = 0; k < 7; k++) if (!isfinite(pose[k])) pose[k] = 0;   // (nan or inf is no JSON: the line would be lost)
         float d = near_link(pose, lp, nl);
         if (d > CHECK_FAR) continue;
         char id[24];
@@ -164,6 +166,7 @@ void coop_check_tick(Cpu *c, uint64_t me) {
             char cmd[EN_SLOT_N][40];
             float clk[EN_SLOT_N];
             int ns = en_read_anim(a, cmd, clk);
+            if (ns && !isfinite(clk[0])) clk[0] = -1;
             uint32_t h = 2166136261u;   // the first slot's command, as its FNV-1a hash (0: none)
             for (const char *s = cmd[0]; ns && *s; s++) h = (h ^ (uint8_t)*s) * 16777619u;
             fo += snprintf(fl + fo, sizeof fl - fo, "%s[\"%s\",%.3f,%.3f,%.3f,%.4f,%.4f,%.4f,%.4f,\"%08x\",%.3f]", fn++ ? "," : "", id,

@@ -10,7 +10,8 @@ sync's key for one made at run time). A difference counts when it holds in two p
   missing     shown in one game only, within 60 m of the other game's own Link (farther, the other game may not
               have that part of the world loaded: listed as "far", not counted)
   unpaired    an actor neither placed nor synced (named by its address): each game has its own, nothing pairs them
-  owner       not run by exactly one game (two games run it, or neither while one shows it as a copy)
+  owner       not run by exactly one game (both run it, or neither: each game's own, unsynced)
+  dup         two actors of one game with one identity
   pos         place: more than 0.75 m plus a quarter second of the owner's speed apart
   rot         rotation: more than 25 degrees apart
   life        life points
@@ -24,15 +25,18 @@ Nothing is compared in the first 10 s after both games are in the world.
 Every frame, for actors within 40 m of a Link, the copy against its owner (the game that runs it; "r" in the record):
   lag         the delay that best lines the copy's path up with the owner's (only while the owner moves)
   error       the copy's distance from the owner at that delay: p50, p95, max
-  stutter     the copy's frame-to-frame acceleration (RMS) over the owner's, and steps far off the owner's speed
+  stutter     the copy's frame-to-frame acceleration (RMS) over the owner's
   command     the share of the copy's frames playing the owner's command (first slot) at that delay
-  phase       how far the copy's clock of that command is from the owner's, in seconds (the clock's rate is taken
-              from the owner's own frames)
+  phase       how far the copy's clock of that command is from the owner's, in seconds (each command's clock rate
+              and loop length are taken from the owner's own frames)
+The owner is taken per second, so an enemy handed over is compared the right way round on each side of the change.
 
-A planted desync (TOTK_COOP_TEST_NUDGE, in either game's log) must show as "pos" on its enemy during its window.
+A planted desync (TOTK_COOP_TEST_NUDGE, in either game's log) must show as "pos" on its enemy during its window;
+--expect-nudge (run_pair.ps1 -Nudge) fails the run when no game logged one.
 
-Targets (PLAN.md step 1) are checked and printed; exit 1 when any is missed, a FATAL line is in a log, or nothing was
-compared. --all prints every occurrence of each difference.
+Targets (PLAN.md step 1) are checked and printed. Exit 1 when any is missed, a FATAL line is in a log, a record has
+lines that cannot be read (beyond a last one cut short), or nothing was compared; exit 2 (not judged) when nothing
+failed but no copy moved enough to measure lag and stutter. --all prints every occurrence of each difference.
 """
 import bisect
 import json
@@ -49,17 +53,19 @@ SETTLE = 10.0
 
 def load(d):
     path = os.path.join(d, 'logs', 'check.jsonl')
-    snaps, frames = [], []
+    snaps, frames, bad = [], [], 0
     if not os.path.exists(path):
-        return snaps, frames, path
+        return snaps, frames, path, 0
     with open(path, encoding='utf-8', errors='replace') as f:
-        for line in f:
-            try:
-                r = json.loads(line)
-            except json.JSONDecodeError:
-                continue   # a line cut short when the game was closed
-            (snaps if r.get('k') == 's' else frames).append(r)
-    return snaps, frames, path
+        lines = f.readlines()
+    for k, line in enumerate(lines):
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            bad += k != len(lines) - 1   # (the last one may be cut short when the game was closed)
+            continue
+        (snaps if r.get('k') == 's' else frames).append(r)
+    return snaps, frames, path, bad
 
 
 def log_lines(d):
@@ -111,12 +117,17 @@ def compare_snaps(SA, SB, names):
     seen = defaultdict(list)     # (kind, id) -> [(sec, detail)] every second it differed
     far = defaultdict(list)
     compared = 0
-    prev = [{}, {}]
+    prev, prev_s = [{}, {}], None
     for s in secs:
         if start is None or s < start:
             continue
         snap = [bysec[0][s], bysec[1][s]]
-        acts = [{a['id']: a for a in sn['a']} for sn in snap]
+        acts = [{}, {}]
+        for k in (0, 1):
+            for a in snap[k]['a']:
+                if a['id'] in acts[k]:
+                    seen[('dup', a['id'])].append((s, f"two in {'AB'[k]}"))
+                acts[k][a['id']] = a
         own_link = [sn['links'][0] if sn['links'] else None for sn in snap]
         for k in (0, 1):
             for i, a in acts[k].items():
@@ -137,11 +148,11 @@ def compare_snaps(SA, SB, names):
                 continue
             compared += 1
             roles = a['r'] + b['r']
-            if roles.count('o') != 1 and 'c' in roles:
+            if roles.count('o') != 1:
                 seen[('owner', i)].append((s, f"roles A {a['r']} B {b['r']}"))
             own, cop = (a, b) if a['r'] == 'o' else (b, a)
-            pv = prev[0 if own is a else 1].get(i)
-            sp = dist(own['p'], pv['p']) if pv else 0.0
+            pv = prev[0 if own is a else 1].get(i) if prev_s == s - 1 else None
+            sp = dist(own['p'], pv['p']) if pv else 0.0   # (metres in the last second: the owner's speed, roughly)
             d = dist(a['p'], b['p'])
             if d > 0.75 + 0.25 * sp:
                 seen[('pos', i)].append((s, f'{d:.2f} m apart (owner moving {sp:.1f} m/s)'))
@@ -164,7 +175,7 @@ def compare_snaps(SA, SB, names):
             for k in range(min(len(a['eq']), len(b['eq']))):
                 if a['eq'][k] != b['eq'][k]:
                     seen[('equip', i)].append((s, f"slot {k}: A {a['eq'][k][0] or '-'} ({a['eq'][k][1]}) B {b['eq'][k][0] or '-'} ({b['eq'][k][1]})"))
-        prev = acts
+        prev, prev_s = acts, s
     held = {}
     for key, occ in seen.items():
         secs_set = {s for s, _ in occ}
@@ -215,13 +226,12 @@ def motion(own, cop, skip):
         return res
     best = None
     if moved_s >= 2.0:
-        movingt = [own[k][0] for k in sorted(moving)]
         for lag_ms in range(0, 601, 10):
             lag = lag_ms / 1000
             errs = []
             for r in cop:
-                j = bisect.bisect_left(movingt, r[0] - lag)
-                if j < len(movingt) and abs(movingt[j] - (r[0] - lag)) < 0.05:
+                j = bisect.bisect_right(ts, r[0] - lag)   # the owner between frames j-1 and j, moving there
+                if 0 < j < len(ts) and j in moving:
                     o = at(own, ts, r[0] - lag)
                     if o:
                         errs.append(dist(r[1], o[0]))
@@ -239,17 +249,25 @@ def motion(own, cop, skip):
             both += 1
             if r[3] == o[1]:
                 same += 1
-                phase.append(r[4] - o[2])
+                phase.append((r[3], r[4] - o[2]))
     res.update(err_p50=pct(errs, 0.5), err_p95=pct(errs, 0.95), err_max=max(errs) if errs else float('nan'),
                cmd_share=same / both if both else None)
-    rates = []   # the owner's clock per second while one command plays on
+    rates, top = defaultdict(list), defaultdict(float)   # per command: the owner's clock per second, its highest clock
     for k in range(1, len(own)):
         dt = own[k][0] - own[k - 1][0]
+        top[own[k][3]] = max(top[own[k][3]], own[k][4])
         if own[k][3] == own[k - 1][3] and own[k][3] != '00000000' and 0 < dt < 0.1 and own[k][4] > own[k - 1][4]:
-            rates.append((own[k][4] - own[k - 1][4]) / dt)
-    rate = pct(rates, 0.5) if rates else None
-    res['clock_rate'] = rate
-    res['phase_p95'] = pct([abs(x) / rate for x in phase], 0.95) if phase and rate else None
+            rates[own[k][3]].append((own[k][4] - own[k - 1][4]) / dt)
+    ph = []
+    for cmd, d in phase:
+        rate = pct(rates[cmd], 0.5) if rates.get(cmd) else None
+        if not rate:
+            continue
+        if top[cmd] > 0 and abs(d) > top[cmd] / 2:   # one side has looped round already
+            d -= math.copysign(top[cmd], d)
+        ph.append(abs(d) / rate)
+    res['clock_rate'] = pct([pct(v, 0.5) for v in rates.values()], 0.5) if rates else None
+    res['phase_p95'] = pct(ph, 0.95) if ph else None
 
     def jerk(ser):
         acc = []
@@ -272,8 +290,11 @@ def main():
     if len(args) != 2:
         print(__doc__)
         return 2
-    (SA, FA, pa), (SB, FB, pb) = load(args[0]), load(args[1])
+    (SA, FA, pa, bada), (SB, FB, pb, badb) = load(args[0]), load(args[1])
     fail = []
+    for p, nb in ((pa, bada), (pb, badb)):
+        if nb:
+            fail.append(f'{nb} lines of {p} could not be read (a number written as nan or inf?)')
     for d, S, p in ((args[0], SA, pa), (args[1], SB, pb)):
         if not S:
             fail.append(f'no record in {p}')
@@ -305,7 +326,7 @@ def main():
     kinds = defaultdict(list)
     for (kind, i), occ in held.items():
         kinds[kind].append((i, occ))
-    order = ['missing', 'unpaired', 'owner', 'pos', 'rot', 'life', 'dead', 'ragdoll', 'drawn', 'anim', 'equip']
+    order = ['missing', 'unpaired', 'owner', 'dup', 'pos', 'rot', 'life', 'dead', 'ragdoll', 'drawn', 'anim', 'equip']
     for kind in order:
         for i, occ in sorted(kinds.get(kind, []), key=lambda x: x[1][0][0]):
             print(f'  {kind:8} {names.get(i, "?")} {i}: {len(occ)} s from {occ[0][0]}: {occ[0][1]}')
@@ -319,6 +340,9 @@ def main():
 
     # the planted desync
     skip = defaultdict(list)
+    if '--expect-nudge' in sys.argv and not nudges:
+        print('Planted desync: asked for, but no game logged one (no enemy copy was shown when it was due).')
+        fail.append('the planted desync was asked for and never made')
     for n in nudges:
         ids = {'p' + n['key'], 'r' + n['key']}
         hit = [(i, occ) for (kind, i), occ in held.items() if kind == 'pos' and i in ids]
@@ -334,41 +358,27 @@ def main():
                 skip[i].append((n['t0'] - 1, n['t1'] + 1))
 
     # every frame
-    roles = {}
+    owner = defaultdict(dict)   # id -> {second: the game that runs it then}
     for S, who in ((SA, 0), (SB, 1)):
         for s in S:
             for a in s['a']:
                 if a['r'] == 'o':
-                    roles[a['id']] = who
+                    owner[a['id']][int(s['t'])] = who
     ser = [series(FA), series(FB)]
     print('Every frame (copy against owner):')
-    measured = 0
-    for i, who in sorted(roles.items()):
-        own, cop = ser[who].get(i), ser[1 - who].get(i)
-        if not own or not cop:
-            continue
-        r = motion(own, cop, skip.get(i, []))
-        if not r.get('frames'):
-            continue
-        measured += 1
-        tag = f"{names.get(i, '?')} {i} (run by {'AB'[who]})"
-        if r.get('lag_ms') is None:
-            print(f"  {tag}: it moved {r['moved_s']:.1f} s, too little for lag and stutter; error p95 {r.get('err_p95', float('nan')):.2f} m")
-        else:
-            print(f"  {tag}: lag {r['lag_ms']} ms, error p50 {r['err_p50']:.2f} p95 {r['err_p95']:.2f} max {r['err_max']:.2f} m, "
-                  f"stutter {r['stutter']:.2f}x" if r['stutter'] is not None else f"  {tag}: lag {r['lag_ms']} ms, error p95 {r['err_p95']:.2f} m, stutter not measured")
-        cs = r.get('cmd_share')
-        ph = r.get('phase_p95')
-        print(f"      command same {cs * 100:.0f} % of frames" if cs is not None else '      command: none played',
-              f", phase p95 {ph:.3f} s (clock {r['clock_rate']:.1f}/s)" if ph is not None else ', phase not measured')
-        checks = [('lag_ms', r.get('lag_ms'), lambda v: v <= TARGET['lag_ms'], f"lag over {TARGET['lag_ms']} ms"),
-                  ('err_p95', r.get('err_p95') if r.get('lag_ms') is not None else None, lambda v: v <= TARGET['err_p95'], f"error p95 over {TARGET['err_p95']} m"),
-                  ('stutter', r.get('stutter'), lambda v: v <= TARGET['stutter'], f"stutter over {TARGET['stutter']}x"),
-                  ('cmd_share', cs, lambda v: v >= TARGET['cmd_share'], f"command same under {TARGET['cmd_share'] * 100:.0f} %"),
-                  ('phase_p95', ph, lambda v: v <= TARGET['phase_p95'], f"phase p95 over {TARGET['phase_p95']} s")]
-        for _, v, ok, msg in checks:
-            if v is not None and not (isinstance(v, float) and math.isnan(v)) and not ok(v):
-                fail.append(f'{tag}: {msg}')
+    measured = moved = 0
+    for i in sorted(owner):
+        for who in (0, 1):
+            own = ser[who].get(i)
+            cop = [r for r in ser[1 - who].get(i, []) if owner[i].get(int(r[0])) == who]   # (its frames while who ran it)
+            if not own or not cop:
+                continue
+            r = motion(own, cop, skip.get(i, []))
+            if not r.get('frames'):
+                continue
+            measured += 1
+            moved += r.get('lag_ms') is not None
+            report_motion(i, who, r, names, fail)
     if not measured:
         print('  no enemy within 40 m was run by one game and shown by the other')
 
@@ -387,8 +397,32 @@ def main():
         for f_ in fail:
             print(f'  {f_}')
         return 1
+    if not moved:
+        print('NOT JUDGED: no enemy copy moved enough (2 s) to measure lag, place error at that lag and stutter.')
+        return 2
     print('PASS')
     return 0
+
+
+def report_motion(i, who, r, names, fail):
+    tag = f"{names.get(i, '?')} {i} (run by {'AB'[who]})"
+    if r.get('lag_ms') is None:
+        print(f"  {tag}: it moved {r['moved_s']:.1f} s, too little for lag and stutter; error p95 {r.get('err_p95', float('nan')):.2f} m")
+    else:
+        print(f"  {tag}: lag {r['lag_ms']} ms, error p50 {r['err_p50']:.2f} p95 {r['err_p95']:.2f} max {r['err_max']:.2f} m, "
+              f"stutter {r['stutter']:.2f}x" if r['stutter'] is not None else f"  {tag}: lag {r['lag_ms']} ms, error p95 {r['err_p95']:.2f} m, stutter not measured")
+    cs = r.get('cmd_share')
+    ph = r.get('phase_p95')
+    print(f"      command same {cs * 100:.0f} % of frames" if cs is not None else '      command: none played',
+          f", phase p95 {ph:.3f} s (clock {r['clock_rate']:.1f}/s)" if ph is not None else ', phase not measured')
+    checks = [('lag_ms', r.get('lag_ms'), lambda v: v <= TARGET['lag_ms'], f"lag over {TARGET['lag_ms']} ms"),
+              ('err_p95', r.get('err_p95') if r.get('lag_ms') is not None else None, lambda v: v <= TARGET['err_p95'], f"error p95 over {TARGET['err_p95']} m"),
+              ('stutter', r.get('stutter'), lambda v: v <= TARGET['stutter'], f"stutter over {TARGET['stutter']}x"),
+              ('cmd_share', cs, lambda v: v >= TARGET['cmd_share'], f"command same under {TARGET['cmd_share'] * 100:.0f} %"),
+              ('phase_p95', ph, lambda v: v <= TARGET['phase_p95'], f"phase p95 over {TARGET['phase_p95']} s")]
+    for _, v, ok, msg in checks:
+        if v is not None and not (isinstance(v, float) and math.isnan(v)) and not ok(v):
+            fail.append(f'{tag}: {msg}')
 
 
 if __name__ == '__main__':

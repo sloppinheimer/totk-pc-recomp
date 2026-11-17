@@ -129,4 +129,4 @@ foreach ($d in $a, $b) {
     Select-String -Path (Join-Path $d 'logs\totk.log') -Pattern 'coop net|coop: (slot|player slot|remote|markers|notice|test: notice|test: travel)|FATAL' | Select-Object -ExpandProperty Line
 }
 "=== relay"; Get-Content (Join-Path $root $relayLog)
-"=== check"; & (Join-Path $root '.venv\Scripts\python.exe') (Join-Path $PSScriptRoot 'check.py') $a $b
+"=== check"; & (Join-Path $root '.venv\Scripts\python.exe') (Join-Path $PSScriptRoot 'check.py') $a $b $(if ($Nudge) { '--expect-nudge' })
