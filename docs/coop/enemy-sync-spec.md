@@ -502,6 +502,20 @@ the actor registry and keys, the HIT channel's reader, and research probes.
   in each game) and played no clip in the game that ran it; its copy stood in its idle clip inside the other player's
   Link. Not read: how the game keeps such an enemy undrawn before it rises, and why it is made at the stand-in.
 
+**B.32 Every whole enemy is taken** (2026-11-17, the tester's call). The name rule now takes every actor of the
+census (research R3, `q4_component_matrix.tsv`) that has a brain and a life: added are the five dungeon bosses with
+their Uncleared and Underground forms, Ganondorf and his Miasma form, Phantom Ganon, Kohga's constructs, the Goron
+mid-boss, the sand worm, the dungeon practice construct, and the swarms (the "Swarm" exclusion is gone). Left out by
+name, as not whole enemies: weak points and secret stones, dummies, bullets, tornadoes, thorns, event starters. Not in
+the rule at all: the census's System actors (the army managers, the dragons).
+- [m] the standing test of B.19, one of each spawned beside a Link, 75 s: made in the other game, bound, tables
+  equal, no leak, no crash; same command in that share of samples: the sand worm 99.2 %, a Keese swarm 100 % (20 cm
+  off while moving), a bee swarm 100 %, the Goron mid-boss 100 % (33 cm off while moving), the practice construct
+  99.7 %, Kohga's construct 100 %.
+- Not run: the five dungeon bosses, Ganondorf, Phantom Ganon. None was fought; a boss stood in a field, not in its
+  arena or its scripted fight. What each family's graphs do that a copy does not show is being read from the graphs
+  themselves (research R19), not found by fighting each.
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is

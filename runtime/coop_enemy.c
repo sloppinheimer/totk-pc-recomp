@@ -36,7 +36,7 @@ void coop_lock_wait(PlatMutex *m);   // coop_spawn.c
 static int kind_of(const char *nm);
 int coop_enemy_spawn_synced(const char *nm) {
     if (strncmp(nm, "Enemy_", 6)) return 0;
-    return kind_of(nm) || strstr(nm, "WeakPoint") || strstr(nm, "Dummy") || strstr(nm, "Bullet");
+    return kind_of(nm) || strstr(nm, "WeakPoint") || strstr(nm, "Dummy") || strstr(nm, "Bullet") || strstr(nm, "Tornado") || strstr(nm, "Thorns") || strstr(nm, "SecretStone");
 }
 
 int coop_enemy_new(void) {
@@ -65,7 +65,7 @@ uint64_t en_now(void) { return plat_now_ns(); }
 // The Bokoblin shape (S 0): one actor with a character controller and the graph units the switch turns away.
 static int kind_of(const char *nm) {
     // (the first four are one shape; the others were each tried by spawning one beside a Link with a second game
-    // watching, and in a tester's session: made in the other game, followed, no leak. A swarm is not one actor.)
+    // watching, and in a tester's session: made in the other game, followed, no leak.)
     static const char *const pre[] = { "Enemy_Bokoblin", "Enemy_Moriblin", "Enemy_Horablin", "Enemy_Lizalfos", "Enemy_Chuchu", "Enemy_Keese",
                                        "Enemy_Octarock", "Enemy_Wizzrobe", "Enemy_Zonau_Robot", "Enemy_Zonau_Golem", "Enemy_Assassin",
                                        // (2026-11-17, each spawned beside a Link with a second game watching, standing: made in the
@@ -77,7 +77,14 @@ static int kind_of(const char *nm) {
                                        // (the same test: a Fire Gleeok 99.8 %, a block construct 99.7 %; and the boss variants of
                                        // families above are no longer left out: a boss Bokoblin 99.7 %, an armoured Lynel 99.7 %,
                                        // a Gibdo boss with its parts 98.8 %)
-                                       "Enemy_Drake", "Enemy_Zonau_BlockMaster" };
+                                       "Enemy_Drake", "Enemy_Zonau_BlockMaster",
+                                       // (2026-11-17, the tester's call after a play session: every whole enemy is taken. These are
+                                       // the rest of the census's actors with a brain and a life: the five dungeon bosses with
+                                       // their Uncleared and Underground forms, Ganondorf and his Miasma form, Phantom Ganon,
+                                       // Kohga's constructs, the Goron mid-boss, the sand worm, the dungeon practice construct,
+                                       // the bee swarm; the Keese swarms come by "Enemy_Keese". What each was seen to do: spec B.32.)
+                                       "Enemy_DungeonBoss_", "Enemy_Ganondorf", "Enemy_PhantomGanon", "Enemy_Kohga_", "Enemy_MiddleBoss_",
+                                       "Enemy_Sandworm", "Enemy_CDungeon_", "Enemy_Bee_Swarm" };
     // Test (TOTK_COOP_EN_KINDS=<prefix>[,<prefix>...]): more kinds by the start of their actor names, for trying a family
     // (asked first: a name the default list leaves out, a boss's, can be tried this way).
     static const char *more;
@@ -92,7 +99,11 @@ static int kind_of(const char *nm) {
     // (Not one whole enemy. A baby Frox is no longer left out: its copy plays its owner's command in 91 % of samples,
     // under the bar, but left out it was each game's own, two Froxes where the players saw one: a play session,
     // 2026-11-17.)
-    if (strstr(nm, "Swarm") || strstr(nm, "WeakPoint") || strstr(nm, "Dummy") || strstr(nm, "Bullet")) return 0;
+    // Not whole enemies, by the census's categories: weak points and secret stones (WeakPoint), dummies
+    // (ObjectStaticActive), bullets, tornadoes and thorns (Shootable, ObjectGeneralActive), event starters (System).
+    if (strstr(nm, "WeakPoint") || strstr(nm, "Dummy") || strstr(nm, "Bullet") || strstr(nm, "Tornado") || strstr(nm, "Thorns") ||
+        strstr(nm, "EventStarter") || strstr(nm, "SecretStone"))
+        return 0;
     for (unsigned i = 0; i < sizeof pre / sizeof *pre; i++)
         if (!strncmp(nm, pre[i], strlen(pre[i]))) return (int)i + 1;
     return 0;
