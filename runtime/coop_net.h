@@ -4,8 +4,11 @@
 #include <stdint.h>
 
 #define COOP_MAX_PLAYERS 8
-#define COOP_NET_VERSION 30   // packet header version: games and relays of another version ignore each other
-                              // (29: CTR packets, routed by header byte 7)
+#define COOP_NET_VERSION 31   // packet header version: games and relays of another version ignore each other
+                              // (29: CTR packets, routed by header byte 7; 31: HELLO carries the session code)
+#define COOP_CODE_LEN 8       // the host's session code (coop_relay.c), at most this many characters
+#define COOP_HELLO_LEN (16 + COOP_CODE_LEN)   // HELLO's payload: the name, then the code
+void coop_name_clean(char *s, int n);   // control bytes of a name from the network become '?'
 
 // One player's state, sent about 30 times a second. Positions and directions are world space; the sticks are as the
 // player's own camera saw them, with the camera's horizontal forward and right so a receiver can turn them into its
@@ -121,6 +124,7 @@ int coop_net_players(int *ids, char (*names)[17], int max);   // the other playe
 
 // The relay inside this game (coop_relay.c): Host starts it and joins it at 127.0.0.1.
 int coop_relay_start(int port);
+const char *coop_relay_code(void);   // the session code of the relay here ("" when none runs here)
 void coop_relay_stop(void);
 int coop_relay_port(void);       // 0 when none runs here
 int coop_local_address(char *out, size_t n);   // this PC's LAN address, for the other players

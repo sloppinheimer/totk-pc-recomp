@@ -5,7 +5,8 @@
     UI_MENU_COOP_HOST, UI_MENU_COOP_HOST_DESC, UI_MENU_COOP_JOIN, UI_MENU_COOP_JOIN_DESC,
     UI_MENU_COOP_LEAVE, UI_MENU_COOP_LEAVE_DESC,
     UI_MENU_COOP_IDLE,
-    UI_MENU_COOP_HOSTING,     // "%s": this PC's LAN address
+    UI_MENU_COOP_HOSTING,     // "%s": this PC's LAN address and the session code
+    UI_MENU_COOP_CODE,        // "%s": the session code (coop_relay.c)
     UI_MENU_COOP_JOINING,     // "%s": the address
     UI_MENU_COOP_JOINED,      // "%s": the address, "%d": this player's number
     UI_MENU_COOP_PLAYERS,     // "%s": the other players' names

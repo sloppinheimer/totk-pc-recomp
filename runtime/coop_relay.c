@@ -2,6 +2,10 @@
 // own. It hands out player ids on HELLO, forwards STATE / WORLD / HIT / POSE / OBJS / EPOSE packets to everyone else
 // (CTR packets to the player header byte 7 names, everyone else when 0) and drops players
 // that stay quiet for 5 s. The hosting game joins it itself through 127.0.0.1 like any other player.
+// The port may be open to the internet (UPnP), so a seat is given only to a HELLO that carries this session's code: a
+// random code made at Host, shown in the Co-op tab with the address, typed by the joining players after it. Without
+// it, anyone who reached the port took a seat, received every player's state and could send anything to every game,
+// and a HELLO from a forged address made the relay stream the game to that address.
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +37,7 @@ enum { HELLO = 1, WELCOME = 2, STATE = 3, LEAVE = 4, BYE = 5, WORLD = 6, HIT = 7
 static volatile int relay_gen;    // a new value stops the running relay thread
 static volatile int relay_port;   // nonzero while a relay runs here
 static volatile int relay_players;
+static char relay_code[COOP_CODE_LEN + 1];   // this session's code (set before the thread starts)
 
 typedef struct { struct sockaddr_in addr; int id; char name[17]; uint64_t seen_ns; } Peer;
 
@@ -68,6 +73,9 @@ static void relay_thread(void *arg) {
     int rcvbuf = 1 << 20;   // enemy poses come in bursts (coop_world.c)
     setsockopt(s, SOL_SOCKET, SO_RCVBUF, (const char *)&rcvbuf, sizeof rcvbuf);
     rt_log("coop relay: listening on UDP %d", port);
+    // The router is asked to forward the port only once the relay has it: a relay that could not bind it left a
+    // forward to whatever held the port, and Leave did not take it back (Leave now always does).
+    if (relay_gen == gen) coop_upnp_open();
     Peer peers[COOP_MAX_PLAYERS];
     int np = 0;
     uint8_t buf[8192], out[8192];
@@ -91,7 +99,23 @@ static void relay_thread(void *arg) {
         for (int i = 0; i < np; i++) if (same(&peers[i].addr, &from)) at = i;
         if (kind == HELLO) {
             if (at < 0) {
-                if (np == COOP_MAX_PLAYERS) { rt_log("coop relay: a player was refused: %d already", np); continue; }
+                char code[COOP_CODE_LEN + 1] = "";
+                if (n >= HEADER + COOP_HELLO_LEN) memcpy(code, buf + HEADER + 16, COOP_CODE_LEN);
+                for (int i = 0; code[i]; i++) if (code[i] >= 'a' && code[i] <= 'z') code[i] -= 32;
+                if (strcmp(code, relay_code)) {   // (logged at most 5 times, then every 1000th: a flood must not fill the log)
+                    static unsigned refused;
+                    if (refused++ < 5 || refused % 1000 == 0) {
+                        char ip[64];
+                        inet_ntop(AF_INET, &from.sin_addr, ip, sizeof ip);
+                        rt_log("coop relay: a HELLO from %s without this session's code was refused (%u so far)", ip, refused);
+                    }
+                    continue;
+                }
+                if (np == COOP_MAX_PLAYERS) {
+                    static unsigned full;
+                    if (full++ < 5 || full % 1000 == 0) rt_log("coop relay: a player was refused: %d already", np);
+                    continue;
+                }
                 int id = 1;
                 for (int used = 1; used;) {
                     used = 0;
@@ -101,6 +125,7 @@ static void relay_thread(void *arg) {
                 memset(&peers[at], 0, sizeof peers[at]);
                 peers[at].addr = from, peers[at].id = id;
                 memcpy(peers[at].name, buf + HEADER, n - HEADER >= 16 ? 16 : n - HEADER);
+                coop_name_clean(peers[at].name, 16);
                 char ip[64];
                 inet_ntop(AF_INET, &from.sin_addr, ip, sizeof ip);
                 rt_log("coop relay: player %d \"%s\" joined from %s:%d; %d connected", id, peers[at].name, ip,
@@ -151,6 +176,26 @@ void coop_relay_stop(void) {
 }
 
 int coop_relay_port(void) { return relay_port; }
+const char *coop_relay_code(void) { return relay_port ? relay_code : ""; }
+
+// A new session code: 6 characters from an alphabet without look-alikes (0/O, 1/I), 30 bits for 6.
+// TOTK_COOP_HOST_CODE sets it (the test scripts, which join by script).
+static void new_code(void) {
+    static const char abc[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    const char *fixed = cfg_get("TOTK_COOP_HOST_CODE");
+    if (fixed && *fixed) {
+        snprintf(relay_code, sizeof relay_code, "%s", fixed);
+        for (int i = 0; relay_code[i]; i++) if (relay_code[i] >= 'a' && relay_code[i] <= 'z') relay_code[i] -= 32;
+        return;
+    }
+    uint8_t r[6] = {0};
+    if (!plat_random(r, sizeof r)) {   // (no system randomness: the clock, which is weaker but still unknown outside)
+        uint64_t t = plat_now_ns() * 0x9e3779b97f4a7c15ull;
+        memcpy(r, &t, sizeof r);
+    }
+    for (int i = 0; i < 6; i++) relay_code[i] = abc[r[i] & 31];
+    relay_code[6] = 0;
+}
 
 // This PC's addresses to give the other players: the one its traffic to the internet leaves from (a UDP "connect"
 // sends nothing), which is the LAN address behind a router.
@@ -170,16 +215,16 @@ int coop_local_address(char *out, size_t n) {
 
 // Host: the relay here, joined through 127.0.0.1 (the menu's Host button and TOTK_COOP_TEST_HOST).
 void coop_host(const char *name) {
-    coop_relay_start(COOP_PORT);
-    coop_upnp_open();   // the router, for players over the internet
-    char self[32];
-    snprintf(self, sizeof self, "127.0.0.1:%d", COOP_PORT);
+    if (!coop_relay_port()) new_code();
+    coop_relay_start(COOP_PORT);   // (it asks the router to forward the port once it has bound it)
+    char self[48];
+    snprintf(self, sizeof self, "127.0.0.1:%d %s", COOP_PORT, relay_code);
     coop_net_join(self, name);
 }
 
 void coop_end(void) {
     coop_net_leave();
-    if (coop_relay_port()) coop_upnp_close();
+    coop_upnp_close();   // (always: a forward asked for is taken back whether or not the relay ever bound the port)
     coop_relay_stop();
 }
 

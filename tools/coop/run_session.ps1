@@ -20,7 +20,7 @@ foreach ($f in Get-ChildItem $a -Force) {
     else { New-Item -ItemType HardLink $t -Target $f.FullName | Out-Null }
 }
 . (Join-Path $PSScriptRoot 'quiet.ps1')
-Remove-Item Env:TOTK_COOP_RELAY, Env:TOTK_COOP_TEST_HOST, Env:TOTK_COOP_TEST_JOIN, Env:TOTK_COOP_TEST_LEAVE, Env:TOTK_MENU_TEST, Env:TOTK_MENU_TEST_DIR -ErrorAction SilentlyContinue
+Remove-Item Env:TOTK_COOP_RELAY, Env:TOTK_COOP_HOST_CODE, Env:TOTK_COOP_TEST_HOST, Env:TOTK_COOP_TEST_JOIN, Env:TOTK_COOP_TEST_LEAVE, Env:TOTK_MENU_TEST, Env:TOTK_MENU_TEST_DIR -ErrorAction SilentlyContinue
 $games = @()
 foreach ($g in @(@{dir = $a; prof = 'build\prof-coop-a'; script = $ScriptA; name = 'A'; input = $null},
                  @{dir = $b; prof = 'build\prof-coop-b'; script = $ScriptB; name = 'B'; input = 'none'})) {
@@ -32,10 +32,10 @@ foreach ($g in @(@{dir = $a; prof = 'build\prof-coop-a'; script = $ScriptA; name
     $env:TOTK_FULLSCREEN = '0'; $env:TOTK_WINDOW_SIZE = '960x540'
     $env:TOTK_COOP_NAME = "Player $($g.name)"
     if ($g.input) { $env:TOTK_INPUT = $g.input } else { Remove-Item Env:TOTK_INPUT -ErrorAction SilentlyContinue }
-    if ($g.name -eq 'A') { $env:TOTK_COOP_TEST_HOST = "$HostAt"; if ($HostLeaveAt) { $env:TOTK_COOP_TEST_LEAVE = "$HostLeaveAt" } else { Remove-Item Env:TOTK_COOP_TEST_LEAVE -ErrorAction SilentlyContinue } }
+    if ($g.name -eq 'A') { $env:TOTK_COOP_HOST_CODE = 'TEST42'; $env:TOTK_COOP_TEST_HOST = "$HostAt"; if ($HostLeaveAt) { $env:TOTK_COOP_TEST_LEAVE = "$HostLeaveAt" } else { Remove-Item Env:TOTK_COOP_TEST_LEAVE -ErrorAction SilentlyContinue } }
     else {
         Remove-Item Env:TOTK_COOP_TEST_HOST -ErrorAction SilentlyContinue
-        $env:TOTK_COOP_TEST_JOIN = "${JoinAt}:127.0.0.1"
+        $env:TOTK_COOP_TEST_JOIN = "${JoinAt}:127.0.0.1 TEST42"   # (the session code TOTK_COOP_HOST_CODE gives game A)
         if ($LeaveAt) { $env:TOTK_COOP_TEST_LEAVE = "$LeaveAt" } else { Remove-Item Env:TOTK_COOP_TEST_LEAVE -ErrorAction SilentlyContinue }
         if ($MenuTestB) { $env:TOTK_MENU_TEST = $MenuTestB; $env:TOTK_MENU_TEST_DIR = $ShotsDir }
     }

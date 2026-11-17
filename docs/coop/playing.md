@@ -3,13 +3,16 @@
 ## Online (any number of players up to 8)
 1. Everyone loads a save, opens the menu (F1) and goes to the **Co-op** tab, and types a name.
 2. One player chooses **Host a session**. That game runs the relay itself (`runtime/coop_relay.c`) and joins it. The
-   tab then shows the address the others use on the same network, and asks the host's router (UPnP) to forward UDP
+   tab then shows the address the others use on the same network with this session's **code** (six letters and
+   digits, new at each Host), and asks the host's router (UPnP) to forward UDP
    port 41900 to this PC for players over the internet: when it works, the tab shows the internet address to give
    them. When the router has UPnP off, or the provider shares one address among customers (CGNAT, the tab says so),
    forward UDP 41900 by hand or use a virtual network (Tailscale, ZeroTier). The forward is removed on Leave. If the
    game is closed while hosting, a forward with the usual one-hour lease expires within the hour; a router that only
    takes a lease "until removed" keeps it until it is removed by hand.
-3. The others type that address under **Host's address** and choose **Join**. Players appear in each other's games
+3. The others type that address, a space and the code under **Host's address** (`10.0.0.20 K7Q2MX`; the tab's copy
+   buttons copy both) and choose **Join**. The relay seats no one without the code, so a stranger who reaches the
+   forwarded port cannot join. Players appear in each other's games
    as they connect and disappear when they leave (**Leave the session**, or closing the game). When the host leaves
    the session ends for everyone.
 4. The name and the last address are kept in `totk.ini` (`coop_name`, `coop_join`).
@@ -20,8 +23,8 @@
    its own time of day and weather.
 
 Everyone needs the same build (the packet version must match) and the same game update. A standalone relay still
-works: `python server/coop_relay.py` on a PC everyone can reach, and `coop_relay = <address>` in `totk.ini` joins
-it at start. The test scripts and `play_two.ps1` use this relay, not the in-game one.
+works: `python server/coop_relay.py --code <code>` on a PC everyone can reach, and `coop_relay = <address> <code>` in
+`totk.ini` joins it at start. Without `--code` it seats anyone who reaches it: keep it to one PC or a private network. The test scripts and `play_two.ps1` use this relay, not the in-game one.
 
 ## What works
 

@@ -92,6 +92,10 @@ static void keyboard(float scale) {
             while (cn && (clip[cn - 1] == ' ' || clip[cn - 1] == '\t' || clip[cn - 1] == '\r' || clip[cn - 1] == '\n')) cn--;
             if (cn > kb_cap - 1 - l) cn = kb_cap - 1 - l;
             memcpy(kb_buf + l, clip, cn), kb_buf[l + cn] = 0;
+            // (control characters left out: a line break inside the clipboard's text went into totk.ini as a line
+            // of its own when the field was saved)
+            for (char *q = kb_buf + l; *q; q++)
+                if ((unsigned char)*q < 0x20 || *q == 0x7f) *q = ' ';
         }
     }
     ImGui::SameLine();
@@ -258,7 +262,14 @@ extern "C" void tab_coop(float scale) {
         char ip[64];
         if (have_ip) snprintf(ip, sizeof ip, "%s", ip_seen);
         else snprintf(ip, sizeof ip, "this PC's address");
-        snprintf(line, sizeof line, menu_text(UI_MENU_COOP_HOSTING), ip);
+        // What the others type: the address, a space, and this session's code (coop_relay.c: the relay seats no one
+        // without it)
+        const char *code = coop_relay_code();
+        char shown[96];
+        snprintf(shown, sizeof shown, "%s %s", ip, code);
+        snprintf(line, sizeof line, menu_text(UI_MENU_COOP_HOSTING), shown);
+        opt_text_str(line);
+        snprintf(line, sizeof line, menu_text(UI_MENU_COOP_CODE), code);
         opt_text_str(line);
         char detail[160];
         int up = coop_upnp_status(detail, sizeof detail);
@@ -266,13 +277,13 @@ extern "C" void tab_coop(float scale) {
                                          UI_MENU_COOP_UPNP_OPEN_NOIP, UI_MENU_COOP_UPNP_SHARED, UI_MENU_COOP_UPNP_FAILED};
         snprintf(line, sizeof line, menu_text(kUpnp[up]), detail);
         opt_text_str(line, up == COOP_UPNP_FAILED || up == COOP_UPNP_SHARED);
-        char addr[80];   // what a joining player types: the address, and the port when it is not the usual one
-        if (coop_relay_port() == COOP_PORT) snprintf(addr, sizeof addr, "%s", ip);
-        else snprintf(addr, sizeof addr, "%s:%d", ip, coop_relay_port());
+        char addr[96];   // what a joining player types: the address, the port when it is not the usual one, the code
+        if (coop_relay_port() == COOP_PORT) snprintf(addr, sizeof addr, "%s %s", ip, code);
+        else snprintf(addr, sizeof addr, "%s:%d %s", ip, coop_relay_port(), code);
         if (have_ip) copy_button("##coop_copy_lan", UI_MENU_COOP_COPY_LAN, UI_MENU_COOP_COPY_LAN_DESC, addr, scale);
         if (up == COOP_UPNP_OPEN && detail[0]) {
-            if (coop_relay_port() == COOP_PORT) snprintf(addr, sizeof addr, "%s", detail);
-            else snprintf(addr, sizeof addr, "%s:%d", detail, coop_relay_port());
+            if (coop_relay_port() == COOP_PORT) snprintf(addr, sizeof addr, "%s %s", detail, code);
+            else snprintf(addr, sizeof addr, "%s:%d %s", detail, coop_relay_port(), code);
             copy_button("##coop_copy_net", UI_MENU_COOP_COPY_NET, UI_MENU_COOP_COPY_NET_DESC, addr, scale);
         }
     } else if (*target && id) {

@@ -1,9 +1,12 @@
 """Co-op relay: every game connects here over UDP and the relay forwards each player's state to the others.
 
-    python server/coop_relay.py [--port 41900]
+    python server/coop_relay.py [--port 41900] [--code K7Q2MX]
 
 Packets (little-endian), all starting with the header  b'TKCO', version u8, type u8, player id u8, reserved u8:
-  1 HELLO    client -> relay: name (16 bytes, NUL padded). Answered with WELCOME.
+  1 HELLO    client -> relay: name (16 bytes, NUL padded), then the session code (8 bytes, NUL padded). Answered
+             with WELCOME when the code matches --code (any code when --code is not given: the test scripts on one
+             PC). Give a code whenever the relay can be reached from the internet: the players then join with
+             "<address> <code>".
   2 WELCOME  relay -> client: the client's player id in the header, then the ids and names of everyone else.
   3 STATE    client -> relay -> everyone else: the sender's state (runtime/coop_net.c NetState); the relay only
              writes the sender's id into the header.
@@ -22,7 +25,7 @@ import struct
 import sys
 import time
 
-MAGIC, VERSION = b'TKCO', 30
+MAGIC, VERSION = b'TKCO', 31
 HELLO, WELCOME, STATE, LEAVE, BYE, WORLD, HIT, POSE, OBJS, EPOSE, CTR = 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
 MAX_PLAYERS, TIMEOUT = 8, 5.0
 HEADER = struct.Struct('<4sBBBB')
@@ -38,6 +41,8 @@ def main():
     ap.add_argument('--bad', default=os.environ.get('TOTK_COOP_RELAY_BAD', ''),
                     help='a test network: "<delay ms>,<jitter ms>,<loss percent>" applied to every forwarded game packet '
                          '(also from the environment variable TOTK_COOP_RELAY_BAD)')
+    ap.add_argument('--code', default=os.environ.get('TOTK_COOP_RELAY_CODE', ''),
+                    help='seat only players whose HELLO carries this code (also TOTK_COOP_RELAY_CODE); none: anyone')
     ap.add_argument('--log', help='write the lines here instead of to the console (for pythonw, which has none)')
     a = ap.parse_args()
     if a.log:
@@ -52,7 +57,9 @@ def main():
     if bad:
         bad += [0.0] * (3 - len(bad))
         print(f'relay: test network: {bad[0]:.0f} ms delay, up to {bad[1]:.0f} ms more, {bad[2]:.1f} % lost', flush=True)
-    players = {}   # addr -> {'id', 'name', 'seen'}
+    players = {}   # addr -> {'id', 'name', 'raw', 'seen'}
+    code = a.code.strip().upper().encode()[:8]
+    refused = 0
     print(f'relay: listening on UDP {a.port}', flush=True)
 
     def send(data, addr):
@@ -91,18 +98,27 @@ def main():
         if magic != MAGIC or version != VERSION:
             continue
         if kind == HELLO:
-            name = data[HEADER.size:HEADER.size + 16].split(b'\0')[0].decode('utf-8', 'replace')
+            raw = data[HEADER.size:HEADER.size + 16].split(b'\0')[0]
+            raw = bytes(b if b >= 0x20 and b != 0x7f else 0x3f for b in raw)   # control bytes: '?' (log lines)
+            name = raw.decode('utf-8', 'replace')
+            if addr not in players and code and data[HEADER.size + 16:HEADER.size + 24].split(b'\0')[0].upper() != code:
+                refused += 1
+                if refused <= 5 or refused % 1000 == 0:
+                    print(f'relay: a HELLO from {addr[0]} without the session code was refused ({refused} so far)', flush=True)
+                continue
             if addr not in players:
                 used = {p['id'] for p in players.values()}
                 free = [i for i in range(1, MAX_PLAYERS + 1) if i not in used]
                 if not free:
-                    print(f'relay: {addr} refused: {MAX_PLAYERS} players already', flush=True)
+                    refused += 1
+                    if refused <= 5 or refused % 1000 == 0:
+                        print(f'relay: {addr} refused: {MAX_PLAYERS} players already', flush=True)
                     continue
-                players[addr] = {'id': free[0], 'name': name, 'seen': now}
+                players[addr] = {'id': free[0], 'name': name, 'raw': raw, 'seen': now}
                 print(f'relay: player {free[0]} "{name}" joined from {addr[0]}:{addr[1]}; {len(players)} connected', flush=True)
             me = players[addr]
             me['seen'] = now
-            others = b''.join(struct.pack('<B16s', p['id'], p['name'].encode()[:16]) for k, p in players.items() if k != addr)
+            others = b''.join(struct.pack('<B16s', p['id'], p['raw']) for k, p in players.items() if k != addr)
             send(header(WELCOME, me['id']) + others, addr)
         elif kind in (STATE, WORLD, HIT, POSE, OBJS, EPOSE, CTR) and addr in players:
             me = players[addr]

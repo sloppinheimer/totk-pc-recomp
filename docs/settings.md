@@ -95,8 +95,8 @@ Online co-op (`docs/coop/playing.md`). The co-op tab of the menu writes `coop_na
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
 | `coop_name` | The name the other players see over this player's Link (16 characters at most; `Player` when unset). | Shown to the others from the next join. | Safe |
-| `coop_join` | The relay address (`host:port`) the co-op tab joins. | Only used by the co-op tab's Join. | Safe |
-| `coop_relay` | A relay address (`host` or `host:port`) joined at start, without the co-op tab. | The game joins that session as it starts; the launchers in `tools/coop` set it. | Safe |
+| `coop_join` | The relay address (`host:port`, a space, the session code) the co-op tab joins. | Only used by the co-op tab's Join. | Safe |
+| `coop_relay` | A relay address (`host` or `host:port`, then a space and the session code when the relay asks for one) joined at start, without the co-op tab. | The game joins that session as it starts; the launchers in `tools/coop` set it. | Safe |
 | `coop_tags` (default `on`) | `off` hides the other players' names over their Links. | Only what this game draws. | Safe |
 | `coop_hide_console` | `1` hides the console window at start, for sessions with several game windows (`tools/coop/play_two.ps1`). | The log still goes to `logs/totk.log`. | Safe |
 | `coop_edges` | `all` copies every update link of this Link onto a stand-in when it is made, not only the links to resident actors. | A diagnostic; links to non-resident actors may tie the stand-in to objects that go away. | Caution |

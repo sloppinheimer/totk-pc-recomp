@@ -41,6 +41,7 @@ static int started;                   // the settings were looked at (TOTK_COOP_
 static volatile int net_gen;          // a new value stops the running network thread
 static volatile int net_active;       // a network thread runs (joined or joining)
 static char target[256], my_name[17];   // the relay host[:port], this player's name; set before a thread starts
+static char my_code[COOP_CODE_LEN + 1];  // the host's session code typed after the address ("" none): sent in HELLO
 static char last_error[160];           // why the last join failed ("" none)
 // HIT packets both ways, queued (coop_world.c hands them to their syncs). Kinds 6 (WORLD) and 10 (EPOSE) were the
 // older enemy sync's; a packet of either is dropped.
@@ -69,6 +70,13 @@ static void set_live(int id, int live) {   // (lock held)
 }
 
 static void header(uint8_t *p, int kind) { memcpy(p, "TKCO", 4), p[4] = VERSION, p[5] = (uint8_t)kind, p[6] = (uint8_t)my_id, p[7] = 0; }
+// HELLO: this player's name (16 bytes) and the host's session code (COOP_CODE_LEN bytes), each NUL padded.
+static void hello(uint8_t *p, const char *name) {
+    header(p, HELLO);
+    memset(p + HEADER, 0, COOP_HELLO_LEN);
+    snprintf((char *)p + HEADER, 16, "%s", name ? name : "Player");
+    memcpy(p + HEADER + 16, my_code, strlen(my_code));
+}
 
 // The same address and port (IPv4 or IPv6).
 static int same_addr(const struct sockaddr_storage *a, socklen_t alen, const struct sockaddr *b, int blen) {
@@ -131,10 +139,8 @@ static void net_thread(void *arg) {
         uint64_t now = plat_now_ns();
         if (!my_id && now - last_hello > 1000000000ull) {
             last_hello = now;
-            header(buf, HELLO);
-            memset(buf + HEADER, 0, 16);
-            snprintf((char *)buf + HEADER, 16, "%s", name ? name : "Player");
-            sendto(s, (const char *)buf, HEADER + 16, 0, res->ai_addr, (int)res->ai_addrlen);
+            hello(buf, name);
+            sendto(s, (const char *)buf, HEADER + COOP_HELLO_LEN, 0, res->ai_addr, (int)res->ai_addrlen);
         }
         if (my_id && now - last_state >= 16000000ull) {
             last_state = now;
@@ -152,10 +158,8 @@ static void net_thread(void *arg) {
             // Once a second (every 60th pass), state or none: keep the relay's seat. (Counted by the states sent, it
             // went once and never again while there was no state, and the relay let the seat go, code review.)
             if (++beat % 60 == 0) {
-                header(buf, HELLO);
-                memset(buf + HEADER, 0, 16);
-                snprintf((char *)buf + HEADER, 16, "%s", name ? name : "Player");
-                sendto(s, (const char *)buf, HEADER + 16, 0, res->ai_addr, (int)res->ai_addrlen);
+                hello(buf, name);
+                sendto(s, (const char *)buf, HEADER + COOP_HELLO_LEN, 0, res->ai_addr, (int)res->ai_addrlen);
             }
         }
         if (my_id) {   // queued hits, as they come
@@ -245,6 +249,7 @@ static void net_thread(void *arg) {
                 if (other < 1 || other > COOP_MAX_PLAYERS) continue;
                 plat_mutex_lock(&lock);
                 memcpy(others[other].name, buf + off + 1, 16);
+                coop_name_clean(others[other].name, 16);
                 plat_mutex_unlock(&lock);
             }
         } else if (kind == STATE && id >= 1 && id <= COOP_MAX_PLAYERS && n >= HEADER + (int)sizeof(NetState)) {
@@ -311,7 +316,18 @@ void coop_net_leave(void) {
 void coop_net_join(const char *relay, const char *name) {
     coop_net_leave();
     started = 1;
+    // "host[:port] CODE": the address, then (after a space) the host's session code
     snprintf(target, sizeof target, "%s", relay);
+    my_code[0] = 0;
+    char *sp = strpbrk(target, " 	");
+    if (sp) {
+        *sp = 0;
+        const char *c = sp + 1;
+        while (*c == ' ' || *c == '	') c++;
+        int k = 0;
+        for (; c[k] && c[k] != ' ' && k < COOP_CODE_LEN; k++) my_code[k] = (char)(c[k] >= 'a' && c[k] <= 'z' ? c[k] - 32 : c[k]);
+        my_code[k] = 0;
+    }
     snprintf(my_name, sizeof my_name, "%s", name && *name ? name : "Player");
     last_error[0] = 0;
     net_active = 1;
@@ -466,4 +482,10 @@ int coop_net_live(int id) {
     int live = others[id].live;
     plat_mutex_unlock(&lock);
     return live;
+}
+
+// A name from the network shown or logged here: control bytes become '?', and it ends at n bytes.
+void coop_name_clean(char *s, int n) {
+    for (int i = 0; i < n && s[i]; i++)
+        if ((unsigned char)s[i] < 0x20 || s[i] == 0x7f) s[i] = '?';
 }
