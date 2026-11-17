@@ -132,6 +132,22 @@ static int camera_frame(float fwd[2], float right[2]) {
 // x, y: 0..1 of the screen (the overlay's guess, TOTK_COOP_TAG_FOV); world: the anchor (vk_tags.c projects it with the
 // frame's own camera); id: the player's net id
 typedef struct { float x, y, dist, world[3]; int id; char name[17]; } CoopTag;
+// What other threads read of the remote players (the overlay's name tags and map markers, the tests' places): a copy
+// made under a lock at the end of each tick, instead of the live slots the tick rewrites (PLAN.md step 0: two threads
+// read the slots without a lock).
+static PlatMutex pub_lock = PLAT_MUTEX_INIT;
+static struct { int n, ids[COOP_MAX_PLAYERS]; uint64_t actor[COOP_MAX_PLAYERS]; float pos[COOP_MAX_PLAYERS][3], rot[COOP_MAX_PLAYERS][9]; } pub;
+static void players_publish(void) {
+    int n = 0;
+    plat_mutex_lock(&pub_lock);
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++)
+        if (slots[i].state == LIVE && slots[i].source == SRC_NET && slots[i].have_want) {
+            pub.ids[n] = slots[i].net_id, pub.actor[n] = slots[i].actor;
+            memcpy(pub.pos[n], slots[i].want_pos, 12), memcpy(pub.rot[n], slots[i].want_rot, 36), n++;
+        }
+    pub.n = n;
+    plat_mutex_unlock(&pub_lock);
+}
 int coop_name_tags(CoopTag *out, int max, float aspect) {
     uint64_t cam = coop_resident_named("PlayerCamera", NULL);
     float cp[3], r[9];
@@ -141,13 +157,17 @@ int coop_name_tags(CoopTag *out, int max, float aspect) {
     int ids[COOP_MAX_PLAYERS];
     char names[COOP_MAX_PLAYERS][17];
     int nn = coop_net_players(ids, names, COOP_MAX_PLAYERS), n = 0;
-    for (int i = 0; i < COOP_MAX_PLAYERS && n < max; i++) {
+    int pn = 0, pid[COOP_MAX_PLAYERS];
+    uint64_t pa[COOP_MAX_PLAYERS];
+    plat_mutex_lock(&pub_lock);   // (the tick's copy: this runs on the overlay thread)
+    for (int i = 0; i < pub.n; i++) pid[pn] = pub.ids[i], pa[pn++] = pub.actor[i];
+    plat_mutex_unlock(&pub_lock);
+    for (int i = 0; i < pn && n < max; i++) {
         const char *nm = "";
-        Slot *s = &slots[i];
-        if (s->state != LIVE || s->source != SRC_NET || !s->actor) continue;
-        uint64_t a = s->actor;
-        int id = s->net_id;
-        for (int k = 0; k < nn; k++) if (ids[k] == s->net_id) nm = names[k];
+        uint64_t a = pa[i];
+        int id = pid[i];
+        if (!a) continue;
+        for (int k = 0; k < nn; k++) if (ids[k] == id) nm = names[k];
         float p[3];
         if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) continue;
         p[1] += 2.0f;   // above the head
@@ -572,24 +592,23 @@ int coop_player_actors(uint64_t *actors, int *net_ids, int max) {
     return n;
 }
 int coop_player_positions_ids(float (*out)[3], int *ids, int max) {
-    int n = 0;
-    for (int i = 0; i < COOP_MAX_PLAYERS && n < max; i++)
-        if (slots[i].state == LIVE && slots[i].source == SRC_NET && slots[i].have_want) {
-            if (ids) ids[n] = slots[i].net_id;
-            memcpy(out[n++], slots[i].want_pos, 12);
-        }
+    plat_mutex_lock(&pub_lock);
+    int n = pub.n < max ? pub.n : max;
+    for (int i = 0; i < n; i++) {
+        if (ids) ids[i] = pub.ids[i];
+        memcpy(out[i], pub.pos[i], 12);
+    }
+    plat_mutex_unlock(&pub_lock);
     return n;
 }
 // The remote players' places as their owners last reported them (position and rotation), their ids and actors. A
 // PlayerPuppet stand-in's own actor position (+0x2b4) is not where it is drawn: its body is moved, the actor field
 // stays at the place it was made (the stand-in foe test, 2026-11-07), so tests take the place from here.
 int coop_player_places(float (*pos)[3], float (*rot)[9], int *ids, uint64_t *actors, int max) {
-    int n = 0;
-    for (int i = 0; i < COOP_MAX_PLAYERS && n < max; i++)
-        if (slots[i].state == LIVE && slots[i].source == SRC_NET && slots[i].have_want) {
-            memcpy(pos[n], slots[i].want_pos, 12), memcpy(rot[n], slots[i].want_rot, 36);
-            ids[n] = slots[i].net_id, actors[n] = slots[i].actor, n++;
-        }
+    plat_mutex_lock(&pub_lock);
+    int n = pub.n < max ? pub.n : max;
+    for (int i = 0; i < n; i++) memcpy(pos[i], pub.pos[i], 12), memcpy(rot[i], pub.rot[i], 36), ids[i] = pub.ids[i], actors[i] = pub.actor[i];
+    plat_mutex_unlock(&pub_lock);
     return n;
 }
 int coop_player_positions(float (*out)[3], int max) { return coop_player_positions_ids(out, NULL, max); }
@@ -4154,10 +4173,10 @@ static void audit_tick(Cpu *c, uint64_t me, const CoopObj *sent, int n_sent, con
 }
 void coop_players_tick(Cpu *c) {
     coop_rd_fail_report();
-    if (frame_step_world_us() <= 0) return;   // not in the world yet
+    if (frame_step_world_us() <= 0) { players_publish(); return; }   // not in the world yet
     coop_session_tests(frame_step_world_us());
     uint64_t me = coop_player_actor();
-    if (!me) return;
+    if (!me) { players_publish(); return; }
     {   // which Player actor this PC's Link is: a load that makes it again shows here (docs/coop/character-mods.md)
         static uint64_t me_was;
         if (me != me_was) rt_log("coop: this PC's Link is the Player at %llx%s", (unsigned long long)me, me_was ? " (a new one)" : "");
@@ -4703,6 +4722,7 @@ void coop_players_tick(Cpu *c) {
             }
         }
     }
+    players_publish();   // (the copy the overlay thread and the tests read: coop_name_tags, coop_player_places)
 }
 
 int coop_players_all(uint64_t *out, int max) {   // every live stand-in actor (contraption sync I16)
