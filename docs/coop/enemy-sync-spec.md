@@ -663,11 +663,16 @@ research R21, R22; from a play session, 2026-11-17).
   scripted runs that showed no hit never had the watching Link inside a swing. The tester found the hits
   "inconsistent"; not explained. In that short fight the Bokoblin changed owner four times, once offered with both
   Links 1.7 m from it.
-- [open] A small stone a Bokoblin throws (`Rock_Weapon`, a Shooter's shot) is seen flying by one player only. The
-  logs: the copy's game makes the prepare and the shoot with the same request as its owner's (velocity -8.32 13.82
-  -11.04), and both calls answer 1; but the owner's stone starts at height 121.0 and travels 12 m in a second, and
-  the copy's starts at 113.1, eight metres lower, and falls a metre where it is. Why the copy's shot is made lower
-  and does not keep its velocity is not read.
+- A small stone a Bokoblin throws (`Rock_Weapon`, a Shooter's shot) was seen flying by one player only. The logs:
+  the copy's game made the prepare and the shoot with the same request as its owner's (velocity -8.32 13.82 -11.04),
+  and both calls answered 1; but the owner's stone started at height 121.0 and travelled 12 m in a second, and the
+  copy's started 7.87 m lower in each of four throws and sank where it was. [read] The pointer at +8 of a prepare's
+  request block is no flag byte: it is the name of the shooter's bone the prepared projectile is held at (the node's
+  TrackBoneName; ExecuteShooterPrepare's virtual +0x118, main+0x24521f8, stores the node's string there), the prepare
+  tests its first character, and the record keeps the pointer at +0x50 while the projectile is held. The copy was
+  given one byte of it, so its record named no bone, the stone was not held in the hand, and it fell for the 1.3 s
+  between the prepare and the throw (7.87 m is that fall). [built, not yet seen in a game] The name is stated whole
+  and the copy's block points at its own game's lasting text of it (coop_enemy_shot.c, `bone_text`).
 
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the

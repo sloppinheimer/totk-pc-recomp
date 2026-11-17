@@ -13,8 +13,13 @@
 // the game that runs the enemy states each prepare and each shoot with the request block it was made with, and a
 // copy makes the same call on its own record of the same key and index, at the time T it shows that owner at. The
 // request block is sent with its runs of zeros squeezed out; pointers into the block itself are moved to where the
-// block is rebuilt, the one pointer out of it (Q+8, to a flag byte: "at the shooter's place") is given a byte of its
-// own with the stated value.
+// block is rebuilt. The one pointer out of it is a prepare's Q+8: the name of the shooter's bone the prepared projectile
+// is held at (the node's TrackBoneName, put there by its virtual +0x118, main+0x24521f8 for ExecuteShooterPrepare). The
+// prepare starts the projectile at the shooter's place when that name is not empty, and the record keeps the pointer
+// (R+0x50) for as long as the projectile is held. So the name is stated whole and the copy's block points at this
+// game's own lasting text of it. (The first version took it for a flag byte and gave the copy one byte: its record
+// named no bone, the stone a Bokoblin's copy was about to throw was not held in its hand and fell for the second
+// before the throw, eight metres, and only the owner's game saw it fly: a play session, 2026-11-17.)
 //
 // Not here: a mirrored projectile's damage is the game's own (it hurts this game's Link as the owner's would; what
 // else it touches is not yet filtered), and its chemistry is the element sync's to switch off.
@@ -32,12 +37,14 @@
 #define Q_SZ 0x1980
 #define FN_PREPARE 0x1bf9af8
 #define FN_SHOOT 0x1bfbc44
+#define BONE_SZ 48
 void rt_dispatch(Cpu *c);
 
 typedef struct {
     _Atomic int state;            // 0 free, 1 being filled, 2 waiting (captured here, or taken from the owner), 3 due on the copy
     uint8_t kind;                 // 1 prepare, 2 shoot
-    uint8_t at_shooter, flag;     // the byte Q+8 points to; the shoot's flag argument
+    uint8_t flag;                 // the shoot's flag argument
+    char bone[BONE_SZ];           // a prepare's track bone name (what Q+8 points to)
     uint8_t via;                  // whose Shooter: 0 the enemy's own; 1 + k what its equipment slot k holds; 0x80 | (1 + k) what is fused to that
     uint32_t key; int32_t idx;    // the record: its slot's key hash and its index in the slot
     uint32_t index_arg;           // prepare's third argument
@@ -52,8 +59,22 @@ typedef struct {
 static Shot shots[SHOT_N];
 static _Atomic uint32_t n_cap, n_sent, n_big, n_taken, n_done, n_miss;
 
-typedef struct { Enid id; int64_t ns; uint32_t key; int32_t idx; uint32_t index_arg; uint8_t kind, at_shooter, flag, via; uint64_t q_addr; float va[3], vb[3]; uint16_t len, pad2[3]; uint8_t z[1080]; } MShot;
+typedef struct { Enid id; int64_t ns; uint32_t key; int32_t idx; uint32_t index_arg; uint8_t kind, pad, flag, via; uint64_t q_addr; float va[3], vb[3]; uint16_t len, pad2[3]; char bone[BONE_SZ]; uint8_t z[1032]; } MShot;
 _Static_assert(sizeof(MShot) <= COOP_CTR_PAYLOAD, "a shot fits one transport payload");
+
+// This game's lasting text of a bone name (a record keeps the pointer while its projectile is held; the few names in
+// use are kept for the session).
+static const char *bone_text(const char *s) {
+    static char tab[32][BONE_SZ];
+    static _Atomic int used[32];   // 0 free, 1 being written, 2 set
+    for (int i = 0; i < 32; i++) {
+        int f = 0;
+        if (atomic_compare_exchange_strong(&used[i], &f, 1)) { strncpy(tab[i], s, BONE_SZ - 1); atomic_store(&used[i], 2); return tab[i]; }
+        while (atomic_load(&used[i]) == 1) {}
+        if (!strcmp(tab[i], s)) return tab[i];
+    }
+    return "";
+}
 
 static Shot *shot_take(void) {
     for (int i = 0; i < SHOT_N; i++) { int f = 0; if (atomic_compare_exchange_strong(&shots[i].state, &f, 1)) return &shots[i]; }
@@ -126,7 +147,12 @@ int en_shot_hook(Cpu *c, uint64_t off, EnCell *m) {
     if (off == FN_SHOOT) coop_rd(c->x[3], va, 12), coop_rd(c->x[5], vb, 12);
     Shot *h = q > 0x10000 ? shot_take() : NULL;
     if (h && !coop_rd(q, h->q, Q_SZ)) atomic_store(&h->state, 0), h = NULL;   // (the block as the caller built it: the call may change it)
-    if (h) { uint64_t fp = 0; h->at_shooter = 0; if (off != FN_SHOOT) { memcpy(&fp, h->q + 8, 8); if (fp) coop_rd(fp, &h->at_shooter, 1); } }
+    if (h) {   // (a prepare's track bone name, read a byte at a time: it may end at the edge of what can be read)
+        uint64_t fp = 0;
+        memset(h->bone, 0, BONE_SZ);
+        if (off != FN_SHOOT) { memcpy(&fp, h->q + 8, 8); for (int k = 0; fp && k < BONE_SZ - 1 && coop_rd(fp + (uint64_t)k, &h->bone[k], 1) && h->bone[k]; k++) {} }
+        h->bone[BONE_SZ - 1] = 0;
+    }
     deep = 1, c->pc = MOD_MAIN_BASE + off;
     rt_dispatch(c);
     deep = 0;
@@ -204,8 +230,8 @@ void en_shot_phase0(void) {
             if (ei >= 0 && en_tab[ei].used && en_tab[ei].owner == me) {
                 static MShot ms;
                 memset(&ms, 0, offsetof(MShot, z));
-                ms.id = en_tab[ei].id, ms.ns = h->ns, ms.key = h->key, ms.idx = h->idx, ms.index_arg = h->index_arg, ms.kind = h->kind, ms.at_shooter = h->at_shooter, ms.flag = h->flag, ms.via = h->via, ms.q_addr = h->q_addr;
-                memcpy(ms.va, h->va, 12), memcpy(ms.vb, h->vb, 12);
+                ms.id = en_tab[ei].id, ms.ns = h->ns, ms.key = h->key, ms.idx = h->idx, ms.index_arg = h->index_arg, ms.kind = h->kind, ms.flag = h->flag, ms.via = h->via, ms.q_addr = h->q_addr;
+                memcpy(ms.va, h->va, 12), memcpy(ms.vb, h->vb, 12), memcpy(ms.bone, h->bone, BONE_SZ);
                 // The block's named parameters: a list header (capacity u32, pointer to the cells, count i32) at Q+8 in a
                 // shoot's block and at Q+0x18 in a prepare's, then 32 cells of 0xc8 bytes (type u32 +0, pointer to the name
                 // +8, the name's capacity 0x80 +0x10, the name +0x14, the value +0x98..0xc8). A shoot's are its InitPos,
@@ -281,8 +307,8 @@ int en_shot_msg(const CoopCtrMsg *m, int from) {
         at += z + lit, n += 4 + lit;
     }
     if (!ok) { atomic_store(&h->state, 0); return 1; }
-    h->actor = 0, h->id = ms->id, h->ns = ms->ns, h->key = ms->key, h->idx = ms->idx, h->index_arg = ms->index_arg, h->kind = ms->kind, h->at_shooter = ms->at_shooter, h->flag = ms->flag, h->via = ms->via, h->q_addr = ms->q_addr;
-    memcpy(h->va, ms->va, 12), memcpy(h->vb, ms->vb, 12);
+    h->actor = 0, h->id = ms->id, h->ns = ms->ns, h->key = ms->key, h->idx = ms->idx, h->index_arg = ms->index_arg, h->kind = ms->kind, h->flag = ms->flag, h->via = ms->via, h->q_addr = ms->q_addr;
+    memcpy(h->va, ms->va, 12), memcpy(h->vb, ms->vb, 12), memcpy(h->bone, ms->bone, BONE_SZ), h->bone[BONE_SZ - 1] = 0;
     h->cell = -1, h->tries = 0, h->taken_ns = en_now();
     atomic_fetch_add(&n_taken, 1);
     atomic_store(&h->state, 2);
@@ -304,7 +330,6 @@ void en_shot_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             uint64_t of = via_actor(actor, h->via), s = of ? coop_rd_ptr(en_comps(of) + 0x448) : 0, r = s ? rec_at(s, h->key, h->idx) : 0;
             static __thread _Alignas(16) uint8_t q[Q_SZ];
             static __thread _Alignas(16) float va[4], vb[4];
-            static __thread uint8_t at_shooter;
             uint64_t ret = 0;
             if (r) {
                 {   // (the record's projectile is this copy's from now, for whoever asks: coop_enemy_shot_mirror)
@@ -317,9 +342,9 @@ void en_shot_precalc(Cpu *c, uint64_t actor, EnCell *m) {
                 for (int k = 0; k + 8 <= Q_SZ; k += 8) {   // pointers into the block go where the block is now
                     uint64_t v;
                     memcpy(&v, q + k, 8);
-                    // (a prepare's block has a pointer at +8, which the record keeps at +0x50: into the game's image it is
-                    // the same in every game; any other is given this game's byte of the same value)
-                    if (k == 8 && h->kind == 1 && v && !(v >= MOD_MAIN_BASE && v < MOD_MAIN_BASE + 0x8000000ull) && !(v >= h->q_addr && v < h->q_addr + Q_SZ)) v = (uint64_t)(uintptr_t)&at_shooter;
+                    // (a prepare's block has the track bone's name at +8, which the record keeps at +0x50: into the game's
+                    // image the pointer is the same in every game; any other is given this game's text of the name)
+                    if (k == 8 && h->kind == 1 && v && !(v >= MOD_MAIN_BASE && v < MOD_MAIN_BASE + 0x8000000ull) && !(v >= h->q_addr && v < h->q_addr + Q_SZ)) v = (uint64_t)(uintptr_t)bone_text(h->bone);
                     else if (v >= h->q_addr && v < h->q_addr + Q_SZ) v = v - h->q_addr + here;
                     else continue;
                     memcpy(q + k, &v, 8);
@@ -332,7 +357,6 @@ void en_shot_precalc(Cpu *c, uint64_t actor, EnCell *m) {
                     memcpy(&tp, cell + 8, 8);
                     if (!tp) tp = here + (uint64_t)co + (uint64_t)k * 0xc8 + 0x14, memcpy(cell + 8, &tp, 8), memcpy(cell + 0x10, &cap, 4);
                 }
-                at_shooter = h->at_shooter;
                 memcpy(va, h->va, 12), memcpy(vb, h->vb, 12);
                 uint64_t x[31], sp = c->sp, pc = c->pc;
                 memcpy(x, c->x, sizeof x);
@@ -362,6 +386,7 @@ void en_shot_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             if (atomic_load(&n_done) + atomic_load(&n_miss) <= 12)
                 rt_log("coop: en: shot: the copy %llx %s its projectile %08x/%d as its owner's did: %s (the call answered %llx)", (unsigned long long)actor, h->kind == 2 ? "shoots" : "prepares", h->key, h->idx,
                        r ? "made" : "no such record here", (unsigned long long)ret);
+            if (r && h->kind == 1 && atomic_load(&n_done) <= 12) rt_log("coop: en: shot: (held at the bone '%s')", h->bone);
             if (r && h->tries) rt_log("coop: en: shot: (the projectile was asked for first: %d frames)", h->tries);
             atomic_store(&h->state, 0);
         }
