@@ -44,39 +44,15 @@ void coop_watch_disarm(void);
 static uint64_t player_actor_cached;    // this PC's Link, refreshed by coop_tick for the calc wrapper
 static _Atomic uint64_t copy_dst[16];   // input objects the input copy (coop_hook) has written to
 
-static int rd(uint64_t a, void *out, size_t n) { return a && plat_mem_read(a, out, n); }
-static uint64_t rd_ptr(uint64_t a) {
-    uint64_t p = 0;
-    return rd(a, &p, 8) ? p : 0;
-}
+// The helpers this file had copies of are coop_game.c's (one copy each; code review, 2026-11-17).
+#define rd coop_rd
+#define rd_ptr coop_rd_ptr
+#define player_actor coop_player_actor
+#define guest_call coop_guest_call
+#define actor_name coop_actor_name
+#define resident_named coop_resident_named
 
-// The resident actor named "Player", as runtime/frame_rate.c player_pos finds it.
-static uint64_t player_actor(void) {
-    uint64_t module = rd_ptr(MOD_MAIN_BASE + SCENE_SLOT), scene = module ? rd_ptr(module + 0x1e8) : 0;
-    int32_t count = 0;
-    if (!scene || !rd(scene + 0x50, &count, 4) || count < 14 || count > 256) return 0;
-    uint64_t comps = rd_ptr(scene + 0x58), resident = comps ? rd_ptr(comps + 13 * 8) : 0;
-    if (!resident || !rd(resident + 0x20, &count, 4) || count < 1 || count > 64) return 0;
-    uint64_t links = rd_ptr(resident + 0x28);
-    for (int i = 0; links && i < count; i++) {
-        uint64_t data = rd_ptr(links + (uint64_t)i * 0x70 + 8), actor = data ? rd_ptr(data + 0x40) : 0;
-        uint64_t name = actor ? rd_ptr(actor + ACTOR_NAME) : 0;
-        char text[7];
-        if (name && rd(name, text, 7) && !memcmp(text, "Player", 7)) return actor;
-    }
-    return 0;
-}
 
-// Calls a guest function from inside a host call: the caller's x registers and sp come back unchanged.
-static uint64_t guest_call(Cpu *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
-    uint64_t saved_x[31], sp0 = c->sp;
-    memcpy(saved_x, c->x, sizeof saved_x);
-    c->sp = (sp0 - 0x100) & ~0xfull;
-    uint64_t r = rt_call(c, fn, 4, a0, a1, a2, a3);
-    c->sp = sp0;
-    memcpy(c->x, saved_x, sizeof saved_x);
-    return r;
-}
 
 // Logs the resident actor list (scene component 13): per entry its name (+0x20), id (+0x10), the reference object (+8:
 // +0x40 actor, +0x48 id) and that actor's state (+0x24: under 2 not ready, 7..11 going away) and name.
@@ -101,32 +77,8 @@ static void dump_resident(const char *tag) {
     }
 }
 
-static const char *actor_name(uint64_t actor, char *buf, size_t n) {
-    uint64_t nm = actor ? rd_ptr(actor + ACTOR_NAME) : 0;
-    buf[0] = 0;
-    if (nm) rd(nm, buf, n - 1), buf[n - 1] = 0;
-    return buf;
-}
 
 
-// The resident actor named `want` and its reference object (entry +8), or 0.
-static uint64_t resident_named(const char *want, uint64_t *ref_out) {
-    uint64_t module = rd_ptr(MOD_MAIN_BASE + SCENE_SLOT), scene = module ? rd_ptr(module + 0x1e8) : 0;
-    int32_t count = 0;
-    if (!scene || !rd(scene + 0x50, &count, 4) || count < 14) return 0;
-    uint64_t comps = rd_ptr(scene + 0x58), resident = comps ? rd_ptr(comps + 13 * 8) : 0;
-    if (!resident || !rd(resident + 0x20, &count, 4) || count < 0 || count > 64) return 0;
-    uint64_t entries = rd_ptr(resident + 0x28);
-    for (int i = 0; entries && i < count; i++) {
-        uint64_t ref = rd_ptr(entries + (uint64_t)i * 0x70 + 8), actor = ref ? rd_ptr(ref + 0x40) : 0;
-        char nm[40];
-        if (actor && !strcmp(actor_name(actor, nm, sizeof nm), want)) {
-            if (ref_out) *ref_out = ref;
-            return actor;
-        }
-    }
-    return 0;
-}
 
 
 
@@ -214,27 +166,11 @@ static void spawn(Cpu *c, int k) {
             for (int r = 0; r < 3; r++) rot[r * 3 + 0] = -rot[r * 3 + 0], rot[r * 3 + 2] = -rot[r * 3 + 2];
     }
 
-    // The frame the AI node builds (main+0x231fa58): stack args at sp, the name pointer at sp+0x20, the create
-    // argument at sp+0x28 (position, rotation, scale 1, a string at +0x40, flags at +0x90).
-    uint64_t saved_x[31], sp0 = c->sp, sp = (sp0 - 0x200) & ~0xfull;
-    memcpy(saved_x, c->x, sizeof saved_x);
-    memset((void *)(uintptr_t)sp, 0, 0x100);
-    ST64(sp + 0x20, (uint64_t)(uintptr_t)names[k]);
-    uint8_t *arg = (uint8_t *)(uintptr_t)(sp + 0x28);
-    const float one[3] = {1, 1, 1};
-    memcpy(arg + 0x00, at, 12);
-    memcpy(arg + 0x0c, rot, 36);
-    memcpy(arg + 0x30, one, 12);
-    static const char empty[1] = "";
-    ST64(sp + 0x28 + 0x40, (uint64_t)(uintptr_t)empty);   // a string the manager reads without a null check (main+0x59a9f0)
-    arg[0x90] = 3;   // flags: bit 0 position, bit 1 rotation given (bit 2 would be scale)
+    // The game's create request as coop_game.c makes it for every co-op create (it marks the request as the co-op's own,
+    // coop_ent_creating, so the entity sync does not take a test spawn for another game's object).
     if (rd_ptr((uint64_t)(uintptr_t)handles[k])) coop_handle_release(c, handles[k]);   // (an earlier request's: its record freed, coop_game.h)
     memset(handles[k], 0, sizeof handles[k]);
-    c->sp = sp;
-    uint64_t ok = rt_call(c, MOD_MAIN_BASE + REQUEST_CREATE, 8, mgr, sp + 0x20, sp + 0x28,
-                          (uint64_t)(uintptr_t)handles[k], (uint64_t)1, (uint64_t)0, (uint64_t)0, (uint64_t)0);
-    c->sp = sp0;
-    memcpy(c->x, saved_x, sizeof saved_x);
+    uint64_t ok = coop_request_create(c, names[k], at, rot, handles[k]);
     rt_log("coop: spawn %s at %.1f %.1f %.1f (Link %.1f %.1f %.1f, facing %.2f %.2f): request %s", names[k], at[0],
            at[1], at[2], pos[0], pos[1], pos[2], rot[2], rot[8], ok & 1 ? "queued" : "refused");
     last_status[k] = -1;
