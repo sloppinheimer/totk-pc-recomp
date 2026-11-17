@@ -126,6 +126,7 @@ static void attn_copy(Cpu *c, uint64_t actor, En *e) {
 }
 int en_copy_msg(const CoopCtrMsg *m, int from) {
     (void)from;
+    { int en_fx_msg(const CoopCtrMsg *m); if (en_fx_msg(m)) return 1; }   // coop_enemy_fx.c
     if (m->type == ENM_ATTN) {
         const MAttn *q = (const MAttn *)m->d;
         if (m->len != (int)sizeof *q) return 1;
@@ -610,6 +611,7 @@ int en_copy_hook(Cpu *c, uint64_t off) {
                key, (int)idx, flags, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], st);
         return 0;
     }
+    case 0x25aafec: case 0x21cdf44: case 0x1d71dfc: { int en_fx_hook(Cpu *c, uint64_t off); return en_fx_hook(c, off); }   // coop_enemy_fx.c
     case 0x21cd650: { void en_moon_local(void); en_moon_local(); return 0; }   // the blood moon begins here (coop_enemy.c)
     case 0x1c78060: case 0x1b738e4: case 0x1b73be4: case 0xb28394: { int en_loot_hook(Cpu *c, uint64_t off); return en_loot_hook(c, off); }   // coop_enemy_loot.c
     case FN_BRAIN_VERB: {   // (x0 the brain, w1 the verb, w2 bit 0 force): a held brain keeps its owner's verb
@@ -985,6 +987,7 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
                 mem_write(actor, m->show_mem, mei >= 0 ? en_tab[mei].name : "?");
             }
             { int16_t aei = atomic_load(&m->en); if (aei >= 0 && !(coop_sess_frame_no() & 7)) attn_copy(c, actor, &en_tab[aei]); }   // the prompts its owner's offers
+            { void en_fx_precalc(Cpu *c, uint64_t actor, EnCell *m); en_fx_precalc(c, actor, m); }   // coop_enemy_fx.c
             uint8_t want = m->show_hide;
             uint64_t who[1 + EN_EQ_N * 2], eu = coop_rd_ptr(en_comps(actor) + 0x230);
             int nw = 0;
@@ -1120,6 +1123,7 @@ void en_copy_phase0(Cpu *c) {
                 s->hide = hm, s->vis = vb;
             }
             brain_read(e->actor, &s->verb, &s->tgt);
+            { uint8_t wx = frame - m->wx_frame < 10 ? m->wx_type : 0; if (wx != s->wx) e->send_burst = 3; s->wx = wx; }   // (the magic weather its graph asks for: coop_enemy_fx.c)
             if (!((frame + (uint32_t)i) & 7)) attn_owner(e);
             {   // its AI memory (B.2)
                 uint8_t mm = mem_read(e->actor);
@@ -1226,7 +1230,7 @@ void en_copy_phase0(Cpu *c) {
         // The owner's enemy began a flinch (a partial ragdoll, by its own player's blow or anything else): the copy's is
         // asked of its own ragdoll component, unless this game's player just struck it and it flinched here already.
         // (no flinch is asked of the copy's own ragdoll component any more: see en_copy_hook, the ragdoll start)
-        m->show_rag = sl->rag, m->show_hide = sl->hide, m->show_mem = sl->mem, m->show_verb = sl->verb, m->show_tgt = sl->tgt;
+        m->show_rag = sl->rag, m->show_hide = sl->hide, m->show_mem = sl->mem, m->show_verb = sl->verb, m->show_tgt = sl->tgt, m->show_wx = sl->wx;
         m->show_nslot = sl->nslot, m->show_hold = (uint8_t)hold, m->show_teleport = (uint8_t)jump, m->show_hp = sl->hp, m->show_dstate = sl->dstate;
         for (int k = 0; k < sl->nslot; k++) {
             m->show_slot[k] = sl->sl[k];

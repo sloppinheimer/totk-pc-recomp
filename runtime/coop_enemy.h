@@ -39,7 +39,7 @@ typedef struct {
     struct { float clock, weight; } c[EN_CTRL_N];
 } EnSlot;
 #define EN_EQ_N 8         // equipment slots
-typedef struct { EnSnap s; int32_t hp; uint32_t dstate; uint8_t nslot, rag, hide, vis, mem, verb, tgt, pad[1]; uint32_t eq[EN_EQ_N]; uint32_t att[EN_EQ_N]; uint8_t eqs[EN_EQ_N]; EnSlot sl[EN_SLOT_N]; } EnState;   // eq: the name hash of what each equipment slot holds   // one stated moment of an enemy
+typedef struct { EnSnap s; int32_t hp; uint32_t dstate; uint8_t nslot, rag, hide, vis, mem, verb, tgt, wx; uint32_t eq[EN_EQ_N]; uint32_t att[EN_EQ_N]; uint8_t eqs[EN_EQ_N]; EnSlot sl[EN_SLOT_N]; } EnState;   // eq: the name hash of what each equipment slot holds   // one stated moment of an enemy
 // (hide: the model controller's "not drawn" byte, [comps+0x280]+0x9d; vis: actor+0x444 bit 23)
 
 typedef struct {
@@ -69,6 +69,7 @@ typedef struct {
     int32_t show_hp; uint32_t show_dstate; uint8_t show_rag, show_hide, show_mem, show_verb, show_tgt;
     uint32_t eq_att[EN_EQ_N]; uint8_t eq_state[EN_EQ_N], eq_att_tries[EN_EQ_N]; uint32_t eq_state_frame;   // what is fused to each slot's thing at its owner's (name hash), and whether it is drawn (2) or put away (4)
     uint8_t throw_slot, throw_due; uint64_t throw_x3, throw_x4; uint8_t throw_req[0x30];   // a throw of its owner's enemy to make here (B.14)
+    uint8_t wx_type, show_wx; uint32_t wx_frame;   // the magic weather its graph last asked for (type + 1) and when; what its owner states
     uint32_t out_id;      // the attack id of the copy's blow whose outcome on this game's Link was last told to its owner
     uint32_t fwd_id;      // the attack id of the contact last sent whole (one blow is sent once)
     uint32_t fwd_frame;   // the frame this game's player's contact on the copy was last sent whole to its owner (its lost life is then not sent as points too)
@@ -161,5 +162,5 @@ enum {
     ENM_STATE = 60, ENM_BONES = 61, ENM_DECL = 62, ENM_PLAY = 63, ENM_EVENT = 64, ENM_HIT = 65, ENM_HITACK = 66,
     ENM_OUTCOME = 67, ENM_DEATH = 68, ENM_DEATH_END = 69, ENM_KILL = 70, ENM_TOMBS = 71, ENM_CLAIM = 72,
     ENM_ORPHAN_ACK = 73, ENM_REST = 74, ENM_OFFER = 75, ENM_GONE = 76, ENM_NEED = 77, ENM_INDEX = 78, ENM_SYNC_END = 79,
-    ENM_PROJ = 80, ENM_PROJ_END = 81, ENM_EQUIP = 82, ENM_MOON = 83, ENM_UNSYNCED = 84, ENM_DEATH_SIGNAL = 85, ENM_POSE = 86, ENM_ATTN = 87,
+    ENM_PROJ = 80, ENM_PROJ_END = 81, ENM_EQUIP = 82, ENM_MOON = 83, ENM_UNSYNCED = 84, ENM_DEATH_SIGNAL = 85, ENM_POSE = 86, ENM_ATTN = 87, ENM_FX = 88, ENM_PICK = 89,
 };

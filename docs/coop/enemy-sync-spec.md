@@ -342,6 +342,23 @@ function's entry (main+0x1bddcb0), the one its own damage step asks when this ga
 the owner's flinch (state 2) is sent as bones like a full ragdoll (B.7). Measured: 7 flinches and 2 full ragdolls,
 243 poses sent and put, bones agreeing to 0.1 cm (median).
 
+**B.17 What a copy's graphs would have asked of other systems** (research R16; `coop_enemy_fx.c`; off with
+`TOTK_COOP_EN_FX=0`).
+- **An effect or a sound a node starts by key** [m]: the owner states actor, key and the node's effect and sound flags
+  at the entry of OneShotXLinkSearchAndEmit (main+0x25aafec); the copy's game makes the emits on its own actor's
+  users ([[comps+0x68]+0x70] and +0x78) by main+0xa98cf8 and main+0xa98d00. Only what a node starts is stated, so
+  nothing an animation event already starts on a copy sounds twice. Seen: a Wizzrobe's `WeatherFlash` started on its
+  copy. Not built: the held ones (a Yiga's `Sign`, `Vehicle_Magic`), the emit with a matrix, the stop of a sound.
+- **A Wizzrobe's magic weather** [m]: the owner notes the type its graph asks the weather manager for
+  (main+0x21cdf44), STATE carries it, and the copy's game makes the same call for its own actor at each pre-calc
+  while it is stated (the manager keeps a claim four updates and reads nothing of the actor). Seen: the copy asking
+  type 1 while its owner's weather was on. The sky was not looked at.
+- **A weapon picked up from the ground** (built, not seen: no enemy picked one up): the pick-up is main+0x1d71dfc
+  (weapon link, picker, 1), not main+0x1bb16a0, which only stores the AI's memory of a weapon. The owner states which
+  object the weapon was by the object mirror's name for it; the copy's game deletes its own actor of that object, and
+  the held-things rule gives the copy the weapon. [open: a placed weapon nobody has moved is not known to the mirror
+  and stays lying in the copy's game.]
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is
