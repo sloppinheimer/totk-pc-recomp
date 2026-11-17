@@ -11,12 +11,12 @@
 #include "coop_notices.h"
 #include "coop_world_int.h"
 
-void coop_autobuild_tick(Cpu *c, uint64_t me);                    // coop_autobuild.c
+void coop_ent_tick(Cpu *c, uint64_t me);                         // coop_ent_hooks.c: the entity sync
 int coop_gamedata_take(const void *data, int n, int from);       // coop_gamedata.c: 1 when the packet was its own
 
 // Once a frame while another player is in the session (from coop_world_tick).
 void coop_hitchan_tick(Cpu *c, uint64_t me) {
-    coop_autobuild_tick(c, me);
+    coop_ent_tick(c, me);
     int my_id = coop_net_id(), from = 0, n;
     static _Alignas(16) uint8_t in[COOP_HIT_MAX];
     while ((n = coop_net_hit_take(in, sizeof in, &from)) != 0) {

@@ -988,10 +988,10 @@ int coop_hook(Cpu *c, uint64_t addr) {
         int coop_ctn_core(void);   // coop_ctn.c: on unless TOTK_COOP_CONTRAPTION=0
         if (seq < 0) seq = cfg_get("TOTK_COOP_TEST_REBUILDGOIN") || coop_ctn_core();
         if (seq) {
-            void coop_autobuild_seq_calc(Cpu *c);
+            void coop_ent_seq_calc(Cpu *c);   // coop_ent_hooks.c
             uint64_t x[31], sp = c->sp, pc = c->pc;
             memcpy(x, c->x, sizeof x);
-            coop_autobuild_seq_calc(c);
+            coop_ent_seq_calc(c);
             memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
         }
         {   // TOTK_COOP_TEST_X6 (coop_life.c): whether this save has Autobuild, and the ability's build objects

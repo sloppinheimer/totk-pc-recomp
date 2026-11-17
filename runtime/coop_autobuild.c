@@ -1348,8 +1348,7 @@ static int contraption_on(void) {
 }
 // TOTK_COOP_TEST_REBUILDGOIN=gamedata: the rebuild's confirm (and the history writer, TOTK_COOP_TEST_SERIAL) run from
 // GameDataMgr::calc instead, at actor phase 0 (coop_spawn.c coop_hook)
-void coop_autobuild_seq_calc(Cpu *c) {
-    coop_ent_phase0(c);
+void coop_autobuild_seq_tests(Cpu *c) {   // (from coop_ent_hooks.c coop_ent_seq_calc)
     rebuild_go(c);
     serial_try(c, "GameDataMgr::calc");
 }
@@ -1988,13 +1987,8 @@ static void phase0_tick(Cpu *c, int n) {
     }
 }
 
-void coop_autobuild_tick(Cpu *c, uint64_t me) {
+void coop_autobuild_tick(Cpu *c, uint64_t me) {   // the tests' tick (from coop_ent_hooks.c coop_ent_tick)
     playerdiff_test(me);
-    coop_ent_mirror_tick();   // the object mirror's answers to the entity sync (this is the tick its tables live on)
-    coop_ent_drive(c);
-    { void coop_ent_saved_tick(Cpu *c); coop_ent_saved_tick(c); }                    // the devices of a save (coop_ent_id.c)
-    { void coop_ent_bench_tick(Cpu *c, uint64_t me); coop_ent_bench_tick(c, me); }   // TOTK_COOP_BENCH (coop_ent_bench.c)
-    { void coop_ent_log_tick(Cpu *c, uint64_t me); coop_ent_log_tick(c, me); }       // the session record (coop_ent_log.c)
     if (!ablog_on()) return;
     deck_test(c, me, atomic_load(&tracked_n) < TRACK_N ? atomic_load(&tracked_n) : TRACK_N);
     failspam_test(c, me);
