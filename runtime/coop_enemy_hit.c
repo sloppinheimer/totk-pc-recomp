@@ -227,6 +227,15 @@ void en_hit_msg(const CoopCtrMsg *m, int from) {
         if (m->len != (int)sizeof *h) break;
         En *e = NULL;
         for (int i = 0; i < EN_N; i++) if (en_tab[i].used && enid_eq(en_tab[i].id, h->id)) e = &en_tab[i];
+        // A hit that was on its way when the enemy changed owner: passed on to the game that runs it now (at most twice;
+        // `pad` counts), so it is not lost. The new owner may be the game that sent it.
+        if (e && e->owner != me && e->owner && e->life == EN_LIVE && h->dmg > 0 && h->dmg <= 100000 && h->pad < 2) {
+            MHit f = *h;
+            f.pad++;
+            en_send(en_peer_id(e->owner), ENM_HIT, &f, sizeof f);
+            rt_log("coop: en: hit: a hit of %d on %s %016llx came here after its change of owner: passed on to the game that runs it", h->dmg, e->name, (unsigned long long)e->id.a);
+            break;
+        }
         if (!e || e->owner != me || e->life != EN_LIVE || h->dmg <= 0 || h->dmg > 100000) { n_hits_lost++; break; }
         e->pend_dmg += h->dmg, n_hits_taken++;
         e->hit_by = from, e->hit_by_ns = en_now();
