@@ -323,6 +323,14 @@ for a guarded blow, sets its enemy's attack pause as the game's own node does af
 [[comps+0x268]+0x3c] = 10 + 5 x a random number below 1). Not built: the enemy's repelled or guard-break reaction
 (with B.10 on, the shield's contact on the copy may carry it), and anything for an avoided blow or a flurry rush.
 
+**B.16 The prompts a copy offers** [m] (research R4 1.3, 1.4). The attention sender ([comps+0x130]) keeps a reason
+mask per client type at +0x24..0x64; a client with a reason is not offered to the player's game (Sneakstrike awake is
+type 0x2c, asleep 0x2d). Graph nodes write them, so a copy kept the loaded zeros and offered a Sneakstrike on an
+enemy in battle. The owner states the 0x40 bytes when they change (ATTN); a copy's are changed by the game's own
+setter, main+0x4e603c(sender, reason bit, client type, 1 offered | 0 not), which also marks the clients' records, at
+most six calls a frame. Measured: the owner's Bokoblins set the awake reason in battle and clear it out of battle,
+and their copies were given each change. Not seen: the prompt itself on screen.
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is

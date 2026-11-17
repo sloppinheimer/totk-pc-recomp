@@ -102,6 +102,7 @@ typedef struct {
     EnState cur;                      // an owned enemy as last read
     uint64_t read_ns, sent_ns, log_ns;
     // the record
+    uint8_t attn[0x40], attn_have;   // the attention sender's client reason bytes, as this enemy's owner has them (B.16)
     uint32_t st_used, st_lost, st_held, eq_off, eq_att_off; float err_sum, err_max; uint32_t err_n;
 } En;
 
@@ -160,5 +161,5 @@ enum {
     ENM_STATE = 60, ENM_BONES = 61, ENM_DECL = 62, ENM_PLAY = 63, ENM_EVENT = 64, ENM_HIT = 65, ENM_HITACK = 66,
     ENM_OUTCOME = 67, ENM_DEATH = 68, ENM_DEATH_END = 69, ENM_KILL = 70, ENM_TOMBS = 71, ENM_CLAIM = 72,
     ENM_ORPHAN_ACK = 73, ENM_REST = 74, ENM_OFFER = 75, ENM_GONE = 76, ENM_NEED = 77, ENM_INDEX = 78, ENM_SYNC_END = 79,
-    ENM_PROJ = 80, ENM_PROJ_END = 81, ENM_EQUIP = 82, ENM_MOON = 83, ENM_UNSYNCED = 84, ENM_DEATH_SIGNAL = 85, ENM_POSE = 86,
+    ENM_PROJ = 80, ENM_PROJ_END = 81, ENM_EQUIP = 82, ENM_MOON = 83, ENM_UNSYNCED = 84, ENM_DEATH_SIGNAL = 85, ENM_POSE = 86, ENM_ATTN = 87,
 };

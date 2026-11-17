@@ -88,8 +88,51 @@ void en_equip_event(uint64_t holder, int slot, int thrown, const uint8_t req[0x3
     if (req) memcpy(q.req, req, 0x30);
     en_send_all(ENM_EQUIP, &q, sizeof q);
 }
+// The attention sender's client reason bytes ([[comps+0x130]]+0x24..0x64, one byte a client type: a client with a
+// reason is not offered). They decide which prompts the player's game shows on this enemy: the two Sneakstrike
+// clients, lock-on, auto-aim. They are written by graph nodes (the utility graph's stealth module, an interrupt node),
+// so a copy kept the loaded zeros: every client offered at all times, and a Sneakstrike prompt on an enemy in battle
+// (research R4 1.3). The owner states the 0x40 bytes when they change and a copy's are kept the same.
+typedef struct { Enid id; uint8_t b[0x40]; } MAttn;
+static uint64_t attn_sender(uint64_t actor) { return coop_rd_ptr(en_comps(actor) + 0x130); }   // (the component itself: its bytes at +0x24 are the reason masks)
+static void attn_owner(En *e) {
+    uint64_t s = attn_sender(e->actor);
+    uint8_t b[0x40];
+    if (!s) { static _Atomic int said0; if (atomic_fetch_add(&said0, 1) < 3) rt_log("coop: en: attention: %s has no attention sender at [[comps+0x130]]", e->name); return; }
+    if (!coop_rd(s + 0x24, b, sizeof b) || (e->attn_have && !memcmp(b, e->attn, sizeof b))) return;
+    {
+        static _Atomic int said;
+        int nz = 0;
+        for (int k = 0; k < 0x40; k++) nz += b[k] != 0;
+        if (atomic_fetch_add(&said, 1) < 40) rt_log("coop: en: attention: %s %016llx (run here) states its client reasons: %d set (Sneakstrike awake %02x asleep %02x, lock-on %02x)", e->name, (unsigned long long)e->id.a, nz, b[0x2c], b[0x2d], b[0]);
+    }
+    memcpy(e->attn, b, sizeof b), e->attn_have = 1;
+    MAttn m;
+    m.id = e->id, memcpy(m.b, b, sizeof b);
+    en_send_all(ENM_ATTN, &m, sizeof m);
+}
+// A copy's reasons are changed by the game's own setter (main+0x4e603c(sender, reason bit, client type, 1 offered | 0
+// not), which also marks the clients' records), a few a frame, from the copy's pre-calc.
+static void attn_copy(Cpu *c, uint64_t actor, En *e) {
+    uint64_t s = e->attn_have ? attn_sender(actor) : 0;
+    uint8_t b[0x40];
+    int calls = 0;
+    if (!s || !coop_rd(s + 0x24, b, sizeof b) || !memcmp(b, e->attn, sizeof b)) return;
+    for (int t = 1; t < 0x40 && calls < 6; t++)
+        for (int r = 0; r < 8 && calls < 6; r++)
+            if ((b[t] ^ e->attn[t]) >> r & 1) coop_guest_call(c, MOD_MAIN_BASE + 0x4e603c, s, (uint64_t)r, (uint64_t)t, (uint64_t)!(e->attn[t] >> r & 1)), calls++;
+    static _Atomic int said;
+    if (atomic_fetch_add(&said, 1) < 30) rt_log("coop: en: attention: the copy of %s %016llx is given its owner's client reasons, %d changes now (Sneakstrike awake %02x asleep %02x)", e->name, (unsigned long long)e->id.a, calls, e->attn[0x2c], e->attn[0x2d]);
+}
 int en_copy_msg(const CoopCtrMsg *m, int from) {
     (void)from;
+    if (m->type == ENM_ATTN) {
+        const MAttn *q = (const MAttn *)m->d;
+        if (m->len != (int)sizeof *q) return 1;
+        for (int i = 0; i < EN_N; i++)
+            if (en_tab[i].used && enid_eq(en_tab[i].id, q->id) && en_tab[i].owner != coop_ctr_me()) memcpy(en_tab[i].attn, q->b, sizeof q->b), en_tab[i].attn_have = 1;
+        return 1;
+    }
     if (m->type == ENM_EQUIP) {
         const MEquip *q = (const MEquip *)m->d;
         if (m->len != (int)sizeof *q || q->slot >= EN_EQ_N) return 1;
@@ -930,6 +973,7 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
                 int16_t mei = atomic_load(&m->en);
                 mem_write(actor, m->show_mem, mei >= 0 ? en_tab[mei].name : "?");
             }
+            { int16_t aei = atomic_load(&m->en); if (aei >= 0 && !(coop_sess_frame_no() & 7)) attn_copy(c, actor, &en_tab[aei]); }   // the prompts its owner's offers
             uint8_t want = m->show_hide;
             uint64_t who[1 + EN_EQ_N * 2], eu = coop_rd_ptr(en_comps(actor) + 0x230);
             int nw = 0;
@@ -1065,6 +1109,7 @@ void en_copy_phase0(Cpu *c) {
                 s->hide = hm, s->vis = vb;
             }
             brain_read(e->actor, &s->verb, &s->tgt);
+            if (!((frame + (uint32_t)i) & 7)) attn_owner(e);
             {   // its AI memory (B.2)
                 uint8_t mm = mem_read(e->actor);
                 if (mm != s->mem) { e->send_burst = 3; if (s->mem) rt_log("coop: en: memory: %s %016llx (run here) %02x -> %02x (bit 0 IsMagicWeather, 1 IsShootMagicObj)", e->name, (unsigned long long)e->id.a, s->mem, mm); }
