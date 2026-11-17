@@ -251,7 +251,8 @@ Not shown: shock and wetness on a stand-in, and what burns in a Link's hands.
 - `TOTK_COOP_ELEM_TEST_THING=<s>[,<name prefix>]`: at that time the first game asks the nearest placed thing with a
   chemical component (of that name), within 150 m, to ignite.
 - `TOTK_COOP_ELEM_TEST_STRIKE=<s>[,<dx>,<dz>]`: at that time the first game makes a lightning strike that far from its
-  Link (default 8 m on x).
+  Link (default 8 m on x). `<s>,standin`: at that time a strike on the first stand-in there (5.6: not made), and 5 s
+  later one 8 m from its Link.
 - `TOTK_COOP_ELEM_TEST_ENEMY=<s>,<ignite|freeze|thaw|out|charge>[/<s>,<what>...]`: at each of those times the first
   game asks the nearest enemy it decides for, within 40 m, with the game's own request.
 - `TOTK_COOP_ELEM_TEST_LINK=<s>,<ignite|freeze|thaw|out>`: at that time the first game asks its own Link.
@@ -334,9 +335,13 @@ projectiles; nothing calls it yet.
 
 - **Lightning**: only the forced strike was run, not a storm's own, an arrow's or a node's; a strike in a game whose
   Link is far away is still made there; the thing a strike electrifies or lights in the showing game is given by its
-  owner's statement, which was not run. The rule that a player is a target only in its own game (5.6) is built, not
-  run: neither the stand-in's avoid flag nor the strike hook's refusal has been seen in a storm yet, and the owner's
-  static is not shown on the stand-in.
+  owner's statement, which was not run. The rule that a player is a target only in its own game (5.6) was run once
+  without a storm (2026-11-17, `TOTK_COOP_ELEM_TEST_STRIKE=40,standin`, the two Links 0.4 m apart): the stand-in, on
+  its own chemical parameters, was made and has its chemical component; A refused the strike on B's stand-in and
+  logged it, and neither game's pictures show a strike. The control strike 8 m from A's Link was refused too, being
+  7.6 m from the stand-in against 7.8 m from A's Link, so a strike made and shown beside a stand-in was not seen in
+  that run. Not seen in a storm: the avoid flag keeping the static off the stand-in's metal, and the storm's own
+  aim. The owner's static is not shown on the stand-in.
 - **From the review, not fixed** (enemies made at run time are now named by the enemy sync's key, not run): a copy
   cannot pass a reaction of this game's to its owner (another player's fire on an enemy copy
   does nothing); an enemy copy is put out for a moment at each change of owner; a state that lasts (a brazier put

@@ -1023,18 +1023,30 @@ static void strikes_phase0(Cpu *c, const int *ids, int np, uint32_t frame) {
                    best.level, (unsigned long long)(plat_now_ns() / 1000000));
         }
     }
-    {   // Test (TOTK_COOP_ELEM_TEST_STRIKE=<s>[,<dx>,<dz>]): at that world time the first game makes a strike that far from its Link
+    {   // Test (TOTK_COOP_ELEM_TEST_STRIKE=<s>[,<dx>,<dz>]): at that world time the first game makes a strike that far from its
+        // Link. <s>,standin: at <s> a strike on the first stand-in here (S 5.6: not made, logged), at <s>+5 one 8 m from
+        // this Link (made and shown as before)
         static double at = -2;
         static float dx = 8, dz;
-        static int done;
+        static int done, on_standin;
         if (at < -1) {
             const char *e = cfg_get("TOTK_COOP_ELEM_TEST_STRIKE"), *k = e ? strchr(e, ',') : NULL;
             at = e ? atof(e) : -1;
-            if (k) { dx = (float)atof(k + 1); k = strchr(k + 1, ','); if (k) dz = (float)atof(k + 1); }
+            if (k && !strncmp(k + 1, "standin", 7)) on_standin = 1;
+            else if (k) { dx = (float)atof(k + 1); k = strchr(k + 1, ','); if (k) dz = (float)atof(k + 1); }
         }
-        uint64_t link = coop_player_actor(), tm = thunder_mgr();
+        uint64_t link = coop_player_actor(), tm = thunder_mgr(), sa = atomic_load(&standins[0]);
         static _Alignas(16) float pos[4];
-        if (at >= 0 && !done && frame_step_world_us() / 1e6 >= at && link && tm && lowest_here() && coop_rd(link + COOP_ACTOR_POS, pos, 12)) {
+        if (on_standin == 1 && at >= 0 && frame_step_world_us() / 1e6 >= at && sa && tm && lowest_here() && coop_rd(sa + COOP_ACTOR_POS, pos, 12)) {
+            on_standin = 2, at += 5;
+            uint64_t x[31], sp = c->sp, pc = c->pc;
+            memcpy(x, c->x, sizeof x);
+            c->sp = (sp - 0x100) & ~0xfull;
+            rt_log("coop: elem: test: a strike asked on the stand-in at %.1f %.1f %.1f", pos[0], pos[1], pos[2]);
+            rt_call(c, MOD_MAIN_BASE + FN_STRIKE, 5, tm, (uint64_t)(uintptr_t)pos, (uint64_t)2, (uint64_t)0, (uint64_t)0);
+            memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
+        }
+        if (on_standin != 1 && at >= 0 && !done && frame_step_world_us() / 1e6 >= at && link && tm && lowest_here() && coop_rd(link + COOP_ACTOR_POS, pos, 12)) {
             done = 1, pos[0] += dx, pos[2] += dz;
             uint64_t x[31], sp = c->sp, pc = c->pc;
             memcpy(x, c->x, sizeof x);
