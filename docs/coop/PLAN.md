@@ -107,11 +107,11 @@ run of step 1 that hosts from game A's tab tests it (`run_session.ps1` gives gam
 Left, and where it goes:
 - With step 2 (engine reads): SYNC-006, whether one actor's calc can run inside another's (an enemy copy's
   thread-local marks stay set across other actors' calcs, and a held brain's grace may turn away another actor's
-  target reset), and PERF-001, a checked read in every actor's calc; both changes were tried and taken back
-  (4d217dc4) because neither could be shown safe by reading.
+  target reset). Its change was taken back (4d217dc4): the calc is reached only through its vtable entry, but a call
+  through that entry from inside another calc is not ruled out by reading. PERF-001 was settled by reading the calc's
+  entry and fixed again (see its commit).
 - A protocol change for contraption ownership (SEC-007 in the report; no step yet). The session code keeps it to
   invited players.
-- With step 3 or 5: SYNC-007, a contraption copy's device striking an enemy this game runs counts in both games.
 - Replaced by step 1's checker: the enemy bench's own bookkeeping (tables equal, shot counts), the empty enemy list of
   the sync audit.
 - `coop_hooks.h`: the enemy hooks 0x2314ab0, 0x42ec98, 0x1b87a9c, 0x195321c, 0xa70a1c, 0x4e603c, 0x4f59ec, 0xc448c8

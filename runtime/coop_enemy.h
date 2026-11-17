@@ -26,6 +26,7 @@ enum { EN_LIVE = 1, EN_DYING, EN_DEAD, EN_UNSYNCED };
 // (not synced, far, no session); HELD claimed, in the hold of its claim; OWNED this game runs it for all; COPY another
 // game runs it and this actor shows it.
 enum { EM_FREE, EM_NEW, EM_OWN, EM_HELD, EM_OWNED, EM_COPY };
+_Static_assert(EM_OWNED == 4, "coop_contact.c contacts_filter tests en_cell_state against 4");
 
 typedef struct {
     int64_t ns;                       // the owner's frame stamp

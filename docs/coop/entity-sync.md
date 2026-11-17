@@ -190,9 +190,9 @@ motion. What a physics step takes off the written vertical velocity (gravity, da
 - **Strain and the 21-part cap** belong to the owner: on a strand with an end in another game's entity, the strain
   check (main+0x190f034), the glue manager's list add (main+0x191642c) and the cap's kill (main+0x190d924) are skipped
   (`coop_ent_rec.c coop_ent_strand_hook`).
-- A copy's device striking an enemy that is a copy here is left to the game that runs that enemy
-  (`coop_contact.c contacts_filter`, via `coop_ctn_emitter_of_followed`). Striking an enemy this game runs, it counts
-  in both games ([open] in the code: possibly twice the damage; PLAN.md step 0).
+- A copy's device striking an enemy the enemy sync shares (a copy here, or one this game owns) is left to the game
+  that runs the device, which counts the blow on its own actor of that enemy (`coop_contact.c contacts_filter`, via
+  `coop_ctn_emitter_of_followed`).
 
 ## Devices
 
