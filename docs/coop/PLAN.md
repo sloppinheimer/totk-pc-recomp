@@ -249,6 +249,20 @@ effects by key and blows; no FATAL; pictures show A fighting in the camp in both
   is not shown to work yet; a Fire Wizzrobe (its `WeatherFlash` is started by key, measured 2026-11-17) shows it.
 - One run each, no repeat.
 
+Two runs to settle those (2026-11-17, layer off):
+- Both Links fighting in the camp (`camp_melee.txt` for both, 110 s): an enemy's blow on a Link is in that Link's game
+  only, in every case (A: 24 on its Link, none on B's stand-in; B: 15 on its Link, none on A's stand-in). That is the
+  design (a stand-in takes no enemy contact; each game decides hits on its own Link from what it shows), so the check
+  is now: a copy's blow on a Link must come while the enemy's owner had an attack armed. 3 did, 1 did not (a Bokoblin
+  hit B's Link with nothing armed in A: a blow the owner never made). A Link's blow on an enemy was in both games 21
+  times, in one only 2, with the same outcome every time. Some blows of an enemy on its own game's Link came with no
+  arm call at all, so arming is not every attack. Attacks armed agreed worse than with B watching (22 to 93 % found
+  per copy), not read yet.
+- A Fire Wizzrobe beside A (90 s, the Great Sky Island platform): it floated by the Links in both games and never
+  attacked (no shot, no weather, nothing armed), so effects by key are still not shown to work. Only AI nodes and a few
+  engine paths start an effect by key (36 calls of main+0xa98cf8 in the game, read in Ghidra); clips start theirs
+  otherwise. Effects by key are now "not judged" alone when none were started; the run is judged on the rest.
+
 Step 1 is done by its "done when": the checker runs on a scripted pair, lists differences by actor and kind, finds the
 planted desync, and one run hosted from the Co-op tab.
 

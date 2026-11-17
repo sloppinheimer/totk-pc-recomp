@@ -429,7 +429,11 @@ def main():
     nfx = sum(1 for E in (EA, EB) for e in E if e['w'] in 'xs')
     nblow = sum(1 for E in (EA, EB) for e in E if e['w'] == 'h')
     print(f'Records: {armed} armed frames, {nfx} effects and sounds by key, {nblow} blow contacts (both games).')
-    empty = [n for n, v in (('attacks armed', armed), ('effects by key', nfx), ('blows', nblow)) if not v]
+    # (effects by key: only AI nodes and a few engine paths start them, so a fight may have none; that measure alone is
+    # then not judged, and says so, while the run is judged on the rest)
+    empty = [n for n, v in (('attacks armed', armed), ('blows', nblow)) if not v]
+    if not nfx:
+        print('Effects by key: none started in either game, so not judged (and the record not shown to work).')
     over = max([s.get('over', 0) for s in SA + SB] or [0])
     arms_full = max([s.get('arms_full', 0) for s in SA + SB] or [0])
     if over or arms_full:
@@ -526,7 +530,12 @@ def compare_events(EA, EB, owner, ser, names, fail):
         if copys and xr > TARGET['fx_extra']:
             fail.append(f"{tag}: effects by key the owner had not {xr * 100:.0f} % (over {TARGET['fx_extra'] * 100:.0f} %)")
 
-    print('Blows between an enemy and a Link (each must be in both games):')
+    # An enemy's blow on a Link is decided in that Link's own game (from what it shows; a stand-in takes no enemy
+    # contact), so it is in one game only by design: there it must come while the enemy's owner had an attack armed
+    # (within 0.4 s before to 0.1 s after), or the blow is one the owner never made. A Link's blow on an enemy is in
+    # both games (on the enemy in its player's game, by the stand-in in the other), with the same outcome.
+    print('Blows of a Link on an enemy (each must be in both games); blows of an enemy on a Link (each in a moment its '
+          'owner had an attack armed):')
     blows = [[], []]
     for g in (0, 1):   # (one blow per swing: a contact seen in more than one hit update is one blow; a pair named by an
         last = {}      # address, this game's alone, cannot be matched)
@@ -538,12 +547,32 @@ def compare_events(EA, EB, owner, ser, names, fail):
                 continue
             last[k] = e['t']
             blows[g].append(e)
-    one, differ, both_n = [], [], 0
+    cls_name = {0: 'hit', 1: 'guarded', 3: 'guarded in time', 4: 'avoided'}
+    one, differ, both_n, phantom, backed, unjudged = [], [], 0, [], 0, 0
     for g in (0, 1):
         for e in blows[g]:
-            if e.get('seen'):
+            if not e['a'].startswith('L'):
                 continue
-            en = e['by'] if e['a'].startswith('L') else e['a']   # the enemy of the pair
+            en, ow = e['by'], owner.get(e['by'], {}).get(int(e['t']))
+            if ow is None or ow == g:
+                # (in the owner's own game the blow is the enemy's own: nothing to hold it against; and not every blow
+                # is armed by main+0x1bf20cc, measured 2026-11-17: some of an owner's own blows came with none armed)
+                unjudged += ow is None
+                continue
+            s_ = ser[ow].get(en, [])
+            tss = [r[0] for r in s_]
+            j0, j1 = bisect.bisect_left(tss, e['t'] - 0.4), bisect.bisect_right(tss, e['t'] + 0.1)
+            if j0 >= j1 or s_[j0][5] is None:
+                unjudged += 1   # (the owner's game has no frames of it then, or no arm record)
+            elif any(s_[j][5] for j in range(j0, j1)):
+                backed += 1
+            else:
+                phantom.append((g, e, ow))
+    for g in (0, 1):
+        for e in blows[g]:
+            if e.get('seen') or e['a'].startswith('L'):
+                continue
+            en = e['a']   # the enemy struck
             if not near(1 - g, en, e['t']):
                 continue   # (the other game does not show that enemy near a Link then)
             m = None
@@ -559,8 +588,14 @@ def compare_events(EA, EB, owner, ser, names, fail):
             both_n += 1
             if m['cls'] != e['cls']:
                 differ.append((g, e, m))
-    cls_name = {0: 'hit', 1: 'guarded', 3: 'guarded in time', 4: 'avoided'}
-    print(f'  {both_n} in both games, {len(one)} in one game only, {len(differ)} with another outcome')
+    print(f"  enemy (a copy) on a Link: {backed} while its owner had an attack armed, {len(phantom)} with none armed there, "
+          f'{unjudged} not judged (no owner then); blows in the owner\'s own game are not judged')
+    for g, e, ow in phantom[:12]:
+        print(f"    in {'AB'[g]} at {e['t']:.1f}: {names.get(e['by'], e['by'])} {e['by']} -> {e['a']}, "
+              f"{cls_name.get(e['cls'], e['cls'])}; its owner ({'AB'[ow]}) had no attack armed")
+    if phantom:
+        fail.append(f'{len(phantom)} blows of an enemy on a Link while its owner had no attack armed')
+    print(f'  Link on an enemy: {both_n} in both games, {len(one)} in one game only, {len(differ)} with another outcome')
     for g, e in one[:12]:
         print(f"    in {'AB'[g]} only at {e['t']:.1f}: {names.get(e['by'], e['by'])} {e['by']} -> {names.get(e['a'], e['a'])} {e['a']}, "
               f"{cls_name.get(e['cls'], e['cls'])}")
@@ -568,7 +603,7 @@ def compare_events(EA, EB, owner, ser, names, fail):
         print(f"    at {e['t']:.1f}: {e['by']} -> {e['a']}: {cls_name.get(e['cls'], e['cls'])} in {'AB'[g]}, "
               f"{cls_name.get(m['cls'], m['cls'])} in {'AB'[1 - g]}")
     if one:
-        fail.append(f'{len(one)} blows between an enemy and a Link in one game only')
+        fail.append(f'{len(one)} blows of a Link on an enemy in one game only')
     if differ:
         fail.append(f'{len(differ)} blows with another outcome in each game')
 
