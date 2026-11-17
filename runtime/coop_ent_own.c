@@ -268,13 +268,13 @@ static int stmt_send(Cpu *c, Island *is, Ent *one, int p) {   // 1: every piece 
     if (!inc || inc == coop_ctr_me()) return 1;
     int len = stmt_build(c, is, one, buf, &h);
     h.counter = peers[p].sent_counter + 1;
-    for (int k = 0; k < h.pieces; k++) {
+    int drop = test_drop(COOP_CTR_RELIABLE);   // (TOTK_COOP_ENT_DROP: a whole statement, never a piece; the counter still rises)
+    for (int k = 0; k < h.pieces && !drop; k++) {
         int at = k * PIECE_MAX, pl = len - at < PIECE_MAX ? len - at : PIECE_MAX;
         h.piece = (uint16_t)k;
         memcpy(pkt, &h, sizeof h), memcpy(pkt + sizeof h, buf + at, (size_t)pl);
         if (!coop_ctr_send(p + 1, ENT_ISLAND, COOP_CTR_RELIABLE | COOP_CTR_BULK, pkt, (int)sizeof h + pl)) return 0;
     }
-    if (test_drop(COOP_CTR_RELIABLE)) { /* (a whole statement dropped: the counter still rises, the pieces were sent) */ }
     peers[p].sent_counter = h.counter;
     return 1;
 }
