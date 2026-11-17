@@ -1,7 +1,7 @@
 # Unattended one-game test run: a copy of the 1.4.3 profile (the real one is never written), scripted title-to-save
 # input, a small window. Stops the game after -Seconds and prints the coop log lines.
 #   powershell -ExecutionPolicy Bypass -File tools\coop\run_test.ps1 [-Seconds 90] [-Script tools\input\load_save.txt]
-param([int]$Seconds = 90, [string]$Script = "tools\input\load_save.txt", [string]$Watch = "0", [string]$Prof = "0", [string]$Blind = "0", [string]$CtrlDump = "0")
+param([int]$Seconds = 90, [string]$Script = "tools\input\load_save.txt", [string]$Watch = "0", [string]$Prof = "0", [string]$CtrlDump = "0")
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
@@ -17,7 +17,6 @@ $env:TOTK_FULLSCREEN = '0'
 $env:TOTK_WINDOW_SIZE = '1280x720'
 $env:TOTK_COOP_WATCH = $Watch
 $env:TOTK_COOP_PROF = $Prof
-$env:TOTK_COOP_BLIND = $Blind
 $env:TOTK_COOP_CTRLDUMP = $CtrlDump
 . (Join-Path $PSScriptRoot 'quiet.ps1')   # no console, no mouse capture, the window stays behind
 $p = Start-Quiet (Join-Path $root 'build\v143\totk.exe') '' (Join-Path $root 'build\v143')
