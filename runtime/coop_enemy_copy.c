@@ -234,8 +234,16 @@ static void mem_write(uint64_t actor, uint8_t want, const char *name) {
 #define FN_SLOT_CLEAR 0x83be9c
 #define FN_TARGETS_RESET 0x24f0a9c
 #define BRAIN_GRACE 4
+// The brain's start does not always come in those first frames: in three of four runs it came seconds later (when the
+// action in hand ended), after the hold, and the Wizzrobe went to verb 18, then 6, with a Find clip. So after the
+// strict frames the hold goes on in a narrow form until the start has been seen and turned away once, 20 s at most:
+// only the idle verbs the root's Enter chooses among (1 wait, 2 wait at camp, 8 lookout, 18 wander, 19 patrol), asked
+// without force, and the target slots' reset are turned away; any other verb is the brain's own business.
+#define BRAIN_HOLD 600
 static __thread uint64_t tl_grace_bsa;   // the brain of the actor whose calc this thread is in, while it is held
 static __thread uint8_t tl_grace_verb;
+static __thread int tl_grace_narrow;     // the narrow form of the hold
+static __thread EnCell *tl_grace_cell;
 static __thread int tl_brain_mine;       // inside this file's own call of the verb request
 uint64_t coop_player_standin(int net_id);   // coop_players.c
 static uint64_t brain_bsa(uint64_t actor) { return coop_rd_ptr(en_comps(actor) + 0x158); }
@@ -517,7 +525,10 @@ int en_copy_hook(Cpu *c, uint64_t off) {
     case FN_BRAIN_VERB: {   // (x0 the brain, w1 the verb, w2 bit 0 force): a held brain keeps its owner's verb
         if (tl_brain_mine || !tl_grace_bsa || c->x[0] != tl_grace_bsa) return 0;
         static _Atomic int said;
-        int drop = (uint32_t)c->x[1] != tl_grace_verb;
+        uint32_t v = (uint32_t)c->x[1];
+        int idle = v == 1 || v == 2 || v == 8 || v == 18 || v == 19;
+        int drop = tl_grace_narrow ? idle && !(c->x[2] & 1) && v != tl_grace_verb : v != tl_grace_verb;
+        if (drop && tl_grace_narrow && tl_grace_cell) tl_grace_cell->hold_frame = coop_sess_frame_no() + 2;   // (the start has come: its other nodes run in this tick and the next)
         if (atomic_fetch_add(&said, 1) < 80) rt_log("coop: en: brain: a verb asked of a held brain: %u (force %llu) from main+%#llx: %s", (uint32_t)c->x[1], (unsigned long long)(c->x[2] & 1), (unsigned long long)(c->x[30] - MOD_MAIN_BASE), drop ? "turned away" : "let through");
         if (!drop) return 0;
         c->x[0] = 0;
@@ -526,6 +537,7 @@ int en_copy_hook(Cpu *c, uint64_t off) {
     case FN_TARGETS_RESET: {   // the reset of the target slots, in the calc of a held brain's actor
         if (!tl_grace_bsa) return 0;
         static _Atomic int said;
+        if (tl_grace_narrow && tl_grace_cell) tl_grace_cell->hold_frame = coop_sess_frame_no() + 2;
         if (atomic_fetch_add(&said, 1) < 40) rt_log("coop: en: brain: the target slots' reset of a held brain turned away (from main+%#llx)", (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
         return 1;
     }
@@ -674,24 +686,41 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         else off = 0;
     }
     tl_off_actor = off ? actor : 0;
-    tl_grace_bsa = 0;
+    tl_grace_bsa = 0, tl_grace_narrow = 0, tl_grace_cell = NULL;
+    if (off) m->grace_frame = m->hold_frame = 0;
     if (!off && m->grace_frame) {
         uint32_t frame = coop_sess_frame_no();
         if ((int32_t)(m->grace_frame - frame) > 0) {
             brain_hold(c, actor, m, "held");
             tl_grace_bsa = brain_bsa(actor), tl_grace_verb = m->grace_verb;
-        } else {
-            m->grace_frame = 0, m->brain_log_frame = frame;
-            rt_log("coop: en: brain: %llx is let go: its own from here", (unsigned long long)actor);
+        } else m->grace_frame = 0, m->brain_log_frame = frame, m->hold_frame = frame + BRAIN_HOLD;
+    }
+    if (!off && !m->grace_frame && m->hold_frame) {
+        uint32_t frame = coop_sess_frame_no();
+        if ((int32_t)(m->hold_frame - frame) > 0) tl_grace_bsa = brain_bsa(actor), tl_grace_verb = m->grace_verb, tl_grace_narrow = 1, tl_grace_cell = m;
+        else {
+            m->hold_frame = 0;
+            rt_log("coop: en: brain: %llx is let go, %u frames after its take-over: its own from here", (unsigned long long)actor, frame - m->brain_log_frame);
         }
     }
     if (!off && m->brain_log_frame && !m->grace_frame) {   // the record: once a second for 10 s after a take-over
         uint32_t frame = coop_sess_frame_no(), d = frame - m->brain_log_frame;
-        if (d > 300) m->brain_log_frame = 0;
+        if (d > 600) m->brain_log_frame = 0;
         else if (d && !(d % 30)) {
             uint8_t v, t;
             brain_read(actor, &v, &t);
-            rt_log("coop: en: brain: %llx %u s after its take-over: verb %u, target %u (0 no one, 1 + player, 255 another actor); memory %02x", (unsigned long long)actor, d / 30, v, t, mem_read(actor));
+            uint64_t s0 = brain_slot(actor, 0), ta = brain_slot_actor(s0);
+            float since = -1, tp[3] = {0}, ep[3] = {0}, cp[3] = {0};
+            uint32_t em = 0, fl = 0;
+            uint8_t k93 = 0, ke2 = 0;
+            char tn[48] = "";
+            if (s0) coop_rd(s0 + 0x80, &since, 4), coop_rd(s0 + 0x84, &em, 4), coop_rd(s0 + 0x90, &fl, 4), coop_rd(s0 + 0x93, &k93, 1), coop_rd(s0 + 0xe2, &ke2, 1), coop_rd(s0 + 0x20, cp, 12);
+            if (ta) coop_rd(ta + COOP_ACTOR_POS, tp, 12);
+            coop_rd(actor + COOP_ACTOR_POS, ep, 12);
+            rt_log("coop: en: brain: %llx %u s after its take-over: verb %u, target %u (0 no one, 1 + player, 255 another actor); memory %02x; slot 0: %s, not seen for %.2f s, emitter %d, flags %08x, kinds %u %u, %.1f m away, its kept place %.1f m from the target",
+                   (unsigned long long)actor, d / 30, v, t, mem_read(actor), ta ? coop_actor_name(ta, tn, sizeof tn) : "-", since, (int)em, fl, k93, ke2,
+                   ta ? sqrtf((tp[0] - ep[0]) * (tp[0] - ep[0]) + (tp[1] - ep[1]) * (tp[1] - ep[1]) + (tp[2] - ep[2]) * (tp[2] - ep[2])) : -1.0f,
+                   ta ? sqrtf((tp[0] - cp[0]) * (tp[0] - cp[0]) + (tp[1] - cp[1]) * (tp[1] - cp[1]) + (tp[2] - cp[2]) * (tp[2] - cp[2])) : -1.0f);
         }
     }
     if (!off && !m->sw_on) { en_hit_precalc(c, actor, m, 0); return; }

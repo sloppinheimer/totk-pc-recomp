@@ -246,10 +246,15 @@ slot 0 with its own actor of that player (its Link or its stand-in) by main+0xa7
 slot 6 (main+0x83be9c), asks the verb with force (main+0xad9844(BSA, verb, 1)), and for four frames turns away a
 different verb asked by the graphs and the target slots' reset (main+0x24f0a9c), putting both back at each of those
 frames' pre-calc. Measured [m]: a Fire Wizzrobe whose owner left: verb 0 -> 12, slot 0 filled, the start's verb 18
-and the reset turned away, and the next clips were MagicAttack, Disappear, Fly with no Find. Handed to the nearer
-player's game with both staying: verb 12 and `IsMagicWeather` kept for 6 s, then the brain went to 6 (discovered) and
-back to 12, with a Find clip: the target it was given is the other player's stand-in, and what an enemy does with a
-stand-in in slot 0 is section 12's open question. Not done on a copy: asking the verb while it is a copy (R10 4 ii).
+and the reset turned away, and the next clips were MagicAttack, Disappear, Fly with no Find. The brain's start does not always come in those four frames: in three of four runs it came seconds later, after the
+hold, and the Wizzrobe went to verb 18, then 6, with a Find clip. So the hold goes on in a narrow form until the start
+has been seen and turned away once, 20 s at most: only the idle verbs the root's Enter chooses among (1, 2, 8, 18,
+19), asked without force, and the slots' reset are turned away. Handed over with both players staying, three runs of
+three [m]: verb 12 for the 20 s logged, no Find clip, attack after attack, `IsMagicWeather` kept where it was set and
+fireballs shot by the new owner (10 after 8 by the old one). The target it is given is the other player's stand-in:
+it is seen every frame (the slot's time since seen stays 0) and fought, and in one run the brain itself changed to
+this game's nearer Link after 12 s. Section 12's question, whether an enemy fights a stand-in in slot 0, is answered
+yes for a Wizzrobe. Not done on a copy: asking the verb while it is a copy (R10 4 ii).
 
 **B.5 Order.** B.1 (the bit) with a run that also says whether the flame is seen again; B.3's run; B.2; then effects
 and sounds by key and the weather request, each when a play session or a run shows it missing.
