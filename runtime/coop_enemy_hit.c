@@ -310,10 +310,15 @@ void en_hit_msg(const CoopCtrMsg *m, int from) {
     case ENM_DEATH: case ENM_DEATH_END: {
         const MDeath *d = (const MDeath *)m->d;
         if (m->len != (int)sizeof *d) break;
+        // Only the game that runs the enemy states its death (a death was taken from any game, which let one kill or
+        // free any enemy everywhere; code review, 2026-11-17).
+        int from_owner = 0;
+        for (int i = 0; i < EN_N && !from_owner; i++) from_owner = en_tab[i].used && enid_eq(en_tab[i].id, d->id) && en_tab[i].owner == m->from;
+        if (!from_owner) break;
         if (d->id.b != EN_RT && d->id.b >= en_life_no()) en_tomb_add(d->id.a, d->id.b, 1);
         for (int i = 0; i < EN_N; i++) {
             En *e = &en_tab[i];
-            if (!e->used || !enid_eq(e->id, d->id) || e->life == EN_UNSYNCED) continue;
+            if (!e->used || !enid_eq(e->id, d->id) || e->life == EN_UNSYNCED || e->owner != m->from) continue;
             if (m->type == ENM_DEATH) {   // a death is a fact, whoever states it (S 9.2)
                 if (e->life == EN_LIVE) e->life = EN_DYING, en_log_own(e, "dying", "its death was stated");
                 if (e->cell >= 0) atomic_store(&en_map[e->cell].dying, 1);

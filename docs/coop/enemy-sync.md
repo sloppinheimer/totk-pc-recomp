@@ -314,6 +314,12 @@ All go through `coop_msg.c` on the enemy stream. "Reliable" ones go through the 
 
 73, 81 and 85 are free. SPAWN and SPAWN_GONE (the spawn sync) and the contact filter use the HIT channel instead.
 
+What a message may do is checked against who sent it: DEATH, DEATH_END, ATTN, EQUIP and PICK are taken only from the
+game that owns that enemy here; PICK deletes only a `Weapon_`; MOON and SYNC_END raise the life number by one at most;
+a PLAY name must hash to the hash it is given for; a copy is given no equipment named as a player, character, enemy,
+animal, chest or armor. SPAWN is taken at most 8 times a second from a player and only within 500 m of where that
+player last stood, with a finite place and rotation.
+
 ## Settings
 
 For players and testers (all read with `cfg_get`, so `totk.ini` can set them as `coop_...` keys):

@@ -135,14 +135,14 @@ int en_copy_msg(const CoopCtrMsg *m, int from) {
         const MAttn *q = (const MAttn *)m->d;
         if (m->len != (int)sizeof *q) return 1;
         for (int i = 0; i < EN_N; i++)
-            if (en_tab[i].used && enid_eq(en_tab[i].id, q->id) && en_tab[i].owner != coop_ctr_me()) memcpy(en_tab[i].attn, q->b, sizeof q->b), en_tab[i].attn_have = 1;
+            if (en_tab[i].used && enid_eq(en_tab[i].id, q->id) && en_tab[i].owner == m->from) memcpy(en_tab[i].attn, q->b, sizeof q->b), en_tab[i].attn_have = 1;
         return 1;
     }
     if (m->type == ENM_EQUIP) {
         const MEquip *q = (const MEquip *)m->d;
         if (m->len != (int)sizeof *q || q->slot >= EN_EQ_N) return 1;
         for (int i = 0; i < EN_N; i++)
-            if (en_tab[i].used && enid_eq(en_tab[i].id, q->id) && en_tab[i].cell >= 0 && en_tab[i].owner != coop_ctr_me())
+            if (en_tab[i].used && enid_eq(en_tab[i].id, q->id) && en_tab[i].cell >= 0 && en_tab[i].owner == m->from)   // (its owner's word only)
             {
                 EnCell *cm = &en_map[en_tab[i].cell];
                 // (a throw is made by the copy itself, with the request its owner's enemy threw with: what flies here
@@ -154,7 +154,9 @@ int en_copy_msg(const CoopCtrMsg *m, int from) {
     }
     if (m->type != ENM_PLAY) return 0;
     const MName *n = (const MName *)m->d;
-    if (m->len == (int)sizeof *n && n->hash && memchr(n->name, 0, sizeof n->name)) name_add(n->hash, n->name);
+    // (the name must hash to what it is given for: the first pair heard for a hash stays for the session, as the game
+    // keeps the string's address, so a wrong pair from another game would have named every play and equipment of it)
+    if (m->len == (int)sizeof *n && n->hash && memchr(n->name, 0, sizeof n->name) && fnv_str(n->name) == n->hash) name_add(n->hash, n->name);
     return 1;
 }
 
@@ -974,6 +976,9 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             // default life, no fused attachment. At most one create in two seconds.
             uint32_t want = atomic_exchange_explicit(&m->eq_make[k], 0, memory_order_relaxed);
             const char *wn = want ? name_of(want) : NULL;
+            // (what an enemy can hold: never a player, a character, another enemy or a chest, whatever name the owner states)
+            static const char *const no_eq[] = {"Player", "Npc", "Enemy_", "Animal_", "Horse_", "TBox_", "Dgn", "Miasma", "Armor_"};
+            for (size_t j = 0; wn && j < sizeof no_eq / sizeof *no_eq; j++) if (!strncmp(wn, no_eq[j], strlen(no_eq[j]))) wn = NULL;
             uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230);
             uint32_t fr = coop_sess_frame_no();
             if (!wn || !eu || fr - m->eq_made_frame < 120 || m->eq_tries[k] >= 2) continue;

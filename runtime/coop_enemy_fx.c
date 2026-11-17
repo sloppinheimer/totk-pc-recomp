@@ -20,6 +20,7 @@
 //    weapon the mirror does not know (one placed on the map that nobody has moved) is told by its name and where it
 //    lay, and found among every actor of the copy's game within 2.5 m of there.
 #include <stdatomic.h>
+#include <math.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -224,6 +225,13 @@ int en_fx_msg(const CoopCtrMsg *m) {
     if (m->type == ENM_PICK) {
         const MPick *p = (const MPick *)m->d;
         if (m->len != (int)sizeof *p || !memchr(p->name, 0, sizeof p->name)) return 1;
+        // Only from the game that runs that enemy, and only a weapon: the message deleted the first actor of any name
+        // near any place, whoever sent it (an NPC, a stand-in, this Link; code review, 2026-11-17).
+        if (strncmp(p->name, "Weapon_", 7) || !isfinite(p->pos[0]) || !isfinite(p->pos[1]) || !isfinite(p->pos[2])) return 1;
+        int owned_by_sender = 0;
+        for (int i = 0; i < EN_N && !owned_by_sender; i++)
+            owned_by_sender = en_tab[i].used && enid_eq(en_tab[i].id, p->id) && en_tab[i].owner == m->from;
+        if (!owned_by_sender) return 1;
         for (int k = 0; k < 8; k++) {
             if (atomic_load(&pickq[k].frame)) continue;
             pickq[k].owner = p->obj_owner, pickq[k].id = p->obj_id, memcpy(pickq[k].pos, p->pos, 12), memcpy(pickq[k].name, p->name, sizeof p->name);
