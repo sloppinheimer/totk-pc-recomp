@@ -144,6 +144,13 @@ INDEX_END answer it.
    island made whole from the recipe (rung 3), not with a map member or a member this game owns. Failing that, the
    island is **not shown** here, tried again after a back-off doubling from 2 s to 30 s.
 
+What another game states is checked before it is made: a member named as a player, character, enemy, animal, horse,
+chest, dungeon object, armor or one of the game's helpers is not made (`coop_game.c coop_create_refused`), nor one
+whose place is not a finite number; a recipe's bonds must name parts it has, and each part's name must be its
+member's and allowed. A far end never changes the owner of an entity this game owns. Ownership taken by a statement
+or a GRANT is otherwise trusted from any player (claims of a paused or loading owner's entities use them; PLAN.md
+step 0).
+
 Copies are marked `ENT_COPY`. A green (Autobuilt) copy is made by the Autobuild create, so it looks green as the
 owner's does.
 

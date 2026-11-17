@@ -298,7 +298,10 @@ static void stmt_apply(uint64_t from, int p, const IslandHdr *h, const uint8_t *
     if (p >= 0 && h->counter > peers[p].taken_counter) peers[p].taken_counter = h->counter;
     for (int k = 0; k < h->nf; k++) {   // far ends: not members; their owner and epoch as the sender knows them
         Ent *e = ent_new(fr[k].id);
-        if (e) ent_apply_owner(e, fr[k].owner, fr[k].epoch), e->far_seen = 1;
+        // (never one this game owns: a far end names another owner's entity, and a statement's far ends could hand
+        // this game's own devices to anyone; code review, 2026-11-17)
+        if (e && e->owner != coop_ctr_me()) ent_apply_owner(e, fr[k].owner, fr[k].epoch);
+        if (e) e->far_seen = 1;
     }
     for (int k = 0; k < h->n; k++) {
         Ent *e = ent_new(mr[k].id);

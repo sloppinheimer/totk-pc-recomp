@@ -1532,6 +1532,20 @@ int ctn_make_start(Cpu *c, int st_i) {
     int n = r[9], root_i = -1;
     char b[24];
     if (n < 2 || n > 21 || n != st->rec_n || memcmp(r, "CmbAct", 6)) return 0;
+    // Another game's record: checked as the owner's side checks its own (ctn_recipe) before the game's part maker and
+    // confirm read it: the bonds and their part indices, and each part's name, which must be its member's and one a
+    // statement may make here (code review, 2026-11-17).
+    if (r[10] > 21) return 0;
+    for (int i = 0; i < r[10]; i++) {
+        const uint8_t *bd = r + 0x1704 + i * 12;
+        if (bd[8] >= n || bd[9] >= n) return 0;
+    }
+    for (int i = 0; i < n; i++) {
+        char want[0x40] = "";
+        memcpy(want, r + 0xc + i * 0x118 + 0x98, sizeof want - 1);
+        Ent *me_ = ent_by_id(st->rec_member[i]);
+        if (coop_create_refused(want) || !me_ || (me_->name[0] && strcmp(me_->name, want))) return 0;
+    }
     for (int i = 0; i < n; i++) if (eid_eq(st->rec_member[i], st->root)) root_i = i;
     if (root_i < 0) return 0;
     float f[12], inv[12], base[12];

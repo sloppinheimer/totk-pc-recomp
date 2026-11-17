@@ -27,6 +27,7 @@ int coop_rd(uint64_t a, void *out, size_t n);
 uint64_t coop_rd_ptr(uint64_t a);
 void coop_rd_fail_report(void);   // logs failed reads per calling site every 5 s (call once per tick)
 const char *coop_actor_name(uint64_t actor, char *buf, size_t n);
+int coop_create_refused(const char *name);   // a name never made on another game's word (coop_game.c)
 uint64_t coop_resident_named(const char *name, uint64_t *ref_out);   // actor (and its reference object) or 0
 int coop_is_resident(uint64_t actor);
 uint64_t coop_player_actor(void);                                    // the resident "Player": this PC's Link

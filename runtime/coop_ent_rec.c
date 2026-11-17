@@ -295,9 +295,13 @@ static void rec_one(Cpu *c, Stated *st, int st_i) {
                 acted = 1;
                 continue;
             }
+            if (coop_create_refused(e->name)) { backoff(st, WHY_CREATE_FAILED); return; }   // (a name no statement makes here)
             float w[12], rot[9], pos[3];
             ctn_m34_mul(w, st->root_m, st->m[k].rel_root);
             for (int i = 0; i < 3; i++) { pos[i] = w[i * 4 + 3]; for (int j = 0; j < 3; j++) rot[i * 3 + j] = w[i * 4 + j]; }
+            int fin = 1;
+            for (int i = 0; i < 12; i++) fin &= isfinite(w[i]) && fabsf(w[i]) < 1e5f;
+            if (!fin) { backoff(st, WHY_CREATE_FAILED); return; }
             memset(e->handle, 0, sizeof e->handle), memset(e->link, 0, sizeof e->link);
             int ok = (e->flags & ENT_GREEN) ? coop_request_create_autobuilt(c, e->name, pos, rot, e->handle) : coop_request_create(c, e->name, pos, rot, e->handle);
             if (ok) e->making = 1, e->make_ms = now, e->flags |= ENT_COPY, acted = 1;
