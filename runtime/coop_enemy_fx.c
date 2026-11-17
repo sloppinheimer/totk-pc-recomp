@@ -43,7 +43,10 @@ uint64_t coop_enemy_holder(uint64_t actor);                                     
 #define FXQ 32
 // A held effect on a copy (a Yiga footsoldier's Sign, Vehicle_Magic): the two handles its emits gave, kept until its
 // owner's node leaves, when they are stopped by the node's own stop (main+0x6e34e8(the pair, -1: the resource's fade)).
-static struct { int cell; char key[48]; _Alignas(16) uint8_t pair[16]; } held[8];   // (the copy's own thread only: its pre-calc)
+// A slot is taken by compare-and-swap (copies' pre-calcs run on several threads at once, and two took one free slot),
+// and phase 0 stops and frees one whose cell is no longer a copy (taken over or let go: it was kept, still running,
+// and after eight no held effect showed; code review, 2026-11-17).
+static struct { _Atomic int cell; char key[48]; _Alignas(16) uint8_t pair[16]; } held[8];
 static struct { _Atomic int cell; uint8_t elink, slink, mode; char key[48]; uint32_t frame; } fxq[FXQ];       // emits waiting for their copy's pre-calc (cell + 1; 0 free)
 static struct { _Atomic uint32_t frame; int32_t owner; uint32_t id; float pos[3]; char name[48]; } pickq[8];         // ground weapons to delete here
 static _Atomic uint32_t n_fx_sent, n_fx_made, n_wx, n_pick_sent, n_pick_done, n_fx_own;
@@ -270,7 +273,8 @@ void en_fx_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         if (fxq[k].mode != 2 && en_act_has(cell) && frame - fxq[k].frame < 20) continue;
         if (fxq[k].mode && frame - fxq[k].frame < 600) {   // a held one: its handles are kept, or it is stopped
             int h = -1, fr = -1;
-            for (int j = 0; j < 8; j++) { if (held[j].cell == cell && !strcmp(held[j].key, key)) h = j; else if (!held[j].cell && fr < 0) fr = j; }
+            for (int j = 0; j < 8; j++) if (held[j].cell == cell && !strcmp(held[j].key, key)) h = j;
+            for (int j = 0; j < 8 && fxq[k].mode == 1 && h < 0 && fr < 0; j++) { int z = 0; if (atomic_compare_exchange_strong(&held[j].cell, &z, -1)) fr = j; }
             if (fxq[k].mode == 1 && h < 0 && fr >= 0) {
                 memset(held[fr].pair, 0, 16), held[fr].pair[0] = held[fr].pair[8] = 0xff, held[fr].pair[2] = held[fr].pair[3] = held[fr].pair[10] = held[fr].pair[11] = 0xff;
                 if (fxq[k].elink && eu) coop_guest_call(c, MOD_MAIN_BASE + 0xa98cf8, eu, (uint64_t)(uintptr_t)key, (uint64_t)(uintptr_t)held[fr].pair, 0);
@@ -318,6 +322,14 @@ static void pick_find(uint64_t actor, const char *name, uint32_t key, void *arg)
 }
 // Phase 0: a weapon another game's enemy picked up is taken off this game's ground.
 void en_fx_phase0(Cpu *c) {
+    for (int j = 0; j < 8; j++) {   // held effects of cells no longer a copy: stopped (the actor still there) and freed
+        int cell = atomic_load(&held[j].cell);
+        if (cell <= 0) continue;
+        EnCell *m = &en_map[cell - 1];
+        if (atomic_load(&m->state) == EM_COPY) continue;
+        if (atomic_load(&m->actor) > 1) coop_guest_call(c, MOD_MAIN_BASE + 0x6e34e8, (uint64_t)(uintptr_t)held[j].pair, (uint64_t)(uint32_t)-1, 0, 0);
+        atomic_store(&held[j].cell, 0);
+    }
     uint32_t frame = coop_sess_frame_no();
     for (int k = 0; k < 8; k++) {
         uint32_t f = atomic_load(&pickq[k].frame);

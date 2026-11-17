@@ -71,7 +71,9 @@ typedef struct {
     uint8_t show_nslot, show_hold;
     int32_t show_hp; uint32_t show_dstate; uint8_t show_rag, show_hide, show_mem, show_verb, show_tgt;
     uint32_t eq_att[EN_EQ_N]; uint8_t eq_state[EN_EQ_N], eq_att_tries[EN_EQ_N]; uint32_t eq_state_frame;   // what is fused to each slot's thing at its owner's (name hash), and whether it is drawn (2) or put away (4)
-    uint8_t throw_slot, throw_due; uint64_t throw_x3, throw_x4; uint8_t throw_req[0x30];   // a throw of its owner's enemy to make here (B.14)
+    // a throw of its owner's enemy to make here (B.14): written by the net tick while throw_due is 0, then throw_due set
+    // (release); the copy's pre-calc copies them out and clears it (acquire, then release)
+    uint8_t throw_slot; _Atomic uint8_t throw_due; uint64_t throw_x3, throw_x4; uint8_t throw_req[0x30];
     _Atomic uint8_t tgt_back;   // the player (1 + net id) its target slot is to name again: a change too soon after the last (B.22)
     uint8_t show_gb;   // its owner's game-balance bits, as EnState.gb (B.31)
     uint8_t show_cct; float show_cvel[3];   // its owner's character controller: the move state's index (0x80 stated) and velocity, as EnState.cct and cvel (B.38)

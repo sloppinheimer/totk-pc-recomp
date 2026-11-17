@@ -147,7 +147,11 @@ int en_copy_msg(const CoopCtrMsg *m, int from) {
                 EnCell *cm = &en_map[en_tab[i].cell];
                 // (a throw is made by the copy itself, with the request its owner's enemy threw with: what flies here
                 // is this game's own, and it is this game's Link it can hurt. A drop: the copy lets go at once.)
-                if (q->thrown) memcpy(cm->throw_req, q->req, 0x30), cm->throw_x3 = q->x3, cm->throw_x4 = q->x4, cm->throw_slot = (uint8_t)q->slot, cm->throw_due = 1;
+                if (q->thrown) {   // (one at a time: a second one while the first waits is not made)
+                    if (!atomic_load_explicit(&cm->throw_due, memory_order_acquire))
+                        memcpy(cm->throw_req, q->req, 0x30), cm->throw_x3 = q->x3, cm->throw_x4 = q->x4, cm->throw_slot = (uint8_t)q->slot,
+                        atomic_store_explicit(&cm->throw_due, 1, memory_order_release);
+                }
                 else atomic_fetch_or(&cm->eq_drop, (uint8_t)(1u << q->slot));
             }
         return 1;
@@ -585,6 +589,7 @@ static void held_rebuild(void) {
 
 // ---- The switch (S 5) --------------------------------------------------------------------------------------------------
 static __thread uint64_t tl_off_actor;   // the switched-off actor whose calc this thread entered last (the leak net)
+void en_copy_calc_other(void) { tl_off_actor = 0, tl_grace_bsa = 0, tl_grace_narrow = 0, tl_grace_cell = NULL; }   // (coop_enemy.c coop_enemy_calc)
 
 extern __thread uint64_t tl_act_actor;   // coop_enemy_act.c: the copy whose action request the mod is making
 int en_copy_hook(Cpu *c, uint64_t off) {
@@ -1030,17 +1035,19 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
                 if (atomic_fetch_add(&said, 1) < 30) rt_log("coop: en: equip: the copy %llx %s what its slot %d holds, as its owner's", (unsigned long long)actor, v ? "shows" : "hides", k);
             }
         }
-        if (m->throw_due) {   // its owner's enemy threw what this slot holds: the same throw, by the game's own call (main+0x1b73be4)
-            uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230), ref = eu ? coop_rd_ptr(eu + 0x20 + (uint64_t)m->throw_slot * 0x18 + 8) : 0, held = ref ? coop_rd_ptr(ref + 0x40) : 0;
+        if (atomic_load_explicit(&m->throw_due, memory_order_acquire)) {   // its owner's enemy threw what this slot holds: the same throw, by the game's own call (main+0x1b73be4)
             static __thread _Alignas(16) uint8_t req[0x30];
-            m->throw_due = 0;
+            memcpy(req, m->throw_req, 0x30);
+            int slot = m->throw_slot;
+            uint64_t x3 = m->throw_x3, x4 = m->throw_x4;
+            atomic_store_explicit(&m->throw_due, 0, memory_order_release);
+            uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230), ref = eu ? coop_rd_ptr(eu + 0x20 + (uint64_t)slot * 0x18 + 8) : 0, held = ref ? coop_rd_ptr(ref + 0x40) : 0;
             if (eu && held) {
                 void en_loot_thrown(uint64_t actor);   // coop_enemy_loot.c: this game's own flying copy, gone when it rests
                 char hn[40] = "";
-                memcpy(req, m->throw_req, 0x30);
                 en_loot_thrown(held);
-                uint64_t r = rt_call(c, MOD_MAIN_BASE + 0x1b73be4, 5, eu, (uint64_t)(uintptr_t)req, (uint64_t)m->throw_slot, m->throw_x3, m->throw_x4);
-                rt_log("coop: en: equip: the copy %llx throws its %s (slot %d), as its owner's enemy did (the call answered %llx)", (unsigned long long)actor, coop_actor_name(held, hn, sizeof hn), m->throw_slot, (unsigned long long)r);
+                uint64_t r = rt_call(c, MOD_MAIN_BASE + 0x1b73be4, 5, eu, (uint64_t)(uintptr_t)req, (uint64_t)slot, x3, x4);
+                rt_log("coop: en: equip: the copy %llx throws its %s (slot %d), as its owner's enemy did (the call answered %llx)", (unsigned long long)actor, coop_actor_name(held, hn, sizeof hn), slot, (unsigned long long)r);
             }
         }
         uint8_t drop = atomic_exchange_explicit(&m->eq_drop, 0, memory_order_relaxed);
