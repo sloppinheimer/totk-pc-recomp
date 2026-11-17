@@ -2,8 +2,8 @@
 //
 // A copy shows its owner's enemy by the root's place and the animation commands; a ragdoll is neither: its bones are
 // driven by physics bodies in the game that runs the enemy. The copy's own ragdoll is not started (it would fight the
-// static body and the written root, and two games' ragdolls part at the first bounce). While the owner's enemy is a
-// full ragdoll or getting up (its ragdoll component's state [[comps+0x3e8]+0x20]: 3 full, 1 recovering), the owner's
+// static body and the written root, and two games' ragdolls part at the first bounce). While the owner's enemy is in
+// any ragdoll state (its ragdoll component's state [[comps+0x3e8]+0x20]: 3 full, 2 partial: a flinch, 1 recovering), the owner's
 // game sends the skeleton's local records as they stand after the enemy's model phase, every other frame, latest
 // only; the copy's game writes the two newest, blended, over its own skeleton right after the actor's model phase
 // (main+0x245030) and pushes the model, as the stand-ins' poses are put. A copy with no pose newer than 0.3 s shows
@@ -102,7 +102,7 @@ void en_pose_precalc(uint64_t actor, EnCell *m) {
     uint64_t rg = coop_rd_ptr(en_comps(actor) + 0x3e8);
     int32_t rs = 0;
     int16_t ei = atomic_load(&m->en);
-    if (pose_off() || !rg || !coop_rd(rg + 0x20, &rs, 4) || (rs != 3 && rs != 1) || ei < 0 || (coop_sess_frame_no() & 1)) return;
+    if (pose_off() || !rg || !coop_rd(rg + 0x20, &rs, 4) || !rs || ei < 0 || (coop_sess_frame_no() & 1)) return;
     // (called after the actor's model phase: the bodies have just been read back into the records)
     plat_mutex_lock(&pose_lk);
     PoseSlot *s = slot_of((int)(m - en_map), 1);
@@ -129,7 +129,7 @@ void en_pose_phase0(void) {
         En *e = &en_tab[i];
         if (!e->used || e->owner == me || !e->owner || e->cell < 0 || e->life == EN_UNSYNCED) continue;
         uint8_t rag = en_map[e->cell].show_rag;
-        if (rag != 3 && rag != 1) continue;
+        if (!rag) continue;
         int id = en_peer_id(e->owner);
         static MPose in;
         uint64_t age = 0;
@@ -162,7 +162,7 @@ int en_pose_phase(Cpu *c, uint64_t addr) {
     if (m && atomic_load_explicit(&m->state, memory_order_relaxed) == EM_OWNED) {   // this game's own: the phase, then its bones are kept to send
         uint64_t rg = coop_rd_ptr(en_comps(actor) + 0x3e8);
         int32_t rs = 0;
-        if (!rg || !coop_rd(rg + 0x20, &rs, 4) || (rs != 3 && rs != 1)) return 0;
+        if (!rg || !coop_rd(rg + 0x20, &rs, 4) || !rs) return 0;
         deep = 1, c->pc = addr;
         rt_dispatch(c);
         deep = 0;
@@ -171,7 +171,7 @@ int en_pose_phase(Cpu *c, uint64_t addr) {
         c->x[0] = r0;
         return 1;
     }
-    if (!m || atomic_load_explicit(&m->state, memory_order_relaxed) != EM_COPY || (m->show_rag != 3 && m->show_rag != 1)) return 0;
+    if (!m || atomic_load_explicit(&m->state, memory_order_relaxed) != EM_COPY || !m->show_rag) return 0;
     float f = 1;
     int have = 0;
     uint32_t seq = 0;

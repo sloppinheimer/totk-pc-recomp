@@ -333,6 +333,15 @@ setter, main+0x4e603c(sender, reason bit, client type, 1 offered | 0 not), which
 most six calls a frame. Measured: the owner's Bokoblins set the awake reason in battle and clear it out of battle,
 and their copies were given each change. Not seen: the prompt itself on screen.
 
+**B.18 A copy starts no ragdoll of its own** [m, seen by a tester]. A hit Bokoblin's copy soared into the sky and
+snapped back down. The cause was the flinch this sync asked of the copy's own ragdoll component when its owner's
+enemy flinched (section A): a partial ragdoll on an actor whose main body is static and whose root is written throws
+the model until it ends. The recorded places of actor and copy never left the ground; only the drawn model did. With
+the flinch request off the tester saw no more of it. Now every ragdoll start on a copy is turned away at the
+function's entry (main+0x1bddcb0), the one its own damage step asks when this game's player strikes it included, and
+the owner's flinch (state 2) is sent as bones like a full ragdoll (B.7). Measured: 7 flinches and 2 full ragdolls,
+243 poses sent and put, bones agreeing to 0.1 cm (median).
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is

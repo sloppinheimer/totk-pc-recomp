@@ -642,6 +642,17 @@ int en_copy_hook(Cpu *c, uint64_t off) {
     case 0x1bddcb0: {   // a ragdoll start (x0 the component, x1 the request): logged for the enemies this sync knows
         uint64_t a = coop_rd_ptr(c->x[0] + 0x18);
         EnCell *m = a > 0x10000 ? en_cell_of(a) : NULL;
+        // A COPY starts no ragdoll of its own, partial or full (TOTK_COOP_EN_TEST_SKIP=r lets it): its main body is static
+        // and its root is written, and a partial ragdoll started on it (the flinch this sync used to ask for, or the one
+        // its own damage step asks when this game's player strikes it) threw the model into the sky until it ended, when
+        // it snapped back (a tester watching the runs, 2026-11-16; with the flinch request off, no more). What the
+        // owner's enemy's ragdoll looks like, flinch included, comes as bones (coop_enemy_pose.c).
+        if (m && atomic_load_explicit(&m->state, memory_order_relaxed) == EM_COPY && !en_test_skip('r')) {
+            static _Atomic int said_c;
+            if (atomic_fetch_add(&said_c, 1) < 20) rt_log("coop: en: rag: a ragdoll start on the copy %llx turned away (from main+%#llx): its owner's comes as bones", (unsigned long long)a, (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
+            c->x[0] = 0;
+            return 1;
+        }
         static _Atomic int said;
         uint8_t rq[0x40] = {0};
         if (!m || !coop_rd(c->x[1], rq, sizeof rq) || atomic_fetch_add(&said, 1) >= 60) return 0;
@@ -1214,7 +1225,7 @@ void en_copy_phase0(Cpu *c) {
         memcpy(m->show_pos, pos, 12), memcpy(m->show_quat, quat, 16);
         // The owner's enemy began a flinch (a partial ragdoll, by its own player's blow or anything else): the copy's is
         // asked of its own ragdoll component, unless this game's player just struck it and it flinched here already.
-        if (sl->rag == 2 && m->show_rag != 2 && now - m->hit_ns > SEC) atomic_store(&m->flinch, 1);
+        // (no flinch is asked of the copy's own ragdoll component any more: see en_copy_hook, the ragdoll start)
         m->show_rag = sl->rag, m->show_hide = sl->hide, m->show_mem = sl->mem, m->show_verb = sl->verb, m->show_tgt = sl->tgt;
         m->show_nslot = sl->nslot, m->show_hold = (uint8_t)hold, m->show_teleport = (uint8_t)jump, m->show_hp = sl->hp, m->show_dstate = sl->dstate;
         for (int k = 0; k < sl->nslot; k++) {
