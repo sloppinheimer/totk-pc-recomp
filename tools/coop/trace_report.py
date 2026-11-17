@@ -1,6 +1,6 @@
 """Turns a co-op frame trace (runtime/coop_trace.c, TOTK_COOP_TRACE_AT) into a readable report.
 
-    python tools/coop/trace_report.py build/v143/logs/trace_0_20s_1234.csv [--out report.txt]
+    python tools/coop/trace_report.py build/v143/logs/trace_0_20s_1234.csv [--top N]
 
 Writes <csv>.report.txt (the diff and the value changes) and <csv>.timeline.txt (every recorded call, per thread, in
 order, indented by stack depth). "L" is this PC's Link, "C1".. the co-op Links; an object path reads

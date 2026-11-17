@@ -1,4 +1,4 @@
-# autobuild_3rd.txt without its sword swings (the Fanplane built at 30 s, nothing hit): for TOTK_COOP_TEST_REBUILD.
+# autobuild_3rd.txt without its sword swings (the Fanplane built at 30 s, nothing hit). (Its test, TOTK_COOP_TEST_REBUILD, was removed.)
 # The 100% save (third in the Continue list), nothing equipped. At 14 s equip the first weapon (inventory, A, A). At
 # 20 s the ability wheel (hold L) with the right stick down-right (Autobuild); let go at 23 s: the Autobuild screen.
 # A at 26 s picks its first schematic (the Fanplane: a wing with three fans) and A at 30 s builds it. With

@@ -61,7 +61,7 @@ foreach ($f in Get-ChildItem $a -Force) {
 foreach ($d in $a, $b) {
     Remove-Item -Force (Join-Path $d 'logs\audit.jsonl'), (Join-Path $d 'logs\motion.jsonl'), (Join-Path $d 'logs\mark-*.png') -ErrorAction SilentlyContinue
 }
-# The session record (runtime\coop_ent_log.c) is on by itself; the drive's line for every frame it writes a copy is
+# The session record (runtime\coop_ent_log.c) is on with TOTK_COOP_DEBUG=1, which this script sets; the drive's line for every frame it writes a copy is
 # asked for here, for every session: about 0.4 KB a frame for each copy that moves, none for one at rest.
 if (-not $env:TOTK_COOP_FOLLOW_TRACE) { $env:TOTK_COOP_FOLLOW_TRACE = '1' }
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'

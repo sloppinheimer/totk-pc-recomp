@@ -295,7 +295,7 @@ def main():
                 results.append(('expected', False, f'"{want}" is no expectation this script knows'))
     if rest_d:
         # (the angle's limit is the drive's own leave band: a copy put in place once is left to rest up to 8 degrees
-        # off, section 21; the place stays at 0.10 m for nine lines in ten)
+        # off; the place stays at 0.10 m for nine lines in ten)
         ok = pct(rest_d, .9) <= 0.10 and max(rest_d) <= 0.25 and max(rest_a) <= 8
         results.append(('rest', ok, f'{len(rest_d)} lines: {pct(rest_d, .5):.3f} m median, {pct(rest_d, .9):.3f} at 90%, {max(rest_d):.3f} at most; '
                         f'{pct(rest_a, .5):.1f} degrees median, {pct(rest_a, .9):.1f} at 90%, {max(rest_a):.1f} at most; worst: {worst_rest[1]}'))

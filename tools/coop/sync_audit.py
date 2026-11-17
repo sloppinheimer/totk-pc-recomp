@@ -11,7 +11,8 @@ lines pair by time (both games on one PC). For each pair, both ways (the owner's
               report), and at its place
   stale       a copy shown of an object its owner no longer sends
   dup / dead  two copies of one object; a copy whose actor is gone
-  enemy       each enemy near a Link in both games: its place and life the same (the host is the lower id)
+  enemy       each enemy near a Link in both games: its place and life the same (the host is the lower id). The audit
+              writes no enemies today (coop_world.c coop_audit_enemies): PLAN.md step 1's checker is to compare them.
   enemy-only  an enemy within 100 m of the host's Link in one game only (not counted as a failure: it can be the
               other game's streaming)
   time        the time of day: the guest follows the host's (within 180 game seconds, 3 s of real time); not while
