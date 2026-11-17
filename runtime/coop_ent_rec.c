@@ -268,7 +268,9 @@ static void rec_one(Cpu *c, Stated *st, int st_i) {
         if (stale) { st->state = ST_DIFFER; return; }
         int paired = 0;   // (a member the mirror may have an actor for is bound, not made: one by one below)
         for (int k = 0; k < n; k++) paired |= m[k]->mir_id != 0;
-        if (missing == live && st->rec_n && live >= 2 && !paired) {   // nothing of it is here: made whole by the maker (S 9.2)
+        int refused = 0;   // (a member no statement makes here: the maker would refuse the whole record; one by one below)
+        for (int k = 0; k < n; k++) refused |= coop_create_refused(m[k]->name);
+        if (missing == live && st->rec_n && live >= 2 && !paired && !refused) {   // nothing of it is here: made whole by the maker (S 9.2)
             float reach = max_rel + 1.5f;
             if (ctn_make_busy() || ctn_make_waits(st->root_m, reach)) {
                 extern const char *ctn_make_wait_why;

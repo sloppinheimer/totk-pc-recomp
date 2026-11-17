@@ -67,7 +67,8 @@ static void set_my_id(int id) {
     if (my_id != id) my_id = id, session_gen++;
 }
 static void set_live(int id, int live) {   // (lock held)
-    if (others[id].live != live) others[id].live = live, presence_gen[id]++;
+    if (others[id].live == live) return;
+    others[id].live = live, presence_gen[id]++;
     if (!live) others[id].name[0] = 0;   // (a new player given this id was shown with the one before's name)
 }
 
