@@ -343,6 +343,15 @@ from both games show the fight, each player's stand-in in it, the same guard eff
   Link with its owner (B) not armed.
 So the gate is not passed: no crash and the refusals work, arming is fixed, but movement got worse on one side.
 
+The same fight with the layer off (2026-11-17, same build): stutter 1.01 to 1.24x on every copy that moved (place
+error p95 0.05 to 0.12 m), attacks armed without the owner 0 to 4 %, no FATAL. So **the play limit is good and the
+stutter is the layer's** (every verb on): what a copy's action does to its own body (its controller's move, the
+physics an action asks) fights the placing of the copy at its owner's pose. The layer does help arming with the
+owner: 94 to 100 % per copy with it, 81 and 43 % for two Bokoblins without it (a clip started at the owner's command
+still arms by its own clock). Next: read what moves a copy's body while its action runs (`cct_write`, the
+controller's move state and velocity, and the action's own movement requests) against `en_copy_precalc`'s placing,
+before any change.
+
 Also from step 1's runs: a run-time enemy whose actor went in one game (unloaded, or its own far delete) is never made
 again there while it lives on in another; the checker lists it as "missing".
 
