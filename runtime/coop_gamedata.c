@@ -1201,6 +1201,10 @@ static void apply(uint64_t gmd, uint64_t now) {
                 out_put(T_HELLO, (uint64_t)from << 16 | (uint32_t)me, (uint32_t)from, stamp_new());   // so they catch this game up too
             continue;
         }
+        // (a counter far ahead of this game's is not taken: one such stamp moved the clock to its top, the next
+        // stamp_new wrapped to 0, and every later change of this game lost to older ones everywhere; or it froze
+        // that value for the session. A real session's counters stay close; code review, 2026-11-17)
+        if ((stamp >> 8) > atomic_load(&lclock) + (1ull << 32)) { atomic_fetch_add(&n_stale, 1); continue; }
         stamp_seen(stamp);
         int known = slog_get(t, id, &have, &have_stamp);
         if (known && stamp <= have_stamp) { atomic_fetch_add(&n_stale, 1); continue; }   // older than what this game has
