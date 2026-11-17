@@ -5045,7 +5045,7 @@ static void fuse_log(uint64_t me, uint64_t my_eq) {
 }
 static uint64_t my_shield_fused;
 // The actor on a proxy's shield (found as on this Link's, every 10 reports) given its owner's scale each report.
-void proxy_fuse_scale(Slot *s, const float sc[3]) {
+static void proxy_fuse_scale(Slot *s, const float sc[3]) {
     static uint64_t found[COOP_MAX_PLAYERS];
     static int t[COOP_MAX_PLAYERS], said;
     int i = (int)(s - slots);
@@ -5673,6 +5673,8 @@ void coop_players_tick(Cpu *c) {
             if (k < 3) s->out_want = (s->out_want & ~(1 << k)) | (int)((st.flags >> (8 + k)) & 1) << k;
             if (k == 0) s->attack_want = (int)(st.flags >> 13 & 1);
         }
+        // The actor fused to its shield at its owner's size: a fused material is drawn at full size otherwise.
+        if (s->state == LIVE && st.fuse[2][0] && st.shield_fuse_scale[0] > 0) proxy_fuse_scale(s, st.shield_fuse_scale);
         s->idle = !st.buttons && abs(st.sticks[0]) < 3000 && abs(st.sticks[1]) < 3000;
     }
     int others = 0;
