@@ -4219,6 +4219,23 @@ uint64_t coop_player_standin(int net_id) {   // another player's stand-in actor 
     Slot *s = slot_for(SRC_NET, net_id);
     return s && s->state == LIVE ? s->actor : 0;
 }
+// The player whose stand-in here is this actor or holds it in one of its EquipmentUser's rows (its weapon, bow, shield
+// and the rest), 0 none. The element sync asks it of the actor a lightning strike is aimed at (coop_elem.c, the
+// lightning section): another player's Link and what it holds are struck only in that player's own game.
+int coop_standin_holds(uint64_t actor) {
+    if (!actor) return 0;
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++) {
+        Slot *s = &slots[i];
+        if (s->state != LIVE || s->source != SRC_NET || !s->actor) continue;
+        if (s->actor == actor) return s->net_id;
+        uint64_t eq = coop_rd_ptr(coop_rd_ptr(s->actor + 0x228) + 0x230);
+        for (int row = 0; eq && row < 24; row++) {
+            uint64_t ref = coop_rd_ptr(eq + GEAR_TABLE + 0x18 * (uint64_t)row);
+            if (ref && coop_rd_ptr(ref + 0x40) == actor) return s->net_id;
+        }
+    }
+    return 0;
+}
 void coop_mat_quat(const float r[9], float q[4]) { mat_quat(r, q); }
 int coop_obj_ident(uint64_t a, int *owner, uint32_t *id) {
     if (!a) return 0;
@@ -5680,9 +5697,12 @@ void coop_players_tick(Cpu *c) {
             if (coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, my_eq, hand_of[k], 0, 0) & 1) st.flags |= 1u << (8 + k);
         shield_send(me, my_eq, &st);
         hold_send(me, my_eq, &st);
-        // Lightning about to strike this Link (its metal gear sparks): AI node OneShotEquipmentUserSetLightningWait sets
-        // bit 16 of the EquipmentUser's flags at +0x4600 (and the wait time at +0x3f14 to 0; main+0x2529c3c, its
-        // ResetLightningWait clears it). Sent as NetState flags bit 12, so the proxy sparks too.
+        // The EquipmentUser's lightning wait: bit 16 of its flags at +0x4600 (the wait time at +0x3f14). Its setters in
+        // 1.4.3 are the AI node OneShotEquipmentUserSetLightningWait (main+0x2529c3c; no AI graph of the game uses it),
+        // the Sage's thunder field node (main+0x2438e60) and the EquipmentUser's request 0x75e90009 (main+0xe26964,
+        // sent only from that node's code, main+0x2439a34); an arrow shot meanwhile carries lightning
+        // (ShootableArrow_IsLightningWait, main+0x1d1fb70). A thunderstorm's static warning on metal gear is not this
+        // bit but the gear's own chemistry (docs/coop/element-sync-spec.md 5.6). Sent as NetState flags bit 12.
         if (my_eq && eq_points_to(my_eq, me) && (LD64(my_eq + 0x4600) >> 16 & 1)) st.flags |= 1u << 12;
         // The weapon's attack is on (EquipmentUser +0x660, 1 for about 0.1 s in each swing in 1.4.3 as in 1.2.1:
         // TOTK_COOP_TEST_EQDIFF, 2026-11-07): flags bit 13. TotK Online writes it onto its stand-in every frame (read
@@ -5931,9 +5951,9 @@ void coop_players_tick(Cpu *c) {
         }
         s->shield_placed = (st.flags >> 11) & 1;
         memcpy(s->hold_bone, st.hold_bone, sizeof s->hold_bone), memcpy(s->hold, st.hold, sizeof s->hold);
-        {   // its owner's lightning wait (flags bit 12) on the stand-in's EquipmentUser, as the AI node
-            // OneShotEquipmentUserSetLightningWait sets it (bit 16 of +0x4600, the wait time +0x3f14 to 0), so its metal
-            // gear sparks too; cleared when its owner's is
+        {   // its owner's lightning wait (flags bit 12, the Sage's thunder field's: see the sender) on the stand-in's
+            // EquipmentUser, as the AI node OneShotEquipmentUserSetLightningWait sets it (bit 16 of +0x4600, the wait
+            // time +0x3f14 to 0); cleared when its owner's is
             int want_l = (st.flags >> 12) & 1;
             uint64_t peq = s->actor && s->state == LIVE ? eq_of_actor(s->actor) : 0;
             if (peq && eq_points_to(peq, s->actor)) {

@@ -321,6 +321,36 @@ static int is_standin(uint64_t actor) {
     for (int i = 0; i < COOP_MAX_PLAYERS; i++) if (atomic_load_explicit(&standins[i], memory_order_relaxed) == actor) return 1;
     return 0;
 }
+// A strike of this game's own aimed at another player (S 5.6): that player's id, else 0; *dist how far from its
+// stand-in. A strike with an element (the component route, main+0x21c4358: what the element belongs to asked for it)
+// is that player's when the element's actor is the stand-in or something it holds (its owner object +0x60, that
+// object's component +0x10, the component's actor +0x18, checked back). A strike without one (the storm's, main+0x21c3a6c
+// and main+0x21c4074), or one whose actor is not found, is that player's when it falls within STRIKE_NEAR of a stand-in
+// and nearer it than this game's Link: the ground around a player is that player's own storm's.
+#define STRIKE_NEAR 12.0f
+static _Atomic uint32_t n_strikes_theirs;
+static uint64_t comp_of(uint64_t actor);
+static int strike_theirs(uint64_t el, const float p[3], float *dist) {
+    int coop_standin_holds(uint64_t actor);
+    if (el) {
+        uint64_t o = coop_rd_ptr(el + 0x60), comp = o ? coop_rd_ptr(o + 0x10) : 0, actor = comp ? coop_rd_ptr(comp + 0x18) : 0;
+        if (actor && comp_of(actor) == comp) { *dist = -1; return coop_standin_holds(actor); }
+    }
+    uint64_t link = atomic_load_explicit(&my_link, memory_order_relaxed);
+    float l[3], s[3];
+    if (!link || !coop_rd(link + COOP_ACTOR_POS, l, 12)) return 0;
+    float dl = hypotf(p[0] - l[0], p[2] - l[2]);
+    for (int i = 0; i < COOP_MAX_PLAYERS; i++) {
+        uint64_t a = atomic_load_explicit(&standins[i], memory_order_relaxed);
+        if (!a || !coop_rd(a + COOP_ACTOR_POS, s, 12)) continue;
+        float d = hypotf(p[0] - s[0], p[2] - s[2]);
+        if (d < STRIKE_NEAR && d < dl) {
+            int who = coop_standin_holds(a);
+            if (who) { *dist = d; return who; }
+        }
+    }
+    return 0;
+}
 static int shown_only(uint64_t actor) {
     int coop_enemy_shot_mirror(uint64_t proj);
     return is_inert(actor) || is_standin(actor) || strike_blast(actor) || coop_enemy_shot_mirror(actor);
@@ -703,8 +733,18 @@ int coop_elem_hook(Cpu *c, uint64_t off) {
         return 1;
     }
     if (off == FN_STRIKE) {   // a strike of this game's own (the weather's, an arrow's, a node's): told to the others
-        float p[3];
+        float p[3], d = 0;
         if (strike_showing || !coop_rd(c->x[1], p, 12)) return 0;
+        int who = strike_theirs(c->x[4], p, &d);
+        if (who) {   // aimed at another player: that player's game decides it (S 5.6); not made here, not sent
+            static _Atomic int said;
+            atomic_fetch_add_explicit(&n_strikes_theirs, 1, memory_order_relaxed);
+            if (atomic_fetch_add(&said, 1) < 40)
+                rt_log("coop: elem: lightning at %.1f %.1f %.1f is aimed at player %d (%s %.1f m): not made here, at %llu ms", p[0], p[1], p[2], who,
+                       d < 0 ? "its stand-in or what it holds asked for it," : "nearer its stand-in than this Link, at", d < 0 ? 0.0f : d,
+                       (unsigned long long)(plat_now_ns() / 1000000));
+            return 1;
+        }
         plat_mutex_lock(&lk);
         if (strike_out_n < STRIKES) memcpy(strike_out[strike_out_n].pos, p, 12), strike_out[strike_out_n].level = (uint8_t)c->x[2], strike_out[strike_out_n++].sage = (uint8_t)(c->x[3] & 1);
         plat_mutex_unlock(&lk);
@@ -983,18 +1023,30 @@ static void strikes_phase0(Cpu *c, const int *ids, int np, uint32_t frame) {
                    best.level, (unsigned long long)(plat_now_ns() / 1000000));
         }
     }
-    {   // Test (TOTK_COOP_ELEM_TEST_STRIKE=<s>[,<dx>,<dz>]): at that world time the first game makes a strike that far from its Link
+    {   // Test (TOTK_COOP_ELEM_TEST_STRIKE=<s>[,<dx>,<dz>]): at that world time the first game makes a strike that far from its
+        // Link. <s>,standin: at <s> a strike on the first stand-in here (S 5.6: not made, logged), at <s>+5 one 8 m from
+        // this Link (made and shown as before)
         static double at = -2;
         static float dx = 8, dz;
-        static int done;
+        static int done, on_standin;
         if (at < -1) {
             const char *e = cfg_get("TOTK_COOP_ELEM_TEST_STRIKE"), *k = e ? strchr(e, ',') : NULL;
             at = e ? atof(e) : -1;
-            if (k) { dx = (float)atof(k + 1); k = strchr(k + 1, ','); if (k) dz = (float)atof(k + 1); }
+            if (k && !strncmp(k + 1, "standin", 7)) on_standin = 1;
+            else if (k) { dx = (float)atof(k + 1); k = strchr(k + 1, ','); if (k) dz = (float)atof(k + 1); }
         }
-        uint64_t link = coop_player_actor(), tm = thunder_mgr();
+        uint64_t link = coop_player_actor(), tm = thunder_mgr(), sa = atomic_load(&standins[0]);
         static _Alignas(16) float pos[4];
-        if (at >= 0 && !done && frame_step_world_us() / 1e6 >= at && link && tm && lowest_here() && coop_rd(link + COOP_ACTOR_POS, pos, 12)) {
+        if (on_standin == 1 && at >= 0 && frame_step_world_us() / 1e6 >= at && sa && tm && lowest_here() && coop_rd(sa + COOP_ACTOR_POS, pos, 12)) {
+            on_standin = 2, at += 5;
+            uint64_t x[31], sp = c->sp, pc = c->pc;
+            memcpy(x, c->x, sizeof x);
+            c->sp = (sp - 0x100) & ~0xfull;
+            rt_log("coop: elem: test: a strike asked on the stand-in at %.1f %.1f %.1f", pos[0], pos[1], pos[2]);
+            rt_call(c, MOD_MAIN_BASE + FN_STRIKE, 5, tm, (uint64_t)(uintptr_t)pos, (uint64_t)2, (uint64_t)0, (uint64_t)0);
+            memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
+        }
+        if (on_standin != 1 && at >= 0 && !done && frame_step_world_us() / 1e6 >= at && link && tm && lowest_here() && coop_rd(link + COOP_ACTOR_POS, pos, 12)) {
             done = 1, pos[0] += dx, pos[2] += dz;
             uint64_t x[31], sp = c->sp, pc = c->pc;
             memcpy(x, c->x, sizeof x);
@@ -1285,9 +1337,10 @@ void coop_elem_phase0(Cpu *c) {
     static uint32_t said;
     if (frame - said >= 30 && (cn || tn || wn || n_copy)) {
         said = frame;
-        rt_log("coop: elem: cells mine %d, copied %u, not shown %u; things mine %d, copied %d; requests %u, reactions dropped %u, contacts dropped %u, spread heat undone %u, mirrored projectiles made inert %u; strikes mine %u, shown %u, reactions from shown-only actors dropped %u",
+        rt_log("coop: elem: cells mine %d, copied %u, not shown %u; things mine %d, copied %d; requests %u, reactions dropped %u, contacts dropped %u, spread heat undone %u, mirrored projectiles made inert %u; strikes mine %u, shown %u, at another player not made %u, reactions from shown-only actors dropped %u",
                cn, atomic_load(&n_cell_copies), atomic_load(&n_not_shown), tn, n_copy, atomic_load(&n_req), atomic_load(&n_react_drop),
-               atomic_load(&n_contact_drop), atomic_load(&n_spread_undone), atomic_load(&n_mirrors), atomic_load(&n_strikes_mine), atomic_load(&n_strikes_shown), atomic_load(&n_src_drop));
+               atomic_load(&n_contact_drop), atomic_load(&n_spread_undone), atomic_load(&n_mirrors), atomic_load(&n_strikes_mine), atomic_load(&n_strikes_shown),
+               atomic_load(&n_strikes_theirs), atomic_load(&n_src_drop));
     }
     tests(c);
 }
