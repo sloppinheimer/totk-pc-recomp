@@ -207,7 +207,10 @@ static EnCell *map_touch(uint64_t actor) {
         if (blind < 0) { const char *e = cfg_get("TOTK_COOP_EN_TEST_BLIND"); blind = e ? atoi(e) : 0; }
         if (blind && (!session_ns || en_now() - session_ns < (uint64_t)blind * SEC)) return NULL;
     }
-    if (!coop_rd(actor + 0x10, &gen, 4)) return NULL;
+    // (a plain load: this runs at the entry of the actor's calc, main+0x41bb20, whose own first block loads x0+0x5b4 and
+    // x0+0x5ac unchecked, so x0 is a mapped actor whenever the game calls it; the checked read was a system call for every
+    // actor's calc each frame. Read in the lifted C, f_700041bb20, 2026-11-17)
+    memcpy(&gen, (const void *)(uintptr_t)(actor + 0x10), 4);
     EnCell *m = en_cell_of(actor);
     if (m) {
         if (atomic_load_explicit(&m->gen, memory_order_relaxed) == gen) return m;
