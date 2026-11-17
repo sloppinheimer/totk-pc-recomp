@@ -411,6 +411,7 @@ static void rec_one(Cpu *c, Stated *st, int st_i) {
 static void rec_single(Cpu *c, Ent *e) {
     static Stated tmp;
     memset(&tmp, 0, offsetof(Stated, rec));
+    memset((char *)&tmp + offsetof(Stated, rec_n), 0, sizeof tmp - offsetof(Stated, rec_n));   // (the reconcile state after rec: not the last entity's)
     tmp.used = 1, tmp.from = e->owner, tmp.root = e->id, tmp.digest = e->st_digest, tmp.n = 1;
     tmp.m[0].id = e->id, tmp.m[0].life = e->life, tmp.m[0].death_kind = e->death_kind, tmp.m[0].green = (e->flags & ENT_GREEN) != 0, tmp.m[0].radius = e->radius;
     tmp.m[0].rel_root[0] = tmp.m[0].rel_root[5] = tmp.m[0].rel_root[10] = 1;

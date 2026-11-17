@@ -354,7 +354,7 @@ static void stmt_apply(uint64_t from, int p, const IslandHdr *h, const uint8_t *
     if (!st) { ent_full("statement"); return; }
     Stated keep_st;
     int same = st->used && st->digest == h->digest;
-    if (same) memcpy(&keep_st, st, offsetof(Stated, rec));   // (the same structure stated again: its reconcile state stays)
+    if (same) keep_st = *st;   // (the same structure stated again: its reconcile state, after rec, stays)
     uint8_t cls = st->used ? st->cls : 0, offer = st->used ? st->offer : 0;
     int64_t cls_ms = st->used ? st->cls_ms : 0, pose_ms = st->used ? st->pose_ms : 0;
     float keep_m[12];

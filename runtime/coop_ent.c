@@ -288,6 +288,8 @@ void ent_mark_due(Ent *e) { (void)e; bonds_dirty = 1; }
 // Step 3: each entity's liveness and main-body matrix, one read each.
 static void world_caches(void) {
     int64_t now = ent_ms();
+    static uint32_t pass;   // (the cached body is read again once in 32 frames, each row on its own frame: a part can get another)
+    pass++;
     for (int i = 0; i < ENT_N; i++) {
         Ent *e = &ents[i];
         if (!e->used || !e->actor) continue;
@@ -306,9 +308,7 @@ static void world_caches(void) {
             bonds_dirty = 1;
             continue;
         }
-        static uint32_t pass;   // (the cached body is read again once in 32 frames: a part can get another)
         if (!e->main_body || ((pass + (uint32_t)i) & 31) == 0) e->main_body = ctn_main_body(e->actor);
-        if (i == ENT_N - 1) pass++;
         float m[12];
         if (e->main_body && coop_rd(e->main_body + 0x98, m, sizeof m)) {
             float d = fabsf(m[3] - e->m[3]) + fabsf(m[7] - e->m[7]) + fabsf(m[11] - e->m[11]);
