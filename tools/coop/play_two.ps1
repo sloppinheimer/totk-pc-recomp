@@ -40,6 +40,7 @@ function Start-NoConsole([string]$exe, [string]$arguments, [string]$dir) {
 }
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
+$env:TOTK_COOP_DEBUG = '1'   # (the records and measurements the reports read: off in a plain game)
 Get-Process totk -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep 2
 

@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "coop_sess.h"
 #include "coop_ctn.h"
 #include "coop_ctr.h"
 #include "coop_game.h"
@@ -560,7 +561,7 @@ static int follow_rigid(Cpu *c, Grp *e, int64_t now, float *err_out) {
                fs->comp[0], fs->comp[1], fs->comp[2], fs->integ[0], fs->integ[1], fs->integ[2], V[0], V[1], V[2], W[0], W[1], W[2], vb[0], vb[1], vb[2], v_d[0], v_d[1], v_d[2], hv_ok);
     }
     static int64_t said;
-    if (now - said > 500000) {
+    if (coop_debug() && now - said > 500000) {
         said = now;
         float vb[3] = {0}, f68 = 0;
         uint64_t flags = 0;

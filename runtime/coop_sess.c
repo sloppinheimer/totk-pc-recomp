@@ -199,3 +199,11 @@ uint32_t coop_sess_caps(void) {
     int coop_enemy_world_stands(void);   // (a menu in which phase 0 still runs: seen by the enemies not thinking)
     return (coop_enemy_new() ? COOP_CTR_HB_ENEMY : 0) | (coop_enemy_world_stands() ? COOP_CTR_HB_PAUSED : 0);
 }
+
+// TOTK_COOP_DEBUG=1: the session's records (the sync audit, the entity sync's record) and the periodic measurement
+// lines tests and reports read. Off for play, so a session does not measure itself every frame.
+int coop_debug(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_DEBUG"); on = e && *e == '1'; }
+    return on;
+}

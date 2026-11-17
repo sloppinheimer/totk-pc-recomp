@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "coop_sess.h"
 #include "coop_far.h"
 #include "coop_game.h"
 #include "coop_net.h"
@@ -301,6 +302,7 @@ void coop_anim_pack(uint64_t me, CoopAnim *out) {
 // sets, how many new states came, and the oldest state age used. To tell a stand-in fed too rarely from one fed
 // unevenly.
 static void anim_watch(uint16_t idx, float sent, float fr, float age) {
+    if (!coop_debug()) return;
     static uint64_t t0;
     static int calls, held, news, said;
     static float last_fr = -1, last_sent = -1, step_sum, step_max, age_max;

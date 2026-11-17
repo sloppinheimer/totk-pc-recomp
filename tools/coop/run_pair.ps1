@@ -30,6 +30,7 @@ param([int]$Seconds = 90, [string]$ScriptA = "tools\coop\walk.txt", [string]$Scr
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
+$env:TOTK_COOP_DEBUG = '1'   # (the records and measurements the reports read: off in a plain game)
 $src = Join-Path $root 'build\v143'; $a = Join-Path $root $ADir; $b = Join-Path $root $BDir
 # Only this pair's games (from its two folders): another pair may run beside it, and a game of another checkout may be
 # someone playing.

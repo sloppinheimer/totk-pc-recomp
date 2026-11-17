@@ -5,6 +5,7 @@
 void coop_sess_phase0(void);              // once a frame, first thing at GameDataMgr::calc: the frame stamp
 uint64_t coop_sess_frame_ns(void);        // the performance counter as read at this frame's phase 0
 uint32_t coop_sess_frame_no(void);
+int coop_debug(void);                     // TOTK_COOP_DEBUG=1: the records and periodic measurements tests read
 int coop_sess_paused(void);               // phase 0 has not run for 0.3 s
 int coop_sess_loading(void);              // the game's teardown flag, or no Link yet
 void coop_sess_net(void);                 // the net tick

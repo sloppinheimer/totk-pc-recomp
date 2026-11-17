@@ -30,6 +30,7 @@
 #include <time.h>
 
 #include "cfg.h"
+#include "coop_sess.h"
 #include "coop_ctn.h"
 #include "coop_ctr.h"
 #include "coop_ent.h"
@@ -47,7 +48,7 @@ void ctn_follow_peek(const struct FollowState *fs, int *rest, int *no_rest, int 
 
 static int rec_on(void) {
     static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_RECORD"); on = !(e && *e == '0'); }
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_RECORD"); on = e ? *e != '0' : coop_debug(); }   // (set, it decides; unset, TOTK_COOP_DEBUG does)
     return on && ent_on();
 }
 

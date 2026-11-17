@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "coop_sess.h"
 #include "coop_chars.h"
 #include "coop_far.h"
 #include "coop_game.h"
@@ -918,6 +919,7 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
         static __thread int dn;
         if (coop_rd(actor + COOP_ACTOR_POS, pp, 12) && coop_rd(actor + COOP_ACTOR_ROT, pr, 36)) {
             memcpy(s->phys_pos, pp, 12), s->have_phys = 1;
+            if (coop_debug()) {
             for (int k = 0; k < 3; k++) { float d = fabsf(pp[k] - m[k * 4 + 3]); if (d > dp_max) dp_max = d; }
             for (int r = 0; r < 3; r++) for (int k = 0; k < 3; k++) { float d = fabsf(pr[r * 3 + k] - m[r * 4 + k]); if (d > dr_max) dr_max = d; }
             // and how far the physics moved it since it was last placed (its own drag, apart from its owner's motion),
@@ -935,6 +937,7 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
                        "moved by its physics since placed: vertical mean %.1f max %.1f mm, level mean %.1f max %.1f mm",
                        dp_max * 1000, dr_max, pn ? pv_sum / pn * 1000 : 0, pv_max * 1000, pn ? ph_sum / pn * 1000 : 0, ph_max * 1000);
                 dp_max = dr_max = 0, pv_sum = ph_sum = pv_max = ph_max = 0, pn = 0;
+            }
             }
         }
     }
@@ -955,7 +958,7 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
     }
     {   // Jitter watch: the puppet's highest body bone (model space, skeleton +0x20, row 3) frame to frame; a jump
         // over 3 cm is logged with what this frame did (whether its body was teleported since, the pose's age).
-        uint64_t sk = body_skeleton(actor);
+        uint64_t sk = coop_debug() ? body_skeleton(actor) : 0;
         uint16_t nb = 0;
         uint64_t wb = sk ? coop_rd_ptr(sk + 0x20) : 0;
         static __thread float rec[127][16];   // (per thread: two puppets' placing overwrote each other's, code review)
@@ -988,7 +991,7 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
         }
     }
     // Jerk: how far each frame's placed position is from the straight line through the two frames before it.
-    if (s->jit_have >= 2) {
+    if (coop_debug() && s->jit_have >= 2) {
         float e = 0;
         for (int k = 0; k < 3; k++) { float d = pos[k] - 2 * s->jit_prev[1][k] + s->jit_prev[0][k]; e += d * d; }
         e = sqrtf(e);
@@ -5118,8 +5121,8 @@ static void audit_tick(Cpu *c, uint64_t me, const CoopObj *sent, int n_sent, con
     static FILE *f;
     static uint64_t last_s;
     if (on < 0) {
-        const char *e = cfg_get("TOTK_COOP_AUDIT");
-        on = !(e && !strcmp(e, "0"));
+        const char *e = cfg_get("TOTK_COOP_AUDIT");   // (set, it decides; unset, TOTK_COOP_DEBUG does)
+        on = e ? strcmp(e, "0") != 0 : coop_debug();
     }
     uint64_t now = plat_now_ns(), sec = now / 1000000000ull;
     int coop_ent_log_take_mark(void);   // coop_ent_log.c: the tester's mark was pressed: a line at once, beside the second's
@@ -5624,7 +5627,7 @@ void coop_players_tick(Cpu *c) {
                 if (e > s->err_max) s->err_max = e;
                 s->err_sum += e, s->err_n++;
             }
-            if (s->err_n >= 30) {
+            if (coop_debug() && s->err_n >= 30) {
                 rt_log("coop: puppet: slot %d error vs its owner at the same moment: mean %.2f m, max %.2f m (owner y %.1f) at %.1f s",
                        (int)(s - slots), s->err_sum / s->err_n, s->err_max, st.pos[1], frame_step_world_us() / 1e6);
                 s->err_max = s->err_sum = 0, s->err_n = 0;
@@ -5797,7 +5800,7 @@ void coop_players_tick(Cpu *c) {
             // Per slot: shared, the count went up once per slot each tick, so with two co-op Links only one ever came to
             // a multiple of 30, and one slot's tries used up or reset another's (code review, 2026-11-06).
             static int hand_ticks[COOP_MAX_PLAYERS], hand_said[COOP_MAX_PLAYERS] = {[0 ... COOP_MAX_PLAYERS - 1] = -1};
-            if (eq && ++hand_ticks[i] % 30 == 0) {
+            if (coop_debug() && eq && ++hand_ticks[i] % 30 == 0) {
                 static const uint64_t hand_of[3] = {0, 3, 4};
                 int now = 0;
                 for (int k = 0; k < 3; k++) now |= (int)(coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, eq, hand_of[k], 0, 0) & 1) << k;
@@ -5826,7 +5829,7 @@ void coop_players_tick(Cpu *c) {
                 for (int r = 0; s->have_body && r < 3; r++)
                     for (int k = 0; k < 3; k++) { float d = fabsf(s->body_rot[r * 3 + k] - om[r * 4 + k]); if (d > rd) rd = d; }
                 static int said_body;
-                if (s->have_body && said_body++ % 300 == 0)
+                if (coop_debug() && s->have_body && said_body++ % 300 == 0)
                     rt_log("coop: puppet: slot %d body %.2f %.2f %.2f, owner %.2f %.2f %.2f, rotation off %.3f", i, bp[0], bp[1], bp[2],
                            om[3], om[7], om[11], rd);
                 if ((!s->have_phys && !s->have_body) || dx * dx + dy * dy + dz * dz > lim * lim || rd > 0.02f) snap(c, s), s->since_snap = 0;
