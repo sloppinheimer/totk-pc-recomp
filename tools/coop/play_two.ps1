@@ -105,6 +105,9 @@ foreach ($g in @(@{dir = $a; n = 1; name = $Name1; pad = '0'}, @{dir = $b; n = 2
         $env:TOTK_SHOTS = $Shots; $env:TOTK_SHOTS_DIR = $sd
     }
     if ($ShareWorld) { $env:TOTK_COOP_SHARE_WORLD = '1' } else { Remove-Item Env:TOTK_COOP_SHARE_WORLD -ErrorAction SilentlyContinue }
+    # game 1 makes what tools\coop\spawn.ps1 asks for while it runs (TOTK_COOP_SPAWN_FILE; the file starts empty)
+    $spawnFile = Join-Path $root 'build\spawn_cmd.txt'
+    if ($g.n -eq 1) { Remove-Item $spawnFile -ErrorAction SilentlyContinue; $env:TOTK_COOP_SPAWN_FILE = $spawnFile } else { Remove-Item Env:TOTK_COOP_SPAWN_FILE -ErrorAction SilentlyContinue }
     if ($Spawn -and $g.n -eq 1) { $env:TOTK_COOP_TEST_SPAWN = $(if ($Spawn -match '@') { $Spawn } else { "$Spawn@40" }) } else { Remove-Item Env:TOTK_COOP_TEST_SPAWN -ErrorAction SilentlyContinue }
     $games += Start-NoConsole (Join-Path $g.dir 'totk.exe') '' $g.dir
     Start-Sleep 3

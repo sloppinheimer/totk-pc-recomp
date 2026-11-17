@@ -2021,6 +2021,30 @@ void coop_tick(struct Cpu *c) {
                 if (e == at) test_spawned = 1;
             }
         }
+        {   // TOTK_COOP_SPAWN_FILE=<path>: an actor made beside this Link while the game runs, asked for from outside
+            // it (tools/coop/spawn.ps1). The file holds one line, "<number> <actor name>"; four times a second it is
+            // read, and a number greater than the last one seen makes that actor, once the slot's last one is done.
+            static const char *path;
+            static int read;
+            static unsigned seen, tick;
+            static char nm[64];
+            if (!read) path = cfg_get("TOTK_COOP_SPAWN_FILE"), read = 1;
+            if (k == 1 && path && *path && !(++tick % 15) && !rd_ptr((uint64_t)(uintptr_t)handles[1])) {
+                FILE *f = fopen(path, "r");
+                unsigned seq = 0;
+                char want[64] = "";
+                if (f) {
+                    if (fscanf(f, "%u %63s", &seq, want) == 2 && seq > seen && want[0]) {
+                        seen = seq;
+                        snprintf(nm, sizeof nm, "%s", want);
+                        names[1] = nm, last_status[1] = -1;
+                        rt_log("coop: spawn file: request %u: %s", seq, nm);
+                        spawn(c, 1);
+                    }
+                    fclose(f);
+                }
+            }
+        }
         {   // Test: TOTK_COOP_TEST_SPAWN_KEY=<actor>[+<actor>...]: each press of the mark key (Home or numpad 0) makes the
             // next actor of the list beside this Link, round and round (a tester fights one enemy kind after another).
             static const char *list;
