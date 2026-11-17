@@ -57,7 +57,7 @@ It was replaced by copies that play and never think (2026-11-15) without a side-
 
 ## Steps
 
-### 0. The clean-up (2026-11-17, branch `coop-clean`)
+### 0. The clean-up (2026-11-17, now `main`)
 
 Done: every branch of the co-op work merged into one branch; the co-op code mapped; about 8,300 lines of code that
 could not run, experiments, failed alternatives and unused tests removed (co-op runtime about 38,500 to 30,200
@@ -65,6 +65,27 @@ lines); eleven bugs found by reading fixed (hook addresses with an extra digit, 
 uninitialised memory, a shield fuse scale never applied, a shared message number, and others); records and
 measurements behind `TOTK_COOP_DEBUG=1`; the documents replaced by this plan, two how-it-works pages and facts/
 (README.md). Two short two-game runs after the removals: no crash, stand-ins and an enemy copy shown in both games.
+
+Not exercised by those runs (both Links stood still, nobody fought or built): the fixes that change behaviour. The
+Shooter-sleep replay of a copy's prepared shot runs for the first time (`TOTK_COOP_EN_SHS=0` turns it off); a
+stand-in's fused shield material is scaled to its owner's; the spawn sync leaves an enemy seen dead to the enemy
+sync; game-data catch-up has its own flag (game-data version 4); failed create requests are released. Moving
+stand-ins, contraptions, hits and the horse sync were not run either.
+
+Seen in both runs and in a run before the clean-up (`fam-Enemy_Bokoblin_Junior`), cause unknown: a Bokoblin made by
+`TOTK_COOP_TEST_SPAWN` beside the Links on the Great Sky Island platform leaves its owner's game about 5 s after it is
+made, without dying (`coop_spawn_sync.c spawn_tick` then sends its gone notice). Step 1's deliberate-desync test and
+step 4's fight need an enemy that stays: read why before relying on a test spawn there.
+
+Before any run in the main checkout (`C:\Dev\totkCoop`): its build and stand-in pack date from 2026-11-15, before
+the clean-up. Run `.venv\Scripts\python tools\coop\make_puppet_pack.py --version v143` (the pack changed: the
+stand-in avoids lightning) and then a full `tools/build_game.py --version v143` (the hook list changed). The lifted
+code is current (`recomp/` did not change).
+
+Next, before step 1: a full review of the co-op code in a session of its own; its report is
+`build/CODEBASE_REVIEW.md`, outside git because it lists weak spots of a public repository. Its findings are fixed in
+the report's suggested order; a finding in code that steps 2 to 6 replace (the hand-made replays of the enemy sync,
+step 5) waits for that step. What the review fixes and what it leaves is written here when it ends.
 
 Left, small, to do when the files are next touched (no behaviour change unless said):
 - `coop_hooks.h`: the enemy hooks 0x2314ab0, 0x42ec98, 0x1b87a9c, 0x195321c, 0xa70a1c, 0x4e603c, 0x4f59ec, 0xc448c8
@@ -84,6 +105,13 @@ Left, small, to do when the files are next touched (no behaviour change unless s
 - A character stand-in lacks the plain stand-in's lightning-avoid flag (`tools/coop/charmod.py build_set`): where a
   character's chemical parameters live is not read yet.
 - Only 7 co-op names are in `coop_cfg_names.inc`: other co-op keys work from totk.ini with an "unknown key" line.
+- An unfinished entity-bench change from a deleted session is saved at `build/contraptions-uncommitted-2026-11-17.patch`
+  (the bench's fan row moved 2 m, off a talking construct that stood at the third fan); apply it to
+  `coop_ent_bench.c` or drop it (its other half touched `coop_bonds.c`, which is gone).
+- Two untracked input scripts in the main checkout, `tools/coop/map_hold.txt` and `menu_hold.txt` (Nov 4: hold the
+  stick 20 s with the map or the inventory open on the Rito Village save): nothing uses them.
+- Old local branches stay; all are in `main` except parked work: `claude/coop-arrow-tail-wip` (an arrow trail, "not
+  working") and `claude/quizzical-poincare-8711f5` (an inventory-backdrop diagnostic).
 
 ### 1. The mismatch checker
 
