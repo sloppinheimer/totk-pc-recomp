@@ -273,8 +273,9 @@ static uint32_t lookup(uint64_t x, uint32_t *off) {
 
 // ---- the window (cpu.h FN_ENTER -> main.c fnprof_hit, g_fnprof on)
 static uint64_t hash_of(const Watch *w, float v[3]) {
-    uint8_t b[0x80];
-    memcpy(b, (const void *)(uintptr_t)w->addr, w->len);   // checked readable when the map was built
+    uint8_t b[0x80] = {0};
+    // (a checked read: a Link object freed during the window faulted the game; code review, 2026-11-17)
+    if (!coop_rd(w->addr, b, w->len)) return 0;
     uint64_t h = 0xcbf29ce484222325ull;
     for (uint32_t i = 0; i < w->len; i++) h = (h ^ b[i]) * 0x100000001b3ull;
     if (w->len == 0x60) memcpy(&v[0], b + 0x2c, 4), memcpy(&v[1], b + 0x3c, 4), memcpy(&v[2], b + 0x4c, 4);   // a bone record's

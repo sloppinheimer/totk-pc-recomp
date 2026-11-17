@@ -21,7 +21,6 @@ static DWORD old_prot;
 static struct { volatile LONG64 fn; volatile LONG hits; volatile LONG min_off, max_off; } seen[SLOTS];
 int coop_watch_writes;   // set: only writes to the range are counted
 static volatile LONG outside;                // faults on the pages outside the range
-static __declspec(thread) int stepping;      // this thread runs one instruction with the page open
 
 static void note(uint64_t fn, uint64_t addr) {
     LONG off = (LONG)(addr - lo);
@@ -42,7 +41,6 @@ static LONG CALLBACK veh(EXCEPTION_POINTERS *ep) {
     // Every single-step trap is ours: nothing else in the game sets the trap flag, and a thread can take the trap after
     // its stepping mark went stale (the page was protected again by another thread before it ran the instruction).
     if (er->ExceptionCode == EXCEPTION_SINGLE_STEP) {
-        stepping = 0;
         DWORD o;
         if (armed) VirtualProtect((void *)(uintptr_t)page_lo, page_hi - page_lo, PAGE_NOACCESS, &o);
         return EXCEPTION_CONTINUE_EXECUTION;
@@ -54,7 +52,6 @@ static LONG CALLBACK veh(EXCEPTION_POINTERS *ep) {
     else InterlockedIncrement(&outside);
     DWORD o;
     VirtualProtect((void *)(uintptr_t)page_lo, page_hi - page_lo, old_prot, &o);
-    stepping = 1;
     ep->ContextRecord->EFlags |= 0x100;   // trap after the instruction: protect again in the single-step handler
     return EXCEPTION_CONTINUE_EXECUTION;
 }

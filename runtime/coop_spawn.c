@@ -285,11 +285,6 @@ static int prof3;
 // object, with their call site: where enemy AI uses the player it fetched.
 static int prof4;
 static int prof7;   // TOTK_COOP_PROF=7, below coop_fn_hit
-// TOTK_COOP_PROF=L: every function entered inside a co-op Link's life update (the life hook, main+0x4400b0), all of
-// them reported: for finding what shows its life on this game's hearts (they filled and emptied at each of its
-// updates).
-static int profL;
-static __thread int in_coop_life;
 static __thread uint64_t enemy_calc;
 static uint64_t prof4_ref;
 static struct { _Atomic uint64_t fn; _Atomic uint32_t hits; uint64_t x0, lr; } p3[8192];
@@ -354,10 +349,7 @@ static void p3_report(void) {
         if (guide)
             rt_log("coop: prof3 guide %6u x %s, x0 %llx, from %s", atomic_load(&p3[i].hits), ldr_describe(fn, d, sizeof d),
                    (unsigned long long)p3[i].x0, ldr_describe(p3[i].lr, e, sizeof e));
-        if (profL) {
-            rt_log("coop: profL %6u x %s, x0 %llx%s%s, from %s", atomic_load(&p3[i].hits), ldr_describe(fn, d, sizeof d),
-                   (unsigned long long)p3[i].x0, global ? " held by a global " : "", where, ldr_describe(p3[i].lr, e, sizeof e));
-        } else if (global) {
+        if (global) {
             g++;
             rt_log("coop: prof3 %6u x %s, x0 %llx (held by a global %s), from %s", atomic_load(&p3[i].hits),
                    ldr_describe(fn, d, sizeof d), (unsigned long long)p3[i].x0, where, ldr_describe(p3[i].lr, e, sizeof e));
@@ -488,7 +480,6 @@ static void p8_report(void) {
     }
 }
 void coop_fn_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
-    if (profL) { if (in_coop_life) p3_hit(addr, lr, x0); return; }
     if (prof6) { p6_hit(addr, lr); return; }
     if (prof7) {
         if (coop_in_remote_calc() || !x0) return;
@@ -1023,7 +1014,6 @@ void coop_tick(struct Cpu *c) {
         const char *e = cfg_get("TOTK_COOP_PROF");
         prof_phase = 1;
         if (e && *e == '3') prof3 = 1, g_fnprof = 1;
-        if (e && *e == 'L') prof3 = profL = 1, g_fnprof = 1;
     if (e && *e == '4') prof3 = prof4 = 1;   // the profiler from the world on (loading is too slow under it)
         if (e && *e == '7') prof7 = prof3 = 1, g_fnprof = 1;
         if (e && *e == '8') prof8 = 1;

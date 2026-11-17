@@ -3,3 +3,4 @@
 int coop_watch_arm(uint64_t addr, uint64_t len) { (void)addr, (void)len; return 0; }
 void coop_watch_disarm(void) {}
 void coop_hide_console(void) {}
+int coop_watch_writes;   // (coop_players.c sets it; defined here too so the non-Windows build links)
