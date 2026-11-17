@@ -6053,3 +6053,96 @@ void coop_weaplog_test(uint64_t me) {
                w ? "stand-in" : "this Link", frame_step_world_us() / 1e6, ap[0], ap[1], ap[2], m[3], m[7], m[11], dirty, hp[0], hp[1], hp[2]);
     }
 }
+
+// ---- An enemy's bones for the enemy sync's ragdoll pose (coop_enemy_pose.c) -------------------------------------------------
+// The skeleton's local records as epose_pack sends them: u16 bones, then 12 bytes a bone (the rotation's smallest three
+// quaternion components and the translation in 1/4096 m). 0: no skeleton, or it does not fit.
+int coop_enemy_bones_pack(uint64_t a, uint8_t *out, int max) {
+    uint64_t sk = enemy_skeleton(a), recs = sk ? coop_rd_ptr(sk + 0x18) : 0;
+    uint16_t n = 0;
+    static __thread float rec[PUP_BONES][24];
+    static __thread float fin[PUP_BONES][16];
+    uint64_t wmx = sk ? coop_rd_ptr(sk + 0x20) : 0;
+    if (!recs || !wmx || !coop_rd(sk + 0x48, &n, 2) || n == 0 || n > PUP_BONES || 2 + n * POSE_BONE > max || !coop_rd(recs, rec, (size_t)n * 0x60) || !coop_rd(wmx, fin, (size_t)n * 0x40)) return 0;
+    // A ragdoll's pose is in the final matrices, not in the records (the records keep the animation's pose while the
+    // bodies drive the bones): each record is worked out from the finals, R = Ap^-1 Ai S^-1, t = Ap^-1 (ti - tp), as
+    // epose_pack does with TOTK_COOP_EPOSE_FINAL. Bone 0 (no parent) is the finals' own: its matrix from the model's
+    // space, which the copy's root stands in for.
+    const int16_t *par = enemy_parents(a, n, (const float (*)[16])fin, (const float (*)[24])rec);
+    for (int i = 1; par && i < n; i++) {
+        float Ap[3][3], tp[3], Ai[3][3], ti[3], Ip[3][3];
+        if (par[i] < 0 || par[i] >= n) continue;
+        w_of(fin[par[i]], Ap, tp), w_of(fin[i], Ai, ti);
+        if (!inv3(Ap, Ip)) continue;
+        for (int r = 0; r < 3; r++)
+            for (int cl = 0; cl < 3; cl++) {
+                float v = 0;
+                for (int k = 0; k < 3; k++) v += Ip[r][k] * Ai[k][cl];
+                float sc = rec[i][4 + cl];
+                rec[i][8 + cl * 4 + r] = fabsf(sc) > 1e-6f ? v / sc : v;
+            }
+        for (int r = 0; r < 3; r++) {
+            float v = 0;
+            for (int k = 0; k < 3; k++) v += Ip[r][k] * (ti[k] - tp[k]);
+            rec[i][20 + r] = v;
+        }
+    }
+    if (!par) return 0;
+    memcpy(out, &n, 2);
+    for (int b = 0; b < n; b++) {
+        const float *f = rec[b];
+        float R[9] = {f[8], f[12], f[16], f[9], f[13], f[17], f[10], f[14], f[18]}, q[4];
+        mat_quat(R, q);
+        float len = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+        int big = 0;
+        for (int k = 0; k < 4; k++) { q[k] = len > 0 ? q[k] / len : (k == 3); if (fabsf(q[k]) > fabsf(q[big])) big = k; }
+        float sign = q[big] < 0 ? -1.0f : 1.0f;
+        int16_t v[6];
+        for (int k = 0, j = 0; k < 4; k++) if (k != big) v[j++] = q16(q[k] * sign, 32767.0f);
+        v[0] = (int16_t)((v[0] & ~3) | big);
+        v[3] = q16(f[20], 4096), v[4] = q16(f[21], 4096), v[5] = q16(f[22], 4096);
+        memcpy(out + 2 + b * POSE_BONE, v, POSE_BONE);
+    }
+    return 2 + n * POSE_BONE;
+}
+static void bone_unpack(const uint8_t *in, float q[4], float t[3]) {
+    int16_t v[6];
+    memcpy(v, in, POSE_BONE);
+    int big = v[0] & 3;
+    float s = 0;
+    for (int k = 0, j = 0; k < 4; k++)
+        if (k != big) {
+            q[k] = (float)(j ? v[j] : (int16_t)(v[0] & ~3)) / 32767.0f;
+            s += q[k] * q[k], j++;
+        }
+    q[big] = s < 1 ? sqrtf(1 - s) : 0;
+    for (int k = 0; k < 3; k++) t[k] = (float)v[3 + k] / 4096.0f;
+}
+// Two packed poses blended (f from the first to the second) and written over the actor's skeleton, then the model's push
+// (main+0x24cc30), as the stand-ins' poses are put. 0: the skeleton here has another number of bones.
+int coop_enemy_bones_put(Cpu *c, uint64_t a, const uint8_t *pa, const uint8_t *pb, float f) {
+    uint64_t sk = enemy_skeleton(a), recs = sk ? coop_rd_ptr(sk + 0x18) : 0, model = enemy_model(a);
+    uint16_t have = 0, na = 0, nb = 0;
+    memcpy(&na, pa, 2), memcpy(&nb, pb, 2);
+    if (!recs || !coop_rd(sk + 0x48, &have, 2) || have != na || na != nb) return 0;
+    for (int b = 0; b < na; b++) {
+        float qa[4], qb[4], q[4], ta[3], tb[3], R[9];
+        bone_unpack(pa + 2 + b * POSE_BONE, qa, ta), bone_unpack(pb + 2 + b * POSE_BONE, qb, tb);
+        qblend(qa, qb, f, q), quat_mat(q, R);
+        float *rec = (float *)(uintptr_t)(recs + (uint64_t)b * 0x60);
+        for (int k = 0; k < 3; k++) rec[20 + k] = ta[k] + (tb[k] - ta[k]) * f;
+        for (int cl = 0; cl < 3; cl++) for (int k = 0; k < 3; k++) rec[8 + cl * 4 + k] = R[k * 3 + cl];
+    }
+    if (model) coop_guest_call(c, MOD_MAIN_BASE + 0x24cc30, model, 0, 0, 0);
+    return 1;
+}
+// (test: where a bone is, from the actor's place, by the skeleton's world matrices; coop_enemy_pose.c lays the two games' side by side)
+int coop_enemy_bone_world(uint64_t a, int bone, float out[3]) {
+    uint64_t sk = enemy_skeleton(a), wmx = sk ? coop_rd_ptr(sk + 0x20) : 0;
+    uint16_t n = 0;
+    float m[16], p[3];
+    if (!wmx || !coop_rd(sk + 0x48, &n, 2) || bone >= n || !coop_rd(wmx + (uint64_t)bone * 0x40, m, sizeof m) || !coop_rd(a + COOP_ACTOR_POS, p, 12)) return 0;
+    (void)p;
+    out[0] = m[12], out[1] = m[13], out[2] = m[14];   // (the matrix's translation, in the model's space)
+    return 1;
+}

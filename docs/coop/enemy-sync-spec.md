@@ -256,6 +256,19 @@ it is seen every frame (the slot's time since seen stays 0) and fought, and in o
 this game's nearer Link after 12 s. Section 12's question, whether an enemy fights a stand-in in slot 0, is answered
 yes for a Wizzrobe. Not done on a copy: asking the verb while it is a copy (R10 4 ii).
 
+**B.7 A ragdoll on a copy** (research R12; `coop_enemy_pose.c`, off unless `TOTK_COOP_EN_POSE=1`). The ragdoll
+component's state ([[comps+0x3e8]+0x20]) is 0 none, 1 recovering, 2 partial (a flinch), 3 full. A copy does not start
+its own full ragdoll: the owner's game sends the skeleton's bones while its enemy is in state 3 or 1 (worked out from
+the final matrices, 12 bytes a bone, every other frame, latest only) and the copy's game writes them after the
+actor's model phase. Built and measured as not right yet [m]: poses are sent, taken and put, but the copy's skeleton
+at its next calc is 1.3 m (median) from the owner's bones and of another shape. Open: where the game writes a
+ragdoll's bones into the skeleton, in which space, and at which moment a copy's write lasts until the picture.
+
+**B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
+projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
+struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is
+passed on to the game that runs it now (built, not seen in a run).
+
 **B.5 Order.** B.1 (the bit) with a run that also says whether the flame is seen again; B.3's run; B.2; then effects
 and sounds by key and the weather request, each when a play session or a run shows it missing.
 

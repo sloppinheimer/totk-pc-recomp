@@ -1172,6 +1172,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // main+0x194fd7c; the actor job also runs main+0x2f9910): a co-op Link's run as its calc (TOTK_COOP_PROF=7 found
     // them: its ragdoll and tips ran there, outside the calc flag) (2026-11-04).
     if (addr == MOD_MAIN_BASE + 0x245030 || addr == MOD_MAIN_BASE + 0x2f9910 || addr == MOD_MAIN_BASE + 0x194fd7c) {
+        { int en_pose_phase(Cpu *c, uint64_t addr); if (en_pose_phase(c, addr)) return 1; }   // coop_enemy_pose.c: a copy shown in its owner's ragdoll pose
         int coop_enemy_puppet_phase(Cpu *c, uint64_t addr);   // coop_world.c: an enemy puppet's phases (driven, or skipped)
         if (coop_enemy_puppet_phase(c, addr)) return 1;
         return coop_players_phase(c, addr);

@@ -142,7 +142,7 @@ void en_dead(En *e, const char *why) {
 
 void en_hit_phase0(void) {
     uint64_t me = coop_ctr_me(), now = en_now();
-    {   // Test (TOTK_COOP_EN_TEST_KILL=<s>): that long after this game first ran an enemy, its first one near this Link
+    {   // Test (TOTK_COOP_EN_TEST_KILL=<s>): that long after this game first ran an enemy, its one nearest this Link
         // loses all its life as if to another player's hit.
         static int at = -1, done;
         static uint64_t first_ns;
@@ -156,6 +156,15 @@ void en_hit_phase0(void) {
             if (now - first_ns < (uint64_t)at * SEC) break;
             float dx = e->pose[0] - lp[0], dz = e->pose[2] - lp[2];
             if (dx * dx + dz * dz > 60.f * 60.f) continue;
+            {   // (the nearest of them)
+                int near = 0;
+                for (int k = 0; k < EN_N && !near; k++) {
+                    En *o = &en_tab[k];
+                    float ox = o->pose[0] - lp[0], oz = o->pose[2] - lp[2];
+                    near = k != i && o->used && o->owner == me && o->life == EN_LIVE && o->cell >= 0 && ox * ox + oz * oz < dx * dx + dz * dz;
+                }
+                if (near) continue;
+            }
             e->pend_dmg += 100000, done = 1;
             rt_log("coop: en: test: %s %016llx is made to lose all its life", e->name, (unsigned long long)e->id.a);
         }

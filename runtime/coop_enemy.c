@@ -970,6 +970,7 @@ void coop_enemy_phase0(Cpu *c) {
     en_hit_phase0();
     en_copy_phase0(c);
     en_shot_phase0();
+    { void en_pose_phase0(void); en_pose_phase0(); }   // coop_enemy_pose.c
     out_flush();
     plat_mutex_unlock(&en_lock);
 }

@@ -723,7 +723,12 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
                    ta ? sqrtf((tp[0] - cp[0]) * (tp[0] - cp[0]) + (tp[1] - cp[1]) * (tp[1] - cp[1]) + (tp[2] - cp[2]) * (tp[2] - cp[2])) : -1.0f);
         }
     }
-    if (!off && !m->sw_on) { en_hit_precalc(c, actor, m, 0); return; }
+    if (!off && !m->sw_on) {
+        void en_pose_precalc(uint64_t actor, EnCell *m);   // coop_enemy_pose.c: a ragdoll's bones, for its copies
+        if (st == EM_OWNED) en_pose_precalc(actor, m);
+        en_hit_precalc(c, actor, m, 0);
+        return;
+    }
     int32_t ast = 0;
     if (!coop_rd(actor + COOP_ACTOR_STATE, &ast, 4) || ast < 2 || ast > 6) return;
     uint64_t x[31], sp = c->sp, pc = c->pc, body = main_body(actor);
@@ -769,6 +774,7 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
         return;
     }
+    { void en_pose_copy_precalc(uint64_t actor, EnCell *m); en_pose_copy_precalc(actor, m); }   // (test: coop_enemy_pose.c)
     m->sw_on = 1;
     four_writes(actor, m);
     if (body && !m->body_static && !en_test_skip('s')) coop_guest_call(c, MOD_MAIN_BASE + FN_MOTION_TYPE, body, 0, 0, 0), m->body_static = 1;
@@ -908,6 +914,7 @@ static void gmc_log(uint64_t actor, const char *role) {
 typedef struct { uint64_t key; Enid id; uint32_t epoch; uint8_t life, pad[3]; EnState st; } MState;
 _Static_assert(sizeof(MState) <= 1100, "a state fits one transport payload");
 
+uint64_t en_state_key(Enid id);
 static uint64_t key_of(Enid id) {
     uint64_t h = 1469598103934665603ull;
     const uint8_t *b = (const uint8_t *)&id;
@@ -1159,3 +1166,5 @@ void en_copy_phase0(Cpu *c) {
                n_copy, n_held, turned, leaks, n_owned, passed_sum), passed_sum = 0;
     if (rec && st_n) rt_log("coop: en: sent: %u states, %u bytes in the last second (to each peer)", st_n, st_bytes), st_n = st_bytes = 0;
 }
+
+uint64_t en_state_key(Enid id) { return key_of(id); }
