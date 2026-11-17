@@ -82,36 +82,48 @@ the clean-up. Run `.venv\Scripts\python tools\coop\make_puppet_pack.py --version
 stand-in avoids lightning) and then a full `tools/build_game.py --version v143` (the hook list changed). The lifted
 code is current (`recomp/` did not change).
 
-Next, before step 1: a full review of the co-op code in a session of its own; its report is
-`build/CODEBASE_REVIEW.md`, outside git because it lists weak spots of a public repository. Its findings are fixed in
-the report's suggested order; a finding in code that steps 2 to 6 replace (the hand-made replays of the enemy sync,
-step 5) waits for that step. What the review fixes and what it leaves is written here when it ends.
+The review before step 1 was done on 2026-11-17 (its report, `build/CODEBASE_REVIEW.md`, stays outside git: it lists
+weak spots of a public repository; finding IDs below are its). Fixed, in the report's order (commits 7cb76921 to
+6061ab3f; each built, none run in the game yet):
+- SYNC-001: the contraption sync opens its reader of the transport's inbox; the enemy sync, on by default, had been
+  taking and dropping all its reliable messages and join/leave events.
+- SEC-003, SEC-010, SEC-011, SEC-016: hosting asks for a session code (the address players type is now
+  `<address> <code>`, packet version 31; the standalone relay takes `--code`); the router's forward follows the relay.
+- BUG-001, BUG-002, BUG-003, SEC-002, SEC-008, SEC-009: what another game sends is checked before it is used (numbers,
+  offsets, counts); a stack overflow in the contraption status line and a write through a stale actor address fixed.
+- SEC-001, SEC-004, SEC-005, SEC-006, SEC-012, SEC-013: names and owners of what another game asks this one to make,
+  move or delete are checked where received (README rule 7).
+- REL-001, REL-002, SEC-014, SYNC-004, SYNC-005, SYNC-008, BUG-004, BUG-005: session and slot lifetimes (a lost LEAVE,
+  copy requests released, tables that filled and never emptied).
+- TEST-001 to TEST-006: the test tools judge the copies' real places, fail on any FATAL line and when nothing was
+  compared, and no longer pass on the sync's own bookkeeping.
+- SYNC-002, SYNC-003, RACE-001, RACE-002, RACE-003, SEC-015, SEC-017, REL-004, BUILD-001, ARCH-001, DUP-001, DOC-001,
+  DOC-002: the enemy outbox and shot table, threads' shared state, shared-world stamps, the rotating ground's sender,
+  test tracers, hooks and functions with no use, docs and comments.
 
-Left, small, to do when the files are next touched (no behaviour change unless said):
+Not run: none of these fixes has been exercised in the game. Hosting from the Co-op tab now needs the code: the first
+run of step 1 that hosts from game A's tab tests it (`run_session.ps1` gives game A the code `TEST42`).
+
+Left, and where it goes:
+- With step 2 (engine reads): SYNC-006, whether one actor's calc can run inside another's (an enemy copy's
+  thread-local marks stay set across other actors' calcs, and a held brain's grace may turn away another actor's
+  target reset), and PERF-001, a checked read in every actor's calc; both changes were tried and taken back
+  (4d217dc4) because neither could be shown safe by reading.
+- A protocol change for contraption ownership (SEC-007 in the report; no step yet). The session code keeps it to
+  invited players.
+- With step 3 or 5: SYNC-007, a contraption copy's device striking an enemy this game runs counts in both games.
+- Replaced by step 1's checker: the enemy bench's own bookkeeping (tables equal, shot counts), the empty enemy list of
+  the sync audit.
 - `coop_hooks.h`: the enemy hooks 0x2314ab0, 0x42ec98, 0x1b87a9c, 0x195321c, 0xa70a1c, 0x4e603c, 0x4f59ec, 0xc448c8
-  have no handler; step 2 replaces 0x1bb16a0 and 0x1ba7710 (above).
-- No caller: `input.h input_coop_keys`, `coop_ctr.c coop_ctr_recv_type`. A statement that does nothing in
-  `coop_ent_own.c ent_apply_owner`; `coop_phase0_hook` logs a constant 0.
-- "(test)" lines that log without `TOTK_COOP_DEBUG`: `coop_enemy_copy.c held_rebuild`, the hidden-mask and
-  battle-info lines of `en_copy_phase0`.
-- About 40 comments that contradict the code or cite removed tests by name (the files' maps listed them; among them
-  the headers of `coop_enemy.c`, `coop_contact.c`, `coop_autobuild.c`, `coop_life.c`, `coop_mount.c` and `ov.h`).
-- Duplicated helpers: quaternion conversions, FNV hashes, main-body lookups, the equipment-slot walk, the "paused"
-  tests; `coop_spawn.c` is the hook dispatcher and tick, misnamed.
-- Unread fields in the network state (`cam_fwd`, `cam_right`, `sticks`) and in the enemy and entity tables (a packet
-  version change for the first).
-- 22 input scripts in `tools/coop/` that nothing refers to.
-- Two threads read the player slots without a lock (`coop_name_tags`, `coop_markers` against `coop_players_tick`).
-- A character stand-in lacks the plain stand-in's lightning-avoid flag (`tools/coop/charmod.py build_set`): where a
-  character's chemical parameters live is not read yet.
-- Only 7 co-op names are in `coop_cfg_names.inc`: other co-op keys work from totk.ini with an "unknown key" line.
-- An unfinished entity-bench change from a deleted session is saved at `build/contraptions-uncommitted-2026-11-17.patch`
-  (the bench's fan row moved 2 m, off a talking construct that stood at the third fan); apply it to
-  `coop_ent_bench.c` or drop it (its other half touched `coop_bonds.c`, which is gone).
-- Two untracked input scripts in the main checkout, `tools/coop/map_hold.txt` and `menu_hold.txt` (Nov 4: hold the
-  stick 20 s with the map or the inventory open on the Rito Village save): nothing uses them.
-- Old local branches stay; all are in `main` except parked work: `claude/coop-arrow-tail-wip` (an arrow trail, "not
-  working") and `claude/quizzical-poincare-8711f5` (an inventory-backdrop diagnostic).
+  and 0x1b70a04 have no handler; step 2 is to use them and replaces 0x1bb16a0 and 0x1ba7710.
+- Small, when the files are next touched: duplicated helpers (quaternion conversions, FNV hashes, main-body lookups,
+  the equipment-slot walk, the "paused" tests, `coop_spawn.c`'s copies of `coop_game.c`'s reads and create; the
+  report's consolidation table); unread network-state fields (`cam_fwd`, `cam_right`, `sticks`, `life`, `life_max`: a
+  packet version change); comments that still name removed files or tests (fewer than the 40 listed before); the
+  overlay thread reading player slots without a lock; `coop_cfg_names.inc` holds 7 co-op names; 48 input scripts in
+  `tools/coop/` that no file names; the character stand-in's lightning flag (`charmod.py build_set`); the saved bench
+  change (`build/contraptions-uncommitted-2026-11-17.patch`); the untracked `map_hold.txt` and `menu_hold.txt`; the
+  parked branches `claude/coop-arrow-tail-wip` and `claude/quizzical-poincare-8711f5`.
 
 ### 1. The mismatch checker
 
