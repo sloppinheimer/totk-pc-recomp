@@ -1,5 +1,8 @@
 # Enemy sync: punch list
 
+> **Interim snapshot, 2026-11-16.** Made before the build-out was finished. It will be redone from a full audit once
+> everything is built; until then treat it as a progress note, not the final account.
+
 Everything about the enemy sync that is **not confirmed done** as of 2026-11-16: built but never seen in a run, built
 but switched off, built differently from the plan, or not built. What is confirmed is in
 [enemy-sync-how-it-works.md](enemy-sync-how-it-works.md). Section and research references are to

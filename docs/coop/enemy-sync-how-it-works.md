@@ -1,5 +1,8 @@
 # How the enemy sync works
 
+> **Interim snapshot, 2026-11-16.** Made before the build-out was finished. It will be redone from a full audit once
+> everything is built; until then treat it as a progress note, not the final account.
+
 This describes only what is built **and was measured in a two-game run** as of 2026-11-16. Everything that is built but
 unconfirmed, switched off, or not built is in [enemy-sync-punch-list.md](enemy-sync-punch-list.md). The full reasoning,
 addresses and run figures are in [enemy-sync-spec.md](enemy-sync-spec.md), sections A and B; the audit both documents
