@@ -39,7 +39,7 @@ typedef struct {
     struct { float clock, weight; } c[EN_CTRL_N];
 } EnSlot;
 #define EN_EQ_N 8         // equipment slots
-typedef struct { EnSnap s; int32_t hp; uint32_t dstate; uint8_t nslot, rag, hide, vis, mem, verb, tgt, wx; uint32_t eq[EN_EQ_N]; uint32_t att[EN_EQ_N]; uint8_t eqs[EN_EQ_N]; EnSlot sl[EN_SLOT_N]; } EnState;   // eq: the name hash of what each equipment slot holds   // one stated moment of an enemy
+typedef struct { EnSnap s; int32_t hp; uint32_t dstate; uint8_t nslot, rag, hide, vis, mem, verb, tgt, wx; uint32_t eq[EN_EQ_N]; uint32_t att[EN_EQ_N]; uint8_t eqs[EN_EQ_N]; uint32_t binfo, binfo2; uint8_t blink, bpad[3]; EnSlot sl[EN_SLOT_N]; } EnState;   // eq: the name hash of what each equipment slot holds   // one stated moment of an enemy
 // (hide: the model controller's "not drawn" byte, [comps+0x280]+0x9d; vis: actor+0x444 bit 23)
 
 typedef struct {
@@ -69,6 +69,7 @@ typedef struct {
     int32_t show_hp; uint32_t show_dstate; uint8_t show_rag, show_hide, show_mem, show_verb, show_tgt;
     uint32_t eq_att[EN_EQ_N]; uint8_t eq_state[EN_EQ_N], eq_att_tries[EN_EQ_N]; uint32_t eq_state_frame;   // what is fused to each slot's thing at its owner's (name hash), and whether it is drawn (2) or put away (4)
     uint8_t throw_slot, throw_due; uint64_t throw_x3, throw_x4; uint8_t throw_req[0x30];   // a throw of its owner's enemy to make here (B.14)
+    uint32_t show_binfo; uint8_t show_blink, show_bhave;   // its owner's battle-info flags and whether it is in the battle manager's list (B.20)
     uint8_t wx_type, show_wx; uint32_t wx_frame;   // the magic weather its graph last asked for (type + 1) and when; what its owner states
     uint32_t out_id;      // the attack id of the copy's blow whose outcome on this game's Link was last told to its owner
     uint32_t fwd_id;      // the attack id of the contact last sent whole (one blow is sent once)

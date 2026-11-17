@@ -367,6 +367,15 @@ the other game, bound, followed, no leak, tables equal. They are in the default 
 Bullet or Boss are left out. None of the five was fought beyond the Gibdo's run: their attacks, parts and special
 moves (a Like Like swallowing, a Lynel's charge and bow, an Evermean's disguise) are not looked at.
 
+**B.20 The battle-info component: measured, not carried** (research R15). [comps+0x140] holds the flags the life
+gauge, the marks over the head and the battle music's focus hang on (+0x38). Measured in a camp fight [m]: an enemy
+in battle has 0x720 there in the game that runs it (0x1720, 0x1f20 and 0x10720 at moments), and its copy has 0 or
+0x200. STATE carries the owner's word and the record prints both at each change. Writing the owner's word on the
+copy each pre-calc did not hold: the copy's own component puts its own value back every frame. What works the flags
+out on an enemy that runs (so what a copy lacks) is not read, and the list the battle manager keeps
+([*main+0x395e090]+0x4548) links a component at an offset of its own, not at +0x58. [open: the marks, the gauge's
+battle state and the battle music for an enemy another game runs.]
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is

@@ -987,6 +987,9 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
                 mem_write(actor, m->show_mem, mei >= 0 ? en_tab[mei].name : "?");
             }
             { int16_t aei = atomic_load(&m->en); if (aei >= 0 && !(coop_sess_frame_no() & 7)) attn_copy(c, actor, &en_tab[aei]); }   // the prompts its owner's offers
+            // (The battle-info component's flags ([comps+0x140]+0x38) are NOT written on a copy: tried, and the copy's own
+            // component puts its own value back every frame (measured: still 0 or 0x200 at phase 0 against its owner's
+            // 0x720 in battle). What works them out on an enemy that runs is not read: B.20, open.)
             { void en_fx_precalc(Cpu *c, uint64_t actor, EnCell *m); en_fx_precalc(c, actor, m); }   // coop_enemy_fx.c
             uint8_t want = m->show_hide;
             uint64_t who[1 + EN_EQ_N * 2], eu = coop_rd_ptr(en_comps(actor) + 0x230);
@@ -1123,6 +1126,21 @@ void en_copy_phase0(Cpu *c) {
                 s->hide = hm, s->vis = vb;
             }
             brain_read(e->actor, &s->verb, &s->tgt);
+            {   // the battle-info component's words ([comps+0x140]: the flags at +0x38, the word at +0x40 in the low half and the
+                // int at +0x90 in the high; research R15: the life gauge, the marks and the battle music hang on it)
+                uint64_t bi = coop_rd_ptr(en_comps(e->actor) + 0x140);
+                uint32_t f = 0, n = 0;
+                uint16_t w = 0;
+                if (bi) coop_rd(bi + 0x38, &f, 4), coop_rd(bi + 0x40, &w, 2), coop_rd(bi + 0x90, &n, 4);
+                uint32_t b2 = (uint32_t)w | n << 16;
+                s->blink = bi && (coop_rd_ptr(bi + 0x58) || coop_rd_ptr(bi + 0x60));   // (in the battle manager's list)
+                if (f != s->binfo || b2 != s->binfo2) {
+                    static _Atomic int said;
+                    if (atomic_fetch_add(&said, 1) < 60) rt_log("coop: en: battle info: %s %016llx (run here) flags %08x -> %08x, word %04x, count %d, on the list %u; brain verb %u", e->name, (unsigned long long)e->id.a, s->binfo, f, w, (int)n, s->blink, s->verb);
+                    e->send_burst = 3;
+                }
+                s->binfo = f, s->binfo2 = b2;
+            }
             { uint8_t wx = frame - m->wx_frame < 10 ? m->wx_type : 0; if (wx != s->wx) e->send_burst = 3; s->wx = wx; }   // (the magic weather its graph asks for: coop_enemy_fx.c)
             if (!((frame + (uint32_t)i) & 7)) attn_owner(e);
             {   // its AI memory (B.2)
@@ -1230,7 +1248,7 @@ void en_copy_phase0(Cpu *c) {
         // The owner's enemy began a flinch (a partial ragdoll, by its own player's blow or anything else): the copy's is
         // asked of its own ragdoll component, unless this game's player just struck it and it flinched here already.
         // (no flinch is asked of the copy's own ragdoll component any more: see en_copy_hook, the ragdoll start)
-        m->show_rag = sl->rag, m->show_hide = sl->hide, m->show_mem = sl->mem, m->show_verb = sl->verb, m->show_tgt = sl->tgt, m->show_wx = sl->wx;
+        m->show_rag = sl->rag, m->show_hide = sl->hide, m->show_mem = sl->mem, m->show_verb = sl->verb, m->show_tgt = sl->tgt, m->show_wx = sl->wx, m->show_binfo = sl->binfo, m->show_blink = sl->blink, m->show_bhave = 1;
         m->show_nslot = sl->nslot, m->show_hold = (uint8_t)hold, m->show_teleport = (uint8_t)jump, m->show_hp = sl->hp, m->show_dstate = sl->dstate;
         for (int k = 0; k < sl->nslot; k++) {
             m->show_slot[k] = sl->sl[k];
@@ -1252,6 +1270,17 @@ void en_copy_phase0(Cpu *c) {
             if (was[i][0] != hm || was[i][1] != vb || was[i][2] != sl->hide || was[i][3] != sl->vis)
                 rt_log("coop: en: hide: %s %016llx (copy) own mask %02x bit %u; its owner's mask %02x bit %u", e->name, (unsigned long long)e->id.a, hm, vb, sl->hide, sl->vis);
             was[i][0] = hm, was[i][1] = vb, was[i][2] = sl->hide, was[i][3] = sl->vis;
+        }
+        if ((frame & 15) == (uint32_t)((i + 5) & 15)) {   // (the record: the copy's battle-info words against its owner's, at each change)
+            uint64_t bi = coop_rd_ptr(en_comps(e->actor) + 0x140);
+            uint32_t f = 0, n = 0;
+            uint16_t w = 0;
+            static uint32_t was[EN_N][2];
+            static int said;
+            if (bi) coop_rd(bi + 0x38, &f, 4), coop_rd(bi + 0x40, &w, 2), coop_rd(bi + 0x90, &n, 4);
+            if ((was[i][0] != f || was[i][1] != sl->binfo) && said++ < 80)
+                rt_log("coop: en: battle info: %s %016llx (copy) own flags %08x word %04x count %d; its owner's flags %08x word %04x count %d", e->name, (unsigned long long)e->id.a, f, w, (int)n, sl->binfo, sl->binfo2 & 0xffff, (int)(sl->binfo2 >> 16));
+            was[i][0] = f, was[i][1] = sl->binfo;
         }
         if ((frame & 15) == (uint32_t)(i & 15)) {   // what the copy holds against what its owner's enemy holds
             uint32_t eq[EN_EQ_N];
