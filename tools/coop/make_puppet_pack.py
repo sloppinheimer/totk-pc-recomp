@@ -7,7 +7,8 @@ in-hand calls; nothing in the actor fights them (docs/coop/proxy-plan.md, "Parit
 
 This pack is made here from the player's own Player.pack.zs: every member kept, plus
 Actor/PlayerPuppet.engine__actor__ActorParam.bgyml, the Player's actor parameters with the category Enemy (as the
-mod's) and without the components that make a Player act or that only one Link may have (PLAYER_ONLY below).
+mod's) and without the components that make a Player act or that only one Link may have (PLAYER_ONLY below), and
+its own chemical parameters, the Player's with the gear it holds kept from lightning (CHEMICAL below).
 Enemies do not fight the stand-in, as in TotK Online: each enemy runs in the game of the player nearest it (the
 hand-over, coop_world.c). --target-fix (a test, off) makes enemies notice it: see EMITTER below.
 
@@ -107,6 +108,19 @@ if args.target_fix:
     assert byml.same(byml.read(new), em)
     w.files[EMITTER] = new
     param['Components']['PerceptionEmitterRef'] = '?' + EMITTER
+# Its chemical parameters: the Player's with IsEquipmentAvoidLightningTarget true, as the Lynels', Ganondorf's and
+# the Sage golem's (the only three in 1.4.3 that set it): a thunderstorm in this game does not take the metal the
+# stand-in holds for a lightning target. Only its owner's game builds the static on that player and strikes it
+# (docs/coop/element-sync-spec.md 5.6).
+CHEMICAL = f'Component/ChemicalParam/{NAME}.game__component__ChemicalParam.bgyml'
+ref = param['Components']['ChemicalRef']
+chem = byml.read(bytes(pack.get_file(ref.lstrip('?')).data))
+assert len(chem['Object']) == 1 and chem['Object'][0].get('IsEquipmentAvoidLightningTarget') is False, chem
+chem['Object'][0]['IsEquipmentAvoidLightningTarget'] = True
+new = byml.write(chem)
+assert byml.same(byml.read(new), chem)
+w.files[CHEMICAL] = new
+param['Components']['ChemicalRef'] = '?' + CHEMICAL
 new = byml.write(param)
 assert byml.same(byml.read(new), param)
 w.files[f'Actor/{NAME}.engine__actor__ActorParam.bgyml'] = new
@@ -177,4 +191,4 @@ for path, (z, orig) in outputs.items():
     lines.append(f'{path}\t{len(z)}\t{hashlib.sha256(z).hexdigest()}\t{orig}')
 man.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 print(json.dumps(dict(status='pass', files=list(outputs), members=len(w.files), left_out=gone,
-                      emitter=EMITTER if args.target_fix else 'resident (Player)', game_fields=args.game_fields)))
+                      emitter=EMITTER if args.target_fix else 'resident (Player)', chemical=CHEMICAL, game_fields=args.game_fields)))

@@ -23,7 +23,7 @@ here are registered for later steps and pass through.
 | main+0x1f0eb94 contact entry (x2 the shape, x3 the chemical object) | dropped when the shape is centred on a copied cell (4.5) |
 | main+0x30efa0 component update (x0 the component) | a thing is read; a copy is given its state by requests (5) |
 | main+0x1906768 reaction entry (x0 the target element, x3 the reaction) | dropped when the target is a copy's or a shown-only actor's element (5.4), or the reaction comes from a shown-only actor (5.6) |
-| main+0x21c43b4 lightning strike (x1 the position, x2 the level, x3 sage) | this game's own strike is told to the others (5.6) |
+| main+0x21c43b4 lightning strike (x1 the position, x2 the level, x3 sage, x4 the element or 0) | this game's own strike is told to the others, or not made when it is aimed at another player (5.6) |
 
 The cell hooks run on the thread of the chemical system's update; the component hooks run on the actors' update
 threads, several at once; phase 0 (`coop_elem_phase0`, at GameDataMgr::calc) runs on the game thread and does all
@@ -190,6 +190,34 @@ with the element 0 (thunder manager `[[[[main+0x395dc20]]+0xd0]+0x228]`); its ow
 blast actor of a shown strike (name `LightningStrike...`, within 3 m of the place, for 150 frames) is shown only.
 Weather is not shared, so each game's storm strikes in every game.
 
+**A player is a lightning target only in that player's own game.** Each game runs a storm of its own, and a storm
+aims at metal: the metal a stand-in holds is a real item in the game that shows it, with chemistry of its own. Left
+alone, game A's storm built the static on what B's stand-in held, struck it there, and the strike, sent on, fell on
+B's Link in B with no warning in B (the tester's storm, 2026-11-17: A's strike 4 fell where B stood, B made it 18 ms
+after A and its Link turned burning and electrified 33 ms after that, with no strike of B's own near; B's own
+warnings came only afterwards). So:
+
+- **What a stand-in holds is no lightning target.** The stand-in's chemical parameters (its own, in the puppet pack,
+  `tools/coop/make_puppet_pack.py`) are the Player's with `IsEquipmentAvoidLightningTarget` true, as the Lynels',
+  Ganondorf's and the Sage golem's are (the only three in 1.4.3): the game itself keeps a storm off the gear such an
+  actor holds, so no static builds on the stand-in's metal and no strike is drawn to it.
+- **A strike aimed at another player is not made.** The strike hook asks, for a strike of this game's own, whom it
+  is aimed at. With an element (the strike a component asked for, through main+0x21c4358, after its static): the
+  element's actor (owner object +0x60, its component +0x10, the component's actor +0x18, checked back) is a stand-in
+  or something in a stand-in's EquipmentUser rows (`coop_standin_holds`, coop_players.c). Without one (the storm's
+  own, main+0x21c3a6c and main+0x21c4074, whose metal pull takes the struck thing's place), or when that actor is not
+  found: the point is within 12 m of a stand-in and nearer it than this game's Link. Such a strike returns at once:
+  not made, not sent, counted ("at another player not made") and logged (`lightning at ... is aimed at player N`).
+  A strike the storm aims at the ground near a stand-in is therefore that player's game's to make; a strike nearer
+  this game's own Link is made and sent, and falls on the other player's Link too when they stand close, as one storm
+  would. Lightning arrows and the Sage's strikes carry their own element and are made wherever they are aimed.
+- **The owner's static and strike are what the others show.** The strike is sent as above. The static a storm
+  builds on metal is that metal's chemistry (the chemical source's virtual main+0x18d32c4 starts
+  `Chemical_LightningSign_OT` at main+0x18d43c0); it is not the EquipmentUser's lightning wait. That wait (bit 16 of
+  +0x4600, sent as NetState flags bit 12, coop_players.c) is set only by the Sage's thunder field and an AI node no
+  graph of 1.4.3 uses; it is shown on the stand-in as before. Showing the owner's static on the stand-in's gear is
+  not built: the others see the owner's strike without its warning.
+
 ### 5.7 Each player's Link on the other games' stand-ins
 
 A game states its own Link (its elements as 5.1 reads them, its ice look, its condition bits) in `ELM_LINK`, every
@@ -306,7 +334,9 @@ projectiles; nothing calls it yet.
 
 - **Lightning**: only the forced strike was run, not a storm's own, an arrow's or a node's; a strike in a game whose
   Link is far away is still made there; the thing a strike electrifies or lights in the showing game is given by its
-  owner's statement, which was not run.
+  owner's statement, which was not run. The rule that a player is a target only in its own game (5.6) is built, not
+  run: neither the stand-in's avoid flag nor the strike hook's refusal has been seen in a storm yet, and the owner's
+  static is not shown on the stand-in.
 - **From the review, not fixed** (enemies made at run time are now named by the enemy sync's key, not run): a copy
   cannot pass a reaction of this game's to its owner (another player's fire on an enemy copy
   does nothing); an enemy copy is put out for a moment at each change of owner; a state that lasts (a brazier put
