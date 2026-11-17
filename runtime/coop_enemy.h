@@ -68,6 +68,7 @@ typedef struct {
     uint8_t show_nslot, show_hold;
     int32_t show_hp; uint32_t show_dstate; uint8_t show_rag, show_hide, show_mem, show_verb, show_tgt;
     uint32_t eq_att[EN_EQ_N]; uint8_t eq_state[EN_EQ_N], eq_att_tries[EN_EQ_N]; uint32_t eq_state_frame;   // what is fused to each slot's thing at its owner's (name hash), and whether it is drawn (2) or put away (4)
+    uint8_t throw_slot, throw_due; uint64_t throw_x3, throw_x4; uint8_t throw_req[0x30];   // a throw of its owner's enemy to make here (B.14)
     uint32_t fwd_id;      // the attack id of the contact last sent whole (one blow is sent once)
     uint32_t fwd_frame;   // the frame this game's player's contact on the copy was last sent whole to its owner (its lost life is then not sent as points too)
     uint8_t grace_verb, grace_tgt; uint32_t grace_frame, hold_frame, brain_log_frame;   // a taken-over enemy's brain is held at its owner's verb and target until this frame (B.6)

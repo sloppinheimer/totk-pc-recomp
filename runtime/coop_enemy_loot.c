@@ -29,7 +29,10 @@ const char *coop_actor_name(uint64_t a, char *out, size_t n);
 
 #define LOOT_N 48
 static struct { char name[48]; _Atomic uint32_t frame; float at[3]; } pend[LOOT_N];   // items asked for by a drop, by name, and where the dying enemy was
-static struct { _Atomic uint64_t actor; _Atomic uint32_t frame; } let_go[LOOT_N];   // weapons an owned enemy let go of
+static struct { _Atomic uint64_t actor; _Atomic uint32_t frame; uint8_t thrown; float last[3]; } let_go[LOOT_N];   // weapons an owned enemy let go of (thrown: taken once it rests)
+// What a copy threw here (B.14): this game's own flying thing. It is no loose object of anyone's while it flies, and it
+// is deleted once it rests (or after 10 s): the owner's game's thrown thing, at rest, is the one object that stays.
+static struct { _Atomic uint64_t actor; uint32_t frame, still; float last[3]; } thrown[16];
 static __thread int tl_in_drop;
 static _Atomic uint32_t n_items, n_weapons, n_taken, n_counters;
 
@@ -75,14 +78,17 @@ int en_loot_hook(Cpu *c, uint64_t off) {
         for (int i = 0; i < LOOT_N; i++) {
             uint32_t f = atomic_load(&let_go[i].frame);
             if (atomic_load(&let_go[i].actor) && f && frame - f < 300) continue;
+            let_go[i].thrown = off == 0x1b73be4, memset(let_go[i].last, 0, 12);
             atomic_store(&let_go[i].actor, w), atomic_store(&let_go[i].frame, frame ? frame : 1);
             char wn[48], hn[48];
             if (atomic_fetch_add(&n_weapons, 1) < 40) rt_log("coop: en: loot: %s %s its %s (slot %u): a loose object of this game's from here", coop_actor_name(holder, hn, sizeof hn), off == 0x1b73be4 ? "throws" : "lets go of", coop_actor_name(w, wn, sizeof wn), (uint32_t)c->x[2]);
             break;
         }
         {   // the copies let go at once, not after the three looks of the held-things rule (0.8 s)
-            void en_equip_event(uint64_t holder, int slot);   // coop_enemy_copy.c
-            en_equip_event(holder, (int)(c->x[2] & 0xff));
+            void en_equip_event(uint64_t holder, int slot, int thrown, const uint8_t req[0x30], uint64_t x3, uint64_t x4);   // coop_enemy_copy.c
+            uint8_t req[0x30] = {0};
+            if (off == 0x1b73be4) coop_rd(c->x[1], req, sizeof req);
+            en_equip_event(holder, (int)(c->x[2] & 0xff), off == 0x1b73be4, req, c->x[3], c->x[4]);
         }
         return 0;
     }
@@ -100,6 +106,36 @@ int en_loot_hook(Cpu *c, uint64_t off) {
     return 0;
 }
 
+void en_loot_thrown(uint64_t actor) {
+    for (int i = 0; i < 16; i++) {
+        uint64_t z = 0;
+        if (atomic_compare_exchange_strong(&thrown[i].actor, &z, actor)) { thrown[i].frame = coop_sess_frame_no(), thrown[i].still = 0, memset(thrown[i].last, 0, 12); return; }
+    }
+}
+int coop_enemy_loot_thrown(uint64_t a) {   // (the object mirror: not a loose object to send)
+    for (int i = 0; i < 16; i++) if (atomic_load_explicit(&thrown[i].actor, memory_order_relaxed) == a) return 1;
+    return 0;
+}
+// Phase 0: a thing a copy threw here is deleted once it rests.
+void en_loot_phase0(Cpu *c) {
+    uint32_t frame = coop_sess_frame_no();
+    for (int i = 0; i < 16; i++) {
+        uint64_t a = atomic_load(&thrown[i].actor);
+        int32_t st = 0;
+        float p[3];
+        if (!a) continue;
+        if (!coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || !coop_rd(a + COOP_ACTOR_POS, p, 12)) { atomic_store(&thrown[i].actor, 0); continue; }
+        float dx = p[0] - thrown[i].last[0], dy = p[1] - thrown[i].last[1], dz = p[2] - thrown[i].last[2];
+        memcpy(thrown[i].last, p, 12);
+        thrown[i].still = dx * dx + dy * dy + dz * dz < 0.01f * 0.01f ? thrown[i].still + 1 : 0;
+        if (frame - thrown[i].frame < 20 || (thrown[i].still < 20 && frame - thrown[i].frame < 300) || coop_enemy_holder(a)) continue;
+        char an[48];
+        uint64_t r = coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, a, 0, 0, 0);
+        rt_log("coop: en: loot: the %s a copy threw here rests: deleted (the answer %llu); its owner's game's is the one that stays", coop_actor_name(a, an, sizeof an), (unsigned long long)(r & 1));
+        atomic_store(&thrown[i].actor, 0);
+    }
+}
+
 // The object mirror asks of a loose object it looks at: 1 when it is a noted drop of this game's (taken once).
 int coop_enemy_loot_take(uint64_t a, const char *nm, int first) {
     uint32_t frame = coop_sess_frame_no();
@@ -109,6 +145,13 @@ int coop_enemy_loot_take(uint64_t a, const char *nm, int first) {
         uint32_t f = atomic_load(&let_go[i].frame);
         if (frame - f > 300) { atomic_store(&let_go[i].actor, 0); return 0; }
         if (coop_enemy_holder(a) && frame - f < 20) return 0;   // (still listed as held: asked again at the next look)
+        if (let_go[i].thrown && frame - f < 300) {   // a thrown thing: this game's object once it rests (each game has its own in flight)
+            float p[3] = {0};
+            coop_rd(a + COOP_ACTOR_POS, p, 12);
+            float dx = p[0] - let_go[i].last[0], dy = p[1] - let_go[i].last[1], dz = p[2] - let_go[i].last[2];
+            memcpy(let_go[i].last, p, 12);
+            if (dx * dx + dy * dy + dz * dz > 0.03f * 0.03f || frame - f < 30) return 0;
+        }
         atomic_store(&let_go[i].actor, 0), atomic_fetch_add(&n_taken, 1);
         return 1;
     }

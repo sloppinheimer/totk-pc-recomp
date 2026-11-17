@@ -307,7 +307,13 @@ too, since the mask is not read; a game is not made to start its own moon when t
 **B.13 A drop or a throw, at once** [m]. A drop (main+0x1b738e4) or a throw (main+0x1b73be4) by an enemy this game
 runs is told to the other games at the call (EQUIP), and their copies let go of that slot's thing at their next
 pre-calc instead of after the three looks of the held-things rule. The let-go thing is the owner's loose object
-(B.9). Not built: the throw made by the copy itself, so a thrown weapon hurts the copy game's Link.
+(B.9).
+
+**B.14 A throw made by the copy** (built, not seen in a run: no enemy threw). The owner's game sends the throw's
+request block (0x30 bytes) and its two last arguments with the EQUIP message; the copy's game makes the same call
+(main+0x1b73be4) on its own equipment user, so what flies there is its own and can hurt its own Link (B.1). The
+copy's thrown thing is no loose object while it flies and is deleted once it rests (20 frames still, or 10 s); the
+owner's thrown thing is taken by the object mirror once it rests, and is the one object that stays in every game.
 
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the

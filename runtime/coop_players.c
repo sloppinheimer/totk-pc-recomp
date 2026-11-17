@@ -2590,6 +2590,7 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
     if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
     // What a dying enemy of this game's dropped, and a weapon one let go of: this game's made object wherever it is
     // (coop_enemy_loot.c; the rules below kept every such weapon, and loot far from this Link, in this game alone).
+    { int coop_enemy_loot_thrown(uint64_t a); if (coop_enemy_loot_thrown(a)) return; }   // (what a copy threw here: this game's own, gone when it rests)
     int coop_enemy_loot_take(uint64_t a, const char *nm, int first);
     int loot = coop_enemy_loot_take(a, nm, first);
     int coop_enemy_within(const float p[3], float m);   // coop_world.c

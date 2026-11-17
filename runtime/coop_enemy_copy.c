@@ -77,12 +77,15 @@ void en_copy_burst(int id) {
     }
 }
 // An enemy this game runs let go of, or threw, what its slot held: told at once, so its copies let go at once.
-typedef struct { Enid id; uint32_t slot; } MEquip;
-void en_equip_event(uint64_t holder, int slot) {
+typedef struct { Enid id; uint32_t slot; uint32_t thrown; uint64_t x3, x4; uint8_t req[0x30]; } MEquip;
+void en_equip_event(uint64_t holder, int slot, int thrown, const uint8_t req[0x30], uint64_t x3, uint64_t x4) {
     EnCell *m = en_cell_of(holder);
     int16_t ei = m ? atomic_load(&m->en) : -1;
     if (ei < 0 || slot < 0 || slot >= EN_EQ_N) return;
-    MEquip q = {en_tab[ei].id, (uint32_t)slot};
+    MEquip q;
+    memset(&q, 0, sizeof q);
+    q.id = en_tab[ei].id, q.slot = (uint32_t)slot, q.thrown = (uint32_t)thrown, q.x3 = x3, q.x4 = x4;
+    if (req) memcpy(q.req, req, 0x30);
     en_send_all(ENM_EQUIP, &q, sizeof q);
 }
 int en_copy_msg(const CoopCtrMsg *m, int from) {
@@ -92,7 +95,13 @@ int en_copy_msg(const CoopCtrMsg *m, int from) {
         if (m->len != (int)sizeof *q || q->slot >= EN_EQ_N) return 1;
         for (int i = 0; i < EN_N; i++)
             if (en_tab[i].used && enid_eq(en_tab[i].id, q->id) && en_tab[i].cell >= 0 && en_tab[i].owner != coop_ctr_me())
-                atomic_fetch_or(&en_map[en_tab[i].cell].eq_drop, (uint8_t)(1u << q->slot));
+            {
+                EnCell *cm = &en_map[en_tab[i].cell];
+                // (a throw is made by the copy itself, with the request its owner's enemy threw with: what flies here
+                // is this game's own, and it is this game's Link it can hurt. A drop: the copy lets go at once.)
+                if (q->thrown) memcpy(cm->throw_req, q->req, 0x30), cm->throw_x3 = q->x3, cm->throw_x4 = q->x4, cm->throw_slot = (uint8_t)q->slot, cm->throw_due = 1;
+                else atomic_fetch_or(&cm->eq_drop, (uint8_t)(1u << q->slot));
+            }
         return 1;
     }
     if (m->type != ENM_PLAY) return 0;
@@ -882,6 +891,19 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
                 static _Atomic int said;
                 if (atomic_fetch_add(&said, 1) < 30) rt_log("coop: en: equip: the copy %llx %s what its slot %d holds, as its owner's (state %u -> %u)", (unsigned long long)actor, want == 2 ? "draws" : "puts away", k, own, want);
                 break;
+            }
+        }
+        if (m->throw_due) {   // its owner's enemy threw what this slot holds: the same throw, by the game's own call (main+0x1b73be4)
+            uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230), ref = eu ? coop_rd_ptr(eu + 0x20 + (uint64_t)m->throw_slot * 0x18 + 8) : 0, held = ref ? coop_rd_ptr(ref + 0x40) : 0;
+            static __thread _Alignas(16) uint8_t req[0x30];
+            m->throw_due = 0;
+            if (eu && held) {
+                void en_loot_thrown(uint64_t actor);   // coop_enemy_loot.c: this game's own flying copy, gone when it rests
+                char hn[40] = "";
+                memcpy(req, m->throw_req, 0x30);
+                en_loot_thrown(held);
+                uint64_t r = rt_call(c, MOD_MAIN_BASE + 0x1b73be4, 5, eu, (uint64_t)(uintptr_t)req, (uint64_t)m->throw_slot, m->throw_x3, m->throw_x4);
+                rt_log("coop: en: equip: the copy %llx throws its %s (slot %d), as its owner's enemy did (the call answered %llx)", (unsigned long long)actor, coop_actor_name(held, hn, sizeof hn), m->throw_slot, (unsigned long long)r);
             }
         }
         uint8_t drop = atomic_exchange_explicit(&m->eq_drop, 0, memory_order_relaxed);
