@@ -1031,6 +1031,17 @@ the virtual main+0x21c7974 -> main+0x21c2660 (a parameter reload, inferred), not
 - An enemy made by a game's own spawner (a skeleton) stood at the other player's stand-in and played no clip in the game
   that made it. **measured** 2026-11-17. How the game keeps such an enemy undrawn before it rises: **open** (research
   enemy/gaps/R20-buried-skeleton).
+- An enemy's home, where it returns to: the nest's place when it has a nest, else [[[comps+0x50]+0x20]+0x140]+0x10
+  when actor+0x4b1 bit 1 is set, else actor+0x284 (position; rotation from main+0x2af6194) (QueryEnemyGetHome-
+  OrNestPositionAndRotation, calc main+0x262f020). **read** (research enemy/gaps/R23)
+- A run-time enemy that finds no path home removes itself: a Bokoblin_Junior made by the create request beside the
+  Links on the Great Sky Island start platform (home read at actor+0x284: its spawn place) took brain verb 47
+  (ForceReturnHome) 5 s after it was made, and 3.5 s later the ForceReturnHome module's node
+  OneShotGenericFarDeleteThisActor asked a delete with reason 3 (deferred delete main+0x63b6b0 from return address
+  main+0x2534d34, run at main+0x63baa8 from main+0x2fd080): no death, no drop. **measured** 2026-11-17. The verb is set
+  when the path to home has length 0 or less in Bokoblin.brain.returntohomeposition (a spot with no navigation path);
+  without a nest the ForceReturn timeout does not apply. **read** (research enemy/gaps/R23). Which spots lack a path,
+  and whether the spawn sync's real run-time enemies meet this: **open**.
 
 ### 13.4 Camps, armies, the attack limiter
 

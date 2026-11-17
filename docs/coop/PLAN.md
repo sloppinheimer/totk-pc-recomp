@@ -72,10 +72,13 @@ stand-in's fused shield material is scaled to its owner's; the spawn sync leaves
 sync; game-data catch-up has its own flag (game-data version 4); failed create requests are released. Moving
 stand-ins, contraptions, hits and the horse sync were not run either.
 
-Seen in both runs and in a run before the clean-up (`fam-Enemy_Bokoblin_Junior`), cause unknown: a Bokoblin made by
-`TOTK_COOP_TEST_SPAWN` beside the Links on the Great Sky Island platform leaves its owner's game about 5 s after it is
-made, without dying (`coop_spawn_sync.c spawn_tick` then sends its gone notice). Step 1's deliberate-desync test and
-step 4's fight need an enemy that stays: read why before relying on a test spawn there.
+Seen in both runs and in a run before the clean-up (`fam-Enemy_Bokoblin_Junior`): a Bokoblin made by
+`TOTK_COOP_TEST_SPAWN` beside the Links on the Great Sky Island platform leaves its owner's game a few seconds after it
+is made, without dying (`coop_spawn_sync.c spawn_tick` then sends its gone notice). Found (2026-11-17, a 60 s run with
+`TOTK_COOP_TEST_FOELOG`; facts/enemies.md 13.3): its brain finds no path home there, takes ForceReturnHome and its own
+AI asks a far delete (reason 3) 8.5 s after it is made. Not our code. The test enemy alone is now kept from that one
+delete (`coop_life.c coop_life_hook`); what it does after the refusal is not seen yet (it is likely to stay in
+ForceReturnHome and not fight). Step 4's fight needs a place with a navigation path (a camp save).
 
 Before any run in the main checkout (`C:\Dev\totkCoop`): its build and stand-in pack date from 2026-11-15, before
 the clean-up. Run `.venv\Scripts\python tools\coop\make_puppet_pack.py --version v143` (the pack changed: the
@@ -161,8 +164,17 @@ Built (2026-11-17, not yet run in the game): `runtime/coop_check.c` writes each 
 desync is `run_pair.ps1 -Nudge <t>,<s>,<m>`: game B shows its first enemy copy m metres east of where its owner's
 state puts it, through the copy's own shown place, so its pictures show it too. The sync audit's empty enemy list and
 its enemy check are removed. Checked without a game: `check.py` on a made-up pair of records found a 120 ms lag, the
-planted 5 m desync in its window, and an enemy in one game only. The test-spawned Bokoblin leaves its owner's game
-after about 5 s (step 0), so the gate runs wait on the reading of why.
+planted 5 m desync in its window, and an enemy in one game only.
+
+First run (2026-11-17, `run_pair.ps1`, 60 s, both Links standing, a test Bokoblin at 20 s, pictures from both games):
+the record was read in both games with no unreadable line; 7 enemy-seconds compared once a second; the copy against
+its owner frame by frame: the same command 99 % of frames, phase p95 0.03 s, place error p95 0.58 m (it moved 1.8 s,
+too little for lag and stutter, so not judged against the 0.3 m target). One difference listed: the new Bokoblin was in
+game A only for its first 2 s (the spawn sync sends a new enemy about 2 s after it is made). The pictures agree: both
+games showed it beside the Links, then running off, then gone. A commit review of the checker found ten ways
+`check.py` could pass on too little or judge wrongly (a nudge asked for and never made, no copy that moved, two
+owners, unreadable lines, duplicate identities, the owner per second, the lag match, phase per command); all fixed:
+a run where no copy moved enough is now "not judged" (exit 2), not a pass.
 
 ### 2. Block at engine functions
 

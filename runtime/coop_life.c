@@ -228,6 +228,20 @@ static void foe_end_log(Cpu *c, uint64_t off) {
 int coop_life_hook(Cpu *c, uint64_t addr) {
     uint64_t off = addr - MOD_MAIN_BASE;
     if (off == DELETE_REQUEST || off == DELETE_DEFER || off == DEATH_REQUEST || off == DEATH_COMPONENT) foe_end_log(c, off);
+    // The enemy TOTK_COOP_TEST_SPAWN made is kept from its own AI's far delete: on the Great Sky Island platform its
+    // brain finds no path home, takes verb 47 (ForceReturnHome) and its node OneShotGenericFarDeleteThisActor (the
+    // call at main+0x2534d30) asks a delete with reason 3 about 8 s after it is made (a run, 2026-11-17; research R23).
+    // A test enemy only: an enemy of the game's own is left to it.
+    if ((off == DELETE_REQUEST || off == DELETE_DEFER) && c->x[1] == 3 && c->x[30] - MOD_MAIN_BASE == 0x2534d34) {
+        uint64_t coop_spawn_test_foe(void);   // coop_spawn.c
+        uint64_t foe = coop_spawn_test_foe();
+        static _Atomic int said;
+        if (foe && c->x[0] == foe) {
+            if (atomic_fetch_add(&said, 1) < 3) rt_log("coop: test: foe: its AI's far delete refused (a test enemy stays)");
+            c->x[0] = 0;
+            return 1;
+        }
+    }
     // A bond made or broken here: the builds recorded at once (coop_ctn.c). Before the x3 branch, which returns for the
     // break addresses (review 1 findings 68 and 79: breaks never reached it).
     if (off == BOND_MAKER || off == 0x1cf54d4 || off == 0x2999fe8 || off == 0x1c042bc || off == 0x2995024) {
