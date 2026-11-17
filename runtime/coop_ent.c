@@ -688,11 +688,15 @@ void ent_status_line(void) {
         if (stated[i].used) far += stated[i].state == ST_FAR, wait += stated[i].state == ST_WAIT_MAKER, notshown += stated[i].state == ST_NOT_SHOWN, differ += stated[i].state == ST_DIFFER;
     char line[200], unc[96] = "";
     int ul = 0;
+    // (each piece is added only if it fits whole: adding snprintf's would-be length let ul pass the buffer's end, and
+    // the next piece was written past it, every frame, with three or more players; code review, 2026-11-17)
     for (int i = 0; i < ISL_N && ul < 70; i++)
         for (int p = 0; isls[i].used && p < ENT_PEERS; p++)
             if (isls[i].peer[p].diff_since && now - isls[i].peer[p].diff_since > 1000) {
                 char b[24];
-                ul += snprintf(unc + ul, sizeof unc - (size_t)ul, " %d:%s:%llds", p + 1, ent_eid_str(isls[i].root, b), (long long)((now - isls[i].peer[p].diff_since) / 1000));
+                int w = snprintf(unc + ul, sizeof unc - (size_t)ul, " %d:%s:%llds", p + 1, ent_eid_str(isls[i].root, b), (long long)((now - isls[i].peer[p].diff_since) / 1000));
+                if (w < 0 || w >= (int)(sizeof unc - (size_t)ul)) { unc[ul] = 0; ul = (int)sizeof unc; break; }
+                ul += w;
             }
     snprintf(line, sizeof line, "owned %d (%d islands) | copies %d | far %d | wait %d | differ %d | not shown %d | bonds %d | unconverged%s | ring lost %u",
              owned, oi, copies, far, wait, differ, notshown, bond_n, unc[0] ? unc : " none", (unsigned)atomic_load(&ring_lost));
