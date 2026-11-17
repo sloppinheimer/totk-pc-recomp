@@ -17,7 +17,7 @@ typedef struct { uint32_t key; float angle, speed; uint8_t on, inv, pad[2]; } Gr
 typedef struct { uint32_t kind, n; GroundState g[GR_MAX]; } GroundPacket;
 _Static_assert(sizeof(GroundPacket) <= COOP_HIT_MAX, "GroundPacket fits a HIT packet");
 void ground_tick(Cpu *c, uint64_t me);
-void ground_take(const GroundPacket *p, int n);
+void ground_take(const GroundPacket *p, int n, int from);
 
 // The players' body poses and the stand-in (coop_standin_pose.c); the older enemy sync's bone packets use its numbers.
 #define POSE_BONE 12   // bytes a bone takes in a pose packet

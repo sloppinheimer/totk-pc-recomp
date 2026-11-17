@@ -22,7 +22,7 @@ void coop_hitchan_tick(Cpu *c, uint64_t me) {
     while ((n = coop_net_hit_take(in, sizeof in, &from)) != 0) {
         if (coop_gamedata_take(in, n, from)) continue;
         const SpawnPacket *sp = (const SpawnPacket *)in;
-        if (n >= (int)offsetof(GroundPacket, g) && ((const GroundPacket *)in)->kind == GROUND_KIND) ground_take((const GroundPacket *)in, n);
+        if (n >= (int)offsetof(GroundPacket, g) && ((const GroundPacket *)in)->kind == GROUND_KIND) ground_take((const GroundPacket *)in, n, from);
         else if (n == (int)sizeof(SpawnPacket) && (sp->kind == SPAWN_KIND || sp->kind == SPAWN_GONE)) spawn_take(c, sp, from);
         else if (n == (int)sizeof(CoopTravelPacket) && ((const CoopTravelPacket *)in)->kind == COOP_TRAVEL_KIND)
             coop_notice_travel_take((const CoopTravelPacket *)in, n, from);

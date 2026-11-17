@@ -4,6 +4,7 @@
 // players' latest states with coop_net_remote; both only copy under a lock.
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,9 +38,9 @@ static PlatMutex lock = PLAT_MUTEX_INIT;
 static NetState mine;                 // lock
 static int mine_set;                  // lock
 static struct { NetState st; uint64_t at_ns; int live; char name[17]; } others[COOP_MAX_PLAYERS + 1];   // lock; by id
-static volatile int my_id;            // 0 until WELCOME
+static _Atomic int my_id;            // 0 until WELCOME
 static int started;                   // the settings were looked at (TOTK_COOP_RELAY joins at start)
-static volatile int net_gen;          // a new value stops the running network thread
+static _Atomic int net_gen;          // a new value stops the running network thread (atomics: a C11 data race otherwise)
 static volatile int net_active;       // a network thread runs (joined or joining)
 static char target[256], my_name[17];   // the relay host[:port], this player's name; set before a thread starts
 static char my_code[COOP_CODE_LEN + 1];  // the host's session code typed after the address ("" none): sent in HELLO
@@ -61,7 +62,7 @@ static struct { uint8_t d[COOP_CTR_MAX]; int len, peer; } ctr_out[COOP_CTR_QUEUE
 static int ctr_out_head, ctr_out_n, ctr_in_head, ctr_in_n;   // lock
 static uint32_t ctr_out_dropped, ctr_in_dropped;              // lock
 // Who is here: bumped on changes (coop_net_session, coop_net_presence).
-static volatile uint32_t session_gen;
+static _Atomic uint32_t session_gen;
 static uint32_t presence_gen[COOP_MAX_PLAYERS + 1];          // lock
 static void set_my_id(int id) {
     if (my_id != id) my_id = id, session_gen++;
@@ -200,7 +201,7 @@ static void net_thread(void *arg) {
         if (my_id) {   // queued hits, as they come
             uint8_t w[HEADER + COOP_HIT_MAX];
             int nh = 0;
-            static struct { uint8_t d[COOP_HIT_MAX]; int len; } hits[HITQ];
+            static __thread struct { uint8_t d[COOP_HIT_MAX]; int len; } hits[HITQ];   // (per thread: a left session's thread may still run beside the new one's)
             plat_mutex_lock(&lock);
             for (int i = 0; i < hit_out_n; i++) memcpy(hits[i].d, hit_out[i].d, hit_out[i].len), hits[i].len = hit_out[i].len;
             nh = hit_out_n, hit_out_n = 0;
@@ -212,7 +213,7 @@ static void net_thread(void *arg) {
             plat_mutex_unlock(&lock);
             if (pl) header(pp, POSE), sendto(s, (const char *)pp, HEADER + pl, 0, res->ai_addr, (int)res->ai_addrlen);
             {   // world objects: every queued packet
-                static uint8_t ob[HEADER + COOP_OBJS_PACKET_MAX];
+                static __thread uint8_t ob[HEADER + COOP_OBJS_PACKET_MAX];
                 for (;;) {
                     int ol = 0;
                     plat_mutex_lock(&lock);
@@ -231,7 +232,7 @@ static void net_thread(void *arg) {
                 sendto(s, (const char *)w, HEADER + hits[i].len, 0, res->ai_addr, (int)res->ai_addrlen);
             }
             {   // contraption traffic: every queued packet, each to its destination (header byte 7)
-                static uint8_t cp[HEADER + COOP_CTR_MAX];
+                static __thread uint8_t cp[HEADER + COOP_CTR_MAX];
                 for (;;) {
                     int cl = 0, to = 0;
                     plat_mutex_lock(&lock);
@@ -311,6 +312,7 @@ static void net_thread(void *arg) {
                 continue;
             }
             plat_mutex_lock(&lock);
+            if (net_gen != gen) { plat_mutex_unlock(&lock); break; }   // (checked under the lock coop_net_leave takes: a left session's thread writes nothing)
             if (!others[id].live) rt_log("coop net: player %d is here", id);
             others[id].st = in;
             others[id].at_ns = plat_now_ns();

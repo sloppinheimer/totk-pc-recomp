@@ -281,10 +281,16 @@ void ground_tick(Cpu *c, uint64_t me) {
         coop_net_hit_send(&p, (int)(offsetof(GroundPacket, g) + p.n * sizeof p.g[0]));
     }
 }
-void ground_take(const GroundPacket *p, int n) {
+void ground_take(const GroundPacket *p, int n, int from) {
     if (n != (int)(offsetof(GroundPacket, g) + p->n * sizeof p->g[0]) || p->n > GR_MAX) return;
+    {   // only from the host, the lowest player id here (any player's packets were taken; code review, 2026-11-17)
+        int host = coop_net_id();
+        for (int i = 1; i <= COOP_MAX_PLAYERS; i++) if (coop_net_live(i) && (!host || i < host)) host = i;
+        if (from != host || from == coop_net_id()) return;
+    }
     uint64_t now = plat_now_ns();
     for (uint32_t k = 0; k < p->n; k++) {
+        if (!isfinite(p->g[k].angle) || !isfinite(p->g[k].speed) || fabsf(p->g[k].speed) > 100.0f) continue;   // (written into the game's turn helper)
         int f = -1;
         for (int i = 0; i < GR_MAX && f < 0; i++) if (atomic_load(&ground_in[i].key) == p->g[k].key) f = i;
         for (int i = 0; i < GR_MAX && f < 0; i++) if (now - atomic_load(&ground_in[i].ns) > 2000000000ull) f = i;
