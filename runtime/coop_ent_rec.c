@@ -295,7 +295,7 @@ static void rec_one(Cpu *c, Stated *st, int st_i) {
                 acted = 1;
                 continue;
             }
-            if (coop_create_refused(e->name)) { backoff(st, WHY_CREATE_FAILED); return; }   // (a name no statement makes here)
+            if (coop_create_refused(e->name)) continue;   // (a name no statement makes here: that member only is left out)
             float w[12], rot[9], pos[3];
             ctn_m34_mul(w, st->root_m, st->m[k].rel_root);
             for (int i = 0; i < 3; i++) { pos[i] = w[i * 4 + 3]; for (int j = 0; j < 3; j++) rot[i * 3 + j] = w[i * 4 + j]; }

@@ -1544,7 +1544,7 @@ int ctn_make_start(Cpu *c, int st_i) {
         char want[0x40] = "";
         memcpy(want, r + 0xc + i * 0x118 + 0x98, sizeof want - 1);
         Ent *me_ = ent_by_id(st->rec_member[i]);
-        if (coop_create_refused(want) || !me_ || (me_->name[0] && strcmp(me_->name, want))) return 0;
+        if (coop_create_refused(want) || !me_ || (me_->name[0] && strncmp(me_->name, want, sizeof me_->name - 1))) return 0;   // (Ent.name keeps 47)
     }
     for (int i = 0; i < n; i++) if (eid_eq(st->rec_member[i], st->root)) root_i = i;
     if (root_i < 0) return 0;

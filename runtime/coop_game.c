@@ -268,7 +268,8 @@ void coop_fill_controller(uint64_t ctl, uint64_t buttons, const float stick[4], 
 // game's own helpers. A statement could name any actor, and a copy of some of these crashed or hung a game before
 // (coop_players.c deny_pre has the history).
 int coop_create_refused(const char *name) {
-    static const char *const pre[] = {"Player", "Npc", "Enemy_", "Animal_", "Horse_", "TBox_", "Dgn", "Miasma", "Armor_",
+    static const char *const pre[] = {"Player", "Npc", "Enemy_", "Animal_", "Horse_", "TBox_", "DgnObj_ZonauShrineEntrance",
+                                      "DgnObj_WarpPoint", "ZonauShrine_EntranceGate", "Miasma", "Armor_",
                                       "Sage_", "MergedActor", "CombinedActorIntegrator", "UltraHand_Connection_Effect"};
     if (!name || !name[0]) return 1;
     for (size_t i = 0; i < sizeof pre / sizeof *pre; i++) if (!strncmp(name, pre[i], strlen(pre[i]))) return 1;
