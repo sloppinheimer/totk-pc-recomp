@@ -7,8 +7,6 @@
 // - The hold of a claim: how long to wait for a rival's claim, from the transport's round trips.
 // - The clock estimate per peer: how far that peer's frame stamps are from this game's, and the time T at which its
 //   states are shown.
-// TOTK_COOP_TEST_SESSCLOCK=1: the estimate is walked through a steady stream, a latency step up, a step down, a jump
-// and a pause at the first phase 0, and the log says what it did ("coop: sess: clock test").
 #include <math.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -43,12 +41,6 @@ typedef struct {
 } Clock;
 static Clock clocks[COOP_MAX_PLAYERS + 1];
 
-static void clock_clear(Clock *k) {
-    uint32_t t = k->teleports;
-    memset(k, 0, sizeof *k);
-    for (int i = 0; i < 10; i++) k->bucket[i] = INT64_MAX;
-    k->teleports = t;
-}
 static void clock_sample(Clock *k, uint64_t now, int64_t sample) {
     uint64_t sec = now / 1000000000ull;
     if (!k->bucket_at) { for (int i = 0; i < 10; i++) k->bucket[i] = INT64_MAX; k->bucket_at = sec; }
@@ -94,47 +86,10 @@ static int64_t clock_step(Clock *k, uint64_t now, uint64_t interval) {
     return (int64_t)now - k->est - k->delay;
 }
 
-static void clock_selftest(void) {
-    Clock k;
-    memset(&k, 0, sizeof k);
-    clock_clear(&k);
-    const uint64_t frame = 16666667ull;
-    uint64_t now = 5000000000ull, peer0 = 900000000000ull;   // the peer's counter has another origin
-    int64_t lat = 20 * MS, t_prev = 0;
-    int back = 0, held = 0, frames = 0;
-    uint32_t tele0;
-    struct { const char *what; int frames; int64_t lat; int pause; } step[] = {
-        { "steady at 20 ms", 600, 20 * MS, 0 }, { "latency up to 120 ms", 900, 120 * MS, 0 }, { "latency down to 20 ms", 900, 20 * MS, 0 },
-        { "a jump of the offset by 400 ms", 300, 420 * MS, 0 }, { "this game paused 5 s, then cleared", 300, 20 * MS, 1 },
-    };
-    for (unsigned s = 0; s < sizeof step / sizeof *step; s++) {
-        lat = step[s].lat, back = held = frames = 0, tele0 = k.teleports;
-        if (step[s].pause) now += 5000000000ull, clock_clear(&k), t_prev = 0;
-        int64_t newest = 0, worst_gap = 0;
-        for (int f = 0; f < step[s].frames; f++, now += frame) {
-            // a state stamped by the peer `lat` ago (with 0 to 4 ms of jitter) is taken now
-            int64_t jit = (int64_t)((f * 7919u) % 5u) * MS;
-            int64_t stamp = (int64_t)(peer0 + now) - lat - jit;
-            clock_sample(&k, now, (int64_t)now - stamp);
-            if (stamp > newest) newest = stamp;
-            int64_t T = clock_step(&k, now, frame);
-            if (t_prev && T < t_prev) back++;
-            if (T > newest) held++;
-            if (newest - T > worst_gap) worst_gap = newest - T;
-            t_prev = T, frames++;
-        }
-        rt_log("coop: sess: clock test: %s: %d frames, T ran backwards %d times, was ahead of the newest state in %d frames, at most %.1f ms behind it; "
-               "at the end the estimate is %.1f ms from the true offset + latency, the delay %.1f ms; set at once %u times",
-               step[s].what, frames, back, held, (double)worst_gap / 1e6, (double)(k.est - (-(int64_t)peer0 + lat)) / 1e6, (double)k.delay / 1e6, k.teleports - tele0);
-    }
-}
-
 // ---- This game ------------------------------------------------------------------------------------------------------
 void coop_sess_phase0(void) {
     uint64_t now = plat_now_ns();
     atomic_store(&frame_ns, now), atomic_store(&phase0_at, now), atomic_fetch_add(&frame_no, 1);
-    static int tested;
-    if (!tested) { tested = 1; if (cfg_get("TOTK_COOP_TEST_SESSCLOCK")) clock_selftest(); }
 }
 uint64_t coop_sess_frame_ns(void) { return atomic_load(&frame_ns); }
 uint32_t coop_sess_frame_no(void) { return atomic_load(&frame_no); }

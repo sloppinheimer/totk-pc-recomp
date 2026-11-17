@@ -355,57 +355,6 @@ int coop_standin_put_pose(uint64_t skel, int id) {
     if (!ok && atomic_fetch_add(&said_no, 1) < 3) rt_log("coop: stand-in: its owner's records not put on (%d bytes)", len);
     return ok;
 }
-// Test (TOTK_COOP_TEST_IKDIFF=1): this Link's body skeleton local records (+0x18, 0x60 a bone: scale +0x10, rotation
-// rows +0x20 / +0x30 / +0x40, transposed against the input pose's, translation +0x50) against the last pose packed for sending (the writer's input):
-// whether later steps (IK) change the records after main+0x283c750 built them. Every 60 calls: how many bones differ.
-void coop_test_ikdiff(uint64_t me) {
-    static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_IKDIFF") != NULL;
-    if (!on) return;
-    uint64_t sk = me;
-    for (int i = 0; i < 8 && sk; i++) sk = coop_rd_ptr(sk + coop_skel_path[i]);
-    uint64_t recs = sk ? coop_rd_ptr(sk + 0x18) : 0;
-    static PoseRec r;
-    static uint8_t pkt[COOP_POSE_MAX];
-    plat_mutex_lock(&pose_lock);
-    int len = atomic_load(&pose_latest_len);
-    if (len) memcpy(pkt, pose_latest, len);
-    plat_mutex_unlock(&pose_lock);
-    if (!recs || !len || !pose_decode(pkt, len, &r)) return;
-    static float rec[POSE_HIST_BONES][24];
-    if (!coop_rd(recs, rec, (size_t)r.n * 0x60)) return;
-    static int dumped;
-    if (!dumped++)
-        for (int b = 1; b <= 3; b++) {
-            float *f = rec[b];
-            rt_log("coop: test: ikdiff record %d: %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f",
-                   b, f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11], f[12], f[13], f[14], f[15], f[16], f[17], f[18], f[19], f[20], f[21], f[22], f[23]);
-            rt_log("coop: test: ikdiff input %d: q %.3f %.3f %.3f %.3f t %.3f %.3f %.3f", b, r.q[b][0], r.q[b][1], r.q[b][2], r.q[b][3], r.t[b][0], r.t[b][1], r.t[b][2]);
-        }
-    static int calls, nb_rot, nb_tr, worst_b;
-    static float worst;
-    static unsigned char seen[POSE_HIST_BONES];
-    for (int b = 0; b < r.n; b++) {
-        float x = r.q[b][0], y = r.q[b][1], z = r.q[b][2], w = r.q[b][3];
-        float m[9] = {1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w), 2 * (x * y + z * w), 1 - 2 * (x * x + z * z),
-                      2 * (y * z - x * w), 2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)};
-        float dr = 0, dt = 0;
-        for (int row = 0; row < 3; row++) for (int k = 0; k < 3; k++) { float d = fabsf(rec[b][8 + row * 4 + k] - m[k * 3 + row]); if (d > dr) dr = d; }   // records hold it transposed
-        for (int k = 0; k < 3; k++) { float d = fabsf(rec[b][20 + k] - r.t[b][k]); if (d > dt) dt = d; }
-        if (dr > 0.02f) nb_rot++, seen[b] = 1;
-        if (dt > 0.002f) nb_tr++, seen[b] = 1;
-        if (dr > worst) worst = dr, worst_b = b;
-    }
-    if (++calls % 60) return;
-    char list[400];
-    int m = 0;
-    for (int b = 0; b < r.n && m < 380; b++) if (seen[b]) m += snprintf(list + m, sizeof list - m, " %d", b);
-    list[m] = 0;
-    rt_log("coop: test: ikdiff over 60 frames: %d bone-frames rotated off, %d moved off, worst rotation %.3f (bone %d); bones:%s",
-           nb_rot, nb_tr, worst, worst_b, list);
-    nb_rot = nb_tr = 0, worst = 0;
-    memset(seen, 0, sizeof seen);
-}
 int coop_puppet_before_writer(uint64_t pose, uint64_t skel) {
     if (skel && skel == atomic_load_explicit(&my_body_skel, memory_order_relaxed)) return 0;   // (coop_proxy_pack_mine sends this Link's records)
     int n = atomic_load_explicit(&puppet_n, memory_order_relaxed);

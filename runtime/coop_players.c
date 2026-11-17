@@ -126,7 +126,7 @@ static int camera_frame(float fwd[2], float right[2]) {
 // The camera: PlayerCamera's position is the eye, its rotation's columns right, up and back (it looks along -Z);
 // the vertical field of view is TOTK_COOP_TAG_FOV degrees (50 until it is found in the game).
 // x, y: 0..1 of the screen (the overlay's guess, TOTK_COOP_TAG_FOV); world: the anchor (vk_tags.c projects it with the
-// frame's own camera); id: 0 the self test
+// frame's own camera); id: the player's net id
 typedef struct { float x, y, dist, world[3]; int id; char name[17]; } CoopTag;
 int coop_name_tags(CoopTag *out, int max, float aspect) {
     uint64_t cam = coop_resident_named("PlayerCamera", NULL);
@@ -137,20 +137,13 @@ int coop_name_tags(CoopTag *out, int max, float aspect) {
     int ids[COOP_MAX_PLAYERS];
     char names[COOP_MAX_PLAYERS][17];
     int nn = coop_net_players(ids, names, COOP_MAX_PLAYERS), n = 0;
-    uint64_t self_test = cfg_get("TOTK_COOP_TEST_TAGSELF") ? coop_player_actor() : 0;   // test: tag this PC's Link
-    for (int i = 0; i <= COOP_MAX_PLAYERS && n < max; i++) {
-        uint64_t a;
+    for (int i = 0; i < COOP_MAX_PLAYERS && n < max; i++) {
         const char *nm = "";
-        int id = 0;
-        if (i == COOP_MAX_PLAYERS) {
-            if (!self_test) break;
-            a = self_test, nm = "(you)";
-        } else {
-            Slot *s = &slots[i];
-            if (s->state != LIVE || s->source != SRC_NET || !s->actor) continue;
-            a = s->actor, id = s->net_id;
-            for (int k = 0; k < nn; k++) if (ids[k] == s->net_id) nm = names[k];
-        }
+        Slot *s = &slots[i];
+        if (s->state != LIVE || s->source != SRC_NET || !s->actor) continue;
+        uint64_t a = s->actor;
+        int id = s->net_id;
+        for (int k = 0; k < nn; k++) if (ids[k] == s->net_id) nm = names[k];
         float p[3];
         if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) continue;
         p[1] += 2.0f;   // above the head
@@ -444,29 +437,6 @@ int coop_players_gear(Cpu *c, uint64_t addr) {
     int k = gear_index((int)(uint32_t)c->x[1]);
     if (k < 0) return 0;
     uint64_t owner = me ? gear_owner(eq, me) : 0;
-    static int eqdbg = -1;   // TOTK_COOP_TEST_EQLOG=1: every gear create seen here
-    if (eqdbg < 0) eqdbg = cfg_get("TOTK_COOP_TEST_EQLOG") != NULL;
-    if (eqdbg) {
-        uint64_t np0 = coop_rd_ptr(c->x[2]);
-        char nm0[32] = "";
-        if (np0) coop_rd(np0, nm0, sizeof nm0 - 1);
-        char chain[300];
-        int m = 0;
-        uint64_t fp = c->x[29];
-        for (int d = 0; d < 12 && fp && m < 280; d++) {   // the guest frame chain (x29 links), return addresses
-            uint64_t next = coop_rd_ptr(fp), ret = coop_rd_ptr(fp + 8);
-            if (!ret) break;
-            m += snprintf(chain + m, sizeof chain - m, " %llx", (unsigned long long)(ret - MOD_MAIN_BASE));
-            if (next <= fp) break;
-            fp = next;
-        }
-        chain[m] = 0;
-        char att0[48] = "";   // a weapon create's 7th argument: the attachment (fused material) name, as a string object
-        if (addr == MOD_MAIN_BASE + GEAR_WEAPON_CREATE) { uint64_t ap = coop_rd_ptr(c->x[6]); if (ap) coop_rd(ap, att0, sizeof att0 - 1); }
-        rt_log("coop: test: create main+%#llx eq %llx slot %d %s dye %d att '%s', me %llx, owner %llx%s; from%s", (unsigned long long)(addr - MOD_MAIN_BASE),
-               (unsigned long long)eq, (int)(uint32_t)c->x[1], nm0, (int)(int32_t)c->x[3], att0, (unsigned long long)me, (unsigned long long)owner,
-               owner && owner != me ? " (a co-op Link)" : "", chain);
-    }
     if (!owner) {   // a Player not claimed yet (a new co-op Link builds its gear first, or this PC's Link while a
                     // save loads): matched after its claim or by match_my_eq; its armor dyes are kept for then
         for (int i = 0; i < 16; i++)
@@ -643,13 +613,6 @@ int coop_in_remote_calc(void) { return inside; }   // this thread runs a co-op L
 // The actor's other per-frame update phases (coop_spawn.c hooks them): run as inside a co-op Link's calc when x0 is
 // one, so what keeps a co-op Link from changing this game (HUD, game data, tips) covers them too. No controller swap:
 // the calc alone reads the pad.
-// Test (TOTK_COOP_TEST_FREEZE=<s>): from that many seconds into the world, a co-op Link's update phases do not run at
-// all: whether it still shows, and follows ForceSetMatrix, with none of its gameplay running.
-static int frozen(void) {
-    static double at = -2;
-    if (at == -2) { const char *e = cfg_get("TOTK_COOP_TEST_FREEZE"); at = e ? atof(e) : -1; }
-    return at >= 0 && frame_step_world_us() / 1e6 >= at;
-}
 // The model push: main+0x24cc30 (model) makes the body bones' world matrices from the pose and the model's world
 // matrix (+0x1f8, with its dirty bit) and puts the parts hung on body bones (items) on them.
 #define PROXY_MODEL_PUSH 0x24cc30
@@ -661,7 +624,7 @@ static uint64_t body_skeleton(uint64_t actor) {
     static const uint32_t path[8] = {0x48, 0x2a8, 0x20, 0x20, 0, 0xf8, 0x58, 0xb0};
     uint64_t sk = actor;
     for (int k = 0; k < 8 && sk; k++) sk = coop_rd_ptr(sk + path[k]);
-    // A PlayerPuppet's: [[[actor+0x238]+0x3a8]+0x3b0] (TOTK_COOP_TEST_SKELFIND, 2026-11-08: 127 bones, as a Link's)
+    // A PlayerPuppet's: [[[actor+0x238]+0x3a8]+0x3b0] (found by a pointer search, 2026-11-08: 127 bones, as a Link's)
     if (!sk && actor) {
         uint64_t a = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(actor + 0x238) + 0x3a8) + 0x3b0);
         uint16_t nb = 0;
@@ -669,40 +632,12 @@ static uint64_t body_skeleton(uint64_t actor) {
     }
     return sk;
 }
-// Test (TOTK_COOP_TEST_SKELFIND=1): once, for the first stand-in, the pointer paths from its actor (3 levels, 0x400
-// bytes each) to an object whose +0x48 u16 is 127 (a Link's body bone count) and whose +0x20 points somewhere: where a
-// PlayerPuppet's body skeleton is (body_skeleton's path is a Player's and gives none on it).
-static void skel_find(uint64_t actor) {
-    static int done;
-    if (done || !cfg_get("TOTK_COOP_TEST_SKELFIND") || !actor) return;
-    done = 1;
-    static uint64_t l0[0x80], l1[0x80], l2[0x80];
-    int found = 0;
-    if (!coop_rd(actor, l0, sizeof l0)) return;
-    for (int a = 0; a < 0x80 && found < 8; a++) {
-        if (l0[a] < 0x100000000ull || l0[a] > 0x800000000ull || !coop_rd(l0[a], l1, sizeof l1)) continue;
-        for (int b = 0; b < 0x80 && found < 8; b++) {
-            if (l1[b] < 0x100000000ull || l1[b] > 0x800000000ull || !coop_rd(l1[b], l2, sizeof l2)) continue;
-            for (int d = 0; d < 0x80 && found < 8; d++) {
-                uint64_t o = l2[d];
-                uint16_t nb = 0;
-                if (o < 0x100000000ull || o > 0x800000000ull || !coop_rd(o + 0x48, &nb, 2) || nb != 127 || !coop_rd_ptr(o + 0x20)) continue;
-                rt_log("coop: test: skeleton of the stand-in at actor +%#x +%#x +%#x (%llx)", a * 8, b * 8, d * 8, (unsigned long long)o);
-                found++;
-            }
-        }
-    }
-    if (!found) rt_log("coop: test: no 127-bone skeleton within 3 levels of the stand-in");
-}
 static uint64_t model_of(uint64_t a);
 static int ride_place(const Slot *s, float out[3]);   // the owner rides an object: where, here
 static void shield_place(Cpu *c, Slot *s);
 static uint64_t eq_item(uint64_t eq, int kind);
 static void watch_old_item(uint64_t eq, int k, uint64_t old, int remade);
 static int item_local(uint64_t link, uint64_t item, float local[3]);
-static void beam_dump(uint64_t a, int copy);
-static void beam_log(uint64_t a, uint32_t id, const char *who);
-static void beam_end_watch(const float at[3]);
 static void place_copy(Cpu *c, Slot *s, int k);
 static void beam_copy(Cpu *c, Slot *s, int k, float m[12]);
 static void set_driven(uint64_t a);
@@ -774,10 +709,6 @@ int coop_players_phase(Cpu *c, uint64_t addr) {
         uint64_t me = coop_player_actor();
         if (me) keep_player_eq(me, eq_of_actor(me));
     }
-    // TOTK_COOP_TEST_FREEZE_PHASES=0: the freeze stops the calc only; these phases (model, physics) still run
-    static int keep_phases = -1;
-    if (keep_phases < 0) { const char *e = cfg_get("TOTK_COOP_TEST_FREEZE_PHASES"); keep_phases = e && *e == '0'; }
-    if (frozen() && !keep_phases) return 1;
     static _Atomic int said;
     if (atomic_fetch_add(&said, 1) < 4) rt_log("coop: a co-op Link's update phase main+%#llx counts as its calc", (unsigned long long)(addr - MOD_MAIN_BASE));
     uint64_t phase_actor = c->x[0];   // (x0 is the call's result after it)
@@ -876,9 +807,7 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
     static int tl = -1;
     if (tl < 0) tl = cfg_get("TOTK_COOP_TOP_LOG") != NULL;
     if (tl && c->x[0] && c->x[0] == coop_player_actor()) top_log("mine", c->x[0]);
-    void coop_test_ikdiff(uint64_t me);   // coop_world.c
     if (c->x[0] && c->x[0] == coop_player_actor()) {
-        coop_test_ikdiff(c->x[0]);
         void coop_proxy_pack_mine(uint64_t me);   // coop_world.c: proxy mode sends this Link's final local records
         coop_proxy_pack_mine(c->x[0]);
     }
@@ -946,7 +875,6 @@ int coop_puppet_place(Cpu *c, uint64_t addr) {
         for (int k = 0; k < 3; k++) rot[r * 3 + k] = m[r * 4 + k];
     }
     memcpy(s->placed_pos, pos, 12), s->have_placed = 1;
-    skel_find(actor);
     if (place & 1) {
         memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_POS), pos, 12);
         memcpy((void *)(uintptr_t)(actor + COOP_ACTOR_ROT), rot, 36);
@@ -1022,11 +950,6 @@ int coop_players_calc(Cpu *c, uint64_t addr) {
         uint64_t me = coop_player_actor();
         if (me) keep_player_eq(me, eq_of_actor(me));
     }
-    if (frozen()) {
-        static int said;
-        if (!said++) rt_log("coop: test: the co-op Links' updates no longer run");
-        return 1;
-    }
     uint64_t mgr = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + COOP_INPUT_MGR_SLOT));
     if (!mgr) return 0;
     // One update with a swapped controller at a time, and not while this PC's Link's runs (coop_spawn.c, calc_wrap).
@@ -1085,8 +1008,6 @@ static void copy_failed(const Slot *s, int k) {
                s->mir[k].id, s->mir[k].name, n, (unsigned long long)(wait / 1000));
 }
 static int copy_wait(const Slot *s, int k) {   // 1: a copy that failed is not asked for yet
-    int coop_handle_norelease(void);   // coop_game.c (test: the old way)
-    if (coop_handle_norelease()) return 0;
     int i = fail_find(s->net_id, s->mir[k].id, 0);
     return i >= 0 && plat_now_ns() / 1000000 < fails_tab[i].retry_ms;
 }
@@ -1291,93 +1212,6 @@ static int autobuilt_on(void) {
     return on;
 }
 
-// Test (TOTK_COOP_TEST_ARMORPROBE=1): what holds this Link's worn armor after a save loads. Once before (12 s into
-// the world) and 3 s and 10 s after this Link moves more than 100 m in a tick (a load): the live armor and shield
-// actors within 5 m of it, and for each the words in guest memory pointing at it and at its reference object (the
-// word 0x40 before such a pointer), placed against this Link's known EquipmentUser and its table rows.
-void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
-struct probe_list { uint64_t me, a[16]; int n; };
-static void probe_fn(uint64_t a, void *arg) {
-    struct probe_list *pl = arg;
-    char nm[48];
-    coop_actor_name(a, nm, sizeof nm);
-    if (!strcmp(nm, "Player")) {
-        float pp[3] = {0};
-        coop_rd(a + COOP_ACTOR_POS, pp, 12);
-        rt_log("coop: test: armorprobe: live Player %llx at %.1f %.1f %.1f%s", (unsigned long long)a, pp[0], pp[1], pp[2],
-               a == pl->me ? " (this Link)" : slot_of_actor(a) ? " (a co-op Link)" : "");
-    }
-    if (strncmp(nm, "Armor_", 6) || strstr(nm, "Extra") || pl->n >= 16) return;
-    float p[3], q[3];
-    if (!coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(pl->me + COOP_ACTOR_POS, q, 12)) return;
-    float d2 = (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]);
-    if (d2 < 25) pl->a[pl->n++] = a;
-    else if (strstr(nm, "_Upper")) rt_log("coop: test: armorprobe: %s %llx at %.1f %.1f %.1f, %.1f m from this Link", nm, (unsigned long long)a, p[0], p[1], p[2], sqrtf(d2));
-}
-static int heap_holders(uint64_t v, uint64_t *out, int max) {
-    static uint64_t buf[0x10000 / 8];
-    int n = 0;
-    for (uint64_t a = 0x100000000ull; a < 0x240000000ull && n < max; a += sizeof buf) {
-        if (!plat_mem_read(a, buf, sizeof buf)) continue;
-        for (size_t i = 0; i < sizeof buf / 8 && n < max; i++) if (buf[i] == v) out[n++] = a + i * 8;
-    }
-    return n;
-}
-static void where(char *o, size_t n, uint64_t h, uint64_t eq) {
-    if (eq && h >= eq && h < eq + 0x5000) {
-        uint64_t off = h - eq;
-        if (off >= GEAR_TABLE && off < GEAR_TABLE + 24 * 0x18) snprintf(o, n, "eq+%#llx (row %llu +%#llx)", (unsigned long long)off,
-                 (unsigned long long)((off - GEAR_TABLE) / 0x18), (unsigned long long)((off - GEAR_TABLE) % 0x18));
-        else snprintf(o, n, "eq+%#llx", (unsigned long long)off);
-    } else snprintf(o, n, "%llx", (unsigned long long)h);
-}
-static void armor_probe(uint64_t me) {
-    static int on = -1, done[3];
-    static uint64_t load_ns;
-    static float last[3];
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_ARMORPROBE") != NULL;
-    if (!on) return;
-    float p[3];
-    if (!coop_rd(me + COOP_ACTOR_POS, p, 12)) return;
-    float d2 = (p[0] - last[0]) * (p[0] - last[0]) + (p[1] - last[1]) * (p[1] - last[1]) + (p[2] - last[2]) * (p[2] - last[2]);
-    if (last[0] != 0 && d2 > 100 * 100 && !load_ns) load_ns = plat_now_ns(), rt_log("coop: test: armorprobe: this Link moved %.0f m (a load)", sqrtf(d2));
-    memcpy(last, p, 12);
-    int which = -1;
-    if (load_ns && !done[1] && plat_now_ns() - load_ns > 20000000000ull) which = 1;
-    else if (load_ns && !done[2] && plat_now_ns() - load_ns > 40000000000ull) which = 2;
-    if (which < 0) return;
-    done[which] = 1;
-    uint64_t eq = eq_of_actor(me);
-    struct probe_list pl = {me, {0}, 0};
-    coop_actors_live(probe_fn, &pl);
-    rt_log("coop: test: armorprobe %d: Link %llx, EquipmentUser %llx, %d armor / shield actors within 5 m", which, (unsigned long long)me,
-           (unsigned long long)eq, pl.n);
-    for (int i = 0; i < pl.n; i++) {
-        char nm[48];
-        int32_t st = -1;
-        coop_actor_name(pl.a[i], nm, sizeof nm);
-        coop_rd(pl.a[i] + COOP_ACTOR_STATE, &st, 4);
-        static uint64_t h[32], h2[32];
-        int n = heap_holders(pl.a[i], h, 32);
-        char line[900];
-        int m = snprintf(line, sizeof line, "coop: test: armorprobe %d %s %llx state %d, held by %d:", which, nm, (unsigned long long)pl.a[i], st, n);
-        for (int k = 0; k < n && m < 860; k++) {
-            char w[64];
-            where(w, sizeof w, h[k], eq);
-            m += snprintf(line + m, sizeof line - m, " %s", w);
-            {   // h[k] - 0x40 may be its reference object (a gear table row's first word is one)
-                int n2 = heap_holders(h[k] - 0x40, h2, 32);
-                if (n2) m += snprintf(line + m, sizeof line - m, " [ref %llx held by", (unsigned long long)(h[k] - 0x40));
-                for (int j = 0; j < n2 && m < 860; j++) {
-                    where(w, sizeof w, h2[j], eq);
-                    m += snprintf(line + m, sizeof line - m, " %s", w);
-                }
-                if (n2) m += snprintf(line + m, sizeof line - m, "]");
-            }
-        }
-        rt_log("%s", line);
-    }
-}
 // The player's EquipmentUser as the game knows it: [[[main+0x39601e8]] +0x480]. After a save loads, main+0xd97d70
 // rebuilds the gear of that one from the save (main+0xd97dac: c4a5f4 for slots 0, 8, 7, 9, 10, 11; called from
 // main+0x1fe4ed4 in a Player's update). A co-op Link made
@@ -1388,9 +1222,6 @@ static void armor_probe(uint64_t me) {
 // (from the tick alone it came too late in one of two games: the rebuild had run on the new co-op Link already).
 #define PLAYER_EQ_GLOBAL 0x39601e8
 static void keep_player_eq(uint64_t me, uint64_t my_eq) {
-    static int off = -1;   // TOTK_COOP_TEST_NOKEEPEQ=1: not done (test)
-    if (off < 0) off = cfg_get("TOTK_COOP_TEST_NOKEEPEQ") != NULL;
-    if (off) return;
     uint64_t obj = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + PLAYER_EQ_GLOBAL)), var = obj ? obj + 0x480 : 0, g = var ? coop_rd_ptr(var) : 0;
     static uint64_t last = 1;
     static unsigned fixes;
@@ -1408,33 +1239,9 @@ static void keep_player_eq(uint64_t me, uint64_t my_eq) {
     if (++fixes <= 20) rt_log("coop: the player's EquipmentUser was another Player's (%llx): this Link's put back (%u)", (unsigned long long)g, fixes);
     last = my_eq;
 }
-// Test (TOTK_COOP_TEST_ARROWLOG=<from s>,<to s>): every 15 ticks in that window, each live actor with "Arrow" in its
-// name: address, name, position, distance to this Link (what a bow's arrows are, held and in flight).
-static void arrow_fn(uint64_t a, void *arg) {
-    char nm[48];
-    coop_actor_name(a, nm, sizeof nm);
-    float p[3] = {0}, q[3] = {0};
-    coop_rd(a + COOP_ACTOR_POS, p, 12);
-    coop_rd(*(uint64_t *)arg + COOP_ACTOR_POS, q, 12);
-    float d = sqrtf((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
-    if (!strstr(nm, "Arrow") && (d > 3 || !strcmp(nm, "Player"))) return;   // arrows, and anything near this Link
-    int32_t st = -1;
-    coop_rd(a + COOP_ACTOR_STATE, &st, 4);
-    rt_log("coop: test: arrow %.2f s %llx %s at %.2f %.2f %.2f, %.2f m from this Link, state %d", frame_step_world_us() / 1e6,
-           (unsigned long long)a, nm, p[0], p[1], p[2], d, st);
-}
-static void arrow_log(uint64_t me) {
-    const char *e = cfg_get("TOTK_COOP_TEST_ARROWLOG");
-    static int t;
-    if (!e || ++t % 15) return;
-    double now = frame_step_world_us() / 1e6, a = atof(e), b = strchr(e, ',') ? atof(strchr(e, ',') + 1) : a + 10;
-    if (now < a || now > b) return;
-    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);
-    coop_actors_live(arrow_fn, &me);
-}
 // ---- arrows. A bow's arrow is an actor (NormalArrow...): made at the bow when it is drawn
-// (1.4 m from Link), held there, and on release it flies (21 m in 0.12 s) and sticks where it hits (TOTK_COOP_TEST_
-// ARROWLOG, bow_shoot_3rd.txt). Each game reports the arrows that were first seen within 3 m of its own Link, up to
+// (1.4 m from Link), held there, and on release it flies (21 m in 0.12 s) and sticks where it hits (an arrow
+// log, bow_shoot_3rd.txt). Each game reports the arrows that were first seen within 3 m of its own Link, up to
 // COOP_OBJS, with position and rotation, in its state, and a fused arrow's material with them; the other games show a
 // copy of each: made with the same name, then after COPY_WARMUP ticks its own update is off and it is put where the
 // owner's is every tick (place_copy), so it does not fly, hit or get picked up here. A copy goes when its arrow is no
@@ -1561,8 +1368,8 @@ static int report_arrows(Cpu *c, uint64_t me, CoopObj *out) {
         char anm[48];   // another actor in its memory (below)
         if (strcmp(coop_actor_name(my_arrows[i].actor, anm, sizeof anm), my_arrows[i].name)) { my_arrows[i].actor = 0; continue; }
         // Going away (state 7..11: a fused material set off where its arrow hit): not sent, so the other games hear of
-        // it at once (it stays in the live list about 0.5 s more, and the copy's blast came 1 s late, TOTK_COOP_TEST_
-        // IMPACT, bow_fuse_3rd.txt). It is kept, no longer this Link's, so it is not taken again as new while it is
+        // it at once (it stays in the live list about 0.5 s more, and the copy's blast came 1 s late, an impact
+        // log, bow_fuse_3rd.txt). It is kept, no longer this Link's, so it is not taken again as new while it is
         // still listed; once alive again, its memory holds another actor of the same name (the game reuses a
         // BombFruit's for the next one), and the entry is forgotten so that one is taken as new. A name changed (above)
         // is another actor too. Kept as this Link's, a fused BombFruit's number was sent again after its blast, as a
@@ -1621,30 +1428,7 @@ static int report_arrows(Cpu *c, uint64_t me, CoopObj *out) {
     return n;
 }
 static int key_missing(uint32_t id);
-// Test (TOTK_COOP_TEST_ARROWWATCH=1): the first arrow copy made here: its actor state (+0x24) and +0x28 every tick for
-// 30 ticks, and a write watch on those 8 bytes for the same time (which game functions write them: what puts the copy
-// to sleep, state 6, where this game's own arrows stay at 4).
-static uint64_t aw_actor;
-static int aw_ticks = -1;
-static void arrow_watch_start(uint64_t a, const char *nm) {
-    static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_ARROWWATCH") != NULL;
-    if (!on || aw_ticks >= 0 || !a || !strstr(nm, "Arrow")) return;
-    int coop_watch_arm(uint64_t addr, uint64_t len);   // coop_watch_win.c
-    extern int coop_watch_writes;
-    coop_watch_writes = 1;
-    aw_actor = a, aw_ticks = 0;
-    coop_watch_arm(a + 0x24, 8);
-}
-static void arrow_watch_tick(void) {
-    if (aw_ticks < 0 || aw_ticks > 30) return;
-    int32_t st = (int32_t)LD32(aw_actor + COOP_ACTOR_STATE);   // read through the watch (coop_rd does not)
-    uint32_t w = LD32(aw_actor + 0x28);
-    rt_log("coop: test: arrow watch tick %d: state %d, +0x28 %08x", aw_ticks, st, w);
-    if (++aw_ticks > 30) { void coop_watch_disarm(void); coop_watch_disarm(); }
-}
 static void arrow_copies(Cpu *c, Slot *s) {
-    if (s == &slots[0]) arrow_watch_tick();
     for (int k = 0; k < COOP_OBJS; k++) {   // copies whose arrow is gone
         if (!s->mir[k].state) continue;
         int still = 0;
@@ -1698,9 +1482,8 @@ static void arrow_copies(Cpu *c, Slot *s) {
             continue;
         }
         // (A beam's copy is deleted when the owner's beam ends. Left to fly on 0.25 s so it could burst where it hits
-        // here too, it flew on through the wall: a copy has no hit of its own, TOTK_COOP_TEST_BEAMLOG, a play session,
-        // 2026-11-06. The burst where the owner's beam hits is not shown here: what makes it is not found, see
-        // beam_end_watch.)
+        // here too, it flew on through the wall: a copy has no hit of its own, a play session, 2026-11-06. The burst
+        // where the owner's beam hits is not shown here: what makes it is not found.)
         if (s->mir[k].blowing && s->mir[k].state == 3) {   // going off: left to do it, then let go (3 s)
             int32_t st = 0;
             int alive = coop_rd(s->mir[k].actor + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6;
@@ -1759,20 +1542,6 @@ static void arrow_copies(Cpu *c, Slot *s) {
             quat_mat(o->q, s->mir[k].rot);
         }
     }
-    {   // TOTK_COOP_TEST_DROPCOPIES=<s>: at that time every live copy deleted and wanted again, as a fast travel's unload
-        // deletes them (a play session: "went away (state 11)", then each asked for again where its area is not loaded)
-        static double drop_at = -1;
-        if (drop_at < 0) { const char *e = cfg_get("TOTK_COOP_TEST_DROPCOPIES"); drop_at = e ? atof(e) : 0; }
-        if (drop_at > 0 && frame_step_world_us() / 1e6 >= drop_at) {
-            for (int k = 0; k < COOP_OBJS; k++)
-                if (s->mir[k].state == 3 && s->mir[k].actor) {
-                    coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, s->mir[k].actor, COOP_DELETE_REASON, 0, 0), set_driven(s->mir[k].actor);
-                    rt_log("coop: test: dropcopies: the copy of %s (%u) deleted", s->mir[k].name, s->mir[k].id);
-                    s->mir[k].state = 1, s->mir[k].actor = 0, s->mir[k].ticks = 0;
-                }
-            drop_at = 0;
-        }
-    }
     for (int k = 0; k < COOP_OBJS; k++) {
         // A copy taken into a build (coop_ctn.c): the build moves it, breaks it and ends it. The mirror neither places
         // nor deletes it, nor takes its going as a pick-up, until it is a plain object again.
@@ -1808,12 +1577,9 @@ static void arrow_copies(Cpu *c, Slot *s) {
                 s->mir[k].state = s->mir[k].actor ? 3 : 0;
                 static int said;
                 if (s->mir[k].actor && said++ < 20) rt_log("coop: slot %d: a copy of object %u (%s) is here", (int)(s - slots), s->mir[k].id, s->mir[k].name);
-                arrow_watch_start(s->mir[k].actor, s->mir[k].name);
             }
         } else if (s->mir[k].state == 3 && ++s->mir[k].ticks >= COPY_WARMUP) {
             if (coop_held_here(s->mir[k].actor) && obj_take_over(s, k)) continue;   // (held here: this game's now, plan 44.2 item 3)
-            if (s->mir[k].ticks == 5 && !strcmp(s->mir[k].name, "PlayerBeam")) beam_dump(s->mir[k].actor, 1);
-            if (!strcmp(s->mir[k].name, "PlayerBeam") && cfg_get("TOTK_COOP_TEST_BEAMLOG")) beam_log(s->mir[k].actor, s->mir[k].id, "copy");
             // picked up here? An arrow's copy too: awake, a stuck arrow's copy could be picked up again and again
             //
             if (pickable(s->mir[k].name) || strstr(s->mir[k].name, "Arrow")) {
@@ -1892,9 +1658,9 @@ static int copy_place(Cpu *c, uint64_t actor, uint64_t addr, int calc) {
            strcmp(s->mir[k].name, "LightningStrike");   // (a strike's copy plays out by itself)
 }
 // A beam's copy. Made at scale 1, it showed much larger: the owner's beam is at 0.3 (actor +0x2e4..+0x2ec, set by the
-// swing that makes it; TOTK_COOP_TEST_BEAMDUMP). Driven from the reports, its speed went
+// swing that makes it; a memory dump of both). Driven from the reports, its speed went
 // 0, 50 and 100 m/s from tick to tick (the reports come unevenly), where the owner's beam goes a steady 50 m/s
-// (+0x320 and +0x338, TOTK_COOP_TEST_BEAMLOG), and it spun much faster than the owner's. So it is put at its first
+// (+0x320 and +0x338, a beam log), and it spun much faster than the owner's. So it is put at its first
 // place until it has moved 0.4 m, then given that way at 50 m/s and left to fly; put back on the reported place only
 // when it is more than 3 m off.
 static void beam_copy(Cpu *c, Slot *s, int k, float m[12]) {
@@ -1938,7 +1704,7 @@ static void place_copy(Cpu *c, Slot *s, int k) {
         s->mir[k].state = 0, s->mir[k].actor = 0;
         return;
     }
-    // An arrow's copy asks to sleep in its first tick (reason 0, through main+0x55251c: TOTK_COOP_TEST_ARROWWATCH)
+    // An arrow's copy asks to sleep in its first tick (reason 0, through main+0x55251c: a write watch)
     // and sleeps from the third (actor state 6, its model's +0x244 6), where this game's own arrows stay awake (4); a
     // sleeping arrow is not drawn. It is woken as the actor state machine
     // (main+0x54cb00) wakes one: +0x28's reason bits at 0x10, then bit 19 set and the actor queued for the machine
@@ -2111,9 +1877,7 @@ static void place_copy(Cpu *c, Slot *s, int k) {
 //   report wins.
 // Not checked in a game yet: which actors Ultrahand, autobuild and the Zonai devices move or make; the tester tests it.
 #define PROPS_N 256
-static float bend_at[3] = {1e9f, 1e9f, 1e9f};   // where this Link's last beam ended, and when (beam_end_watch)
-static int bend_tick = -1000, bend_ticks;
-static struct { uint64_t actor; uint32_t key, id; int seen, moved, born, made, touched, near_me, said, ended; float last[3]; char name[48]; } props[PROPS_N];
+static struct { uint64_t actor; uint32_t key, id; int seen, moved, born, made, touched, near_me, said; float last[3]; char name[48]; } props[PROPS_N];
 static struct { uint64_t actor; int until; } driven[64];   // actors this game forces to another's report
 static int prop_tick;
 // Keys another game moves that this game does not update (an object at rest runs no per-actor calc, so it is not in
@@ -2144,48 +1908,9 @@ static void set_driven(uint64_t a) {
 // attack thaw lasts while its owner holds the button, and its life follows its owner's, see "proxy attacks".)
 // The beam, though, is sent: the proxy made none (it seems to go by this game's own hearts). It has no model: what
 // shows is its effect, on its body. Frozen and kept 300 m under as an arrow's copy is, the effect stayed spinning
-// where it was made (TOTK_COOP_TEST_BEAMLOG: the copy was put where the owner's beam is, 30 m/s along). So its copy
+// where it was made (a beam log: the copy was put where the owner's beam is, 30 m/s along). So its copy
 // runs its own update and its body is driven at the owner's beam's speed (as a ridden copy's is).
 static int is_beam(const char *nm) { return !strcmp(nm, "PlayerBeam"); }
-// Test (TOTK_COOP_TEST_BEAMLOG=1): a beam's (this Link's, "own", or a copy's) place, turn (its rotation's first row),
-// state and the words that differed between the owner's beam and its copy (TOTK_COOP_TEST_BEAMDUMP), each tick. For the
-// copy spinning faster than the beam and showing no hit.
-static void beam_log(uint64_t a, uint32_t id, const char *who) {
-    float p[3] = {0}, r[9] = {0}, v320[6] = {0};
-    int32_t st = 0;
-    uint32_t w28 = 0;
-    coop_rd(a + COOP_ACTOR_POS, p, 12), coop_rd(a + COOP_ACTOR_ROT, r, 36), coop_rd(a + COOP_ACTOR_STATE, &st, 4), coop_rd(a + 0x28, &w28, 4);
-    coop_rd(a + 0x320, v320, 12), coop_rd(a + 0x338, v320 + 3, 12);
-    uint64_t c11 = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 8 * 11);
-    float f188 = 0, f1ec = 0, f150 = 0;
-    if (c11) coop_rd(c11 + 0x188, &f188, 4), coop_rd(c11 + 0x1ec, &f1ec, 4), coop_rd(c11 + 0x150, &f150, 4);
-    rt_log("coop: test: beam %s %u %.3f s: at %.2f %.2f %.2f, row0 %.3f %.3f %.3f, state %d +28 %x, +320 %.2f %.2f %.2f +338 %.2f %.2f %.2f, c11 %.2f %.2f %.2f",
-           who, id, frame_step_world_us() / 1e6, p[0], p[1], p[2], r[0], r[1], r[2], st, w28, v320[0], v320[1], v320[2], v320[3], v320[4],
-           v320[5], f188, f1ec, f150);
-}
-// Test (TOTK_COOP_TEST_BEAMDUMP=1): the first beam of this Link's 5 ticks after it woke, and the first beam copy here
-// 5 ticks after it was made, each written once to logs/beamdump.bin (tag 0 own, 1 copy): the actor's first 0x800
-// bytes and 0x200 of each of its first 64 components. The copy showed much larger than the owner's beam (the tester's
-// session, 2026-11-06); diffed offline, one game's own against the other's copy.
-static void beam_dump(uint64_t a, int copy) {
-    static int on = -1, done[2];
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_BEAMDUMP") != NULL;
-    if (!on || done[copy]) return;
-    done[copy] = 1;
-    static uint8_t buf[0x800 + 64 * 0x200];
-    memset(buf, 0, sizeof buf);
-    coop_rd(a, buf, 0x800);
-    uint64_t tbl = coop_rd_ptr(a + 0x228);
-    for (int k = 0; k < 64 && tbl; k++) {
-        uint64_t cp = coop_rd_ptr(tbl + 8 * (uint64_t)k);
-        if (cp && !(cp & 7)) coop_rd(cp, buf + 0x800 + k * 0x200, 0x200);
-    }
-    FILE *f = fopen("logs/beamdump.bin", "ab");
-    if (!f) return;
-    uint32_t tag = (uint32_t)copy;
-    fwrite(&tag, 4, 1, f), fwrite(buf, sizeof buf, 1, f), fclose(f);
-    rt_log("coop: test: beam dump: %s %llx", copy ? "a copy" : "this Link's", (unsigned long long)a);
-}
 
 static int prop_skip(const char *nm) {
     if (is_beam(nm)) return 0;
@@ -2391,18 +2116,9 @@ static void regive_gear(Cpu *c, uint64_t eq, int k, const char *name, int dye, i
 // (2026-11-07); TotK Online's stand-in has no AI and replays its owner's animation clips, which this needs as well.
 #define GEAR_SET_IN_HAND 0x4f5700
 #define GEAR_REMOVE_IN_HAND 0x4f5194
-static uint64_t eq_of_actor(uint64_t a);
 static void gear_hand(Cpu *c, uint64_t eq, int k, int in) {
     static const uint64_t row[3] = {0, 3, 4};
-    static int on2 = -1, said2;
-    if (on2 < 0) on2 = cfg_get("TOTK_COOP_TEST_INHAND") != NULL;
-    uint64_t mine = eq_of_actor(coop_player_actor());
-    #define EQ_STATE(e, tag) do { if (on2 && (e) && said2 < 60) { uint8_t f28 = 0, f20 = 0, f4 = 0; uint32_t f0 = 0;         coop_rd((e) + 0x4628, &f28, 1), coop_rd((e) + 0x4620 + row[k], &f20, 1);         coop_rd((e) + 0x570 + row[k] * 0x100 + 0xf0, &f0, 4), coop_rd((e) + 0x570 + row[k] * 0x100 + 0xf4, &f4, 1);         said2++; rt_log("coop: test: inhand %s: +0x4628 %#x, row %llu +0x4620 %u, record +0xf0 %#x +0xf4 %u", tag, f28, (unsigned long long)row[k], f20, f0, f4); } } while (0)
-    EQ_STATE(eq, "stand-in before");
-    EQ_STATE(mine, "this Link");
     if (in) coop_guest_call(c, MOD_MAIN_BASE + GEAR_SET_IN_HAND, eq, row[k], 0, 0);
-    EQ_STATE(eq, "stand-in after");
-    #undef EQ_STATE
     if (!in) coop_guest_call(c, MOD_MAIN_BASE + GEAR_REMOVE_IN_HAND, eq, row[k], 0, 0);
 }
 static int old_item(uint64_t a) {
@@ -2499,10 +2215,7 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
         int ie = -1;
         for (int i = 0; i < PROPS_N && ie < 0; i++) if (props[i].actor == a) ie = i;
         if (est != 4) {
-            if (ie >= 0) {
-                beam_end_watch(props[ie].last);
-                props[ie].actor = 0;
-            }
+            if (ie >= 0) props[ie].actor = 0;
             return;
         }
 
@@ -2518,10 +2231,6 @@ static void prop_fn(uint64_t a, const char *nm, uint32_t key, int first, void *a
         }
         props[ie].seen = prop_tick, props[ie].near_me = 1;
         memcpy(props[ie].last, p, 12);
-        if (prop_tick - props[ie].born == 5) beam_dump(a, 0);
-        static int beamlog = -1, bn;   // TOTK_COOP_TEST_BEAMLOG=1: where the beam actor and its model are, while awake
-        if (beamlog < 0) beamlog = cfg_get("TOTK_COOP_TEST_BEAMLOG") != NULL;
-        if (beamlog && bn++ < 900) beam_log(a, props[ie].id, "own");
         return;
     }
     int e = -1, free = -1;
@@ -2635,7 +2344,6 @@ static int report_props(uint64_t me, CoopObj *out, int max) {
             char nm[48];
             float q[3];
             if (is_beam(props[e].name)) {   // a beam out of the live list has ended (asleep or going away)
-                if (!props[e].ended) props[e].ended = 1, beam_end_watch(props[e].last);
                 props[e].actor = 0;
                 continue;
             }
@@ -3057,94 +2765,6 @@ static void obj_handover_apply(const CoopObj *o, int from) {
         return;
     }
 }
-// Test (TOTK_COOP_TEST_PROPS=1, in the game that joined as player 1): at 24 s into the world it makes a BombFruit
-// 1 m above this Link (an object of its own), and from 28 s to 30 s it lifts the nearest resting AsbObj_ (a rock)
-// within 20 m by 1.5 m (one every game has); the other game's log shows both arriving. Then every 30 ticks both games log
-// where that object is, for comparing.
-static float lift_from[3], lift_best, lift_at[3];
-static uint64_t lift_obj;
-static uint32_t lift_key;
-static void lift_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
-    (void)arg;
-    float q[3];
-    if (strncmp(nm, "AsbObj_", 7) || !coop_rd(a + COOP_ACTOR_POS, q, 12)) return;
-    float d2 = (q[0] - lift_from[0]) * (q[0] - lift_from[0]) + (q[1] - lift_from[1]) * (q[1] - lift_from[1]) + (q[2] - lift_from[2]) * (q[2] - lift_from[2]);
-    if (d2 < lift_best) lift_best = d2, lift_obj = a, lift_key = key, memcpy(lift_at, q, 12);
-}
-static void props_test(Cpu *c, uint64_t me) {
-    static int on = -1, made, picked;
-    static uint64_t obj;
-    static float base[3];
-    static uint32_t obj_key;
-    static _Alignas(16) uint8_t handle[0x40];
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_PROPS") != NULL;
-    if (!on) return;
-    double now = frame_step_world_us() / 1e6;
-    float p[3];
-    if (!coop_rd(me + COOP_ACTOR_POS, p, 12)) return;
-    if (coop_net_id() == 1 && !made && now > 24) {
-        float at[3] = {p[0], p[1] + 1, p[2]}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-        made = coop_request_create(c, "BombFruit", at, rot, handle) ? 1 : 0;
-        rt_log("coop: test: props: BombFruit asked for at %.2f %.2f %.2f (%d)", at[0], at[1], at[2], made);
-    }
-    static _Alignas(16) uint8_t link[0x40];
-    if (made == 1 && coop_handle_status(handle) == 3) {
-        uint64_t ref, a = coop_claim(c, handle, link, &ref);
-        made = 2;
-        rt_log("coop: test: props: BombFruit is here (%llx)", (unsigned long long)a);
-    }
-    if (coop_net_id() == 1 && !picked && now > 28) {
-        void coop_actors_all(void (*fn)(uint64_t, const char *, uint32_t, void *), void *arg);   // coop_world.c
-        memcpy(lift_from, p, 12), lift_best = 400, lift_obj = 0;
-        coop_actors_all(lift_fn, NULL);   // the nearest placed object (AsbObj_ rocks), at rest
-        obj = lift_obj, obj_key = lift_key & ~COOP_OBJ_KEYED, memcpy(base, lift_at, 12);
-        picked = 1;
-        char nm[48] = "";
-        if (obj) coop_actor_name(obj, nm, sizeof nm);
-        rt_log("coop: test: props: lifting %s (key %08x) from %.2f %.2f %.2f", nm, obj_key, base[0], base[1], base[2]);
-    }
-    if (obj && now > 28 && now < 30) {
-        float m[12] = {1, 0, 0, base[0], 0, 1, 0, base[1] + (float)(now - 28) * 0.75f, 0, 0, 1, base[2]};
-        coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, obj, (uint64_t)(uintptr_t)m, 0, 0);
-    }
-    // TOTK_COOP_TEST_PROPS=destroy: at 32 s the first game deletes the rock it lifted (as a blast would break it); the
-    // other game should destroy its own (destroy_watch).
-    static int destroyed;
-    if (!destroyed && obj && now > 32 && coop_net_id() == 1 && !strcmp(cfg_get("TOTK_COOP_TEST_PROPS"), "destroy")) {
-        coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, obj, COOP_DELETE_REASON, 0, 0);
-        destroyed = 1;
-        rt_log("coop: test: props: the lifted rock (key %08x) is deleted here", obj_key);
-    }
-    // TOTK_COOP_TEST_PROPS=blast: at 32 s the other game takes its copy's life (and lets it run its own update): does
-    // a BombFruit's copy go off? This Link's life (it stands by it) is logged before and after.
-    static int blasted;
-    if (!blasted && now > 32 && coop_net_id() != 1 && !strcmp(cfg_get("TOTK_COOP_TEST_PROPS"), "blast"))
-        for (int i = 0; i < COOP_MAX_PLAYERS && !blasted; i++)
-            for (int k = 0; k < COOP_OBJS && !blasted; k++)
-                if (slots[i].mir[k].state == 3 && !strcmp(slots[i].mir[k].name, "BombFruit")) {
-                    int coop_life_of(uint64_t a);
-                    void coop_set_life(uint64_t a, int v);
-                    int before = coop_life_of(slots[i].mir[k].actor);
-                    slots[i].mir[k].blowing = 1;
-                    coop_set_life(slots[i].mir[k].actor, 0);
-                    blasted = 1;
-                    rt_log("coop: test: props: the copy of BombFruit %u: life %d -> 0; this Link's life %d", slots[i].mir[k].id, before,
-                           coop_life_of(me));
-                }
-    static int after;
-    if (blasted && !after && now > 35) after = 1, rt_log("coop: test: props: 3 s later this Link's life is %d", ({ int coop_life_of(uint64_t a); coop_life_of(me); }));
-    // TOTK_COOP_TEST_PROPS=kill: at 32 s the other game deletes its copy of the BombFruit, as a blast would; the
-    // first game's own one should go too (the destroyed-copy notice).
-    static int killed;
-    if (!killed && now > 32 && coop_net_id() != 1 && !strcmp(cfg_get("TOTK_COOP_TEST_PROPS"), "kill"))
-        for (int i = 0; i < COOP_MAX_PLAYERS && !killed; i++)
-            for (int k = 0; k < COOP_OBJS && !killed; k++)
-                if (slots[i].mir[k].state == 3 && !strcmp(slots[i].mir[k].name, "BombFruit")) {
-                    coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, slots[i].mir[k].actor, COOP_DELETE_REASON, 0, 0);
-                    killed = 1;
-                    rt_log("coop: test: props: the copy of BombFruit %u is deleted here", slots[i].mir[k].id);
-                }
-}
 // Test (TOTK_COOP_TEST_PICKUP=1, or =sword for a Weapon_Sword_001, both games on the 100% save; pickup_b_3rd.txt in game B): at 21 s both Links are
 // put on the flat ground the fan test uses, 1.2 m apart and facing each other (player 1 at z 1510.2 facing +z, the
 // other at z 1511.4 facing -z); at 22 s player 1 makes an apple (Item_Fruit_A) between them, 0.5 m from the other;
@@ -3239,129 +2859,6 @@ static void chest_test(Cpu *c, uint64_t me) {
     if (now < 24 || now > 42 || ++t % 30 || !coop_rd(me + COOP_ACTOR_POS, p, 12)) return;
     rt_log("coop: test: chest %.2f s: this Link at %.2f %.2f %.2f", now, p[0], p[1], p[2]);
 }
-// Test (TOTK_COOP_TEST_ARROWDUMP=1, both games on bow_shoot_3rd.txt): once after 24 s, when this game has an arrow of
-// its own Link's and a copy of the other player's at the same time, both are written to logs/arrowdump.bin: the actor
-// (0x800 bytes), its model ([[[actor+0x228]+8]+0x28], 0x800) and 0x200 bytes of each of its first 64 components;
-// own first, then the copy. Copies of arrows did not show in a play session (2026-11-05); diffed offline.
-static void arrow_dump(void) {
-    static int on = -1, done;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_ARROWDUMP") != NULL;
-    if (!on || done || frame_step_world_us() < 24000000) return;
-    uint64_t own = 0, copy = 0;
-    for (int i = 0; i < 32 && !own; i++) if (my_arrows[i].actor && my_arrows[i].mine && arrow_tick - my_arrows[i].seen < 2) own = my_arrows[i].actor;
-    for (int i = 0; i < COOP_MAX_PLAYERS && !copy; i++)
-        for (int k = 0; k < COOP_OBJS && !copy; k++)
-            if (slots[i].mir[k].state == 3 && slots[i].mir[k].ticks > COPY_WARMUP + 10 && strstr(slots[i].mir[k].name, "Arrow")) copy = slots[i].mir[k].actor;
-    if (!own || !copy) return;
-    done = 1;
-    FILE *f = fopen("logs/arrowdump.bin", "wb");
-    static uint8_t buf[0x800 + 0x800 + 64 * 0x200];
-    for (int w = 0; w < 2 && f; w++) {
-        uint64_t a = w ? copy : own, tbl = coop_rd_ptr(a + 0x228), m1 = tbl ? coop_rd_ptr(tbl + 8) : 0, md = m1 ? coop_rd_ptr(m1 + 0x28) : 0;
-        memset(buf, 0, sizeof buf);
-        coop_rd(a, buf, 0x800);
-        if (md) coop_rd(md, buf + 0x800, 0x800);
-        for (int k = 0; k < 64 && tbl; k++) {
-            uint64_t cp = coop_rd_ptr(tbl + 8 * (uint64_t)k);
-            if (cp && !(cp & 7)) coop_rd(cp, buf + 0x1000 + k * 0x200, 0x200);
-        }
-        fwrite(buf, sizeof buf, 1, f);
-    }
-    if (f) fclose(f);
-    char n1[48], n2[48];
-    rt_log("coop: test: arrow dump: own %s %llx, copy %s %llx", coop_actor_name(own, n1, sizeof n1), (unsigned long long)own,
-           coop_actor_name(copy, n2, sizeof n2), (unsigned long long)copy);
-}
-// Test (TOTK_COOP_TEST_PROXYARROWS=1): every 30 ticks, each actor (the reference pool: at rest too) with "Arrow" or a fused material in its name
-// within 2 m of a co-op Link here: whether it is one of this game's copies, its state, how far from the Link. For
-// the one arrow another player could still take at the proxy's bow.
-typedef struct { float at[3]; int n; } ProxyArrowScan;
-static void proxy_arrow_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
-    ProxyArrowScan *ps = arg;
-    (void)key;
-    if (!strstr(nm, "Arrow") && strcmp(nm, "BombFruit")) return;
-    float p[3];
-    if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
-    float d2 = (p[0] - ps->at[0]) * (p[0] - ps->at[0]) + (p[1] - ps->at[1]) * (p[1] - ps->at[1]) + (p[2] - ps->at[2]) * (p[2] - ps->at[2]);
-    if (d2 > 4) return;
-    Slot *cs;
-    int ck, mine = 0;
-    for (int i = 0; i < 32; i++) mine |= my_arrows[i].actor == a;
-    int32_t st = 0;
-    coop_rd(a + COOP_ACTOR_STATE, &st, 4);
-    if (ps->n++ < 8)
-        rt_log("coop: test: proxy arrows %.2f s: %s %llx %s, state %d, %.2f m from the co-op Link", frame_step_world_us() / 1e6, nm,
-               (unsigned long long)a, copy_of(a, &cs, &ck) ? "(a copy)" : mine ? "(this Link's)" : "(neither: the proxy's own?)", st, sqrtf(d2));
-}
-static void proxy_arrows_test(void) {
-    static int on = -1, t;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_PROXYARROWS") != NULL;
-    if (!on || ++t % 30) return;
-    void coop_actors_all(void (*fn)(uint64_t, const char *, uint32_t, void *), void *arg);   // coop_world.c: at rest too
-    for (int i = 0; i < COOP_MAX_PLAYERS; i++) {
-        ProxyArrowScan ps = {{0}, 0};
-        if (!slots[i].actor || !coop_rd(slots[i].actor + COOP_ACTOR_POS, ps.at, 12)) continue;
-        coop_actors_all(proxy_arrow_fn, &ps);
-    }
-}
-// Test (TOTK_COOP_TEST_BONEARROW=1): every 30 ticks while this Link has an arrow within 2.5 m, which body bone is
-// nearest it when a bone's world place is taken as the model's world matrix (model +0x1f8, 3x4 rows) applied to the
-// bone's translation in skeleton +0x20 (4x4, translation at 12..14); and the arrow's place in that bone's frame
-// (columns 0..2, 4..6, 8..10 as its axes). For putting a nocked arrow's copy on the proxy's hand.
-static void bone_arrow_test(uint64_t me) {
-    static int on = -1, t;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_BONEARROW") != NULL;
-    if (!on || ++t % 30) return;
-    uint64_t arrow = 0;
-    for (int i = 0; i < 32 && !arrow; i++) if (my_arrows[i].actor && my_arrows[i].mine && arrow_tick - my_arrows[i].seen < 2) arrow = my_arrows[i].actor;
-    float a[3], lp[3];
-    if (!arrow || !coop_rd(arrow + COOP_ACTOR_POS, a, 12) || !coop_rd(me + COOP_ACTOR_POS, lp, 12)) return;
-    if ((a[0] - lp[0]) * (a[0] - lp[0]) + (a[1] - lp[1]) * (a[1] - lp[1]) + (a[2] - lp[2]) * (a[2] - lp[2]) > 2.5f * 2.5f) return;
-    uint64_t sk = body_skeleton(me), wb = sk ? coop_rd_ptr(sk + 0x20) : 0;
-    uint64_t model = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(me + 0x228) + 0x8) + 0x28);
-    uint16_t nb = 0;
-    static float rec[128][16];
-    float w[12];
-    if (!wb || !model || !coop_rd(sk + 0x48, &nb, 2) || nb == 0 || nb > 128 || !coop_rd(wb, rec, (size_t)nb * 64) ||
-        !coop_rd(model + 0x1f8, w, sizeof w)) return;
-    int best = -1;
-    float bd = 1e9f, bw[3] = {0};
-    for (int b = 0; b < nb; b++) {
-        float q[3];
-        for (int i = 0; i < 3; i++) q[i] = w[i * 4] * rec[b][12] + w[i * 4 + 1] * rec[b][13] + w[i * 4 + 2] * rec[b][14] + w[i * 4 + 3];
-        float d = (q[0] - a[0]) * (q[0] - a[0]) + (q[1] - a[1]) * (q[1] - a[1]) + (q[2] - a[2]) * (q[2] - a[2]);
-        if (d < bd) bd = d, best = b, memcpy(bw, q, 12);
-    }
-    rt_log("coop: test: bone arrow %.2f s: nearest bone %d, %.3f m (arrow %.2f %.2f %.2f, bone %.2f %.2f %.2f, Link %.2f %.2f %.2f)",
-           frame_step_world_us() / 1e6, best, sqrtf(bd), a[0], a[1], a[2], bw[0], bw[1], bw[2], lp[0], lp[1], lp[2]);
-}
-// Test (TOTK_COOP_TEST_IMPACT=1): what a fused arrow makes where it hits. This Link's fused materials are watched
-// each tick (their place, whether they are still there: state 2..6 and the same name); when one goes, the actors
-// within 4 m of its last place are noted, and for 1.5 s after every actor within 4 m that was not among them is
-// logged (name, place, state). For the arrows' effects on the other screens (a bomb arrow's blast; the tester's list).
-typedef struct { float at[3]; uint64_t known[256]; int nk, logged; } ImpactScan;
-static void impact_known_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
-    ImpactScan *is = arg;
-    (void)nm, (void)key;
-    float p[3];
-    if (is->nk >= 256 || !coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
-    if ((p[0] - is->at[0]) * (p[0] - is->at[0]) + (p[1] - is->at[1]) * (p[1] - is->at[1]) + (p[2] - is->at[2]) * (p[2] - is->at[2]) < 16)
-        is->known[is->nk++] = a;
-}
-static void impact_new_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
-    ImpactScan *is = arg;
-    (void)key;
-    float p[3];
-    if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
-    if ((p[0] - is->at[0]) * (p[0] - is->at[0]) + (p[1] - is->at[1]) * (p[1] - is->at[1]) + (p[2] - is->at[2]) * (p[2] - is->at[2]) >= 16) return;
-    for (int i = 0; i < is->nk; i++) if (is->known[i] == a) return;
-    if (is->nk < 256) is->known[is->nk++] = a;   // logged once
-    int32_t st = 0;
-    coop_rd(a + COOP_ACTOR_STATE, &st, 4);
-    if (is->logged++ < 40)
-        rt_log("coop: test: impact %.2f s: new %s %llx at %.2f %.2f %.2f, state %d", frame_step_world_us() / 1e6, nm, (unsigned long long)a,
-               p[0], p[1], p[2], st);
-}
 // Test (TOTK_COOP_TEST_LINKHIT=1): the hit record in each Link's damage component ([actor+0x228]+0x2f8, +0x1a0..;
 // re-notes "The hit's mark on the device": +0x1a4 state, +0x1c8 the attacker's id, +0x1d0 flags, +0x1d8 type, +0x1dc
 // power, +0x1fc the hit place) for this Link and each co-op Link, logged when +0x1a4 turns nonzero, with the life: what
@@ -3428,213 +2925,6 @@ static void link_hit_test(uint64_t me) {
         }
         last[i] = stt;
     }
-}
-static void impact_test(void) {
-    static int on = -1;
-    static struct { uint64_t actor; char name[48]; float last[3]; } w[8];
-    static uint64_t done[32];   // materials already seen going (still in my_arrows for a while after)
-    static int ndone;
-    static ImpactScan is;
-    static int64_t until;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_IMPACT") != NULL;
-    if (!on) return;
-    void coop_actors_all(void (*fn)(uint64_t, const char *, uint32_t, void *), void *arg);   // coop_world.c: at rest too
-    int64_t now = frame_step_world_us();
-    for (int i = 0; i < 32; i++)   // fused materials of this Link's arrows, watched
-        if (my_arrows[i].actor && my_arrows[i].fused_to) {
-            int seen_go = 0;
-            for (int d = 0; d < 32; d++) seen_go |= done[d] == my_arrows[i].actor;
-            if (seen_go) continue;
-            int k = 0, free = -1;
-            while (k < 8 && w[k].actor != my_arrows[i].actor) { if (free < 0 && !w[k].actor) free = k; k++; }
-            if (k == 8 && free >= 0) k = free, w[k].actor = my_arrows[i].actor, coop_actor_name(w[k].actor, w[k].name, sizeof w[k].name);
-        }
-    for (int k = 0; k < 8; k++) {
-        if (!w[k].actor) continue;
-        int32_t st = 0;
-        char nm[48];
-        int gone = !coop_rd(w[k].actor + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || strcmp(coop_actor_name(w[k].actor, nm, sizeof nm), w[k].name);
-        if (!gone) { coop_rd(w[k].actor + COOP_ACTOR_POS, w[k].last, 12); continue; }
-        rt_log("coop: test: impact %.2f s: the fused %s went (state %d) at %.2f %.2f %.2f; wall %llu ms", now / 1e6, w[k].name, st, w[k].last[0],
-               w[k].last[1], w[k].last[2], (unsigned long long)(plat_now_ns() / 1000000));
-        memset(&is, 0, sizeof is);
-        memcpy(is.at, w[k].last, 12);
-        is.known[is.nk++] = w[k].actor;
-        coop_actors_all(impact_known_fn, &is);
-        until = now + 1500000;
-        done[ndone++ % 32] = w[k].actor;
-        w[k].actor = 0;
-    }
-    if (now < until) coop_actors_all(impact_new_fn, &is);
-}
-// Test (TOTK_COOP_TEST_GLIDELOG=1): every 15 ticks, where this Link's paraglider is in the Link's frame, its state and
-// its model's +0x240 byte, open or not: what tells an open glider from a closed one.
-static void glide_log_fn(uint64_t a, const char *nm, uint32_t key, void *arg) {
-    (void)key;
-    if (strncmp(nm, "Parasail", 8)) return;
-    uint64_t me = *(uint64_t *)arg;
-    float l[3];
-    if (!item_local(me, a, l)) return;
-    int32_t st = 0;
-    coop_rd(a + COOP_ACTOR_STATE, &st, 4);
-    uint64_t model = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x8) + 0x28);
-    uint8_t mb[8] = {0};
-    if (model) coop_rd(model + 0x240, mb, 8);
-    rt_log("coop: test: glide %.2f s: %s %llx at %.2f %.2f %.2f in the Link's frame, state %d, model +0x240 %02x %02x %02x %02x", frame_step_world_us() / 1e6,
-           nm, (unsigned long long)a, l[0], l[1], l[2], st, mb[0], mb[1], mb[2], mb[3]);
-}
-static void glide_log(uint64_t me) {
-    static int on = -1, t;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_GLIDELOG") != NULL;
-    if (!on || ++t % 15) return;
-    void coop_actors_all(void (*fn)(uint64_t, const char *, uint32_t, void *), void *arg);   // coop_world.c
-    coop_actors_all(glide_log_fn, &me);
-}
-// Test (TOTK_COOP_TEST_NEWNEAR=1): every actor that shows up within 5 m of this Link (in the live list: running its
-// own calc), once, with its name and whether it is left out of the world objects (prop_skip) or a copy. For finding
-// what the Master Sword's beam and the Earthwake Technique make. At most 400 lines.
-static void newnear_fn(uint64_t a, void *arg) {
-    static uint64_t seen[2048];
-    static int n, logged;
-    const float *me = arg;
-    for (int i = 0; i < n; i++) if (seen[i] == a) return;
-    float p[3];
-    if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
-    float d2 = (p[0] - me[0]) * (p[0] - me[0]) + (p[1] - me[1]) * (p[1] - me[1]) + (p[2] - me[2]) * (p[2] - me[2]);
-    if (d2 > 25) return;
-    seen[n++ % 2048] = a;
-    if (n > 2048) n = 2048;
-    char nm[48];
-    coop_actor_name(a, nm, sizeof nm);
-    Slot *cs;
-    int ck;
-    if (logged++ < 400)
-        rt_log("coop: test: new near %.2f s: %s %llx, %.2f m from this Link%s%s", frame_step_world_us() / 1e6, nm, (unsigned long long)a,
-               sqrtf(d2), prop_skip(nm) ? " (left out)" : "", copy_of(a, &cs, &ck) ? " (a copy)" : "");
-}
-// Test (with TOTK_COOP_TEST_BEAMLOG): for 30 ticks after this Link's beam ends, every actor that shows up within 5 m
-// of where it was last, as newnear_test logs them. For finding what makes the burst where a beam hits (its copy shows
-// none). In that session a PlayerBeam woke 0.83 m from each end; taking any beam that
-// wakes within 2 m of an end in the 20 ticks after as this Link's matched none in the next one, so it is not done.
-static void beam_end_watch(const float at[3]) {
-    memcpy(bend_at, at, 12), bend_tick = prop_tick;
-    if (!cfg_get("TOTK_COOP_TEST_BEAMLOG")) return;
-    bend_ticks = 30;
-    rt_log("coop: test: this Link's beam ended at %.2f %.2f %.2f", at[0], at[1], at[2]);
-}
-static void beam_end_tick(void) {
-    // an ended beam sleeps, so it drops out of the live list: ended once it has not been seen for 2 ticks
-    for (int i = 0; i < PROPS_N; i++)
-        if (props[i].actor && props[i].made && is_beam(props[i].name) && prop_tick - props[i].seen >= 2 && !props[i].ended)
-            props[i].ended = 1, beam_end_watch(props[i].last);
-    if (bend_ticks <= 0) return;
-    bend_ticks--;
-    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
-    coop_actors_live(newnear_fn, bend_at);
-}
-static void newnear_test(uint64_t me) {
-    static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_NEWNEAR") != NULL;
-    float p[3];
-    if (!on || !coop_rd(me + COOP_ACTOR_POS, p, 12)) return;
-    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
-    coop_actors_live(newnear_fn, p);
-}
-// Test (TOTK_COOP_TEST_BEAM=1, with -FakeGearA Weapon_Sword_070): at 20 s this Link's life is set to its most, so a
-// Master Sword swing makes its beam.
-static void beam_test(uint64_t me) {
-    static int on = -1, done;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_BEAM") != NULL;
-    if (!on || done || frame_step_world_us() < 20000000) return;
-    done = 1;
-    int coop_life_max_of(uint64_t a);
-    void coop_set_life(uint64_t a, int v);
-    int m = coop_life_max_of(me);
-    if (m > 0) coop_set_life(me, m);
-    rt_log("coop: test: beam: this Link's life set to %d", m);
-}
-// Both games: where the object a co-op player moved last is here (for the test above).
-static void props_test_where(void) {
-    static int on = -1, t;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_PROPS") != NULL;
-    if (!on || ++t % 30) return;
-    for (int e = 0; e < PROPS_N; e++) {
-        float q[3];
-        if (props[e].actor && !props[e].made && prop_tick - props[e].moved < 60 && coop_rd(props[e].actor + COOP_ACTOR_POS, q, 12))
-            rt_log("coop: test: props: moved here %08x at %.2f %.2f %.2f", props[e].key & ~COOP_OBJ_KEYED, q[0], q[1], q[2]);
-    }
-    for (int i = 0; i < 64; i++) {
-        float q[3];
-        if (driven[i].actor && driven[i].until >= prop_tick && coop_rd(driven[i].actor + COOP_ACTOR_POS, q, 12))
-            rt_log("coop: test: props: driven here %llx at %.2f %.2f %.2f", (unsigned long long)driven[i].actor, q[0], q[1], q[2]);
-    }
-}
-// Test (TOTK_COOP_TEST_REFPOOL=1): at 25 s into the world, once, the memory 8 MiB around this Link's reference
-// object is searched for other reference objects (a word at +0x40 that is an actor: a readable name, a state 0..11),
-// to learn whether every actor's reference sits in one pool (then walking it lists the actors at rest too).
-static int plausible_name(const char *s) {
-    int n = 0;
-    for (; s[n]; n++)
-        if (!((s[n] >= 'A' && s[n] <= 'Z') || (s[n] >= 'a' && s[n] <= 'z') || (s[n] >= '0' && s[n] <= '9') || s[n] == '_')) return 0;
-    return n >= 3;
-}
-static void refpool_test(void) {
-    static int on = -1, done;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_REFPOOL") != NULL;
-    if (!on || done || frame_step_world_us() < 25000000) return;
-    done = 1;
-    uint64_t ref = 0, me = coop_resident_named("Player", &ref);
-    if (!me || !ref) return;
-    rt_log("coop: test: refpool: Player %llx ref %llx id %x", (unsigned long long)me, (unsigned long long)ref, (unsigned)LD32(ref + 0x48));
-    int hits = 0, near_me = 0;
-    uint64_t lo = ref - 0x800000, hi = ref + 0x800000, first = 0, last = 0, prev = 0;
-    static uint64_t steps[8];
-    static int step_n[8];
-    for (uint64_t r = lo & ~7ull; r < hi; r += 8) {
-        uint64_t a;
-        if (!coop_rd(r + 0x40, &a, 8) || a < 0x1000 || (a & 7)) continue;
-        uint64_t np;
-        int32_t st;
-        char nm[48];
-        if (!coop_rd(a + COOP_ACTOR_NAME, &np, 8) || !np || !coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 0 || st > 11) continue;
-        memset(nm, 0, sizeof nm);
-        if (!coop_rd(np, nm, 40) || !plausible_name(nm)) continue;
-        // its back link: an actor's reference names it (the Player's does); keep those whose actor points back
-        hits++;
-        if (!first) first = r;
-        last = r;
-        if (prev) {
-            uint64_t d = r - prev;
-            int k = 0;
-            while (k < 8 && step_n[k] && steps[k] != d) k++;
-            if (k < 8) steps[k] = d, step_n[k]++;
-        }
-        prev = r;
-        float p[3], q[3];
-        if (coop_rd(a + COOP_ACTOR_POS, p, 12) && coop_rd(me + COOP_ACTOR_POS, q, 12)) {
-            float d2 = (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]);
-            if (d2 < 400 && near_me++ < 40)
-                rt_log("coop: test: refpool: %+lld %s state %d at %.1f %.1f %.1f (%.1f m)", (long long)(r - ref), nm, st, p[0], p[1], p[2], sqrtf(d2));
-        }
-        if (hits <= 10) rt_log("coop: test: refpool: hit %+lld %s", (long long)(r - ref), nm);
-    }
-    rt_log("coop: test: refpool: %d hits from %+lld to %+lld, %d within 20 m", hits, (long long)(first - ref), (long long)(last - ref), near_me);
-    {   // the pool from its start, if an id is the entry number
-        uint32_t id = LD32(ref + 0x48);
-        uint64_t base = ref - (uint64_t)(id & 0xffff) * 0x60;
-        int valid = 0, last_i = -1, match = 0, shown = 0, gap = 0;
-        for (int i = 0; i < 65536 && gap < 4096; i++) {
-            uint64_t r = base + (uint64_t)i * 0x60, a = 0, np = 0;
-            uint32_t rid = 0;
-            char nm[48] = {0};
-            if (!coop_rd(r + 0x40, &a, 8) || !coop_rd(r + 0x48, &rid, 4)) break;
-            if (!a || (a & 7) || !coop_rd(a + COOP_ACTOR_NAME, &np, 8) || !np || !coop_rd(np, nm, 40) || !plausible_name(nm)) { gap++; continue; }
-            gap = 0, valid++, last_i = i, match += (int)(rid & 0xffff) == i;
-            if (shown++ < 12) rt_log("coop: test: refpool: entry %d id %x %s", i, rid, nm);
-        }
-        rt_log("coop: test: refpool: from base %+lld: %d actors, last entry %d, %d with id == entry", (long long)(base - ref), valid, last_i, match);
-    }
-    for (int k = 0; k < 8 && step_n[k]; k++) rt_log("coop: test: refpool: step %#llx x%d", (unsigned long long)steps[k], step_n[k]);
 }
 // ---- world objects on the network (OBJS packets, coop_net.c). In the 30-a-second state, 24 objects were already
 // 1.8 KB a packet; now an object is sent when it moved (1 cm) or turned, again once a second while it rests, and
@@ -3750,21 +3040,12 @@ static void objs_receive(Cpu *c) {
             continue;
         }
         Slot *s = slot_for(SRC_NET, from);
-        if (!s) {
-            static int said;
-            if (cfg_get("TOTK_COOP_TEST_ABLOG") && said++ < 5) rt_log("coop: ablog: objects from player %d, who has no slot here", from);
-            continue;
-        }
+        if (!s) continue;
         for (int e = 0; e < h[0]; e++) {
             CoopObj o;
             memcpy(&o, pk + 4 + e * sizeof(CoopObj), sizeof o);
             if (!o.id) continue;
             o.name[sizeof o.name - 1] = 0;
-            {   // TOTK_COOP_TEST_ABLOG (coop_autobuild.c): the first objects heard of
-                static int ab = -1, said;
-                if (ab < 0) ab = cfg_get("TOTK_COOP_TEST_ABLOG") != NULL;
-                if (ab && said < 40 && o.name[0]) said++, rt_log("coop: ablog: from player %d: object %08x %s flags %x", from, o.id, o.name, o.flags);
-            }
             int j = 0, free = -1;
             for (; j < COOP_OBJS && s->objs_want[j].id != o.id; j++)
                 if (free < 0 && !s->objs_want[j].id) free = j;
@@ -3781,99 +3062,13 @@ static void objs_receive(Cpu *c) {
         for (int j = 0; j < COOP_OBJS; j++)
             if (slots[i].objs_want[j].id && rtick - slots[i].objs_heard[j] > 75) slots[i].objs_want[j].id = 0;
 }
-// Test (TOTK_COOP_TEST_STAND=1, one game): what records the thing Link stands on. At 22 s a glider
-// (SpObj_LiftGeneratorWing_A_01) is made 2.5 m beside this Link and 1 m up; at 26 s the Link is put 0.6 m above
-// it; at 29 s (standing on it) this Link's first 0x4000 bytes, and 0x1000 bytes of each block a word there points
-// to, are searched for the glider's actor and its reference object; at 33 s the Link is put back on the ground and
-// the same words are read again (they should no longer hold it).
-static void stand_test(Cpu *c, uint64_t me) {
-    static int on = -1, stage;
-    static _Alignas(16) uint8_t handle[0x40], link[0x40];
-    static uint64_t wing, wing_ref;
-    static float start[3];
-    static struct { uint64_t at; char path[48]; } hit[64];
-    static int n_hit;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_STAND") != NULL;
-    if (!on) return;
-    double now = frame_step_world_us() / 1e6;
-    float p[3];
-    if (!coop_rd(me + COOP_ACTOR_POS, p, 12)) return;
-    if (stage == 0 && now > 22) {
-        memcpy(start, p, 12);
-        float at[3] = {p[0] + 2.5f, p[1] + 1, p[2]}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-        stage = coop_request_create(c, "SpObj_LiftGeneratorWing_A_01", at, rot, handle) ? 1 : 9;
-        rt_log("coop: test: stand: glider asked for at %.2f %.2f %.2f (%d)", at[0], at[1], at[2], stage);
-    }
-    if (stage == 1 && coop_handle_status(handle) == 3) {
-        wing = coop_claim(c, handle, link, &wing_ref);
-        stage = wing ? 2 : 9;
-        rt_log("coop: test: stand: glider %llx ref %llx", (unsigned long long)wing, (unsigned long long)wing_ref);
-    }
-    if (stage == 2 && now > 26) {
-        float w[3];
-        if (!coop_rd(wing + COOP_ACTOR_POS, w, 12)) { stage = 9; return; }
-        float m[12] = {1, 0, 0, w[0], 0, 1, 0, w[1] + 0.6f, 0, 0, 1, w[2]};
-        coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
-        rt_log("coop: test: stand: Link put on the glider at %.2f %.2f %.2f", w[0], w[1] + 0.6f, w[2]);
-        stage = 3;
-    }
-    {   // the words around [Link+0x3b8]+0xd68, which held the glider while the Link stood on it, at each stage
-        static int said_stage = -1;
-        int at_stage = now > 20 && stage == 0 ? 0 : (stage == 3 && now > 28.9) ? 3 : (stage == 6) ? 6 : -1;
-        if (at_stage >= 0 && at_stage != said_stage) {
-            said_stage = at_stage;
-            uint64_t comp = coop_rd_ptr(me + 0x3b8), comp2 = coop_rd_ptr(me + 0xa68);
-            char line[600];
-            int n = snprintf(line, sizeof line, "coop: test: stand: stage %d, [Link+0x3b8] %llx, [Link+0xa68] %llx:", at_stage,
-                             (unsigned long long)comp, (unsigned long long)comp2);
-            for (uint64_t o = 0xd40; o < 0xdc0 && n < (int)sizeof line - 20; o += 8)
-                n += snprintf(line + n, sizeof line - n, " %llx", (unsigned long long)coop_rd_ptr(comp + o));
-            rt_log("%s", line);
-        }
-    }
-    if ((stage == 3 && now > 29) || (stage == 5 && now > 36)) {
-        float w[3] = {0};
-        coop_rd(wing + COOP_ACTOR_POS, w, 12);
-        rt_log("coop: test: stand: %s: Link at %.2f %.2f %.2f, glider at %.2f %.2f %.2f", stage == 3 ? "on it" : "off it",
-               p[0], p[1], p[2], w[0], w[1], w[2]);
-        if (stage == 3) {
-            n_hit = 0;
-            for (uint64_t o = 0; o < 0x4000 && n_hit < 64; o += 8) {
-                uint64_t v = 0;
-                if (!coop_rd(me + o, &v, 8)) continue;
-                if (v == wing || v == wing_ref) {
-                    hit[n_hit].at = me + o, snprintf(hit[n_hit].path, sizeof hit[n_hit].path, "Link+%#llx", (unsigned long long)o), n_hit++;
-                    continue;
-                }
-                if (v < 0x10000000 || (v & 7)) continue;
-                for (uint64_t q = 0; q < 0x1000 && n_hit < 64; q += 8) {
-                    uint64_t u = 0;
-                    if (!coop_rd(v + q, &u, 8)) break;
-                    if (u == wing || u == wing_ref)
-                        hit[n_hit].at = v + q, snprintf(hit[n_hit].path, sizeof hit[n_hit].path, "[Link+%#llx]+%#llx", (unsigned long long)o, (unsigned long long)q), n_hit++;
-                }
-            }
-            for (int i = 0; i < n_hit; i++) rt_log("coop: test: stand: on it, %s holds the glider's %s", hit[i].path, LD64(hit[i].at) == wing ? "actor" : "reference");
-            rt_log("coop: test: stand: %d words hold it", n_hit);
-            float m[12] = {1, 0, 0, start[0], 0, 1, 0, start[1] + 0.3f, 0, 0, 1, start[2]};
-            coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
-            stage = 5;
-        } else {
-            for (int i = 0; i < n_hit; i++) {
-                uint64_t v = LD64(hit[i].at);
-                rt_log("coop: test: stand: off it, %s now %llx%s", hit[i].path, (unsigned long long)v, v == wing || v == wing_ref ? " (still the glider)" : "");
-            }
-            stage = 6;
-        }
-    }
-}
 // ---- riding another player's object (play test: ride a flying Zonai contraption together, 2026-11-05). This Link
 // rides an object a co-op player sends (a copy, or this game's own one moved to their report) when it stands on it:
 // within 1.6 m of it across and 0-1.6 m above its origin. While it rides, each tick the object's move since the last
 // tick (its turn about its origin and its shift) is put on this Link too (COOP_FORCE_MATRIX), so it goes along as on
 // a moving floor and still walks on it. Where the game keeps what Link stands on was not found: no word in the
-// Link's first 0x4000 bytes or one level down held the glider it stood on (TOTK_COOP_TEST_STAND).
-// What it took (ride test, TOTK_COOP_TEST_RIDE=<m/s>: A moves a glider along x and 0.3 m/s up for 10 s, B's Link is
+// Link's first 0x4000 bytes or one level down held the glider it stood on (a test that searched them).
+// What it took (a ride test: A moves a glider along x and 0.3 m/s up for 10 s, B's Link is
 // put on its copy): the copy moved by speed, not teleported, holds the Link up (teleported, it sank through); this
 // runs once a frame (the tick ran twice at one world time, and the second undid the first: the Link fell behind at
 // half the glider's speed); objects are sent within 20 m of any Link (a glider flown 20 m from its maker went away
@@ -4153,8 +3348,6 @@ static void ride_carry(Cpu *c, uint64_t me) {
     if (now_us == last_us) return;
     if (last_us > 0 && now_us > last_us && now_us - last_us < 100000) ride_frame_s = (now_us - last_us) / 1e6f;
     last_us = now_us;
-    static int nocarry = -1;   // TOTK_COOP_TEST_NOCARRY=1: no carrying here, to see whether the moving copy carries the Link itself
-    if (nocarry < 0) nocarry = cfg_get("TOTK_COOP_TEST_NOCARRY") != NULL;
     static uint64_t riding;
     static float last_pos[3], last_rot[9];
     static int said;
@@ -4215,19 +3408,7 @@ static void ride_carry(Cpu *c, uint64_t me) {
         for (int i = 0; i < 3; i++)
             for (int j = 0; j < 3; j++) nr[i * 3 + j] = d[i * 3 + 0] * r[0 * 3 + j] + d[i * 3 + 1] * r[1 * 3 + j] + d[i * 3 + 2] * r[2 * 3 + j];
         float mv = (np[0] - p[0]) * (np[0] - p[0]) + (np[1] - p[1]) * (np[1] - p[1]) + (np[2] - p[2]) * (np[2] - p[2]);
-        {   // TOTK_COOP_TEST_RIDE: each tick for 3 s after stepping on, where the Link was, where it is put, the object
-            static int dbg = -1, n_dbg;
-            static float put[3];
-            if (dbg < 0) dbg = cfg_get("TOTK_COOP_TEST_RIDE") != NULL;
-            if (dbg && n_dbg < 90) {
-                n_dbg++;
-                rt_log("coop: test: ride: tick %.3f s: Link %.3f %.3f %.3f (put %.3f %.3f %.3f last tick), object moved %.3f %.3f %.3f, put at %.3f %.3f %.3f",
-                       frame_step_world_us() / 1e6, p[0], p[1], p[2], put[0], put[1], put[2], on->pos[0] - last_pos[0],
-                       on->pos[1] - last_pos[1], on->pos[2] - last_pos[2], np[0], np[1], np[2]);
-                memcpy(put, np, 12);
-            }
-        }
-        if (mv > 1e-6f && !nocarry && !on->native) {
+        if (mv > 1e-6f && !on->native) {
             float m[12];
             for (int i = 0; i < 3; i++) {
                 for (int j = 0; j < 3; j++) m[i * 4 + j] = nr[i * 3 + j];
@@ -4245,61 +3426,6 @@ static void ride_carry(Cpu *c, uint64_t me) {
             ride_owner_now = on->owner, ride_id_now = on->id;
         }
     }
-}
-// Test (TOTK_COOP_TEST_RIDE=1, two games): the game that joined as player 1 makes a glider 3 m beside its Link at
-// 22 s and from 30 s moves it along x (the variable's value in m/s) and 0.3 m/s up for 10 s (COOP_FORCE_MATRIX each
-// tick); the other game
-// puts its Link 0.6 m above its copy at 27 s, and every 15 ticks logs its Link's place on the copy.
-static void ride_test(Cpu *c, uint64_t me) {
-    static int on = -1, stage;
-    static _Alignas(16) uint8_t handle[0x40], link[0x40];
-    static uint64_t wing;
-    static float base[3];
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_RIDE") != NULL;
-    if (!on) return;
-    double now = frame_step_world_us() / 1e6;
-    float p[3];
-    if (!coop_rd(me + COOP_ACTOR_POS, p, 12)) return;
-    if (coop_net_id() == 1) {
-        if (stage == 0 && now > 22) {
-            float at[3] = {p[0] + 3, p[1] + 1, p[2]}, rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-            stage = coop_request_create(c, "SpObj_LiftGeneratorWing_A_01", at, rot, handle) ? 1 : 9;
-        }
-        if (stage == 1 && coop_handle_status(handle) == 3) {
-            uint64_t ref;
-            wing = coop_claim(c, handle, link, &ref);
-            stage = wing ? 2 : 9;
-            rt_log("coop: test: ride: glider %llx", (unsigned long long)wing);
-        }
-        if (stage == 2 && now > 30) coop_rd(wing + COOP_ACTOR_POS, base, 12), stage = 3;
-        if (stage == 3 && now < 40) {
-            float sp = (float)atof(cfg_get("TOTK_COOP_TEST_RIDE"));   // its value: the speed along x, m/s (1 m/s for "1")
-            if (sp <= 0) sp = 1;
-            float t = (float)(now - 30), m[12] = {1, 0, 0, base[0] + sp * t, 0, 1, 0, base[1] + 0.3f * t, 0, 0, 1, base[2]};
-            coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, wing, (uint64_t)(uintptr_t)m, 0, 0);
-        }
-        static int t1;
-        float w[3], o[3];
-        if (stage >= 2 && ++t1 % 15 == 0 && now < 45 && slots[0].actor && coop_rd(wing + COOP_ACTOR_POS, w, 12) &&
-            coop_rd(slots[0].actor + COOP_ACTOR_POS, o, 12))
-            rt_log("coop: test: ride: %.2f s glider at %.2f %.2f %.2f, the other Link %+.2f %+.2f %+.2f from it", now, w[0], w[1], w[2],
-                   o[0] - w[0], o[1] - w[1], o[2] - w[2]);
-        return;
-    }
-    RideObj objs[64];
-    int n = ride_objects(objs, 64, p);
-    if (!n) return;
-    const RideObj *g = &objs[0];
-    if (stage == 0 && now > 27) {
-        float m[12] = {1, 0, 0, g->pos[0], 0, 1, 0, g->pos[1] + 0.6f, 0, 0, 1, g->pos[2]};
-        coop_guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
-        rt_log("coop: test: ride: this Link put on the copy at %.2f %.2f %.2f", g->pos[0], g->pos[1] + 0.6f, g->pos[2]);
-        stage = 1;
-    }
-    static int t;
-    if (stage == 1 && ++t % 15 == 0 && now < 45)
-        rt_log("coop: test: ride: %.2f s copy at %.2f %.2f %.2f, Link %+.2f %+.2f %+.2f from it", now, g->pos[0], g->pos[1], g->pos[2],
-               p[0] - g->pos[0], p[1] - g->pos[1], p[2] - g->pos[2]);
 }
 // Test (TOTK_COOP_TEST_ZONAI=<actor name>, one game, tools/coop/zonai_hit_3rd.txt): what turns a Zonai device on.
 // At 21 s this Link is turned to face +x, at 22 s the device is made 1.1 m in front of it; its first 0x3000 bytes are kept at 24 s (before the hits
@@ -4356,107 +3482,6 @@ static void zonai_test(Cpu *c, uint64_t me) {
             rt_log("coop: test: zonai: on and back: +%#x %#x -> %#x -> %#x", i * 4, a, b, cc), n++;
     }
     rt_log("coop: test: zonai: snapshot %d, %d words logged", k, n);
-}
-// Test (TOTK_COOP_TEST_ZONAILOG=1; the tester plays it: drop a Zonai device, hit it to turn it on, let it stop, again):
-// which words turn a device on. Every 10 ticks, for up to 8 devices (actors named SpObj_..., not a capsule) within
-// 15 m of this Link: their first 0x3000 bytes, and 0x400 bytes of each of their first 128 components ([actor+0x228]
-// + 8 * i), are compared with the last look; a byte that goes between 0 and 1 is logged as
-// "zonai: <name> <where> a -> b", each place at most 30 times, with the device's place and speed, so the words that
-// go on with the device and off when it stops can be picked out of the log afterwards.
-#define ZL_DEV 8
-#define ZL_ACT 0x3000
-#define ZL_COMP 128
-#define ZL_CB 0x400
-typedef struct {
-    uint64_t actor;
-    char name[48];
-    uint32_t act[ZL_ACT / 4];
-    uint64_t comp[ZL_COMP];
-    uint32_t cw[ZL_COMP][ZL_CB / 4];
-    uint8_t said[ZL_ACT + ZL_COMP * ZL_CB];   // per byte
-    float last[3];
-    int seen, have;
-} ZlDev;
-static ZlDev *zl;
-static int zl_tick;
-static void zl_fn(uint64_t a, void *arg) {
-    const float *me = arg;
-    char nm[48];
-    coop_actor_name(a, nm, sizeof nm);
-    if (strncmp(nm, "SpObj_", 6) || strstr(nm, "Capsule")) return;
-    float p[3];
-    if (!coop_rd(a + COOP_ACTOR_POS, p, 12)) return;
-    if ((p[0] - me[0]) * (p[0] - me[0]) + (p[1] - me[1]) * (p[1] - me[1]) + (p[2] - me[2]) * (p[2] - me[2]) > 225) return;
-    int d = -1, free = -1;
-    for (int i = 0; i < ZL_DEV && d < 0; i++) {
-        if (zl[i].actor == a) d = i;
-        else if (free < 0 && (!zl[i].actor || zl_tick - zl[i].seen > 300)) free = i;
-    }
-    if (d < 0) {
-        if (free < 0) return;
-        d = free;
-        memset(&zl[d], 0, sizeof zl[d]);
-        zl[d].actor = a, snprintf(zl[d].name, sizeof zl[d].name, "%s", nm);
-        rt_log("coop: zonai: watching %s %llx at %.2f %.2f %.2f", nm, (unsigned long long)a, p[0], p[1], p[2]);
-    }
-    ZlDev *z = &zl[d];
-    z->seen = zl_tick;
-    static uint32_t buf[ZL_ACT / 4];
-    if (!coop_rd(a, buf, sizeof buf)) return;
-    float sp = z->have ? sqrtf((p[0] - z->last[0]) * (p[0] - z->last[0]) + (p[1] - z->last[1]) * (p[1] - z->last[1]) +
-                               (p[2] - z->last[2]) * (p[2] - z->last[2])) * 3 : 0;   // m/s over the 10 ticks (about 1/3 s)
-    double now = frame_step_world_us() / 1e6;
-    // Bytes that go between 0 and 1 (a bool): a fan's on state was not a small word (first played run, 2026-11-05).
-    const uint8_t *nb = (const uint8_t *)buf, *ob = (const uint8_t *)z->act;
-    for (int i = 0; i < ZL_ACT && z->have; i++)
-        if (nb[i] != ob[i] && nb[i] < 2 && ob[i] < 2 && z->said[i] < 30)
-            z->said[i]++, rt_log("coop: zonai: %.2f s %s actor+%#x %u -> %u (at %.1f %.1f %.1f, %.1f m/s)", now, z->name, i,
-                                 ob[i], nb[i], p[0], p[1], p[2], sp);
-    memcpy(z->act, buf, sizeof buf);
-    uint64_t tbl = coop_rd_ptr(a + 0x228);
-    for (int k = 0; k < ZL_COMP && tbl; k++) {
-        uint64_t c = coop_rd_ptr(tbl + 8 * (uint64_t)k);
-        static uint32_t cb[ZL_CB / 4];
-        if (!c || (c & 7) || !coop_rd(c, cb, sizeof cb)) { z->comp[k] = 0; continue; }
-        if (z->have && z->comp[k] == c)
-            for (int i = 0; i < ZL_CB; i++) {
-                const uint8_t *n8 = (const uint8_t *)cb, *o8 = (const uint8_t *)z->cw[k];
-                uint8_t *sd = &z->said[ZL_ACT + k * ZL_CB + i];
-                if (n8[i] != o8[i] && n8[i] < 2 && o8[i] < 2 && *sd < 30)
-                    (*sd)++, rt_log("coop: zonai: %.2f s %s comp%d+%#x %u -> %u (at %.1f %.1f %.1f, %.1f m/s)", now, z->name, k, i,
-                                    o8[i], n8[i], p[0], p[1], p[2], sp);
-            }
-        z->comp[k] = c;
-        memcpy(z->cw[k], cb, sizeof cb);
-    }
-    memcpy(z->last, p, 12), z->have = 1;
-}
-static void zonai_log(uint64_t me) {
-    static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_ZONAILOG") != NULL;
-    if (!on || ++zl_tick % 10) return;
-    if (!zl) zl = calloc(ZL_DEV, sizeof *zl);
-    float p[3];
-    if (!zl || !coop_rd(me + COOP_ACTOR_POS, p, 12)) return;
-    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
-    coop_actors_live(zl_fn, p);
-}
-// Test (TOTK_COOP_TEST_ZONAIDUMP=1): every 30 ticks, the first device within 15 m of this Link whose name starts
-// SpObj_WindGenerator (a fan) is written to logs/zonai_dump.bin (beside the game): a header {double world seconds, u64 actor, float
-// pos[3], u32 0}, then its first 0x3000 bytes and 0x400 bytes of each of its first 128 components (zeros where a
-// component is missing). The bytes that hold one value while it is on and another while it is off are picked out
-// afterwards (tools/coop/zonai_dump.py) with the hit times from the logger.
-static void zd_fn(uint64_t a, void *arg) {
-    uint64_t *found = arg;
-    char nm[48];
-    if (found[1]) return;
-    coop_actor_name(a, nm, sizeof nm);
-    if (strncmp(nm, "SpObj_WindGenerator", 19)) return;
-    float p[3], q[3];
-    memcpy(q, &found[2], 12);
-    if (!coop_rd(a + COOP_ACTOR_POS, p, 12) ||
-        (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]) > 625) return;   // 25 m
-    found[1] = a;
 }
 // An EquipmentUser's item of a synced slot kind (0 weapon, 1 bow, 2 shield): its actor, or 0.
 static uint64_t eq_item(uint64_t eq, int kind) {
@@ -4539,56 +3564,6 @@ static void shield_place(Cpu *c, Slot *s) {
 }
 
 static uint64_t model_of(uint64_t a) { return a ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x8) + 0x28) : 0; }
-// Test (TOTK_COOP_TEST_SURFLOG=1): every 15 ticks, for this Link and each co-op Link here, where its shield is
-// (relative to it), whether the shield is in hand, and its EquipmentUser's per-slot bytes +0x4620..+0x4627. For the
-// shield surf, which the proxy showed with the shield on its back.
-static void surf_log(Cpu *c, uint64_t me) {
-    static int on = -1, t;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_SURFLOG") != NULL;
-    if (!on || ++t % 15) return;
-    for (int i = -1; i < COOP_MAX_PLAYERS; i++) {
-        uint64_t link = i < 0 ? me : slots[i].actor, eq = link ? eq_of_actor(link) : 0, sh = eq_item(eq, 2);
-        float l[3];
-        uint8_t b[8] = {0};
-        if (!sh || !item_local(link, sh, l)) continue;
-        coop_rd(eq + 0x4620, b, 8);
-        float mt[12] = {0}, ml[3] = {0}, lp[3], lr[9];
-        uint64_t model = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(sh + 0x228) + 0x8) + 0x28);
-        if (model && coop_rd(model + 0x1f8, mt, sizeof mt) && coop_rd(link + COOP_ACTOR_POS, lp, 12) && coop_rd(link + COOP_ACTOR_ROT, lr, 36)) {
-            float d[3] = {mt[3] - lp[0], mt[7] - lp[1], mt[11] - lp[2]};
-            for (int j = 0; j < 3; j++) ml[j] = lr[j] * d[0] + lr[3 + j] * d[1] + lr[6 + j] * d[2];
-        }
-        int hand = (int)(coop_guest_call(c, MOD_MAIN_BASE + GEAR_IN_HAND, eq, 4, 0, 0) & 1);
-        rt_log("coop: test: surf %.2f s %s: shield at %.2f %.2f %.2f (model %.2f %.2f %.2f), in hand %d, slots %02x %02x %02x %02x %02x %02x %02x %02x",
-               frame_step_world_us() / 1e6, i < 0 ? "this Link" : "co-op Link", l[0], l[1], l[2], ml[0], ml[1], ml[2], hand, b[0], b[1], b[2], b[3],
-               b[4], b[5], b[6], b[7]);
-    }
-}
-static void zonai_dump(uint64_t me) {
-    static int on = -1, t;
-    static FILE *f;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_ZONAIDUMP") != NULL;
-    if (!on || ++t % 30) return;
-    uint64_t found[4] = {0};
-    if (!coop_rd(me + COOP_ACTOR_POS, &found[2], 12)) return;
-    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
-    coop_actors_live(zd_fn, found);
-    uint64_t a = found[1];
-    if (!a) return;
-    if (!f) f = fopen("logs/zonai_dump.bin", "wb");
-    if (!f) return;
-    static uint8_t buf[0x3000 + 128 * 0x400];
-    memset(buf, 0, sizeof buf);
-    coop_rd(a, buf, 0x3000);
-    uint64_t tbl = coop_rd_ptr(a + 0x228);
-    for (int k = 0; k < 128 && tbl; k++) {
-        uint64_t c = coop_rd_ptr(tbl + 8 * (uint64_t)k);
-        if (c && !(c & 7)) coop_rd(c, buf + 0x3000 + k * 0x400, 0x400);
-    }
-    struct { double t; uint64_t actor; float pos[3]; uint32_t pad; } h = {frame_step_world_us() / 1e6, a, {0}, 0};
-    coop_rd(a + COOP_ACTOR_POS, h.pos, 12);
-    fwrite(&h, sizeof h, 1, f), fwrite(buf, sizeof buf, 1, f), fflush(f);
-}
 // Test (TOTK_COOP_TEST_FANSET=<1..9>, one game; 9: no writes, this Link faces the fan for the script's hits): which of a fan's three on/off words (found by the played dump
 // test, 2026-11-05) turns it on. At 21 s this Link is put at 31.5 1514.6 1510.2 (the flat ground where the tester's fans
 // stood still), at 22 s a fan (SpObj_WindGenerator_A_01) is made beside it; at 30 s the chosen word is written to
@@ -4641,8 +3616,6 @@ static void fanset_test(Cpu *c, uint64_t me) {
         fan = coop_claim(c, handle, link, &ref);
         stage = fan ? 3 : 9;
         rt_log("coop: test: fanset: fan %llx", (unsigned long long)fan);
-        extern uint64_t coop_fan_actor;   // coop_spawn.c TOTK_COOP_TEST_FANHIT
-        coop_fan_actor = fan;
     }
     // Wind probes: four BombFruits 1.5 m from the fan on each side, made at 25 s; their places are logged with the
     // rest, so the side the fan blows to shows as one that moves once it is on.
@@ -4829,113 +3802,6 @@ static void fanset_test(Cpu *c, uint64_t me) {
         rt_log("coop: test: fanset: %.2f s at %.2f %.2f %.2f: comp11+0x348 %#x, comp28+0x398 %u, comp107+0x398 %#x, on bool %#x", now, p[0], p[1], p[2],
                LD32(c11 + 0x348), LD32(c28 + 0x398), LD32(c107 + 0x398), dev_on_flag(fan) ? LD8(dev_on_flag(fan)) : 0xff);
 }
-// The object main+0x2f8b70 reads to set a device's on bits: in the actor's component +0xa8 (8 * 21), a table at
-// +0x38 (+0x30 its count) of entries sorted by their first u32, the one 0x9b84ce69; its +8, then +0x150; its +0x7c is
-// compared with 0xd and 0x17 there (2026-11-05). 0 when not found.
-static uint64_t dev_state_obj(uint64_t actor) {
-    uint64_t tbl = coop_rd_ptr(actor + 0x228), comp = tbl ? coop_rd_ptr(tbl + 0xa8) : 0;
-    int32_t n = 0;
-    if (!comp || !coop_rd(comp + 0x30, &n, 4) || n <= 0 || n > 4096) return 0;
-    uint64_t arr = coop_rd_ptr(comp + 0x38);
-    for (int i = 0; arr && i < n; i++) {
-        uint64_t e = coop_rd_ptr(arr + 8 * (uint64_t)i);
-        uint32_t h = 0;
-        if (e && coop_rd(e, &h, 4) && h == 0x9b84ce69u) {
-            uint64_t x = coop_rd_ptr(e + 8);
-            return x ? coop_rd_ptr(x + 0x150) : 0;
-        }
-    }
-    return 0;
-}
-// Test (TOTK_COOP_TEST_FANTOGGLE=1, played): every 10 s the on bool of the nearest fan within 15 m is flipped (with its
-// change count, as main+0x9fb82c writes it); the player sees whether a fan from a capsule starts and stops. A fan
-// made by requestCreateActor showed "on" in its flags but did not blow (no energy, likely).
-static void fan_flag_publish(uint64_t me) {   // for coop_spawn.c's TOTK_COOP_TEST_FLAGCALLER: the nearest fan's on bool
-    extern uint64_t coop_fan_flag;
-    static int t;
-    if (!cfg_get("TOTK_COOP_TEST_FLAGCALLER") || ++t % 30) return;
-    uint64_t found[4] = {0};
-    if (!coop_rd(me + COOP_ACTOR_POS, &found[2], 12)) return;
-    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
-    coop_actors_live(zd_fn, found);
-    coop_fan_flag = found[1] ? dev_on_flag(found[1]) : 0;
-}
-static void fantoggle(uint64_t me) {
-    static int on = -1, t;
-    fan_flag_publish(me);
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_FANTOGGLE") != NULL;
-    if (!on || ++t % 600) return;   // the tick runs twice a frame: about 10 s
-    uint64_t found[4] = {0};
-    if (!coop_rd(me + COOP_ACTOR_POS, &found[2], 12)) return;
-    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
-    coop_actors_live(zd_fn, found);
-    uint64_t bb = 0;
-    uint32_t idx = 0, nch = 0;
-    uint64_t f = found[1] ? dev_on_flag_at(found[1], &bb, &idx) : 0;
-    if (!f) return;
-    uint8_t v = LD8(f) ? 0 : 1;
-    ST8(f, v);
-    uint64_t chg = coop_rd_ptr(bb + 0x1f0);
-    if (chg && coop_rd(bb + 0x1e8, &nch, 4) && idx < nch) ST8(chg + idx, (uint8_t)(LD8(chg + idx) + 1));
-    uint64_t c11 = fan_comp(found[1], 11), c28 = fan_comp(found[1], 28);
-    rt_log("coop: test: fantoggle: %.2f s fan %llx set %s (comp11+0x348 %#x, comp28+0x398 %u)", frame_step_world_us() / 1e6,
-           (unsigned long long)found[1], v ? "on" : "off", c11 ? LD32(c11 + 0x348) : 0, c28 ? LD32(c28 + 0x398) : 0);
-}
-// Test (TOTK_COOP_TEST_FANWATCH=1, played): the code that turns a fan on. While a fan is within 15 m, a write watch
-// is on its on bool (dev_on_flag); when the bool changes (a hit), the watch is taken off, which logs the functions
-// that wrote it ("coop: ... reads/writes by main+..."). Slow while armed (the page faults).
-static void fanwatch(uint64_t me) {
-    static int on = -1, armed, done;
-    static uint64_t flag;
-    static uint8_t was;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_FANWATCH") != NULL;
-    if (!on || done >= 3) return;
-    int coop_watch_arm(uint64_t addr, uint64_t len);   // coop_watch_win.c
-    void coop_watch_disarm(void);
-    extern int coop_watch_writes;
-    if (armed) {
-        static int t;
-        uint8_t v = LD8(flag);
-        if (v != was || ++t > 30 * 60) {   // a change, or a minute without one
-            coop_watch_disarm(), armed = 0, t = 0;
-            rt_log("coop: test: fanwatch: on bool %u -> %u", was, v);
-            if (v != was) done++;
-        }
-        return;
-    }
-    uint64_t found[4] = {0};
-    if (!coop_rd(me + COOP_ACTOR_POS, &found[2], 12)) return;
-    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
-    coop_actors_live(zd_fn, found);
-    if (!found[1] || !(flag = dev_on_flag(found[1]))) return;
-    was = LD8(flag);
-    coop_watch_writes = 1;
-    if (coop_watch_arm(flag, 1)) armed = 1, rt_log("coop: test: fanwatch: watching the on bool (%u) of %llx", was, (unsigned long long)found[1]);
-}
-// Test (TOTK_COOP_TEST_FANSTATE=1, played): every 15 ticks, for the first fan within 15 m, that object's +0x78..+0x8f
-// and the three on/off words, logged when any of them changed.
-static void fanstate_log(uint64_t me) {
-    static int on = -1, t;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_FANSTATE") != NULL;
-    if (!on || ++t % 15) return;
-    uint64_t found[4] = {0};
-    if (!coop_rd(me + COOP_ACTOR_POS, &found[2], 12)) return;
-    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
-    coop_actors_live(zd_fn, found);
-    uint64_t a = found[1];
-    if (!a) return;
-    uint64_t so = dev_state_obj(a), c11 = fan_comp(a, 11), c28 = fan_comp(a, 28), c107 = fan_comp(a, 107);
-    uint32_t w[6] = {0};
-    if (so) coop_rd(so + 0x78, w, 24);
-    uint64_t fo = dev_on_flag(a);
-    uint32_t v[3] = {c11 ? LD32(c11 + 0x348) : 0, c28 ? LD32(c28 + 0x398) : 0, fo ? LD8(fo) : 0xff};
-    static uint32_t last[9];
-    uint32_t now9[9] = {w[0], w[1], w[2], w[3], w[4], w[5], v[0], v[1], v[2]};
-    if (!memcmp(now9, last, sizeof last)) return;
-    memcpy(last, now9, sizeof last);
-    rt_log("coop: fanstate: %.2f s obj %llx +0x78.. %x %x %x %x %x %x | %#x %u %#x", frame_step_world_us() / 1e6,
-           (unsigned long long)so, w[0], w[1], w[2], w[3], w[4], w[5], v[0], v[1], v[2]);
-}
 static int this_paused;   // this game sits in a menu (the clock and this Link both still; set by the tick)
 static uint64_t runs_since_ns;   // when this game last came out of a pause (0 while paused)
 // How long this game has run since its last pause (a menu, a load), in ms; -1 while paused (coop_world.c: enemies are
@@ -4949,7 +3815,7 @@ int coop_runs_for_ms(void) { return runs_since_ns ? (int)((plat_now_ns() - runs_
 // lists what does not match. TOTK_COOP_AUDIT=0: none.
 // The material fused to this Link's shield. A weapon is made again with its material when one is fused (the weapon
 // create's attachment, coop_players_gear); a shield is not: the material is attached to the shield there is, and its
-// create says nothing (TOTK_COOP_TEST_EQLOG, a play session, 2026-11-06: a wheel and a plank fused to a shield went
+// create says nothing (a gear create log, a play session, 2026-11-06: a wheel and a plank fused to a shield went
 // to the other game as loose objects). Taken here as the actor that stays within 0.8 m of the shield for 5 looks in a
 // row (every 10 ticks), not a Link's, a weapon or armor; none for 3 looks, the shield has none. An actor nearer to the
 // Link's weapon or bow than to its shield is that item's fused part: with the sword put away on the back, its rock lay
@@ -5018,33 +3884,6 @@ static void fused_from_world(uint64_t a) {
             dwatch[i].actor = 0;   // (not told again as it goes)
             return;
         }
-}
-// Test (TOTK_COOP_TEST_FUSELOG): once a second, the actor on this Link's shield and on each co-op Link's, with its
-// scale (+0x2e4) and place in the shield's frame: the proxy's shield made with a Zonai device showed it at full size.
-static void fuse_log_one(const char *who, uint64_t shield) {
-    ShieldScan ss = {.best_d2 = 4.0f, .shield = shield};
-    if (!shield || !coop_rd(shield + COOP_ACTOR_POS, ss.at, 12)) return;
-    void coop_actors_live(void (*fn)(uint64_t actor, void *arg), void *arg);   // coop_world.c
-    coop_actors_live(shield_fuse_fn, &ss);
-    char sn[48], an[48] = "";
-    coop_actor_name(shield, sn, sizeof sn);
-    float sc[3] = {0}, ssc[3] = {0}, p[3] = {0}, r[9] = {0};
-    if (ss.best) coop_actor_name(ss.best, an, sizeof an), coop_rd(ss.best + 0x2e4, sc, 12), coop_rd(ss.best + COOP_ACTOR_POS, p, 12);
-    coop_rd(shield + 0x2e4, ssc, 12), coop_rd(shield + COOP_ACTOR_ROT, r, 36);
-    float d[3] = {p[0] - ss.at[0], p[1] - ss.at[1], p[2] - ss.at[2]}, l[3];
-    for (int j = 0; j < 3; j++) l[j] = r[j] * d[0] + r[3 + j] * d[1] + r[6 + j] * d[2];
-    rt_log("coop: test: fuse %s: %s (scale %.3f) has %s %llx, scale %.3f %.3f %.3f, at %.3f %.3f %.3f in its frame (%.2f m)", who, sn, ssc[0],
-           an[0] ? an : "nothing", (unsigned long long)ss.best, sc[0], sc[1], sc[2], l[0], l[1], l[2], sqrtf(ss.best_d2));
-}
-static void fuse_log(uint64_t me, uint64_t my_eq) {
-    static int on = -1, t;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_FUSELOG") != NULL;
-    if (!on || ++t % 60) return;
-    if (my_eq && eq_points_to(my_eq, me)) fuse_log_one("mine", eq_item(my_eq, 2));
-    for (int i = 0; i < COOP_MAX_PLAYERS; i++) {
-        uint64_t eq = slots[i].actor ? eq_of_actor(slots[i].actor) : 0;
-        if (eq && eq_points_to(eq, slots[i].actor)) fuse_log_one("the proxy's", eq_item(eq, 2));
-    }
 }
 static uint64_t my_shield_fused;
 // The actor on a proxy's shield (found as on this Link's, every 10 reports) given its owner's scale each report.
@@ -5241,24 +4080,6 @@ void coop_players_tick(Cpu *c) {
         if (me != me_was) rt_log("coop: this PC's Link is the Player at %llx%s", (unsigned long long)me, me_was ? " (a new one)" : "");
         me_was = me;
     }
-    {   // TOTK_COOP_TEST_HIDESELF=<a>[/<b>[/<c>]],<offset>,<value>[,<from s>][;...] (a test): the byte at
-        // [[[actor + a] + b] + c] + offset set to value every tick from that world second (a candidate for the switch
-        // that hides this PC's Link's model, docs/coop/character-mods.md)
-        for (const char *e = cfg_get("TOTK_COOP_TEST_HIDESELF"); e && *e;) {
-            unsigned path[3] = {0, 0xffff, 0xffff}, oo = 0, v = 0;
-            int np = sscanf(e, "%x/%x/%x", &path[0], &path[1], &path[2]);
-            const char *comma = strchr(e, ',');
-            double from = 0;
-            if (np >= 1 && comma && sscanf(comma + 1, "%x,%x,%lf", &oo, &v, &from) >= 2 && frame_step_world_us() / 1e6 >= from) {
-                uint64_t obj = coop_rd_ptr(me + path[0]);
-                for (int k = 1; k < np && obj; k++) obj = coop_rd_ptr(obj + path[k]);
-                uint8_t b = (uint8_t)v;
-                if (obj) memcpy((void *)(uintptr_t)(obj + oo), &b, 1);
-            }
-            e = strchr(e, ';');
-            if (e) e++;
-        }
-    }
     {   // TOTK_COOP_TEST_MODELTRACE=<t0>,<on>,<off>,<end> (a test): at t0 world seconds the Player actor and the heap
         // objects up to three pointers from it are listed; every tick until end each is read and compared; at end the
         // bytes that changed exactly twice, the first time within a second after on and the second within a second
@@ -5359,21 +4180,6 @@ void coop_players_tick(Cpu *c) {
         const CoopChar *me_char = coop_char_local();
         snprintf(st.character, sizeof st.character, "%s", me_char->key);
         st.char_mod = me_char->mod_id;
-        {   // TOTK_COOP_TEST_CHARKEY=<key>@<s>[,<key>@<s>...] (a test): from s world seconds this PC says its character
-            // is key (the last one due wins), as a player who switched character mods and came back would (the others
-            // remake its stand-in); "Link" or a key like gb:<file id>
-            const char *e = cfg_get("TOTK_COOP_TEST_CHARKEY");
-            double now_s = frame_step_world_us() / 1e6;
-            for (const char *p = e; p && *p;) {
-                const char *at = strchr(p, '@'), *comma = strchr(p, ',');
-                if (!at || (comma && comma < at)) break;
-                if (now_s >= atof(at + 1)) {
-                    snprintf(st.character, sizeof st.character, "%.*s", (int)(at - p) < 23 ? (int)(at - p) : 23, p);
-                    st.char_mod = 0;
-                }
-                p = comma ? comma + 1 : NULL;
-            }
-        }
         static CoopObj cur[COOP_OBJS];
         int n_objs = report_arrows(c, me, cur);
         n_objs += report_props(me, cur + n_objs, COOP_OBJS - n_objs);
@@ -5406,23 +4212,7 @@ void coop_players_tick(Cpu *c) {
         // TOTK_COOP_TEST_EQDIFF, 2026-11-07): flags bit 13. TotK Online writes it onto its stand-in every frame (read
         // for behaviour only), so the stand-in's swing hits there.
         if (my_eq && LD8(my_eq + EQ_ATTACKING)) st.flags |= 1u << 13;
-        {   // test (TOTK_COOP_TEST_LIGHTNING): at 20 s this Link's lightning wait is set, as the AI node sets it; logged
-            // each second while it lasts, and each LightningStrike that shows up near this Link
-            static int on = -1, done, said;
-            if (on < 0) on = cfg_get("TOTK_COOP_TEST_LIGHTNING") != NULL;
-            if (on && my_eq && eq_points_to(my_eq, me)) {
-                if (!done && frame_step_world_us() > 20000000) {
-                    done = 1;
-                    __atomic_fetch_or((uint64_t *)(uintptr_t)(my_eq + 0x4600), 1ull << 16, __ATOMIC_SEQ_CST), ST32(my_eq + 0x3f14, 0);
-                    rt_log("coop: test: lightning: this Link's lightning wait set");
-                }
-                static int t;
-                if (done && ++t % 30 == 0 && said++ < 30)
-                    rt_log("coop: test: lightning: wait %d, time %.3f", (int)(LD64(my_eq + 0x4600) >> 16 & 1), *(float *)(uintptr_t)(my_eq + 0x3f14));
-            }
-        }
         shield_fuse_tick(me, my_eq);
-        fuse_log(me, my_eq);
         audit_tick(c, me, cur, n_objs, &st);
         {   // test: this Link's life when it changes, with each proxy's and whether it runs its own update then (P1's
             // hearts went up and down while P2 swung)
@@ -5502,20 +4292,10 @@ void coop_players_tick(Cpu *c) {
         coop_blur_pack(c, me, &st);
         coop_net_publish(&st);
         props_receive(c), ride_resolve(), ride_carry(c, me), destroy_watch(me), old_items_tick(c);   // placed objects co-op players move; riding them; destroyed
-        props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test(), bone_arrow_test(me), impact_test(), glide_log(me), newnear_test(me), beam_test(me), beam_end_tick(), link_hit_test(me);
+        pickup_test(c, me), chest_test(c, me), link_hit_test(me);
     }
-    armor_probe(me);
-    arrow_log(me);
-    refpool_test();
-    stand_test(c, me);
     zonai_test(c, me);
-    zonai_log(me);
-    zonai_dump(me);
-    surf_log(c, me);
     fanset_test(c, me);
-    fanstate_log(me);
-    fanwatch(me);
-    fantoggle(me);
     uint64_t my_eq = eq_of_actor(me);
     keep_player_eq(me, my_eq);
     if (my_eq) read_my_gear(my_eq);
@@ -5767,9 +4547,6 @@ void coop_players_tick(Cpu *c) {
             // ... and its weapon's attack on while its owner's is (flags bit 13), every tick
             if (eq) {
                 uint8_t att = (uint8_t)s->attack_want;
-                static int also = -1;   // TOTK_COOP_TEST_ATK598=1: +0x598 too (it flips with +0x660 in a swing)
-                if (also < 0) also = cfg_get("TOTK_COOP_TEST_ATK598") != NULL;
-                if (also) ST8(eq + 0x598, att);
                 if (LD8(eq + EQ_ATTACKING) != att) {
                     ST8(eq + EQ_ATTACKING, att);
                     static int said_a;

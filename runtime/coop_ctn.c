@@ -38,7 +38,6 @@ void coop_lock_wait(PlatMutex *m);    // coop_spawn.c
 void coop_deleted_here(uint64_t a);   // coop_players.c: not told to the others as destroyed
 uint64_t coop_life_ability(void);
 void coop_life_free_confirm(int on);
-extern uint8_t coop_ab_cai[0x1820];
 void coop_ent_creating(int on);
 void coop_ent_toggle_seen(uint64_t actor, int want);
 void coop_ent_switch_seen(uint64_t actor, uint8_t bits);
@@ -1553,7 +1552,6 @@ int ctn_make_start(Cpu *c, int st_i) {
     memcpy(mk.save_m, (void *)(uintptr_t)(o + 0x120), sizeof mk.save_m), memcpy(mk.save_b, (void *)(uintptr_t)(o + 0x3c70), sizeof mk.save_b);
     memcpy(mk.save_rec, (void *)(uintptr_t)cai, BP_SIZE), mk.saved = 1;
     memcpy((void *)(uintptr_t)cai, r, BP_SIZE);
-    memcpy(coop_ab_cai, r, BP_SIZE);
     memcpy((void *)(uintptr_t)(o + 0x120), base, sizeof base);
     // the part pool emptied and refilled from the record, as the ability does before its part maker
     uint64_t pc = o + 0x4d10, pu = o + 0x4f48;

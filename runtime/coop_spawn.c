@@ -1,6 +1,7 @@
-// Co-op Phase 1 spawn test: numpad 1 / 2 / 3 ask the game's actor manager for an apple, an NPC or a second Player
-// 2 m in front of Link (docs/coop/re-notes.md, coop_ActorMgr_requestCreateActor). Runs on the game thread that
-// polls the gamepad (ov_input.c npad_states), whose Cpu rt_call needs. Test code: Windows keys only.
+// The co-op hook dispatcher (coop_hook) and per-poll tick (coop_tick), and the test spawn: TOTK_COOP_TEST_SPAWN and
+// TOTK_COOP_SPAWN_FILE ask the game's actor manager for an actor 2 m in front of Link (docs/coop/re-notes.md,
+// coop_ActorMgr_requestCreateActor). Runs on the game thread that polls the gamepad (ov_input.c npad_states), whose
+// Cpu rt_call needs.
 
 #include <stdint.h>
 #include <math.h>
@@ -432,171 +433,7 @@ static int name_like(uint64_t p, char out[40]) {
 // TOTK_COOP_PROF=9: every call of main+0x4dcc1c (x0 an AS manager, x1 the AS name as a string object, x2 the
 // request: +0x28 slot, +0x34 blend time) inside this PC's Link's calc, logged with the world time.
 static int prof9;
-// TOTK_COOP_TEST_ASPLAY=<name>,<slot>@<s> (with PROF=9): this Link's AS manager, name string object and request are
-// copied from one of its own calls; at that world time main+0x4dcc1c is called for the first co-op Link's manager
-// (found at the same component path as this Link's) with that name in that slot: can a Link be made to play an AS.
-static _Alignas(16) uint8_t as_name_obj[0x40], as_req[0x80];
-static uint64_t as_my_mgr;
-static char as_text[48];
-uint64_t coop_as_template(uint64_t *mgr, uint8_t **name_obj, uint8_t **req, char **text) {
-    *mgr = as_my_mgr, *name_obj = as_name_obj, *req = as_req, *text = as_text;
-    return as_my_mgr;
-}
-// TOTK_COOP_TEST_FLAGCALLER=1 (played; the profiler runs from the world on, slow): each call of the named-bool setter
-// main+0x9fb82c (handle x0: [[[x0+8]+8]+0x200] the bool table, [x0+0xc4] the index, w1 the value) that writes the
-// on bool of the fan coop_players.c watches (coop_fan_flag) is logged with the guest frame chain, up to 12 times: the
-// code a hit runs to turn a Zonai device on.
-uint64_t coop_fan_flag;   // coop_players.c fantoggle / fanwatch: the on bool of the nearest fan
-static int flagcaller = -1;
-// TOTK_COOP_TEST_FANHIT=<hit s> (with TOTK_COOP_TEST_FANSET=9 and fan_hits_3rd.txt): the functions entered with x0 or
-// x1 = the test's fan (coop_fan_actor) in the 0.6 s from the hit, that were not entered so in the 3 s before it, with a
-// frame chain each: where a sword hit reaches a Zonai device.
-uint64_t coop_fan_actor;
-static double fanhit_at = -2;
-static struct { _Atomic uint64_t fn; _Atomic int base, win; char chain[200]; } fh[1024];
-static void fanhit_note(uint64_t addr, Cpu *c) {
-    double t = frame_step_world_us() / 1e6;
-    int base = t > fanhit_at - 3 && t < fanhit_at, win = t >= fanhit_at && t < fanhit_at + 0.6;
-    if (!base && !win) return;
-    uint32_t i = (uint32_t)((addr * 0x9e3779b97f4a7c15ull) >> 54);
-    for (int k = 0; k < 1024; k++, i = (i + 1) & 1023) {
-        uint64_t have = atomic_load(&fh[i].fn);
-        if (!have && atomic_compare_exchange_strong(&fh[i].fn, &have, addr)) have = addr;
-        if (have != addr) continue;
-        if (base) atomic_fetch_add(&fh[i].base, 1);
-        if (win && atomic_fetch_add(&fh[i].win, 1) == 0) {
-            int n = snprintf(fh[i].chain, sizeof fh[i].chain, "lr main+%llx", (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
-            uint64_t fp = c->x[29];
-            for (int d = 0; d < 6 && fp && n < (int)sizeof fh[i].chain - 24; d++) {
-                uint64_t next = rd_ptr(fp), ret = rd_ptr(fp + 8);
-                if (!ret) break;
-                n += snprintf(fh[i].chain + n, sizeof fh[i].chain - n, " <- %llx", (unsigned long long)(ret - MOD_MAIN_BASE));
-                if (next <= fp) break;
-                fp = next;
-            }
-        }
-        return;
-    }
-}
-static void fanhit_report(void) {
-    static int done;
-    if (done || fanhit_at < 0 || frame_step_world_us() / 1e6 < fanhit_at + 1) return;
-    done = 1;
-    int n = 0;
-    for (int i = 0; i < 1024; i++)
-        if (atomic_load(&fh[i].fn) && atomic_load(&fh[i].win) && !atomic_load(&fh[i].base) && n++ < 80)
-            rt_log("coop: test: fanhit: main+%llx x%d (%s)", (unsigned long long)(atomic_load(&fh[i].fn) - MOD_MAIN_BASE),
-                   atomic_load(&fh[i].win), fh[i].chain);
-    rt_log("coop: test: fanhit: %d functions new at the hit", n);
-}
-// TOTK_COOP_TEST_FNDIFF=<base from s>,<base to s>,<action from s>,<action to s>: every guest function entered in the
-// action window and never in the base window (same length, the game idle), with its entry count and the caller chain
-// of its first entry, written to logs/fndiff.txt: the code an action runs, to check a reading of it is complete
-// (logs/fndiff.txt is compared against the private research notes; nothing from it goes in the repo).
-#define FD_N 65536
-static double fd_t[4] = {-1};
-static struct { _Atomic uint64_t fn; _Atomic int base, win; char chain[160]; } *fd;
-static volatile int fd_base, fd_win;   // the window the world clock is in, set once a tick (fndiff_tick)
-static void fndiff_note(uint64_t addr, Cpu *c) {
-    int base = fd_base, win = fd_win;
-    if (!base && !win) return;
-    uint32_t i = (uint32_t)((addr * 0x9e3779b97f4a7c15ull) >> 48);
-    for (int k = 0; k < FD_N; k++, i = (i + 1) & (FD_N - 1)) {
-        uint64_t have = atomic_load(&fd[i].fn);
-        if (!have && atomic_compare_exchange_strong(&fd[i].fn, &have, addr)) have = addr;
-        if (have != addr) continue;
-        if (base) atomic_fetch_add(&fd[i].base, 1);
-        if (win && atomic_fetch_add(&fd[i].win, 1) == 0) {
-            int n = snprintf(fd[i].chain, sizeof fd[i].chain, "lr main+%llx", (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
-            uint64_t fp = c->x[29];
-            for (int d = 0; d < 6 && fp && n < (int)sizeof fd[i].chain - 24; d++) {
-                uint64_t next = rd_ptr(fp), ret = rd_ptr(fp + 8);
-                if (!ret) break;
-                n += snprintf(fd[i].chain + n, sizeof fd[i].chain - (size_t)n, " <- %llx", (unsigned long long)(ret - MOD_MAIN_BASE));
-                if (next <= fp) break;
-                fp = next;
-            }
-        }
-        return;
-    }
-}
-static void fndiff_tick(void) {
-    if (fd_t[0] == -1) {
-        const char *e = cfg_get("TOTK_COOP_TEST_FNDIFF");
-        fd_t[0] = -2;
-        if (e && sscanf(e, "%lf,%lf,%lf,%lf", &fd_t[0], &fd_t[1], &fd_t[2], &fd_t[3]) == 4) fd = calloc(FD_N, sizeof *fd);
-        else fd_t[0] = -2;
-    }
-    if (!fd) return;
-    double t = frame_step_world_us() / 1e6;
-    double lo = fd_t[0] < fd_t[2] ? fd_t[0] : fd_t[2], hi = fd_t[1] > fd_t[3] ? fd_t[1] : fd_t[3];
-    if (t > lo - 0.2 && t < hi + 0.2) g_fnprof = 1;
-    fd_base = t >= fd_t[0] && t < fd_t[1], fd_win = t >= fd_t[2] && t < fd_t[3];
-    static int done;
-    if (done || t < hi + 0.3) return;
-    done = 1;
-    const char *path = "logs/fndiff.txt";
-    FILE *f = fopen(path, "w");
-    int n = 0;
-    for (int i = 0; f && i < FD_N; i++)
-        if (atomic_load(&fd[i].fn) && atomic_load(&fd[i].win) && !atomic_load(&fd[i].base))
-            fprintf(f, "main+%llx %d %s\n", (unsigned long long)(atomic_load(&fd[i].fn) - MOD_MAIN_BASE), atomic_load(&fd[i].win), fd[i].chain), n++;
-    if (f) fclose(f);
-    // Functions in both windows whose entries per second changed at least threefold (or that went from many to none):
-    // per-frame code the action changes, a fan's thrust tick when it turns on (logs/fndiff_rate.txt: fn base win).
-    const char *rpath = "logs/fndiff_rate.txt";
-    FILE *r = fopen(rpath, "w");
-    double lb = fd_t[1] - fd_t[0], lw = fd_t[3] - fd_t[2];
-    int nr = 0;
-    for (int i = 0; r && i < FD_N; i++) {
-        uint64_t fn = atomic_load(&fd[i].fn);
-        int b = atomic_load(&fd[i].base), w = atomic_load(&fd[i].win);
-        if (!fn || !b || lb <= 0 || lw <= 0) continue;
-        double rb = b / lb, rw = w / lw;
-        if ((rw >= 3 * rb && w >= 10) || (rb >= 3 * rw && b >= 10))
-            fprintf(r, "main+%llx %d %d\n", (unsigned long long)(fn - MOD_MAIN_BASE), b, w), nr++;
-    }
-    if (r) fclose(r);
-    rt_log("coop: test: fndiff: %d functions whose rate changed threefold: %s", nr, rpath);
-    rt_log("coop: test: fndiff: %d functions entered in %.1f..%.1f s and not in %.1f..%.1f s: %s", n, fd_t[2], fd_t[3], fd_t[0], fd_t[1], path);
-}
-// A call trace for a test hook: while coop_call_trace is set (and the profiler on), every guest function entered is
-// logged with its return address, up to 400 (coop_autobuild.c serial_test: where the history writer gives up).
-_Atomic int coop_call_trace;
-Cpu *volatile coop_call_trace_cpu;   // (only that core's calls: the other cores run on meanwhile)
-volatile uint64_t coop_call_trace_lo, coop_call_trace_hi = ~0ull;   // and only calls made from main+lo..hi
 void coop_fn_args(uint64_t addr, Cpu *c) {
-    if (atomic_load(&coop_call_trace) > 0 && c == coop_call_trace_cpu && c->x[30] - MOD_MAIN_BASE >= coop_call_trace_lo &&
-        c->x[30] - MOD_MAIN_BASE < coop_call_trace_hi && atomic_fetch_sub(&coop_call_trace, 1) > 0)
-        rt_log("coop: test: calltrace main+%llx lr main+%llx x0 %llx x1 %llx", (unsigned long long)(addr - MOD_MAIN_BASE),
-               (unsigned long long)(c->x[30] - MOD_MAIN_BASE), (unsigned long long)c->x[0], (unsigned long long)c->x[1]);
-    if (fd) fndiff_note(addr, c);
-    if (fanhit_at > 0 && coop_fan_actor && (c->x[0] == coop_fan_actor || c->x[1] == coop_fan_actor)) fanhit_note(addr, c);
-    if (flagcaller > 0 && addr == MOD_MAIN_BASE + 0x9fb82c && coop_fan_flag) {
-        uint64_t h = c->x[0], bb = rd_ptr(rd_ptr(rd_ptr(h + 8) + 8) + 0x200);
-        uint32_t idx = 0;
-        rd(h + 0xc4, &idx, 4);
-        static int said;
-        if (bb && rd_ptr(bb + 0x1a0) + idx == coop_fan_flag && said < 12) {
-            said++;
-            char line[512];
-            int n = snprintf(line, sizeof line, "coop: test: flagcaller %.2f s value %llu lr main+%llx chain", frame_step_world_us() / 1e6,
-                             (unsigned long long)(c->x[1] & 0xff), (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
-            uint64_t fp = c->x[29];
-            for (int d = 0; d < 12 && fp && n < (int)sizeof line - 40; d++) {
-                uint64_t next = rd_ptr(fp), ret = rd_ptr(fp + 8);
-                if (!ret) break;
-                n += snprintf(line + n, sizeof line - n, " <- main+%llx", (unsigned long long)(ret - MOD_MAIN_BASE));
-                if (next <= fp) break;
-                fp = next;
-            }
-            rt_log("%s", line);
-        }
-    }
-    if (prof9 && addr == MOD_MAIN_BASE + 0x4dcc1c && calc_actor && calc_actor == player_actor_cached && !as_my_mgr) {
-        rd(c->x[1], as_name_obj, 0x10), rd(c->x[2], as_req, sizeof as_req);
-        as_my_mgr = c->x[0];
-    }
     if (prof9 && addr == MOD_MAIN_BASE + 0x4dcc1c && calc_actor && calc_actor == player_actor_cached) {
         char nm[40] = "?";
         if (!name_like(rd_ptr(c->x[1]), nm)) name_like(c->x[1], nm);
@@ -688,7 +525,6 @@ void coop_ctl_enter(void);                       // the controller lock (below)
 void coop_ctl_leave(void);
 int coop_puppet_place(Cpu *c, uint64_t addr);   // coop_players.c: a puppet put at its owner after its physics step
 void coop_players_tick(Cpu *c);
-uint64_t coop_players_first(void);
 int coop_players_gear(Cpu *c, uint64_t addr);
 
 int coop_watch_counts(void) { return 1; }   // (coop_watch_win.c: every fault counts)
@@ -696,24 +532,6 @@ int coop_watch_counts(void) { return 1; }   // (coop_watch_win.c: every fault co
 
 static int calc_wrap(Cpu *c, uint64_t addr) {
     uint64_t actor = c->x[0];
-    static int part_hook = -1;   // TOTK_COOP_TEST_SERIAL with TOTK_COOP_TEST_SERIALIN=part: from a contraption part's own update
-    if (part_hook < 0) part_hook = cfg_get("TOTK_COOP_TEST_SERIALIN") != NULL;
-    if (part_hook) {
-        void coop_autobuild_part_calc(Cpu *c, uint64_t actor);
-        uint64_t x[31], sp = c->sp, pc = c->pc;
-        memcpy(x, c->x, sizeof x);
-        coop_autobuild_part_calc(c, actor);
-        memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
-    }
-    static int link_hook = -1;   // (only with one of those tests set)
-    if (link_hook < 0) link_hook = cfg_get("TOTK_COOP_TEST_SERIAL") || cfg_get("TOTK_COOP_TEST_REBUILDGO");
-    if (link_hook && actor && actor == player_actor_cached) {   // test hooks that must run on the game's job threads
-        void coop_autobuild_link_calc(Cpu *c);
-        uint64_t x[31], sp = c->sp, pc = c->pc;
-        memcpy(x, c->x, sizeof x);
-        coop_autobuild_link_calc(c);
-        memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
-    }
     (void)in_calc;
     // This PC's Link: its update takes the controller lock (above), so no co-op Link's controller is in the manager
     // while it reads it. Only while there are co-op Links.
@@ -733,75 +551,7 @@ static int calc_wrap(Cpu *c, uint64_t addr) {
 
 // requestCreateActor calls (TOTK_COOP_TRACE=create): the actor name and whose calc it ran in (calc_actor: the actor
 // whose ACTOR_CALC encloses the call on this thread, tracked for Players only).
-// TOTK_COOP_TEST_CREATEDUMP=1: each requestCreateActor of an SpObj_ device: its create argument (x2, 0xa0 bytes) as
-// words, x4..x7 and the caller: an autobuild's devices against ours (coop_game.c request_create), for the green tint
-static void create_dump(Cpu *c) {
-    static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_CREATEDUMP") != NULL;
-    char nm[64] = "";
-    uint64_t np = on ? rd_ptr(c->x[1]) : 0;
-    if (!np || !rd(np, nm, sizeof nm - 1) || strncmp(nm, "SpObj_", 6)) return;
-    static int said;
-    if (said++ > 40) return;
-    uint64_t w[20] = {0};
-    rd(c->x[2], w, sizeof w);
-    char line[900];
-    int n = snprintf(line, sizeof line, "coop: test: createdump '%s' lr main+%llx x4..x7 %llx %llx %llx %llx:", nm,
-                     (unsigned long long)(c->x[30] - MOD_MAIN_BASE), (unsigned long long)c->x[4], (unsigned long long)c->x[5],
-                     (unsigned long long)c->x[6], (unsigned long long)c->x[7]);
-    for (int i = 0; i < 20; i++) n += snprintf(line + n, sizeof line - (size_t)n, " +%02x %llx", i * 8, (unsigned long long)w[i]);
-    rt_log("%s", line);
-    char s1[48] = "", s2[48] = "";   // the strings the autobuild's caller (main+0x1d3b470) compares and passes
-    rd(MOD_MAIN_BASE + 0x2c0bea5, s1, 47), rd(MOD_MAIN_BASE + 0x2c88791, s2, 47);
-    uint64_t f[2] = {0, 0}, vt[4] = {0}, po[8] = {0};
-    if (c->x[7]) rd(c->x[7], f, 16);
-    if (f[0]) rd(f[0], vt, sizeof vt);
-    uint8_t flag = 0;
-    if (f[1]) rd(f[1], &flag, 1);
-    if (w[0x58 / 8]) rd(w[0x58 / 8], po, sizeof po);
-    rt_log("coop: test: createdump: strings '%s' '%s'; x7 {vtable %llx (main+%llx): %llx %llx %llx %llx, flag %u}; +0x58 object: %llx %llx %llx %llx %llx %llx %llx %llx",
-           s1, s2, (unsigned long long)f[0], (unsigned long long)(f[0] - MOD_MAIN_BASE), (unsigned long long)vt[0], (unsigned long long)vt[1],
-           (unsigned long long)vt[2], (unsigned long long)vt[3], flag, (unsigned long long)po[0], (unsigned long long)po[1], (unsigned long long)po[2],
-           (unsigned long long)po[3], (unsigned long long)po[4], (unsigned long long)po[5], (unsigned long long)po[6], (unsigned long long)po[7]);
-    {   // the caller's frame chain and its kept registers (main+0x1d3b470's x19 / x26 / x27: the build's objects)
-        char ch[300];
-        int k = 0;
-        uint64_t fp = c->x[29];
-        for (int d = 0; d < 10 && fp && k < (int)sizeof ch - 24; d++) {
-            uint64_t next = rd_ptr(fp), ret = rd_ptr(fp + 8);
-            if (!ret) break;
-            k += snprintf(ch + k, sizeof ch - (size_t)k, " <- main+%llx", (unsigned long long)(ret - MOD_MAIN_BASE));
-            if (next <= fp) break;
-            fp = next;
-        }
-        uint64_t v19[4] = {0}, v26[4] = {0}, v27[4] = {0};
-        rd(c->x[19], v19, 32), rd(c->x[26], v26, 32), rd(c->x[27], v27, 32);
-        char path[80] = "";
-        rd(c->x[19] + 0x14, path, 79);
-        extern uint64_t coop_ab_obj;   // (coop_autobuild.c: TOTK_COOP_TEST_REBUILD calls main+0x1d3b470 on it again)
-        extern uint8_t coop_ab_cai[0x1820];   // the blueprint as the build had it, its bonds too (coop_autobuild.c rebuild_test)
-        if (c->x[30] - MOD_MAIN_BASE == 0x1d3bb98 && !coop_ab_obj) {
-            coop_ab_obj = c->x[19];
-            uint64_t cai = rd_ptr(c->x[19] + 0x3c50);
-            int ok = cai && rd(cai, coop_ab_cai, sizeof coop_ab_cai);
-            rt_log("coop: test: createdump: the build's object %llx, path '%s'; its blueprint %llx kept: %d (parts %u, +0xa %u)",
-                   (unsigned long long)c->x[19], path, (unsigned long long)cai, ok, coop_ab_cai[9], coop_ab_cai[10]);
-        }
-        char s1920[48] = "";
-        rd(rd_ptr(c->x[26] + 0x1920), s1920, 47);
-        rt_log("coop: test: createdump: chain%s; x19 %llx {%llx %llx %llx %llx} x26 %llx {%llx %llx %llx %llx} [x26+0x1920] '%s' x27 %llx {%llx %llx %llx %llx}",
-               ch, (unsigned long long)c->x[19], (unsigned long long)v19[0], (unsigned long long)v19[1], (unsigned long long)v19[2],
-               (unsigned long long)v19[3], (unsigned long long)c->x[26], (unsigned long long)v26[0], (unsigned long long)v26[1],
-               (unsigned long long)v26[2], (unsigned long long)v26[3], s1920, (unsigned long long)c->x[27], (unsigned long long)v27[0],
-               (unsigned long long)v27[1], (unsigned long long)v27[2], (unsigned long long)v27[3]);
-    }
-    for (int i = 0; i < 8 && w[0x58 / 8]; i++) {   // strings the +0x58 object's words point at
-        char t[40] = "";
-        if (po[i] > 0x1000000 && rd(po[i], t, 39) && t[0] > 0x20 && t[0] < 0x7f) rt_log("coop: test: createdump: +0x58 word %d -> '%s'", i, t);
-    }
-}
 static int create_trace(Cpu *c) {
-    create_dump(c);
     static int on = -1;
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_TRACE"); on = e && strstr(e, "create"); }
     if (!on) return 0;
@@ -880,28 +630,6 @@ static int beam_hook(Cpu *c, uint64_t addr) {
     plat_mutex_unlock(&beam_lock);
     return 1;
 }
-// TOTK_COOP_TEST_PHASES=1: once per hooked function and actor manager phase byte ([[main+0x395da68]]+0x424) value,
-// the pair logged: which hooks run outside the parallel actor update (phase 2), where an actor link resolves to any actor
-static void phase_sample(uint64_t addr) {
-    static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_PHASES") != NULL;
-    if (!on) return;
-    uint64_t m = rd_ptr(rd_ptr(MOD_MAIN_BASE + 0x395da68));
-    uint8_t ph = 0xff;
-    if (m) rd(m + 0x424, &ph, 1);
-    static _Atomic uint64_t seen[128];
-    uint64_t key = ((addr - MOD_MAIN_BASE) << 8) | ph;
-    for (int i = 0; i < 128; i++) {
-        uint64_t have = atomic_load(&seen[i]);
-        if (have == key) return;
-        if (!have && atomic_compare_exchange_strong(&seen[i], &have, key)) {
-            rt_log("coop: test: phases: main+%llx runs at actor phase %u (world %.2f s)", (unsigned long long)(addr - MOD_MAIN_BASE), ph,
-                   frame_step_world_us() / 1e6);
-            return;
-        }
-    }
-}
-static _Atomic uint32_t coop_frames_seen;   // GameDataMgr::calc entries: one a game frame (the tick-rate test)
 int coop_hook(Cpu *c, uint64_t addr) {
     if (addr == MOD_MAIN_BASE + 0x40a240) {   // the body-pair collision predicate (hot): stand-ins off contraptions (coop_life.c)
         int coop_life_veto(Cpu *c);
@@ -916,7 +644,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
         int coop_enemy_shared(Cpu *c, uint64_t off);
         if (coop_enemy_shared(c, addr - MOD_MAIN_BASE)) return 1;
     }
-    phase_sample(addr);
     {   // the entity sync (coop_ent_id.c): where the game marks an actor created (hot: first), the synchronous create, the
         // seat claim, the glue manager's list add and the cap's kill
         uint64_t off = addr - MOD_MAIN_BASE;
@@ -952,15 +679,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
     }
     // contraption-sync.md Phase 0 tests (coop_autobuild.c coop_phase0_hook): a fan's push, the velocity and impulse
     // writes it makes, the on/off node's calc and setter and the two gauge charges
-    // the Autobuild ability's update (main+0x9a2c00, x0 the ability): kept, so the other game can build with it
-    // (coop_autobuild.c coop_ab_ability)
-    if (addr == MOD_MAIN_BASE + 0x9a2c00) {
-        extern _Atomic uint64_t coop_ab_ability;
-        uint64_t was = atomic_exchange(&coop_ab_ability, c->x[0]);
-        if (was != c->x[0]) rt_log("coop: autobuild: the Autobuild ability is %llx (its build object %llx, its menu object %llx)",
-                                   (unsigned long long)c->x[0], (unsigned long long)rd_ptr(c->x[0] + 0x51f0), (unsigned long long)rd_ptr(c->x[0] + 0x51f8));
-        return 0;
-    }
     // contraption copies (coop_autobuild.c, TOTK_COOP_CONTRAPTION): the device switch update, the device force nodes and
     // the body setters they use
     if (addr == MOD_MAIN_BASE + 0x4a3500 || addr == MOD_MAIN_BASE + 0x25a1f0 || addr == MOD_MAIN_BASE + 0x24343f4 || addr == MOD_MAIN_BASE + 0x22fc5f8 || addr == MOD_MAIN_BASE + 0x2458320 || addr == MOD_MAIN_BASE + 0x222d694 || addr == MOD_MAIN_BASE + 0x221cd04 || addr == MOD_MAIN_BASE + 0x230a3fc || addr == MOD_MAIN_BASE + 0x24730dc || addr == MOD_MAIN_BASE + 0x221a7dc || addr == MOD_MAIN_BASE + 0x221420c || addr == MOD_MAIN_BASE + 0x2251440 || addr == MOD_MAIN_BASE + 0x225c52c || addr == MOD_MAIN_BASE + 0x226abd4 || addr == MOD_MAIN_BASE + 0x29ae7a8 || addr == MOD_MAIN_BASE + 0x29ae7fc || addr == MOD_MAIN_BASE + 0x29a4afc) {
@@ -973,7 +691,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // Shared world progress (coop_gamedata.c, TOTK_COOP_SHARE_WORLD=1): GameDataMgr::calc (main+0xa72b00, x0 the
     // manager) and setEventBool (main+0xc6a9f0).
     if (addr == MOD_MAIN_BASE + 0xa72b00) {
-        atomic_fetch_add(&coop_frames_seen, 1);
         { void coop_sess_phase0(void); coop_sess_phase0(); }   // the frame stamp (coop_sess.c), before every sync's pass
         {   // the enemy sync's pass (coop_enemy.c)
             void coop_enemy_phase0(Cpu *c);
@@ -983,23 +700,16 @@ int coop_hook(Cpu *c, uint64_t addr) {
             memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
         }
         { void coop_elem_phase0(Cpu *c); coop_elem_phase0(c); }   // the element sync's pass (coop_elem.c)
-        // contraption tests that need every actor link to resolve: GameDataMgr::calc runs each frame at actor phase 0,
-        // outside the parallel actor update (TOTK_COOP_TEST_PHASES)
+        // the contraption sync's pass, which needs every actor link to resolve: GameDataMgr::calc runs each frame at
+        // actor phase 0, outside the parallel actor update
         static int seq = -1;
         int coop_ctn_core(void);   // coop_ctn.c: on unless TOTK_COOP_CONTRAPTION=0
-        if (seq < 0) seq = cfg_get("TOTK_COOP_TEST_REBUILDGOIN") || coop_ctn_core();
+        if (seq < 0) seq = coop_ctn_core();
         if (seq) {
             void coop_ent_seq_calc(Cpu *c);   // coop_ent_hooks.c
             uint64_t x[31], sp = c->sp, pc = c->pc;
             memcpy(x, c->x, sizeof x);
             coop_ent_seq_calc(c);
-            memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
-        }
-        {   // TOTK_COOP_TEST_X6 (coop_life.c): whether this save has Autobuild, and the ability's build objects
-            void coop_life_x6_probe(Cpu *c);
-            uint64_t x[31], sp = c->sp, pc = c->pc;
-            memcpy(x, c->x, sizeof x);
-            coop_life_x6_probe(c);
             memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
         }
         void coop_gamedata_calc(uint64_t gmd, uint64_t me);
@@ -1020,9 +730,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
         int coop_ground_hook(Cpu *c, uint64_t off);
         return coop_ground_hook(c, addr - MOD_MAIN_BASE);
     }
-    // Test (TOTK_COOP_TEST_HELDCALL=1): who calls main+0x45a460 (a held item's component placing it in its holder's
-    // hand; x1 points to the holder actor) and for which holder: the stand-in's sword reached its hand only while this
-    // game's Link had a weapon. Each caller and holder once, at most 40 lines.
     if (addr == MOD_MAIN_BASE + 0x45a460) {
         // A held item's component placing it (x0 the component, x1 points to its holder). Before it reads the holder's
         // in-hand byte (EquipmentUser +0x4620) it follows eq+0x1620, an object every EquipmentUser shares, and with that
@@ -1055,40 +762,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
                 }
             }
         }
-        static int on = -1;
-        if (on < 0) on = cfg_get("TOTK_COOP_TEST_HELDCALL") != NULL;
-        if (on) {
-            static struct { uint64_t lr, holder; } seen[40];
-            static int n;
-            uint64_t lr = c->x[30], holder = c->x[1] ? coop_rd_ptr(c->x[1]) : 0;
-            int dup = 0;
-            for (int i = 0; i < n; i++) dup |= seen[i].lr == lr && seen[i].holder == holder;
-            if (!dup && n < 40) {
-                seen[n].lr = lr, seen[n].holder = holder, n++;
-                char hn[48] = "", wn[48] = "";
-                coop_actor_name(holder, hn, sizeof hn), coop_actor_name(coop_rd_ptr(c->x[0] + 0x18), wn, sizeof wn);
-                rt_log("coop: test: held call from main+%#llx: holder %llx '%s', item '%s', world %.1f s", (unsigned long long)(lr - MOD_MAIN_BASE),
-                       (unsigned long long)holder, hn, wn, frame_step_world_us() / 1e6);
-            }
-        }
-        if (on) {   // the values its branches read, for a PlayerPuppet holder's item (first 6 calls)
-            static int k;
-            uint64_t holder = c->x[1] ? coop_rd_ptr(c->x[1]) : 0;
-            char hn[48] = "";
-            coop_actor_name(holder, hn, sizeof hn);
-            if (coop_char_is_standin(hn) && k++ < 6) {
-                uint64_t comp = c->x[0], wa = coop_rd_ptr(comp + 0x18), eq = coop_rd_ptr(coop_rd_ptr(holder + 0x228) + 0x230);
-                uint32_t af = 0, row = 0, rf = 0;
-                uint8_t b505 = 0, b516 = 0, b1456 = 0;
-                uint64_t f4600 = 0, owner = eq ? coop_rd_ptr(eq + 0x18) : 0, oc = owner ? coop_rd_ptr(coop_rd_ptr(owner + 0x228) + 0x3a8) : 0;
-                if (wa) coop_rd(wa + 0x28, &af, 4);
-                coop_rd(comp + 0x488, &row, 4), coop_rd(comp + 0x505, &b505, 1), coop_rd(comp + 0x516, &b516, 1);
-                if (eq) coop_rd(eq + 0x570 + (uint64_t)(row < 8 ? row : 0) * 0x100 + 0xf0, &rf, 4), coop_rd(eq + 0x4600, &f4600, 8);
-                if (oc) coop_rd(oc + 0x1456, &b1456, 1);
-                rt_log("coop: test: held call state: actor +0x28 %#x, row %u, record +0xf0 %#x, comp +0x505 %u +0x516 %#x, eq +0x4600 %#llx, owner %llx comp+0x3a8 %llx +0x1456 %#x",
-                       af, row, rf, b505, b516, (unsigned long long)f4600, (unsigned long long)owner, (unsigned long long)oc, b1456);
-            }
-        }
         return 0;
     }
     // the SwordBlur component's update (coop_world.c): a stand-in's runs with its owner's WeaponBlur event
@@ -1107,11 +780,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
         char n1[16] = "", n2[16] = "";
         if (a) actor_name(a, n1, sizeof n1);
         if (b) actor_name(b, n2, sizeof n2);
-        static int tst = -1;   // TOTK_COOP_TEST_ISPLAYER=1: the first 30 calls' two names
-        if (tst < 0) tst = cfg_get("TOTK_COOP_TEST_ISPLAYER") != NULL;
-        static _Atomic int said_t;
-        if (tst && atomic_fetch_add(&said_t, 1) < 30)
-            rt_log("coop: test: is-player check from main+%#llx: link's actor '%s', query's '%s'", (unsigned long long)(c->x[30] - MOD_MAIN_BASE), n1, n2);
         if (!coop_char_is_standin(n1) && !coop_char_is_standin(n2)) return 0;
         static _Atomic int said;
         if (atomic_fetch_add(&said, 1) < 5)
@@ -1180,34 +848,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
         in4 = 0;
         return 1;
     }
-    if (addr == MOD_MAIN_BASE + 0x2192c50 && !coop_in_remote_calc()) {
-        // Test (TOTK_COOP_TEST_GUIDELOG=1): each distinct HUD prompt this Link's game shows (x1 its type) and the
-        // call chain that shows it, 30 of them: what decides the Sneakstrike prompt (an enemy not aware of Link).
-        static int on = -1;
-        static uint64_t seen[30];
-        static _Atomic int n;
-        if (on < 0) on = cfg_get("TOTK_COOP_TEST_GUIDELOG") != NULL;
-        uint64_t key = (c->x[1] & 0xffff) << 32 | ((c->x[30] - MOD_MAIN_BASE) & 0xffffffff);
-        int had = 0;
-        for (int i = 0; on && i < atomic_load(&n) && i < 30; i++) had |= seen[i] == key;
-        if (on && !had && atomic_load(&n) < 30) {
-            seen[atomic_fetch_add(&n, 1)] = key;
-            char chain[300];
-            int m = 0;
-            uint64_t fp = c->x[29];
-            for (int d = 0; d < 8 && fp && m < 280; d++) {
-                uint64_t next = 0, ret = 0;
-                if (!plat_mem_read(fp, &next, 8) || !plat_mem_read(fp + 8, &ret, 8) || !ret) break;
-                m += snprintf(chain + m, sizeof chain - m, " %llx", (unsigned long long)(ret - MOD_MAIN_BASE));
-                if (next <= fp) break;
-                fp = next;
-            }
-            chain[m] = 0;
-            rt_log("coop: test: guide prompt x0 %llx x1 %#llx x2 %#llx at %.1f s; lr main+%llx, frames%s", (unsigned long long)c->x[0],
-                   (unsigned long long)c->x[1], (unsigned long long)c->x[2], frame_step_world_us() / 1e6,
-                   (unsigned long long)(c->x[30] - MOD_MAIN_BASE), chain);
-        }
-    }
     if (addr == MOD_MAIN_BASE + 0x2192c50 || addr == MOD_MAIN_BASE + 0x4cb540) return coop_in_remote_calc();
     // The ability screen effects ([main+0x3a5e878], the manager at its +0x3a8 ability): main+0x2056f3c starts one,
     // main+0x205719c ends it ("UltraHand_End", "ReverseRecorder_End"...), main+0x2057384 focus on/off. A co-op Link's
@@ -1221,16 +861,13 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // main+0x4400b0 (life component): its per-frame update applies damage to the life at [comp+0x1830] +8. A co-op
     // Link's life is its own game's: here it takes no damage, so it cannot die here and bring this game's Game Over
     // (its fall killed it here too) (2026-11-04). The life is lifted for the call and put back (healing kept).
-    // TOTK_COOP_TEST_LIFE_KEEP: the damage is applied as before (a control for tests).
     if (addr == MOD_MAIN_BASE + 0x4400b0 && coop_is_coop_life(c->x[0])) {
         // A co-op Link's life update does not run at all: any change it made to the life showed on this game's hearts
         // as a fill (the tester's capture and session, 2026-11-06); its life is its owner's, set from the owner's
-        // reports. (TOTK_COOP_TEST_LIFE_KEEP: it runs.)
-        static int keep = -1;
-        if (keep < 0) keep = cfg_get("TOTK_COOP_TEST_LIFE_KEEP") != NULL;
+        // reports.
         uint64_t p = rd_ptr(c->x[0] + 0x1830);
         uint32_t before = 0;
-        return !keep && p && rd(p + 8, &before, 4);
+        return p && rd(p + 8, &before, 4);
     }
     // main+0x207ea50 (instant tips manager, tip id) queues an instant tip ("To shield surf...") and records the action
     // (main+0x207eba0). A co-op Link's actions call it from its calc; its own game shows the tip (2026-11-04).
@@ -1254,8 +891,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
                    coop_in_remote_calc() ? " (in a co-op Link's calc)" : "");
         }
     }
-    static int gdata_keep = -1;   // TOTK_COOP_TEST_GDATA_KEEP: the writes are not skipped (a control for tests)
-    if (gdata_keep < 0) gdata_keep = cfg_get("TOTK_COOP_TEST_GDATA_KEEP") != NULL;
     // All the game-data setters a co-op Link's update calls (the action tour, TOTK_COOP_PROF=3 with the game-data
     // manager [[main+0x395dff0]] as x0; the ones that return nothing and take a value, 2026-11-04): main+0x170210,
     // 0x16fdcc (from the player's state code main+0x281d40 / 0x282a0c), 0x170490, 0x282280 (main+0x281d28),
@@ -1266,7 +901,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
     if ((addr == MOD_MAIN_BASE + 0x923d20 || addr == MOD_MAIN_BASE + 0x170210 || addr == MOD_MAIN_BASE + 0x16fdcc ||
          addr == MOD_MAIN_BASE + 0x170490 || addr == MOD_MAIN_BASE + 0x282280 || addr == MOD_MAIN_BASE + 0x2aabf84 ||
          addr == MOD_MAIN_BASE + 0x16ee70 || addr == MOD_MAIN_BASE + 0x31d824) &&
-        !gdata_keep && coop_in_remote_calc()) {
+        coop_in_remote_calc()) {
         static _Atomic int skipped;
         char from[96];
         if (atomic_fetch_add(&skipped, 1) < 12)
@@ -1322,225 +957,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
     return 0;
 }
 
-
-// TOTK_COOP_TEST_KFRIDE=<t>,<mode>,<speed> (contraption-sync.md, Phase 0 item 1), with TOTK_COOP_TEST_SPAWN putting a
-// part beside the Link a few seconds before: the part (slot 1's) is held 1.2 m above the flat ground of the fan tests
-// from t-3 s, the Link put on it at t-1.5 s, and from t it moves at <speed> m/s along -x for 4 s, then stops. Mode 0:
-// left dynamic and driven by its linear velocity each tick; 1: main+0xae4300 asked for type 2 (dynamic, so no change;
-// this test once took it for keyframed) and driven by velocity; 2: the same and teleported each tick. Every 0.5 s: the part's place, the Link's and the Link's offset
-// from the part, to see whether a Link standing on a moving body is carried with it.
-static uint64_t kf_actor;
-#define BODY_MOTION_TYPE 0xae4300   // (body, 0 static / 1 keyframed / 2 dynamic), queued like the setters below
-#define BODY_SET_LINVEL 0x567750
-#define BODY_SET_ANGVEL 0x25a1f0
-static void kfride_test(Cpu *c) {
-    static double t0 = -1;
-    static int mode, st;
-    static float speed, start_off[3];
-    static int64_t last;
-    if (t0 == -1) {
-        const char *e = cfg_get("TOTK_COOP_TEST_KFRIDE");
-        t0 = -2;
-        if (e && sscanf(e, "%lf,%d,%f", &t0, &mode, &speed) != 3) t0 = -2;
-    }
-    if (t0 < 0 || !kf_actor) return;
-    int64_t us = frame_step_world_us();
-    if (us <= last) return;
-    double dt = last ? (us - last) / 1e6 : 1 / 30.0;
-    last = us;
-    double t = us / 1e6;
-    if (t < t0 - 3 || t > t0 + 7) return;
-    uint64_t me = player_actor();
-    uint64_t body = rd_ptr(rd_ptr(rd_ptr(rd_ptr(kf_actor + 0x228) + 0x50) + 0x20) + 0x150);
-    if (!me || !body) return;
-    const float p0[3] = {31.3f, 1516.0f, 1510.7f};
-    double run = t < t0 ? 0 : t > t0 + 4 ? 4 : t - t0;
-    float target[3] = {p0[0] - (float)(speed * run), p0[1], p0[2]};
-    float v_path[3] = {t >= t0 && t <= t0 + 4 ? -speed : 0, 0, 0};
-    if (st == 0) {
-        float m[12] = {1, 0, 0, p0[0], 0, 1, 0, p0[1], 0, 0, 1, p0[2]};
-        guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, kf_actor, (uint64_t)(uintptr_t)m, 0, 0);
-        if (mode >= 1) guest_call(c, MOD_MAIN_BASE + BODY_MOTION_TYPE, body, 2, 0, 0);
-        rt_log("coop: test: kfride: part put at %.1f %.1f %.1f, mode %d, %.1f m/s from %.1f s", p0[0], p0[1], p0[2], mode, speed, t0);
-        st = 1;
-    }
-    float pos[3] = {0}, lp[3] = {0};
-    rd(kf_actor + ACTOR_POS, pos, 12), rd(me + ACTOR_POS, lp, 12);
-    if (st == 1 && t >= t0 - 1.5) {
-        float m[12] = {1, 0, 0, pos[0], 0, 1, 0, pos[1] + 1.0f, 0, 0, 1, pos[2]};
-        guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, me, (uint64_t)(uintptr_t)m, 0, 0);
-        st = 2;
-    }
-    if (st == 2 && t >= t0) {
-        for (int i = 0; i < 3; i++) start_off[i] = lp[i] - pos[i];
-        st = 3;
-    }
-    if (mode >= 1) guest_call(c, MOD_MAIN_BASE + BODY_MOTION_TYPE, body, 2, 0, 0);   // every tick, as the stand-in's (coop_players.c)
-    if (mode == 2) {
-        float m[12] = {1, 0, 0, target[0], 0, 1, 0, target[1], 0, 0, 1, target[2]};
-        guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, kf_actor, (uint64_t)(uintptr_t)m, 0, 0);
-    } else {
-        // the path's velocity plus what closes the error by the next tick
-        _Alignas(16) float v[4] = {0}, w[4] = {0};
-        for (int i = 0; i < 3; i++) v[i] = v_path[i] + (target[i] - pos[i]) / (float)dt;
-        guest_call(c, MOD_MAIN_BASE + BODY_SET_LINVEL, body, (uint64_t)(uintptr_t)v, 0, 0);
-        guest_call(c, MOD_MAIN_BASE + BODY_SET_ANGVEL, body, (uint64_t)(uintptr_t)w, 0, 0);
-    }
-    static double next;
-    if (t >= next) {
-        next = t + 0.5;
-        // the motion type as main+0xae4300 reads it: a pending request ([body+0x60]+0xd4 bit 2: [+0x60]+0x80) first,
-        // else body +0x68 bit 6 static, bit 7 keyframed, neither dynamic
-        uint64_t flags = rd_ptr(body + 0x68), req = rd_ptr(body + 0x60);
-        uint32_t rq = 0, rt = 0;
-        if (req) rd(req + 0xd4, &rq, 4), rd(req + 0x80, &rt, 4);
-        if (req && (rq & 4)) flags = rt == 0 ? 0x40 : rt == 1 ? 0x80 : 0;
-        float off[3] = {lp[0] - pos[0], lp[1] - pos[1], lp[2] - pos[2]};
-        float drift = st == 3 ? sqrtf((off[0] - start_off[0]) * (off[0] - start_off[0]) + (off[2] - start_off[2]) * (off[2] - start_off[2])) : 0;
-        rt_log("coop: test: kfride: %.2f s part %.2f %.2f %.2f (target %.2f, motion %s) Link %.2f %.2f %.2f, offset %.2f %.2f %.2f, level drift %.2f m",
-               t, pos[0], pos[1], pos[2], target[0], flags & 0x40 ? "static" : flags & 0x80 ? "keyframed" : "dynamic",
-               lp[0], lp[1], lp[2], off[0], off[1], off[2], drift);
-    }
-}
-
-// TOTK_COOP_TEST_X1=<t> (docs/coop/contraption-sync-v3.md, experiment X1), with TOTK_COOP_TEST_SPAWN making a plank
-// (slot 1's) before it. One game. The plank is put 1.2 m above the ground ahead of the Link at t and falls; from t+5
-// (at rest) the main body gets one linear velocity of 3 m/s up with no flag (does a write wake a resting body?), and
-// from t+9 the same with body flag 44 set first (does the flag make the velocity last one physics step?). Each frame
-// for 12 frames after each write: the body's current velocity (+0xf8), height, flags 44/45 and its motion type.
-static void x1_test(Cpu *c) {
-    static double t0 = -1;
-    static int st, frames;
-    static int64_t last;
-    if (t0 == -1) { const char *e = cfg_get("TOTK_COOP_TEST_X1"); t0 = e ? atof(e) : -2; if (t0 <= 0) t0 = -2; }
-    if (t0 < 0 || !kf_actor || st >= 6) return;
-    int64_t us = frame_step_world_us();
-    if (us <= last) return;   // (one step per world frame; a paused world writes nothing)
-    double dt = last ? (us - last) / 1e6 : 0;
-    last = us;
-    double t = us / 1e6;
-    uint64_t me = player_actor();
-    uint64_t body = rd_ptr(rd_ptr(rd_ptr(rd_ptr(kf_actor + 0x228) + 0x50) + 0x20) + 0x150);
-    if (!me || !body || t < t0) return;
-    if (st == 0) {
-        float lp[3] = {0}, lr[9] = {0};
-        rd(me + ACTOR_POS, lp, 12), rd(me + ACTOR_ROT, lr, 36);
-        float m[12] = {1, 0, 0, lp[0] + 2.5f * lr[2], 0, 1, 0, lp[1] + 1.2f, 0, 0, 1, lp[2] + 2.5f * lr[8]};
-        guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, kf_actor, (uint64_t)(uintptr_t)m, 0, 0);
-        rt_log("coop: test: x1: plank put at %.2f %.2f %.2f", m[3], m[7], m[11]);
-        st = 1;
-        return;
-    }
-    uint64_t flags = 0;
-    rd(body + 0x68, &flags, 8);
-    if ((st == 1 && t >= t0 + 5) || (st == 3 && t >= t0 + 9)) {
-        if (st == 3) {
-            uint64_t f = flags | 1ull << 44;
-            memcpy((void *)(uintptr_t)(body + 0x68), &f, 8);
-        }
-        _Alignas(16) float v[4] = {0, 3, 0, 0};
-        guest_call(c, MOD_MAIN_BASE + BODY_SET_LINVEL, body, (uint64_t)(uintptr_t)v, 0, 0);
-        rt_log("coop: test: x1: %s: 3 m/s up written at %.3f s (flags %#llx)", st == 1 ? "no flag" : "flag 44", t, (unsigned long long)flags);
-        st++, frames = 0;
-    }
-    if (st == 2 || st == 4) {
-        float v[3] = {0}, m[12] = {0};
-        rd(body + 0xf8, v, 12), rd(body + 0x98, m, 48);
-        uint64_t req = rd_ptr(body + 0x60);
-        uint32_t rq = 0, rt = 0;
-        if (req) rd(req + 0xd4, &rq, 4), rd(req + 0x80, &rt, 4);
-        int type = req && (rq & 4) ? (int)rt : flags & 0x40 ? 0 : flags & 0x80 ? 1 : 2;
-        rt_log("coop: test: x1: %s frame %d (dt %.4f): v %.3f %.3f %.3f, y %.3f, flag44 %d flag45 %d, type %d",
-               st == 2 ? "no flag" : "flag 44", frames, dt, v[0], v[1], v[2], m[7], (int)(flags >> 44 & 1), (int)(flags >> 45 & 1), type);
-        if (++frames >= 12) {
-            if (st == 4 && (flags >> 44 & 1)) {   // (the flag off again)
-                uint64_t f = flags & ~(1ull << 44);
-                memcpy((void *)(uintptr_t)(body + 0x68), &f, 8);
-            }
-            st = st == 2 ? 3 : 6;
-        }
-    }
-}
-
-// TOTK_COOP_TEST_X15_AWAY=<t> (experiment X15a, with TOTK_COOP_TEST_X15=1 and TOTK_COOP_TEST_SPAWN making a plank, slot
-// 1's): at t the plank is put 150 m from the Link along x, 20 m above it, then 300 m at t+10, 600 m at t+20 and 1200 m at
-// t+30. Every second: whether it still exists and its state, so the far delete's distance and path show (coop_life.c
-// logs the delete itself).
-static void x15_away_test(Cpu *c) {
-    static double t0 = -1;
-    static int step;
-    static double next_log;
-    if (t0 == -1) { const char *e = cfg_get("TOTK_COOP_TEST_X15_AWAY"); t0 = e ? atof(e) : -2; if (t0 <= 0) t0 = -2; }
-    if (t0 < 0 || !kf_actor) return;
-    double t = frame_step_world_us() / 1e6;
-    if (t < t0) return;
-    static const float dist[4] = {150, 300, 600, 1200};
-    uint64_t me = player_actor();
-    if (step < 4 && t >= t0 + 10 * step && me) {
-        float lp[3] = {0};
-        rd(me + ACTOR_POS, lp, 12);
-        float m[12] = {1, 0, 0, lp[0] + dist[step], 0, 1, 0, lp[1] + 20, 0, 0, 1, lp[2]};
-        guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, kf_actor, (uint64_t)(uintptr_t)m, 0, 0);
-        rt_log("coop: test: x15 away: %.1f s the plank put %.0f m from the Link", t, dist[step]);
-        step++;
-    }
-    if (t >= next_log && t < t0 + 45) {
-        next_log = t + 1;
-        uint32_t st = 0;
-        float p[3] = {0}, lp[3] = {0};
-        int ok = rd(kf_actor + COOP_ACTOR_STATE, &st, 4) && rd(kf_actor + ACTOR_POS, p, 12);
-        if (me) rd(me + ACTOR_POS, lp, 12);
-        float d = sqrtf((p[0] - lp[0]) * (p[0] - lp[0]) + (p[2] - lp[2]) * (p[2] - lp[2]));
-        rt_log("coop: test: x15 away: %.1f s plank %s, state %u, %.0f m from the Link", t, ok ? "readable" : "unreadable", st, d);
-    }
-}
-
-// TOTK_COOP_TEST_STANDPUSH=<s> (contraption-sync.md, Phase 0 item 6), with TOTK_COOP_TEST_SPAWN making a part
-// (slot 1's) before it and the other game's Link walking (tools/coop/standin_walk_3rd.txt): at that world time the
-// part is put on the ground 2.5 m ahead of the first co-op stand-in, along the way it moved in the last 0.5 s. Then
-// every 0.5 s for 5 s: the part's place and the stand-in's, to see whether a stand-in pushes what it walks into.
-// The stand-in's motion type comes from TOTK_COOP_STANDIN_MOTION_TYPE (coop_players.c; 0 by default).
-static void standpush_test(Cpu *c) {
-    static double at = -1, prev_t;
-    static float prev[3];
-    static int st;
-    if (at == -1) { const char *e = cfg_get("TOTK_COOP_TEST_STANDPUSH"); at = e ? atof(e) : 0; }
-    if (at <= 0 || !kf_actor) return;
-    uint64_t coop_players_first(void);
-    uint64_t sa = coop_players_first();
-    if (!sa) return;
-    double t = frame_step_world_us() / 1e6;
-    float sp[3] = {0}, pp[3] = {0};
-    rd(sa + ACTOR_POS, sp, 12), rd(kf_actor + ACTOR_POS, pp, 12);
-    static double logged;
-    if (t >= at - 2 && t < at + 8 && t >= logged + 0.5 && st < 2) {
-        logged = t;
-        rt_log("coop: test: standpush: %.2f s stand-in at %.2f %.2f %.2f", t, sp[0], sp[1], sp[2]);
-    }
-    if (st == 0 && t >= at) { memcpy(prev, sp, 12), prev_t = t, st = 1; return; }
-    if (st == 1) {   // (wait, up to 6 s, for the stand-in to walk 0.5 m: the other game's clock and the delay vary)
-        float d[3] = {sp[0] - prev[0], 0, sp[2] - prev[2]};
-        float l = sqrtf(d[0] * d[0] + d[2] * d[2]);
-        if (l < 0.5f) {
-            if (t > at + 6) { rt_log("coop: test: standpush: the stand-in moved only %.2f m by %.2f s: no way to put the part on", l, t); st = 3; }
-            return;
-        }
-        float m[12] = {1, 0, 0, sp[0] + d[0] / l * 2.5f, 0, 1, 0, sp[1] + 0.3f, 0, 0, 1, sp[2] + d[2] / l * 2.5f};
-        guest_call(c, MOD_MAIN_BASE + COOP_FORCE_MATRIX, kf_actor, (uint64_t)(uintptr_t)m, 0, 0);
-        rt_log("coop: test: standpush: %.2f s the part put at %.2f %.2f %.2f, 2.5 m ahead of the stand-in at %.2f %.2f %.2f (moving %.2f m/s)",
-               t, m[3], m[7], m[11], sp[0], sp[1], sp[2], l / (t - prev_t));
-        st = 2;
-        return;
-    }
-    static double next;
-    static double placed_at;
-    if (st == 2 && !placed_at) placed_at = t;
-    if (st == 2 && t >= next && t < placed_at + 5) {
-        next = t + 0.5;
-        rt_log("coop: test: standpush: %.2f s part %.2f %.2f %.2f, stand-in %.2f %.2f %.2f", t, pp[0], pp[1], pp[2], sp[0], sp[1], sp[2]);
-    }
-}
-
 void coop_tick(struct Cpu *c) {
     static int trace_on = -1;   // (getenv once)
     if (trace_on < 0) trace_on = cfg_get("TOTK_COOP_TRACE") != NULL;
@@ -1548,13 +964,6 @@ void coop_tick(struct Cpu *c) {
     player_actor_cached = player_actor();
     coop_trace_tick(player_actor_cached);   // coop_trace.c: TOTK_COOP_TRACE_AT
     if (prof4) resident_named("Player", &prof4_ref);
-    static int prev;
-    // The numpad test keys (an apple, a Korok, ... made beside this Link) only with TOTK_COOP_TEST_KEYS=1: one was
-    // pressed by chance in a play session (2026-11-15) and a Korok stood beside the Link.
-    static int test_keys = -1;
-    if (test_keys < 0) test_keys = cfg_get("TOTK_COOP_TEST_KEYS") != NULL;
-    int keys = test_keys ? input_coop_keys() : 0, pressed = keys & ~prev;
-    prev = keys;
     // Once: main's .data/.bss words holding the input object the copy fills (copy_dst[0]) or its owner (dst - 0x198),
     // so the generated C can be searched for the code that loads them.
     static int globals_done;
@@ -1636,17 +1045,6 @@ void coop_tick(struct Cpu *c) {
             rt_log("coop: \"Player\" lookups: %d callers in 10 s", n);
         }
     }
-    fndiff_tick();
-    kfride_test(c);
-    x1_test(c);
-    x15_away_test(c);
-    standpush_test(c);
-    if (fanhit_at == -2) fanhit_at = cfg_get("TOTK_COOP_TEST_FANHIT") ? atof(cfg_get("TOTK_COOP_TEST_FANHIT")) : -1;
-    // (from 3.5 s before the hit only: on from the world's start, it slowed the game too much for a scripted autobuild)
-    if (fanhit_at > 0 && frame_step_world_us() / 1e6 > fanhit_at - 3.5) g_fnprof = 1;
-    fanhit_report();
-    if (flagcaller < 0) flagcaller = cfg_get("TOTK_COOP_TEST_FLAGCALLER") != NULL;
-    if (flagcaller > 0 && frame_step_world_us() > 0) g_fnprof = 1;
     if (prof6) g_fnprof = 1;
     if (prof9 && frame_step_world_us() > 0) g_fnprof = 1;
     if (prof8 && frame_step_world_us() > 0) {   // from the world on (loading is too slow under the profiler)
@@ -1717,23 +1115,6 @@ void coop_tick(struct Cpu *c) {
         }
     }
     coop_ctr_tick();   // the contraption channel (coop_ctr.c): before the players, so their pass sees this poll's messages
-    {   // Test (TOTK_COOP_TEST_TICKRATE=1, enemy-sync-spec.md run 22): how often this tick, and with it the transport's
-        // receive, runs against the game's frames (counted at GameDataMgr::calc, once a frame). One line a second.
-        static int on = -1;
-        static uint64_t at;
-        static uint32_t ticks, frames_was;
-        if (on < 0) on = cfg_get("TOTK_COOP_TEST_TICKRATE") != NULL;
-        if (on) {
-            uint64_t now = plat_now_ns();
-            ticks++;
-            if (!at) at = now, frames_was = atomic_load(&coop_frames_seen);
-            if (now - at >= 1000000000ull) {
-                uint32_t f = atomic_load(&coop_frames_seen);
-                rt_log("coop: test: tick rate: %u co-op ticks and %u game frames in %.3f s", ticks, f - frames_was, (double)(now - at) / 1e9);
-                ticks = 0, at = now, frames_was = f;
-            }
-        }
-    }
     { void coop_sess_net(void); coop_sess_net(); }   // session state (coop_sess.c)
     { void coop_enemy_net(void); coop_enemy_net(); }   // the enemy sync's net half (coop_enemy.c)
     { void coop_ent_net(void); coop_ent_net(); }   // the entity sync's net half: heartbeat flags, the pause queue (coop_ent_own.c)
@@ -1742,7 +1123,7 @@ void coop_tick(struct Cpu *c) {
     coop_players_tick(c);
     foe_log();
     for (int k = 0; k < 2; k++) {
-        // Test: TOTK_COOP_TEST_SPAWN=<actor>@<s> spawns that actor in slot 1 (Numpad 2's) that many seconds into the world.
+        // Test: TOTK_COOP_TEST_SPAWN=<actor>@<s> spawns that actor in slot 1 that many seconds into the world.
         static int test_spawned;
         const char *ts = cfg_get("TOTK_COOP_TEST_SPAWN");
         const char *at = ts ? strchr(ts, '@') : NULL;
@@ -1789,27 +1170,6 @@ void coop_tick(struct Cpu *c) {
                 }
             }
         }
-        {   // Test: TOTK_COOP_TEST_SPAWN_KEY=<actor>[+<actor>...]: each press of the mark key (Home or numpad 0) makes the
-            // next actor of the list beside this Link, round and round (a tester fights one enemy kind after another).
-            static const char *list;
-            static int read, at, was;
-            static char nm[64];
-            int input_mark_key(void);   // input_win.c
-            if (!read) list = cfg_get("TOTK_COOP_TEST_SPAWN_KEY"), read = 1;
-            int down = k == 1 && list && *list ? input_mark_key() : 0;
-            if (k == 1 && down && !was && !rd_ptr((uint64_t)(uintptr_t)handles[1])) {
-                const char *p = list;
-                for (int i = 0; i < at && p; i++) p = strchr(p, '+'), p = p ? p + 1 : NULL;
-                if (!p || !*p) p = list, at = 0;
-                const char *e = strchr(p, '+');
-                snprintf(nm, sizeof nm, "%.*s", (int)(e ? e - p : (long long)strlen(p)), p);
-                names[1] = nm, at++, last_status[1] = -1;
-                rt_log("coop: test spawn by key %d: %s", at, nm);
-                spawn(c, 1);
-            }
-            if (k == 1) was = down;
-        }
-        if (pressed & 1 << k) spawn(c, k);
         if (!rd_ptr((uint64_t)(uintptr_t)handles[k])) continue;
         int st = handle_status(k);
         if (st != last_status[k]) rt_log("coop: %s handle status %d", names[k], st);
@@ -1829,7 +1189,7 @@ void coop_tick(struct Cpu *c) {
             if (l[0] && (name = rd_ptr(l[0] + ACTOR_NAME))) rd(name, text, sizeof text - 1);
             rt_log("coop: %s claimed: %s; link %016llx %016llx (name at link[0] '%s')", names[k],
                    got & 1 ? "ok" : "failed", (unsigned long long)l[0], (unsigned long long)l[1], text);
-            if (k == 1 && (got & 1) && l[1]) foe = rd_ptr(l[1] + 0x40), kf_actor = foe;
+            if (k == 1 && (got & 1) && l[1]) foe = rd_ptr(l[1] + 0x40);
         }
     }
 }

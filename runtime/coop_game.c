@@ -150,21 +150,17 @@ static int request_create_do(Cpu *c, const char *name, const float pos[3], const
     ST64(sp + 0x28 + 0x40, (uint64_t)(uintptr_t)empty);
     if (tag) ST64(sp + 0x28 + 0x80, tag);
     arg[0x90] = 3;
-    // TOTK_COOP_TEST_ABARGS=1 (with the tag): the autobuild's other create argument fields too, +0x48
-    // 0x0101010100000001 and +0x90 7 (TOTK_COOP_TEST_CREATEDUMP: what main+0x1d3b470 passes), for the green tint
-    if (tag && cfg_get("TOTK_COOP_TEST_ABARGS")) ST64(sp + 0x28 + 0x48, 0x0101010100000001ull), arg[0x90] = 7;
     coop_handle_release(c, handle);   // (a request still held there, failed or pending, would be lost: released first)
     memset(handle, 0, 0x40);
     c->sp = sp;
     // With the autobuild's tag, its creation callback too (x7; the autobuild, main+0x1d3b470, passes one): an object of
     // vtable main+0x3694e18 holding a pointer to a byte, whose call (main+0x1d43dc8) writes that byte to the new actor's
-    // init values 0x11 and 0x13 (main+0x63336c). TOTK_COOP_TEST_ABFLAG=<0|1> (default 1): the byte.
+    // init values 0x11 and 0x13 (main+0x63336c); the byte is 1.
     static _Alignas(16) uint64_t cb[2];
     static uint8_t cb_flag;
     uint64_t x7 = 0;
     if (tag) {
-        const char *fl = cfg_get("TOTK_COOP_TEST_ABFLAG");
-        cb_flag = fl ? (uint8_t)atoi(fl) : 1;
+        cb_flag = 1;
         cb[0] = MOD_MAIN_BASE + 0x3694e18, cb[1] = (uint64_t)(uintptr_t)&cb_flag, x7 = (uint64_t)(uintptr_t)cb;
     }
     uint64_t ok = rt_call(c, MOD_MAIN_BASE + COOP_REQUEST_CREATE, 8, mgr, sp + 0x20, sp + 0x28, (uint64_t)(uintptr_t)handle,
@@ -178,14 +174,9 @@ static int request_create_do(Cpu *c, const char *name, const float pos[3], const
 // main+0x5557e0(record, 0) (status 4 or 9: main+0x5559a0 frees the record; 2, 3, 5..7: cancelled, then freed) and
 // clears the handle. A claimed handle is cleared by the claim itself (main+0x89fe48).
 #define REQUEST_RELEASE 0x5557e0
-int coop_handle_norelease(void) {   // TOTK_COOP_TEST_NORELEASE=1: the old way (nothing released, retried at once), to compare
-    static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_NORELEASE") != NULL;
-    return on;
-}
 void coop_handle_release(Cpu *c, uint8_t *handle) {
     uint64_t w = coop_rd_ptr((uint64_t)(uintptr_t)handle);
-    if (!w || coop_handle_norelease()) return;
+    if (!w) return;
     coop_guest_call(c, MOD_MAIN_BASE + REQUEST_RELEASE, w, 0, 0, 0);
     memset(handle, 0, 8);
 }
@@ -251,16 +242,12 @@ void coop_fill_controller(uint64_t ctl, uint64_t buttons, const float stick[4], 
         if (buttons >> b & 1 && to_ctl[b] >= 0) hold |= 1u << to_ctl[b];
     // No L for a co-op Link: its abilities (Ultrahand, Fuse, Ascend, Recall, Autobuild) would run in this game on this
     // game's objects, which are not shared, and tint this game's view (Ultrahand's highlight, tools/coop/tour2.txt);
-    // its own game runs them (2026-11-04). TOTK_COOP_TEST_ABILITY_KEEP: L passes (a control for tests).
-    static int keep_l = -1;
-    if (keep_l < 0) keep_l = cfg_get("TOTK_COOP_TEST_ABILITY_KEEP") != NULL;
-    if (!keep_l) hold &= ~(1u << 13);
+    // its own game runs them (2026-11-04).
+    hold &= ~(1u << 13);
     // No A for a co-op Link unless ZL is held: A talks, picks up, opens and checks, on this game's NPCs, items, chests
     // and doors (its talk to Purah started the talk in this game too, tools/coop/tour3.txt); its own game does those.
-    // With ZL (shield) A starts a shield surf, kept. TOTK_COOP_TEST_INTERACT_KEEP: A passes (a control) (2026-11-04).
-    static int keep_a = -1;
-    if (keep_a < 0) keep_a = cfg_get("TOTK_COOP_TEST_INTERACT_KEEP") != NULL;
-    if (!keep_a && !(hold & 1u << 2)) hold &= ~1u;
+    // With ZL (shield) A starts a shield surf, kept (2026-11-04).
+    if (!(hold & 1u << 2)) hold &= ~1u;
     if (stick[1] > 0.5f) hold |= 1u << 20;
     if (stick[1] < -0.5f) hold |= 1u << 21;
     if (stick[0] < -0.5f) hold |= 1u << 22;

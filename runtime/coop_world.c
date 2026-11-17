@@ -408,96 +408,8 @@ static void target_probe_one(int cell, uint64_t a, void *arg) {
     }
 }
 
-int coop_watch_arm(uint64_t addr, uint64_t len);   // coop_watch_win.c: the readers of a range, reported on disarm
-void coop_watch_disarm(void);
-
-// Test (TOTK_COOP_TEST_WATCH5=<s>): from that many seconds into the world, for 10 s (TOTK_COOP_TEST_WATCHLEN=<s>
-// for another length), the game functions that read slot 5 ([main+0x3ad9830] +0x250, this Link's perception data where enemies seem to take the player from).
+// The pointer path from an actor to its body skeleton (g3d SkeletonObj, coop_is_skeleton); coop_standin_pose.c follows it.
 const uint32_t coop_skel_path[8] = {0x48, 0x2a8, 0x20, 0x20, 0, 0xf8, 0x58, 0xb0};   // actor to its body skeleton (g3d)
-static void watch_slot5(void) {
-    const char *e = cfg_get("TOTK_COOP_TEST_WATCH5");
-    static int phase;
-    if (!e || phase == 2) return;
-    double s = frame_step_world_us() / 1e6;
-    if (!phase && s >= atof(e)) {
-        uint64_t obj = coop_rd_ptr(MOD_MAIN_BASE + 0x3ad9830);
-        const char *what = cfg_get("TOTK_COOP_TEST_WATCHWHAT");   // =data: this Link's perception data (0x300) instead
-        if (what && !strcmp(what, "slot3")) {   // the perception manager's player emitter field
-            uint64_t m = coop_rd_ptr(MOD_MAIN_BASE + 0x3a6ea80);
-            if (m && coop_watch_arm(m + 0x58, 8)) phase = 1, rt_log("coop: test: watching the perception manager's player field %llx", (unsigned long long)(m + 0x58));
-            else phase = 2;
-            return;
-        }
-        if (what && !strcmp(what, "coopmodel")) {   // who reads the first co-op Link's model world matrix
-            extern int coop_watch_writes;
-            uint64_t ca[1]; int ci[1];
-            uint64_t m = coop_player_actors(ca, ci, 1) ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(ca[0] + 0x228) + 0x8) + 0x28) : 0;
-            coop_watch_writes = 0;
-            if (m && coop_watch_arm(m + 0x1f8, 0x30)) phase = 1, rt_log("coop: test: watching the co-op Link's model %llx world matrix", (unsigned long long)m);
-            else if (!m) return;
-            else phase = 2;
-            return;
-        }
-        if (what && !strcmp(what, "coopskel")) {   // who reads the first co-op Link's body skeleton world matrices
-            extern int coop_watch_writes;
-            uint64_t ca[1]; int ci[1];
-            uint64_t s = 0;
-            if (coop_player_actors(ca, ci, 1)) {
-                s = ca[0];
-                for (int i = 0; i < 8 && s; i++) s = coop_rd_ptr(s + coop_skel_path[i]);
-            }
-            uint64_t wm = s ? coop_rd_ptr(s + 0x18) : 0;
-            coop_watch_writes = cfg_get("TOTK_COOP_TEST_WATCHWRITES") != NULL;   // =1: only who writes them
-            if (wm && coop_watch_arm(wm, 127 * 0x30)) phase = 1, rt_log("coop: test: watching the co-op Link's skeleton %llx world matrices %llx", (unsigned long long)s, (unsigned long long)wm);
-            else if (!wm) return;
-            else phase = 2;
-            return;
-        }
-        if (what && !strcmp(what, "cooplife")) {   // who writes the first co-op Link's life (writes only)
-            extern int coop_watch_writes;
-            uint64_t ca[1]; int ci[1];
-            uint64_t w = coop_player_actors(ca, ci, 1) ? life_word(ca[0], 0) : 0;
-            coop_watch_writes = 1;
-            if (w && coop_watch_arm(w, 4)) phase = 1, rt_log("coop: test: watching writes to the co-op Link's life %llx (%d)", (unsigned long long)w, life_of(ca[0]));
-            else if (!w) return;
-            else phase = 2;
-            return;
-        }
-        if (what && !strcmp(what, "coopeq")) {   // who reads the first stand-in's in-hand bytes (EquipmentUser +0x4620)
-            uint64_t ca[1]; int ci[1];
-            uint64_t q = coop_player_actors(ca, ci, 1) ? coop_rd_ptr(coop_rd_ptr(ca[0] + 0x228) + 0x230) : 0;
-            if (q && coop_watch_arm(q + 0x4620, 8)) phase = 1, rt_log("coop: test: watching the stand-in's in-hand bytes %llx", (unsigned long long)(q + 0x4620));
-            else if (!q) return;
-            else phase = 2;
-            return;
-        }
-        if (what && !strcmp(what, "myeq")) {   // the same for this game's own Link
-            uint64_t q = coop_rd_ptr(coop_rd_ptr(coop_player_actor() + 0x228) + 0x230);
-            if (q && coop_watch_arm(q + 0x4620, 8)) phase = 1, rt_log("coop: test: watching this Link's in-hand bytes %llx", (unsigned long long)(q + 0x4620));
-            else phase = 2;
-            return;
-        }
-        if (what && !strcmp(what, "coopdata")) {   // the first co-op Link's perception data
-            uint64_t ca[1]; int ci[1];
-            uint64_t d = coop_player_actors(ca, ci, 1) ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(ca[0] + 0x228) + 0x378) + 0x30) : 0;
-            if (d && coop_watch_arm(d, 0x300)) phase = 1, rt_log("coop: test: watching the co-op Link's perception data %llx", (unsigned long long)d);
-            else if (!d) return;   // no co-op Link yet: try again next tick
-            else phase = 2;
-            return;
-        }
-        if (what && !strcmp(what, "data")) {
-            uint64_t me = coop_player_actor(), d = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(me + 0x228) + 0x378) + 0x30);
-            if (d && coop_watch_arm(d, 0x300)) phase = 1, rt_log("coop: test: watching this Link's perception data %llx", (unsigned long long)d);
-            else phase = 2;
-            return;
-        }
-        if (obj && coop_watch_arm(obj + 0x250, 8)) phase = 1, rt_log("coop: test: watching slot 5 at %llx", (unsigned long long)(obj + 0x250));
-        else phase = 2;
-    } else if (phase == 1 && s >= atof(e) + (cfg_get("TOTK_COOP_TEST_WATCHLEN") ? atof(cfg_get("TOTK_COOP_TEST_WATCHLEN")) : 10)) {
-        coop_watch_disarm();
-        phase = 2;
-    }
-}
 
 // ---- the co-op Links' life components, cached once a tick for coop_spawn.c (coop_is_coop_life).
 static _Atomic uint64_t coop_life_comps[COOP_MAX_PLAYERS];
@@ -525,161 +437,6 @@ int coop_is_skeleton(uint64_t s) {
     return n >= 20 && n <= 600 && w[4] && w[4] == w[0xc] && (w[3] - w[4] == (uint64_t)n * 0x40 || w[0xb] - w[4] == (uint64_t)n * 0x40);
 }
 
-// Test (TOTK_COOP_TEST_REFSCAN=<s1>,<s2>[,...]): at each of those world times, every 8-byte word in guest memory
-// 0x100000000..0x240000000 equal to this Link's actor or its reference object, logged (up to 600) with which it is:
-// before and after an enemy notices this Link, the new holders are where it keeps its target (stage 5).
-static void refscan(uint64_t me) {
-    const char *e = cfg_get("TOTK_COOP_TEST_REFSCAN");
-    static int done_n;
-    if (!e) return;
-    double times[8];
-    int nt = 0;
-    for (const char *q = e; *q && nt < 8; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) times[nt++] = atof(q);
-    double now = frame_step_world_us() / 1e6;
-    if (done_n >= nt || now < times[done_n]) return;
-    done_n++;
-    uint64_t ref = 0;
-    coop_resident_named("Player", &ref);
-    static uint64_t buf[0x100000 / 8];
-    int found = 0;
-    uint64_t t0 = plat_now_ns();
-    for (uint64_t a = 0x100000000ull; a < 0x240000000ull; a += sizeof buf) {
-        if (!plat_mem_read(a, buf, sizeof buf)) {   // in 64 KB pieces where the whole MB does not read
-            for (uint64_t b = a; b < a + sizeof buf; b += 0x10000) {
-                if (!plat_mem_read(b, buf, 0x10000)) continue;
-                for (int i = 0; i < 0x10000 / 8; i++)
-                    if ((buf[i] == me || (ref && buf[i] == ref)) && found++ < 600)
-                        rt_log("coop: test: refscan %d %llx = %s", done_n, (unsigned long long)(b + i * 8), buf[i] == me ? "actor" : "ref");
-            }
-            continue;
-        }
-        for (size_t i = 0; i < sizeof buf / 8; i++)
-            if ((buf[i] == me || (ref && buf[i] == ref)) && found++ < 600)
-                rt_log("coop: test: refscan %d %llx = %s", done_n, (unsigned long long)(a + i * 8), buf[i] == me ? "actor" : "ref");
-    }
-    rt_log("coop: test: refscan %d at %.1f s: %d words (actor %llx, ref %llx), %.1f s", done_n, now, found, (unsigned long long)me,
-           (unsigned long long)ref, (plat_now_ns() - t0) / 1e9);
-}
-// Test (TOTK_COOP_TEST_TARGETSWAP=<s0>,<s1>): the words in guest memory holding this Link's reference object at s1
-// but not at s0 (an enemy spawned in between: where it keeps its target, refscan) are rewritten with the first
-// co-op Link's reference whenever they hold this Link's, every tick from s1 (TOTK_COOP_TEST_TARGETSWAP_OFF=1: only
-// watched). Every 60 ticks: the nearest enemy's distance to both Links, this Link's life, writes so far.
-static uint64_t swap_base[4096], swap_words[16];
-static int swap_nbase, swap_nwords, swap_state;
-static void ref_holders(uint64_t ref, uint64_t *out, int *n, int max) {
-    static uint64_t buf[0x10000 / 8];
-    *n = 0;
-    for (uint64_t a = 0x100000000ull; a < 0x240000000ull; a += sizeof buf) {
-        if (!plat_mem_read(a, buf, sizeof buf)) continue;
-        for (size_t i = 0; i < sizeof buf / 8; i++) if (buf[i] == ref && *n < max) out[(*n)++] = a + i * 8;
-    }
-}
-struct near_enemy { uint64_t me, best; float d; };
-static void near_fn(int cell, uint64_t a, void *arg) {
-    struct near_enemy *ne = arg;
-    char nm[48];
-    if (!enemy_of(cell, a, nm, sizeof nm)) return;
-    float p[3], q[3];
-    if (!coop_rd(a + COOP_ACTOR_POS, p, 12) || !coop_rd(ne->me + COOP_ACTOR_POS, q, 12)) return;
-    float d = sqrtf((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
-    if (!ne->best || d < ne->d) ne->best = a, ne->d = d;
-}
-static void target_swap(uint64_t me) {
-    const char *e = cfg_get("TOTK_COOP_TEST_TARGETSWAP");
-    if (!e || !strchr(e, ',')) return;
-    double s0 = atof(e), s1 = atof(strchr(e, ',') + 1), now = frame_step_world_us() / 1e6;
-    uint64_t ref = 0;
-    coop_resident_named("Player", &ref);
-    if (!ref) return;
-    if (swap_state == 0 && now >= s0) { ref_holders(ref, swap_base, &swap_nbase, 4096); swap_state = 1; rt_log("coop: test: targetswap base: %d words", swap_nbase); }
-    if (swap_state == 1 && now >= s1) {
-        static uint64_t now_w[4096];
-        int n = 0;
-        ref_holders(ref, now_w, &n, 4096);
-        for (int i = 0; i < n && swap_nwords < 16; i++) {
-            int old = 0;
-            for (int k = 0; k < swap_nbase && !old; k++) old = swap_base[k] == now_w[i];
-            if (!old) swap_words[swap_nwords++] = now_w[i], rt_log("coop: test: targetswap word %llx", (unsigned long long)now_w[i]);
-        }
-        swap_state = 2;
-        rt_log("coop: test: targetswap: %d new words of %d", swap_nwords, n);
-    }
-    if (swap_state != 2) return;
-    uint64_t co[1];
-    int ids[1];
-    uint64_t co_ref = 0;
-    if (coop_player_actors(co, ids, 1) != 1) return;
-    for (int k = 0; k < 16 && !co_ref; k++) {   // the co-op Link's reference: a word in its first 0x400 bytes whose +0x40 is it
-        uint64_t w[0x400 / 8];
-        if (!coop_rd(co[0], w, sizeof w)) break;
-        for (int i = 0; i < 0x400 / 8 && !co_ref; i++) if (w[i] > 0x100000000ull && coop_rd_ptr(w[i] + 0x40) == co[0]) co_ref = w[i];
-    }
-    static int off = -1, writes, t;
-    if (off < 0) off = cfg_get("TOTK_COOP_TEST_TARGETSWAP_OFF") != NULL;
-    for (int i = 0; i < swap_nwords && !off && co_ref; i++)
-        if (coop_rd_ptr(swap_words[i]) == ref) ST64(swap_words[i], co_ref), writes++;
-    if (++t % 60) return;
-    struct near_enemy ne = {me, 0, 0};
-    each_live(near_fn, &ne);
-    float pe[3] = {0}, pc[3] = {0};
-    if (ne.best) coop_rd(ne.best + COOP_ACTOR_POS, pe, 12);
-    coop_rd(co[0] + COOP_ACTOR_POS, pc, 12);
-    float dc = sqrtf((pe[0] - pc[0]) * (pe[0] - pc[0]) + (pe[1] - pc[1]) * (pe[1] - pc[1]) + (pe[2] - pc[2]) * (pe[2] - pc[2]));
-    char vals[200];
-    int m = 0;
-    for (int i = 0; i < swap_nwords && m < 180; i++) {
-        uint64_t v = coop_rd_ptr(swap_words[i]);
-        m += snprintf(vals + m, sizeof vals - m, " %s", v == ref ? "mine" : v == co_ref ? "co-op" : "other");
-    }
-    vals[m] = 0;
-    rt_log("coop: test: targetswap %.1f s: enemy %.1f m from this Link, %.1f m from the co-op Link; life %d; %d writes (co-op ref %llx); words:%s",
-           now, ne.best ? ne.d : -1.0f, ne.best ? dc : -1.0f, life_of(me), writes, (unsigned long long)co_ref, vals);
-}
-// TOTK_COOP_TEST_ASPLAY (see coop_spawn.c coop_as_template): the AS manager's place on a Player, learned from this
-// Link's (a word in one of its components, or in an object a component points to, equal to the manager), then the
-// call for the co-op Link's.
-static void as_play_test(Cpu *c, uint64_t me) {
-    const char *e = cfg_get("TOTK_COOP_TEST_ASPLAY");
-    static int done, comp = -1, off = -1, off2 = -1, calls;
-    double at = e && strchr(e, '@') ? atof(strchr(e, '@') + 1) : 0, now = frame_step_world_us() / 1e6;
-    if (!e || !strchr(e, '@') || now < at || now > at + 1.5) return;   // every tick for 1.5 s (its AI may undo one)
-    uint64_t coop_as_template(uint64_t *mgr, uint8_t **name_obj, uint8_t **req, char **text);   // coop_spawn.c
-    uint64_t mgr;
-    uint8_t *nobj, *req;
-    char *text;
-    if (!coop_as_template(&mgr, &nobj, &req, &text)) return;
-    (void)done;
-    uint64_t table = coop_rd_ptr(me + 0x228);
-    static uint64_t w[0x1000 / 8], w2[0x400 / 8];
-    for (int j = 0; table && j < 0x100 && comp == -1; j++) {
-        uint64_t cp = coop_rd_ptr(table + j * 8);
-        if (cp < 0x100000000ull || cp >= 0x8000000000ull || !coop_rd(cp, w, sizeof w)) continue;
-        for (int i = 0; i < 0x1000 / 8 && comp < 0; i++) {
-            if (w[i] == mgr) comp = j * 8, off = i * 8;
-            else if (w[i] > 0x100000000ull && w[i] < 0x8000000000ull && coop_rd(w[i], w2, sizeof w2))
-                for (int k = 0; k < 0x400 / 8; k++) if (w2[k] == mgr) { comp = j * 8, off = i * 8, off2 = k * 8; break; }
-        }
-    }
-    uint64_t co[1];
-    int ids[1];
-    if (comp < 0 || coop_player_actors(co, ids, 1) != 1) { rt_log("coop: test: asplay: manager not found on this Link (%d)", comp); return; }
-    uint64_t x = coop_rd_ptr(coop_rd_ptr(co[0] + 0x228) + (uint64_t)comp);
-    x = x ? coop_rd_ptr(x + (uint64_t)off) : 0;
-    if (off2 >= 0) x = x ? coop_rd_ptr(x + (uint64_t)off2) : 0;
-    char nm[40] = "";
-    int slot = 0;
-    sscanf(e, "%39[^,],%d", nm, &slot);
-    snprintf(text, 48, "%s", nm);
-    uint64_t tp = (uint64_t)(uintptr_t)text;
-    memcpy(nobj + 8, &tp, 8);   // the string object's text pointer (+8 as name_like found it, or +0)
-    if (coop_rd_ptr((uint64_t)(uintptr_t)nobj) < 0x7000000000ull) memcpy(nobj, &tp, 8);
-    int32_t sl = slot;
-    memcpy(req + 0x28, &sl, 4);
-    uint64_t r = x ? coop_guest_call(c, MOD_MAIN_BASE + 0x4dcc1c, x, (uint64_t)(uintptr_t)nobj, (uint64_t)(uintptr_t)req, 0) : 0;
-    if (calls++ % 15) return;
-    rt_log("coop: test: asplay %s slot %d on the co-op Link's manager %llx (this Link's %llx at comp +%#x +%#x +%#x): returned %llu",
-           nm, slot, (unsigned long long)x, (unsigned long long)mgr, comp, off, off2, (unsigned long long)r);
-}
 // The sync audit's "enemies" (coop_players.c, audit_tick): an empty array. The enemy sync writes its own record to the
 // log, which tools/coop/en_report.py compares across the games.
 void coop_audit_enemies(FILE *f, uint64_t me) {
@@ -692,92 +449,10 @@ static float dist3(const float a[3], const float b[3]) {
     return sqrtf((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
 }
 uint64_t coop_world_me;   // this game's Link (set each world tick)
-static void hit_watch_test(uint64_t me) {
-    static int on = -1, phase;
-    static double from, to;
-    static unsigned off = 0x1a4, comp = 0x2f8;   // [@<off>[:<comp>]]: <comp> another entry of the +0x228 table
-    if (on < 0) {
-        const char *e = cfg_get("TOTK_COOP_TEST_HITWATCH");
-        on = e && sscanf(e, "%lf-%lf", &from, &to) == 2;
-        const char *at = e ? strchr(e, '@') : NULL;
-        if (at) off = (unsigned)strtoul(at + 1, NULL, 0);
-        const char *co = at ? strchr(at, ':') : NULL;
-        if (co) comp = (unsigned)strtoul(co + 1, NULL, 0);
-    }
-    if (!on || !me) return;
-    double t = frame_step_world_us() / 1e6;
-    {   // the receiver at the damage component's +0x190 (the attack contact calls its vtable +0x28): its vtable, once
-        static int said;
-        uint64_t dc = coop_rd_ptr(coop_rd_ptr(me + 0x228) + 0x2f8), vt = dc ? coop_rd_ptr(dc + 0x190) : 0;
-        if (vt && !said++) {
-            char line[700];
-            int m = snprintf(line, sizeof line, "coop: test: the damage component's receiver vtable main+%#llx:", (unsigned long long)(vt - MOD_MAIN_BASE));
-            for (int k = 0; k < 24 && m < 660; k++) m += snprintf(line + m, sizeof line - m, " %d:%#llx", k, (unsigned long long)(coop_rd_ptr(vt + 8 * k) - MOD_MAIN_BASE));
-            rt_log("%s", line);
-            uint64_t dvt = coop_rd_ptr(dc);
-            rt_log("coop: test: the damage component's own vtable main+%#llx", (unsigned long long)(dvt - MOD_MAIN_BASE));
-        }
-    }
-    int coop_watch_arm(uint64_t addr, uint64_t len);
-    void coop_watch_disarm(void);
-    extern int coop_watch_writes;
-    if (phase == 0 && t >= from) {
-        uint64_t dc = coop_rd_ptr(coop_rd_ptr(me + 0x228) + comp);
-        if (dc) coop_watch_writes = 1, phase = coop_watch_arm(dc + off, 8) ? 1 : 2;
-    } else if (phase == 1 && t >= to) coop_watch_disarm(), phase = 2;
-}
-// Test (TOTK_COOP_TEST_GUARDSCAN=<t0>,<t1>): this Link's actor (0x3000 bytes) and the objects its +0x228 component
-// table points to (+0..+0x400, 0x800 bytes each), at t0 and t1 world seconds: the 32-bit words that differ, logged
-// for those that stayed the same over the 2 s before t0 (for finding a state such as the shield held up, ZL from t0 to t1).
-static void guard_scan_test(uint64_t me) {
-    static int on = -1, phase;
-    static double t0, t1;
-    if (on < 0) { const char *e = cfg_get("TOTK_COOP_TEST_GUARDSCAN"); on = e && sscanf(e, "%lf,%lf", &t0, &t1) == 2; }
-    if (!on || !me || phase > 2) return;
-    enum { AW = 0x3000 / 4, CN = 0x400 / 8, CW = 0x800 / 4 };
-    static uint32_t a[3][AW], cc[3][CN][CW];
-    static uint64_t comps[CN];
-    double t = frame_step_world_us() / 1e6, at[3] = {t0 - 2, t0 - 0.2, t1};
-    if (t < at[phase]) return;
-    uint64_t tab = coop_rd_ptr(me + 0x228);
-    if (phase == 0 && tab) coop_rd(tab, comps, sizeof comps);
-    coop_rd(me, a[phase], sizeof a[phase]);
-    for (int k = 0; k < CN; k++) if (comps[k] > 0x100000000ull && comps[k] < 0x8000000000ull) coop_rd(comps[k], cc[phase][k], sizeof cc[phase][k]);
-    if (++phase < 3) return;
-    char line[1600];
-    int m = snprintf(line, sizeof line, "coop: test: guardscan actor:");
-    for (int i = 0; i < AW && m < 1500; i++)
-        if (a[0][i] == a[1][i] && a[1][i] != a[2][i]) m += snprintf(line + m, sizeof line - m, " +%#x:%x>%x", i * 4, a[1][i], a[2][i]);
-    rt_log("%s", line);
-    for (int k = 0; k < CN; k++) {
-        if (!comps[k]) continue;
-        m = snprintf(line, sizeof line, "coop: test: guardscan comp +%#x:", k * 8);
-        int any = 0;
-        for (int i = 0; i < CW && m < 1500; i++)
-            if (cc[0][k][i] == cc[1][k][i] && cc[1][k][i] != cc[2][k][i] && cc[2][k][i] - cc[1][k][i] + 0u < 0x100000u)
-                m += snprintf(line + m, sizeof line - m, " +%#x:%x>%x", i * 4, cc[1][k][i], cc[2][k][i]), any = 1;
-        if (any) rt_log("%s", line);
-    }
-}
 // Test (TOTK_COOP_TEST_LINKDUMP=<s>[,<s2>[,<s3>[,<s4>]]]): at those world seconds, this Link's actor (0x3000 bytes) and the
 // first 0x800 bytes of each object its +0x228 table points to (128 of them, in table order, zeros for none) to
-// <TOTK_COOP_TEST_LINKDUMP_DIR or .>/linkdump_<player id>_<n>.bin: two games' Links side by side, for a state one
+// ./linkdump_<player id>_<n>.bin: two games' Links side by side, for a state one
 // has and the other not (an enemy aware of it).
-static void actor_dump(uint64_t a, const char *what, int n) {
-    enum { AS = 0x3000, CN = 128, CS = 0x800 };
-    static uint8_t buf[AS + CN * CS];
-    memset(buf, 0, sizeof buf);
-    coop_rd(a, buf, AS);
-    uint64_t tab = coop_rd_ptr(a + 0x228);
-    for (int k = 0; tab && k < CN; k++) {
-        uint64_t cp = coop_rd_ptr(tab + 8 * k);
-        if (cp > 0x100000000ull && cp < 0x8000000000ull) coop_rd(cp, buf + AS + k * CS, CS);
-    }
-    const char *dir = cfg_get("TOTK_COOP_TEST_LINKDUMP_DIR");
-    char path[PLAT_PATH_MAX];
-    snprintf(path, sizeof path, "%s/%sdump_%d_%d.bin", dir ? dir : ".", what, coop_net_id(), n);
-    rt_log("coop: test: %sdump %s at %.1f s: %s", what, path, frame_step_world_us() / 1e6, plat_file_write(path, buf, sizeof buf) ? "written" : "not written");
-}
 static void link_dump_test(uint64_t me) {
     static int on = -1, done;
     static double at[4];
@@ -788,30 +463,6 @@ static void link_dump_test(uint64_t me) {
         on = nat > 0;
     }
     if (!on || done >= nat || frame_step_world_us() / 1e6 < at[done]) return;
-    {   // and the live enemy of that key (TOTK_COOP_TEST_LINKDUMP_KEY=<hex key>)
-        const char *ks = cfg_get("TOTK_COOP_TEST_LINKDUMP_KEY");
-        uint32_t want = ks ? (uint32_t)strtoul(ks, NULL, 16) : 0;
-        uint64_t en = 0;
-        for (int i = 0; !en && want && i < coop_world_n_enemies; i++) if (coop_actor_world_key(coop_world_enemies[i]) == want) en = coop_world_enemies[i];
-        if (en) actor_dump(en, "enemy", done);
-        if (en) {   // where the enemy holds this Link: its actor or its reference, in its first 0x3000 bytes and its components
-            uint64_t ref = coop_actor_ref(me), tab = coop_rd_ptr(en + 0x228);
-            char line[900];
-            int m = snprintf(line, sizeof line, "coop: test: enemy %08x holds this Link (actor %llx, ref %llx) at:", want, (unsigned long long)me, (unsigned long long)ref);
-            static uint64_t w[0x3000 / 8];
-            for (int k = -1; k < 128 && m < 860; k++) {
-                uint64_t base = k < 0 ? en : (tab ? coop_rd_ptr(tab + 8 * k) : 0);
-                size_t len = k < 0 ? 0x3000 : 0x800;
-                if (!base || !coop_rd(base, w, len)) continue;
-                for (size_t i = 0; i < len / 8 && m < 860; i++)
-                    if (w[i] == me || (ref && w[i] == ref))
-                        m += snprintf(line + m, sizeof line - m, " %s+%#x%s(%s)", k < 0 ? "actor" : "comp", k < 0 ? (unsigned)(i * 8) : (unsigned)(k * 8),
-                                      k < 0 ? "" : "", w[i] == me ? "actor" : "ref"),
-                        m += k < 0 ? 0 : snprintf(line + m, sizeof line - m, "@%#x", (unsigned)(i * 8));
-            }
-            rt_log("%s", line);
-        }
-    }
     enum { AS = 0x3000, CN = 128, CS = 0x800 };
     static uint8_t buf[AS + CN * CS];
     memset(buf, 0, sizeof buf);
@@ -821,9 +472,8 @@ static void link_dump_test(uint64_t me) {
         uint64_t cp = coop_rd_ptr(tab + 8 * k);
         if (cp > 0x100000000ull && cp < 0x8000000000ull) coop_rd(cp, buf + AS + k * CS, CS);
     }
-    const char *dir = cfg_get("TOTK_COOP_TEST_LINKDUMP_DIR");
     char path[PLAT_PATH_MAX];
-    snprintf(path, sizeof path, "%s/linkdump_%d_%d.bin", dir ? dir : ".", coop_net_id(), done);
+    snprintf(path, sizeof path, "./linkdump_%d_%d.bin", coop_net_id(), done);
     rt_log("coop: test: linkdump %s at %.1f s: %s", path, frame_step_world_us() / 1e6, plat_file_write(path, buf, sizeof buf) ? "written" : "not written");
     done++;
 }
@@ -832,19 +482,13 @@ static void link_dump_test(uint64_t me) {
 static void peer_tick(Cpu *c, uint64_t me) {
     coop_world_me = me;
     link_dump_test(me);
-    guard_scan_test(me);
-    hit_watch_test(me);
     coop_hitchan_tick(c, me);
     static int t;
     if (++t % 3 == 0) dup_count();
 }
 
 void coop_world_tick(Cpu *c, uint64_t me) {
-    refscan(me);
-    as_play_test(c, me);
-    target_swap(me);
     cache_links(me);
-    watch_slot5();
     coop_puppet_tick(me);
     static int ton = -1, tt;
     if (ton < 0) { const char *e = cfg_get("TOTK_COOP_TRACE"); ton = e && strstr(e, "target"); }
@@ -858,20 +502,6 @@ void coop_world_tick(Cpu *c, uint64_t me) {
         static int said;
         if (!said++ || tt % 600 == 0) rt_log("coop: perception id of this Link %#x%s", tp_ids[0], tp_n > 1 ? ", of co-op Links:" : "");
         for (int i = 1; i < tp_n && tt % 600 == 0; i++) rt_log("coop:   co-op Link %d: %#x", i, tp_ids[i]);
-        // Test (TOTK_COOP_TEST_RESIDENT): the co-op Links' perception flags (data +0x14, +0x1c and the second record's
-        // +0x27c, +0x284) made this Link's, to see whether enemies then take them as targets.
-        if (cfg_get("TOTK_COOP_TEST_RESIDENT")) {
-            uint64_t d0 = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(tp_links[0] + 0x228) + 0x378) + 0x30);
-            for (int i = 1; i < tp_n && d0; i++) {
-                uint64_t d1 = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(tp_links[i] + 0x228) + 0x378) + 0x30);
-                static const int offs[4] = {0x14, 0x1c, 0x27c, 0x284};
-                for (int k = 0; d1 && k < 4; k++) {
-                    uint32_t v = 0, old = 0;
-                    coop_rd(d0 + offs[k], &v, 4), coop_rd(d1 + offs[k], &old, 4);
-                    if (v != old) ST32(d1 + offs[k], v), rt_log("coop: test: co-op Link %d perception +%#x %#x -> %#x", i, offs[k], old, v);
-                }
-            }
-        }
         // The registry main+0x72b4e8 takes "the player" from: [main+0x3a75a40], count +0x38, sorted pointers +0x40 to
         // {u32 key, +8 object}; key 0x5d5d398d, then object +0x150. What that object and its +0x150 are. Once, at 20 s.
         static int reg_said;
@@ -946,18 +576,6 @@ void coop_world_tick(Cpu *c, uint64_t me) {
                            (unsigned long long)(v - MOD_MAIN_BASE));
             }
         }
-        // Test (TOTK_COOP_TEST_SLOT=1..5): one of those five places made to hold the co-op Link's data from 20 s on.
-        const char *slot = cfg_get("TOTK_COOP_TEST_SLOT");
-        if (slot && tp_n > 1 && tt > 600) {
-            static const uint32_t g_off[5][2] = {{0x3a4e6a8, 0x98}, {0x3a4e6e0, 0x370}, {0x3a6ea80, 0x58}, {0x3a83a30, 0x3b0}, {0x3ad9830, 0x250}};
-            int k = atoi(slot) - 1;
-            uint64_t obj = k >= 0 && k < 5 ? coop_rd_ptr(MOD_MAIN_BASE + g_off[k][0]) : 0;
-            uint64_t d1 = coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(tp_links[1] + 0x228) + 0x378) + 0x30);
-            if (obj && d1 && coop_rd_ptr(obj + g_off[k][1]) != d1) {
-                rt_log("coop: test: [main+%#x]+%#x = the co-op Link's perception data", g_off[k][0], g_off[k][1]);
-                ST64(obj + g_off[k][1], d1);
-            }
-        }
         // Both Links' perception components ([actor+0x228] +0x378) and the object at their +0x30, side by side.
         static int dumped;
         if (tp_n > 1 && !dumped && tt > 600) {
@@ -981,19 +599,5 @@ void coop_world_tick(Cpu *c, uint64_t me) {
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_TRACE"); on = e && strstr(e, "enemy"); }
     if (on && ++t % 300 == 0) { probe_me = me; each_live(probe_one, NULL); }
     if (coop_world_role()) peer_tick(c, me);
-    void coop_anim_slots_test(uint64_t me);   // (below)
-    coop_anim_slots_test(me);
-    void coop_anim_copy_test(Cpu *c, uint64_t me);   // (below)
-    coop_anim_copy_test(c, me);
-    void coop_eqdiff_test(uint64_t me);   // (below)
-    coop_eqdiff_test(me);
-    void coop_binds_test(uint64_t me);   // (below)
-    coop_binds_test(me);
-    void coop_blur_test(uint64_t me);   // (below)
-    coop_blur_test(me);
-    void coop_eqcmp_test(uint64_t me);   // (below)
-    coop_eqcmp_test(me);
-    void coop_weaplog_test(uint64_t me);   // (below)
-    coop_weaplog_test(me);
     if (coop_world_role()) ground_tick(c, me);
 }

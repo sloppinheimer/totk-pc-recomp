@@ -47,14 +47,6 @@ void coop_life_free_confirm(int on) { free_confirm = on; }
 
 uint64_t coop_life_ability(void) { return coop_rd_ptr(MOD_MAIN_BASE + AB_SINGLETON); }
 
-static int x15_on(void) {
-    static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_X15") != NULL;
-    return on;
-}
-
-static int bondable(uint64_t actor) { return actor && coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x480) != 0; }
-
 // x30 and three frames up the x29 chain, as main+ offsets (0 outside main)
 static void lr_chain(Cpu *c, uint64_t out[4]) {
     out[0] = c->x[30];
@@ -64,70 +56,6 @@ static void lr_chain(Cpu *c, uint64_t out[4]) {
         fp = fp ? coop_rd_ptr(fp) : 0;
     }
     for (int i = 0; i < 4; i++) out[i] = out[i] >= MOD_MAIN_BASE && out[i] < MOD_MAIN_BASE + 0x10000000 ? out[i] - MOD_MAIN_BASE : 0;
-}
-
-static void log_actor_event(Cpu *c, const char *what, uint64_t actor, uint64_t arg) {
-    if (!bondable(actor)) return;
-    uint64_t lr[4];
-    lr_chain(c, lr);
-    // A far delete the wrapper defers is asked again every frame: each (actor, caller, reason) is logged once, with a
-    // count of the repeats when it changes (the first run's 4000-line cap went on one wheel 100 m away).
-    static struct { uint64_t actor, lr, arg; uint32_t n; } seen[256];
-    static PlatMutex seen_lock = PLAT_MUTEX_INIT;
-    plat_mutex_lock(&seen_lock);
-    int at = -1, free_at = -1;
-    for (int i = 0; i < 256 && at < 0; i++) {
-        if (seen[i].actor == actor && seen[i].lr == lr[0] && seen[i].arg == arg) at = i;
-        else if (!seen[i].actor && free_at < 0) free_at = i;
-    }
-    int repeat = at >= 0;
-    if (repeat) seen[at].n++;
-    else if (free_at >= 0) seen[free_at].actor = actor, seen[free_at].lr = lr[0], seen[free_at].arg = arg, seen[free_at].n = 1;
-    plat_mutex_unlock(&seen_lock);
-    if (repeat) return;
-    static _Atomic int lines;
-    if (atomic_fetch_add(&lines, 1) > 4000) return;   // (a cap all the same)
-    char nm[48];
-    coop_actor_name(actor, nm, sizeof nm);
-    uint32_t st = 0, f28 = 0, a444 = 0;
-    uint64_t a448 = 0;
-    float p[3] = {0}, me[3] = {0};
-    coop_rd(actor + COOP_ACTOR_STATE, &st, 4), coop_rd(actor + 0x28, &f28, 4), coop_rd(actor + 0x444, &a444, 4);
-    coop_rd(actor + 0x448, &a448, 8), coop_rd(actor + COOP_ACTOR_POS, p, 12);
-    uint64_t link = coop_player_actor();
-    if (link) coop_rd(link + COOP_ACTOR_POS, me, 12);
-    float d2 = (p[0] - me[0]) * (p[0] - me[0]) + (p[1] - me[1]) * (p[1] - me[1]) + (p[2] - me[2]) * (p[2] - me[2]);
-    uint64_t spr = coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x480), grp = spr ? coop_rd_ptr(spr + 0x28) : 0;
-    uint32_t gn = 0;
-    if (grp) coop_rd(grp + 0x58, &gn, 4);
-    uint64_t stamps = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + 0x3ad7498) + 0x150);
-    rt_log("coop: x15: %.3f s %s %llx '%s' arg %llu lr main+%#llx <- %#llx <- %#llx <- %#llx; state %u, +0x28 %#x, +0x444 %#x, "
-           "+0x448 %#llx (current %#llx), %.1f m from the Link, group %llx of %u",
-           frame_step_world_us() / 1e6, what, (unsigned long long)actor, nm, (unsigned long long)arg, (unsigned long long)lr[0],
-           (unsigned long long)lr[1], (unsigned long long)lr[2], (unsigned long long)lr[3], st, f28, a444, (unsigned long long)a448,
-           (unsigned long long)stamps, __builtin_sqrtf(d2), (unsigned long long)grp, gn);
-}
-
-static uint64_t bond_pool(void) {
-    uint64_t r = coop_rd_ptr(MOD_MAIN_BASE + BOND_POOL_ROOT);
-    r = r ? coop_rd_ptr(r + 0xc8) : 0;
-    r = r ? coop_rd_ptr(r + 0xe0) : 0;
-    return r ? coop_rd_ptr(r + 0x188) : 0;
-}
-
-// Once a second with TOTK_COOP_TEST_X15: the group table's slot count and the bond pool's free and used counts.
-static void x15_counts(void) {
-    static int64_t last;
-    int64_t now = frame_step_world_us();
-    if (now - last < 1000000) return;
-    last = now;
-    uint64_t gt = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + GROUP_TABLE)), pool = bond_pool();
-    int32_t slots = -1, fr = -1, used = -1;
-    if (gt) coop_rd(gt + 0x20, &slots, 4);
-    if (pool) coop_rd(pool + 0x20, &fr, 4), coop_rd(pool + 0x38, &used, 4);
-    static int32_t s0 = -2, f0 = -2, u0 = -2;
-    if (slots != s0 || fr != f0 || used != u0)
-        rt_log("coop: x15: %.1f s group table %d slots; bond pool %d free, %d used", now / 1e6, slots, fr, used), s0 = slots, f0 = fr, u0 = used;
 }
 
 // ---- X3 (plan 15.3): what separates bonded parts. While a watch window is open (coop_life_watch_parts, from the copy
@@ -366,41 +294,7 @@ int coop_life_hook(Cpu *c, uint64_t addr) {
         int coop_ent_delete_hook(Cpu *c, uint64_t addr);
         if (off == DELETE_REQUEST && coop_ent_delete_hook(c, addr)) return 1;
     }
-    if (!x15_on()) return 0;
-    x15_counts();
-    if (off == DELETE_REQUEST) log_actor_event(c, "delete", c->x[0], c->x[1]);
-    else if (off == DELETE_DEFER) log_actor_event(c, "delete (deferring)", c->x[0], c->x[1]);
-    else if (off == DEATH_REQUEST) log_actor_event(c, "death", c->x[0], c->x[1]);
-    else if (off == DEATH_COMPONENT) {   // (x0 is the component; its actor is at +0x18: logged as is when not)
-        uint64_t a = coop_rd_ptr(c->x[0] + 0x18);
-        if (!a) a = coop_rd_ptr(c->x[0] + 8);
-        log_actor_event(c, "death (component)", bondable(a) ? a : c->x[0], c->x[1]);
-    } else if (off == BOND_MAKER) {
-        uint64_t pool = bond_pool();
-        int32_t fr = -1;
-        if (pool) coop_rd(pool + 0x20, &fr, 4);
-        if (fr < 1) rt_log("coop: x15: %.3f s BondMaker called with the bond pool empty (%d free)", frame_step_world_us() / 1e6, fr);
-    }
     return 0;
-}
-
-// TOTK_COOP_TEST_X6: from GameDataMgr::calc (actor phase 0), 8 s into the world, once.
-void coop_life_x6_probe(Cpu *c) {
-    static int done = -1;
-    if (done < 0) done = cfg_get("TOTK_COOP_TEST_X6") ? 0 : 1;
-    if (done || frame_step_world_us() < 8000000) return;
-    done = 1;
-    int ab = (int)(coop_guest_call(c, MOD_MAIN_BASE + FLAG_GET_BOOL, ISGET_AUTOBUILDER, 0, 0, 0) & 1);
-    int uh = (int)(coop_guest_call(c, MOD_MAIN_BASE + FLAG_GET_BOOL, ISGET_ULTRAHAND, 0, 0, 0) & 1);
-    uint64_t a = coop_life_ability(), o = a ? coop_rd_ptr(a + 0x51f0) : 0, t = a ? coop_rd_ptr(a + 0x51f8) : 0;
-    uint64_t vt = a ? coop_rd_ptr(a) : 0;
-    uint8_t ot = 0xff, tt = 0xff;
-    if (o) coop_rd(o + 0x3c80, &ot, 1);
-    if (t) coop_rd(t + 0x3c80, &tt, 1);
-    rt_log("coop: x6: this save has Autobuild %d, Ultrahand %d; the ability %llx (vtable main+%#llx), build object %llx "
-           "(thumbnail flag %u), menu object %llx (thumbnail flag %u)",
-           ab, uh, (unsigned long long)a, (unsigned long long)(vt ? vt - MOD_MAIN_BASE : 0), (unsigned long long)o, ot,
-           (unsigned long long)t, tt);
 }
 
 // The contraption sync v3 hooks (cpu.h COOP_HOOKED_V3): the gates G1 to G8, the touch hooks of section 5 and the

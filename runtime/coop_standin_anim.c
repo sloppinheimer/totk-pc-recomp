@@ -19,121 +19,8 @@
 #include "layout.h"
 #include "platform/platform.h"
 
-// Test (TOTK_COOP_TEST_ANIMSLOTS=1): the animation player TotK Online replays onto its stand-in (read for behaviour
-// only; 1.2.1 layout, checked here on 1.4.3): [[[actor+0x228]+8]+0x28]+0x40, its slot count at +0x38 and slots of
-// 0xb0 bytes from [+0x40]: animation index u16 +2, weight f32 +0x10, frame f32 +0x28. Logged every 0.5 s for this
-// Link and each co-op stand-in.
 static uint16_t anim_bind_off(uint64_t g, uint64_t b);
 static uint64_t anim_graph_of(uint64_t a);
-static void anim_slots_log(const char *who, uint64_t a) {
-    uint64_t mc = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 8), model = mc ? coop_rd_ptr(mc + 0x28) : 0;
-    uint64_t ap = model ? coop_rd_ptr(model + 0x40) : 0, arr = ap ? coop_rd_ptr(ap + 0x40) : 0;
-    int32_t n = -1;
-    if (ap) coop_rd(ap + 0x38, &n, 4);
-    char line[700];
-    int m = snprintf(line, sizeof line, "coop: test: anim slots of %s: model %llx player %llx (vtable main+%#llx) count %d:", who,
-                     (unsigned long long)model, (unsigned long long)ap, (unsigned long long)(coop_rd_ptr(ap) - MOD_MAIN_BASE), n);
-    {   // TotK Online's player for its play call: [G+0x28], G = [[[actor+0x228]+0x40]+0x18]+0x18 (a guess at its chain)
-        uint64_t c8 = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x40), x = c8 ? coop_rd_ptr(c8 + 0x18) : 0, g = x ? coop_rd_ptr(x + 0x18) : 0;
-        uint64_t p = g ? coop_rd_ptr(g + 0x28) : 0, pv = p ? coop_rd_ptr(p) : 0;
-        rt_log("coop: test: anim chain of %s: comp8 %llx (vt main+%#llx) +0x18 %llx (vt main+%#llx) G %llx (vt main+%#llx) [G+0x28] %llx (vt main+%#llx, +0x30 main+%#llx)%s",
-               who, (unsigned long long)c8, (unsigned long long)(coop_rd_ptr(c8) - MOD_MAIN_BASE), (unsigned long long)x,
-               (unsigned long long)(coop_rd_ptr(x) - MOD_MAIN_BASE), (unsigned long long)g, (unsigned long long)(coop_rd_ptr(g) - MOD_MAIN_BASE),
-               (unsigned long long)p, (unsigned long long)(pv - MOD_MAIN_BASE), (unsigned long long)(coop_rd_ptr(pv + 0x30) - MOD_MAIN_BASE),
-               p == ap ? " (= the model's player)" : "");
-    }
-    {   // the partial binds (TotK Online, 1.2.1): G+0xf8 a count and an array of per-slot entries, each's byte +0x1c
-        // the slot's partial index; the bind record [[[G+0x20] + index*0x48]+0x58]+0x18]+8. Raw words to check them.
-        uint64_t c8 = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x40), x = c8 ? coop_rd_ptr(c8 + 0x18) : 0, g = x ? coop_rd_ptr(x + 0x18) : 0;
-        uint64_t w[8] = {0};
-        if (g) coop_rd(g + 0xf0, w, sizeof w);
-        char l2[600];
-        int m2 = snprintf(l2, sizeof l2, "coop: test: anim binds of %s: G+0xf0..: %llx %llx %llx %llx %llx %llx;", who, (unsigned long long)w[0],
-                          (unsigned long long)w[1], (unsigned long long)w[2], (unsigned long long)w[3], (unsigned long long)w[4], (unsigned long long)w[5]);
-        uint64_t ev[6] = {0};
-        if (w[1]) coop_rd(w[1], ev, sizeof ev);
-        m2 += snprintf(l2 + m2, sizeof l2 - m2, " [G+0xf8]: %llx %llx %llx %llx %llx %llx;", (unsigned long long)ev[0], (unsigned long long)ev[1],
-                       (unsigned long long)ev[2], (unsigned long long)ev[3], (unsigned long long)ev[4], (unsigned long long)ev[5]);
-        for (int z = 0; z < 6; z++) {   // each word that points somewhere: its first 8 pointers' byte +0x1c
-            uint64_t arr2 = ev[z];
-            if (arr2 < 0x100000000ull || arr2 > 0x8000000000ull) continue;
-            m2 += snprintf(l2 + m2, sizeof l2 - m2, " w%d:", z);
-            for (int i = 0; i < 7 && m2 < 560; i++) {
-                uint64_t e = coop_rd_ptr(arr2 + 8ull * i);
-                uint8_t b = 0xff;
-                if (e) coop_rd(e + 0x1c, &b, 1);
-                m2 += snprintf(l2 + m2, sizeof l2 - m2, " %u", b);
-            }
-        }
-        uint64_t g20 = g ? coop_rd_ptr(g + 0x20) : 0;
-        int32_t g18 = 0;
-        if (g) coop_rd(g + 0x18, &g18, 4);
-        m2 += snprintf(l2 + m2, sizeof l2 - m2, "; G+0x18 %d, G+0x20 %llx", g18, (unsigned long long)g20);
-        rt_log("%s", l2);
-        // each slot's bind (+0x08) and change count (+0xa8), against the table's: [[[G+0x20]+i*0x48]+0x58]+0x18 is
-        // TotK Online's record P, whose +8 the play compares with the slot's +0x08
-        char l3[700];
-        int m3 = snprintf(l3, sizeof l3, "coop: test: anim bind table of %s:", who);
-        for (int i = 0; g20 && i < 10 && m3 < 600; i++) {
-            uint64_t e = coop_rd_ptr(g20 + 0x48ull * i + 0x58), p = e ? coop_rd_ptr(e + 0x18) : 0, b = p ? coop_rd_ptr(p + 8) : 0;
-            m3 += snprintf(l3 + m3, sizeof l3 - m3, " [%d] P %llx B %llx", i, (unsigned long long)p, (unsigned long long)b);
-        }
-        m3 += snprintf(l3 + m3, sizeof l3 - m3, "; slots:");
-        for (int i = 0; arr && i < 7 && m3 < 680; i++) {
-            uint64_t b = coop_rd_ptr(arr + 0xb0ull * i + 8);
-            uint32_t cc = 0;
-            coop_rd(arr + 0xb0ull * i + 0xa8, &cc, 4);
-            m3 += snprintf(l3 + m3, sizeof l3 - m3, " %llx/%u", (unsigned long long)b, cc);
-        }
-        rt_log("%s", l3);
-        // where each slot's bind is held: words equal to it in G's first 0x400 bytes, and one level down (0x200 of
-        // each object G points to), as "G+off" or "G+off -> +off2"
-        static int found_said;
-        for (int i = 0; arr && g && i < 3 && found_said < 12; i++) {
-            uint64_t b = coop_rd_ptr(arr + 0xb0ull * i + 8);
-            if (!b) continue;
-            static uint64_t gw[0x400 / 8], ow[0x200 / 8];
-            if (!coop_rd(g, gw, sizeof gw)) break;
-            char l4[400];
-            int m4 = snprintf(l4, sizeof l4, "coop: test: anim bind %llx of slot %d is at:", (unsigned long long)b, i);
-            for (int j = 0; j < 0x400 / 8 && m4 < 360; j++) {
-                if (gw[j] == b) m4 += snprintf(l4 + m4, sizeof l4 - m4, " G+%#x", j * 8);
-                if (gw[j] < 0x100000000ull || gw[j] > 0x8000000000ull || !coop_rd(gw[j], ow, sizeof ow)) continue;
-                for (int q = 0; q < 0x200 / 8 && m4 < 360; q++)
-                    if (ow[q] == b) m4 += snprintf(l4 + m4, sizeof l4 - m4, " G+%#x->+%#x", j * 8, q * 8);
-                    else if (ow[q] > 0x100000000ull && ow[q] < 0x8000000000ull && (q & 1) == 0) {
-                        uint64_t z = 0;   // two levels: an array of records whose +8 is the bind
-                        for (int r = 0; r < 16; r++)
-                            if (coop_rd(ow[q] + 0x48ull * r + 8, &z, 8) && z == b) { m4 += snprintf(l4 + m4, sizeof l4 - m4, " G+%#x->+%#x->[%d*0x48]+8", j * 8, q * 8, r); break; }
-                    }
-            }
-            rt_log("%s", l4), found_said++;
-        }
-    }
-    for (int i = 0; arr && i < n && i < 8 && m < 640; i++) {
-        uint8_t s[0x30];
-        if (!coop_rd(arr + 0xb0ull * i, s, sizeof s)) break;
-        uint16_t idx;
-        float w, f;
-        memcpy(&idx, s + 2, 2), memcpy(&w, s + 0x10, 4), memcpy(&f, s + 0x28, 4);
-        uint64_t b;
-        memcpy(&b, s + 8, 8);
-        m += snprintf(line + m, sizeof line - m, " [%d] %u w%.2f f%.1f m%#x", i, idx, w, f, anim_bind_off(anim_graph_of(a), b));
-    }
-    rt_log("%s", line);
-}
-void coop_anim_slots_test(uint64_t me) {
-    static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_ANIMSLOTS") != NULL;
-    static uint64_t last;
-    uint64_t now = plat_now_ns();
-    if (!on || now - last < 500000000ull) return;
-    last = now;
-    anim_slots_log("this Link", me);
-    uint64_t co[COOP_MAX_PLAYERS];
-    int ids[COOP_MAX_PLAYERS], n = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
-    for (int i = 0; i < n; i++) anim_slots_log("a stand-in", co[i]);
-}
 
 // The animation play TotK Online calls on its stand-in (read for behaviour only): the object Q = [G+0x28], G =
 // [[[actor+0x228]+0x40]+0x18]+0x18 (component 8's animation graph), its vtable +0x30 (1.4.3 main+0x1b569fc):
@@ -219,23 +106,6 @@ static int anim_read(uint64_t ap, AnimSlot *out, int max) {
         memcpy(&out[i].idx, s + 2, 2), memcpy(&out[i].w, s + 0x10, 4), memcpy(&out[i].f, s + 0x28, 4), memcpy(&out[i].bind, s + 8, 8);
     }
     return n;
-}
-// Test (TOTK_COOP_TEST_ANIMCOPY=1): this game's own Link's slots played on each stand-in every tick (no network).
-void coop_anim_copy_test(Cpu *c, uint64_t me) {
-    static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_ANIMCOPY") != NULL;
-    if (!on) return;
-    AnimSlot s[ANIM_SLOTS];
-    int n = anim_read(anim_player_of(me), s, ANIM_SLOTS);
-    uint64_t co[COOP_MAX_PLAYERS];
-    int ids[COOP_MAX_PLAYERS], nc = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
-    for (int k = 0; k < nc; k++) {
-        uint64_t ap = anim_caller_of(co[k]);
-        for (int i = 0; ap && i < n; i++) if (s[i].idx != 0xffff) anim_play(c, ap, i, s[i].idx, s[i].w, s[i].f);
-        static int said;
-        if (ap && !said++) rt_log("coop: test: animcopy: %d slots of this Link played on a stand-in (play main+%#llx)", n,
-                                  (unsigned long long)(coop_rd_ptr(coop_rd_ptr(ap) + 0x30) - MOD_MAIN_BASE));
-    }
 }
 
 // ---- the stand-in's animation (TotK Online's ActorAnimationSync, read for behaviour only).
@@ -409,54 +279,6 @@ void coop_anim_apply(Cpu *c, uint64_t standin, const CoopAnim *in, int64_t age_n
     if (played && !said++) rt_log("coop: stand-in: its owner's animation (%d slots, %d with a body mask) plays on it", played, masked);
 }
 
-// Test (TOTK_COOP_TEST_EQDIFF=1): this Link's EquipmentUser ([actor+0x228]+0x230, its first 0x4800 bytes) each tick;
-// every byte that goes between 0 and 1 is logged with the world time (at most 200 lines): to find the "weapon is
-// attacking" byte TotK Online copies onto its stand-in (1.2.1 eq+0x660; read for behaviour only) by a swing's times.
-void coop_eqdiff_test(uint64_t me) {
-    static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_EQDIFF") != NULL;
-    if (!on) return;
-    enum { N = 0x4800 };
-    static uint8_t last[N], now[N];
-    static int have, said;
-    static uint16_t flips[N];
-    uint64_t eq = coop_rd_ptr(coop_rd_ptr(me + 0x228) + 0x230);
-    if (!eq || !coop_rd(eq, now, N)) return;
-    if (have)
-        for (int i = 0; i < N && said < 200; i++)
-            if (now[i] != last[i] && now[i] <= 1 && last[i] <= 1 && flips[i]++ < 12)
-                rt_log("coop: test: eqdiff +%#x %u -> %u at %.2f s", i, last[i], now[i], frame_step_world_us() / 1e6), said++;
-    memcpy(last, now, N), have = 1;
-}
-
-// Test (TOTK_COOP_TEST_BINDS=1): the masks at the graph offsets a Link's slots use (anim_bind_off), for this Link and
-// each stand-in side by side, every 2 s: the layer object's mask (+0xc0) and that mask's first 0x40 bytes, to see
-// whether one offset holds the same mask in both (the stand-in has no Player component).
-void coop_binds_test(uint64_t me) {
-    static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_BINDS") != NULL;
-    static uint64_t last;
-    uint64_t now = plat_now_ns();
-    if (!on || now - last < 2000000000ull) return;
-    last = now;
-    static const uint16_t offs[] = {0x1a8, 0x1f0, 0x238, 0x280, 0x2c8, 0x310};
-    uint64_t co[COOP_MAX_PLAYERS];
-    int ids[COOP_MAX_PLAYERS], nc = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
-    for (int w = 0; w <= nc && w < 3; w++) {
-        uint64_t a = w ? co[w - 1] : me, g = anim_graph_of(a);
-        for (unsigned k = 0; g && k < sizeof offs / sizeof offs[0]; k++) {
-            uint64_t layer = coop_rd_ptr(g + offs[k]), b = layer ? coop_rd_ptr(layer + 0xc0) : 0;
-            uint32_t v[16] = {0};
-            if (b) coop_rd(b, v, sizeof v);
-            char ln[400];
-            int m = snprintf(ln, sizeof ln, "coop: test: binds %s G+%#x: layer %llx (vt main+%#llx) mask %llx:", w ? "stand-in" : "this Link", offs[k],
-                             (unsigned long long)layer, (unsigned long long)(layer ? coop_rd_ptr(layer) - MOD_MAIN_BASE : 0), (unsigned long long)b);
-            for (int i = 0; i < 16; i++) m += snprintf(ln + m, sizeof ln - m, " %x", v[i]);
-            rt_log("%s", ln);
-        }
-    }
-}
-
 // The masks' state (CoopMask). The stand-in's graph has the same layer objects at the same offsets as a Link's, each
 // with its mask at +0xc0, but the flags the graph sets in them differ (a Link's whole-body mask 83 83 80 83 80 83 80,
 // the stand-in's 83 83 80 80 83, TOTK_COOP_TEST_BINDS, 2026-11-07): the stand-in's own graph does not set them as the
@@ -531,61 +353,6 @@ void coop_anim_masks_apply(uint64_t standin, const CoopMask *in) {
 // ("WeaponBlur" in the event list at main+0x3713400), the blade's path over that event's frames into the table at
 // [comp+0xc0] (+8 entries of 0x28 bytes: +4 first frame, +8 last frame, +0x20 the clip's name; +0x28 count).
 #define SWORDBLUR_VT 0x367e028ull
-static uint64_t swordblur_of(uint64_t actor) {
-    uint64_t t = actor ? coop_rd_ptr(actor + 0x228) : 0, p = t ? coop_rd_ptr(t + 0x4a8) : 0;   // (where it is in both, 1.4.3)
-    if (p && coop_rd_ptr(p) == MOD_MAIN_BASE + SWORDBLUR_VT) return p;
-    for (int i = 0; t && i < 0x900 / 8; i++) {
-        uint64_t p = coop_rd_ptr(t + 8ull * i);
-        if (p && coop_rd_ptr(p) == MOD_MAIN_BASE + SWORDBLUR_VT) return p;
-    }
-    return 0;
-}
-static int swordblur_slot(uint64_t actor) {
-    uint64_t t = actor ? coop_rd_ptr(actor + 0x228) : 0;
-    for (int i = 0; t && i < 0x900 / 8; i++) {
-        uint64_t p = coop_rd_ptr(t + 8ull * i);
-        if (p && coop_rd_ptr(p) == MOD_MAIN_BASE + SWORDBLUR_VT) return i * 8;
-    }
-    return -1;
-}
-// Test (TOTK_COOP_TEST_BLURWATCH=1): this Link's and each stand-in's SwordBlur component: where it is, its baked
-// table once, and every change of its words +0x28..+0xe8 with the world time (at most 400 lines).
-void coop_blur_test(uint64_t me) {
-    static int on = -1, said, told[1 + COOP_MAX_PLAYERS];
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_BLURWATCH") != NULL;
-    if (!on) return;
-    static uint32_t last[1 + COOP_MAX_PLAYERS][0xe8 / 4];
-    uint64_t co[COOP_MAX_PLAYERS];
-    int ids[COOP_MAX_PLAYERS], nc = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
-    for (int w = 0; w <= nc && w <= COOP_MAX_PLAYERS; w++) {
-        uint64_t a = w ? co[w - 1] : me, b = swordblur_of(a);
-        if (!b) continue;
-        uint32_t now[0xe8 / 4];
-        if (!coop_rd(b, now, sizeof now)) continue;
-        if (!told[w]) {
-            told[w] = 1;
-            uint64_t tab = coop_rd_ptr(b + 0xc0), ents = 0;
-            uint32_t n = 0;
-            if (tab) coop_rd(tab + 8, &ents, 8), coop_rd(tab + 0x28, &n, 4);
-            rt_log("coop: test: blur %s: component [+0x228]+%#x at %llx, baked table %llx with %u entries", w ? "stand-in" : "this Link",
-                   swordblur_slot(a), (unsigned long long)b, (unsigned long long)tab, n);
-            for (uint32_t k = 0; ents && k < n && k < 400; k++) {
-                int32_t e[3] = {0};
-                coop_rd(ents + 0x28ull * k, e, 12);
-                uint64_t nm = coop_rd_ptr(ents + 0x28ull * k + 0x20);
-                char s[64] = {0};
-                if (nm) coop_rd(nm, s, sizeof s - 1);
-                if (k < 40 || w == 0) rt_log("coop: test: blur   %u: %s frames %d..%d (%d samples)", k, s, e[1], e[2], e[0]);
-            }
-            memcpy(last[w], now, sizeof now);
-            continue;
-        }
-        for (int i = 0x28 / 4; i < 0xe8 / 4 && said < 400; i++)
-            if (now[i] != last[w][i])
-                rt_log("coop: test: blur %s +%#x %08x -> %08x at %.3f s", w ? "stand-in" : "this Link", i * 4, last[w][i], now[i], frame_step_world_us() / 1e6), said++;
-        memcpy(last[w], now, sizeof now);
-    }
-}
 
 // ---- The stand-in's sword trail. Its SwordBlur update (main+0x275954, x0 the component) clears +0x2a, then looks
 // through the actor's animation graph G (anim_graph_of) for an event of kind 17 that is on: G +0x18 the number of
@@ -716,23 +483,6 @@ int coop_blur_hook(Cpu *c, uint64_t addr) {
         b = blur_live[k].ev, until = blur_live[k].until_ns;
         s1 = atomic_load(&blur_live[k].seq);
     } while ((s0 != s1 || (s0 & 1)) && ++tries < 100);
-    {   // Test (TOTK_COOP_TEST_BLURWATCH): the stand-in's updates, every 2 s: how many, how many with its owner's event
-        static int on = -1;
-        static _Atomic uint32_t calls, with;
-        static _Atomic uint64_t t0;
-        if (on < 0) on = cfg_get("TOTK_COOP_TEST_BLURWATCH") != NULL;
-        if (on) {
-            uint64_t now = plat_now_ns(), was = atomic_load(&t0);
-            atomic_fetch_add(&calls, 1);
-            if (s0 == s1 && !(s0 & 1) && until && now <= until) atomic_fetch_add(&with, 1);
-            static _Atomic int said_u;
-            if (until && atomic_fetch_add(&said_u, 1) < 20)
-                rt_log("coop: test: blur: update with a held event %.0f ms %s its end (seq %u %u)", fabs((double)(int64_t)(until - now)) / 1e6, now <= until ? "before" : "after", s0, s1);
-            if (!was) atomic_store(&t0, now);
-            else if (now - was > 2000000000ull && atomic_compare_exchange_strong(&t0, &was, now))
-                rt_log("coop: test: blur: %u stand-in SwordBlur updates in 2 s, %u with its owner's event", atomic_exchange(&calls, 0), atomic_exchange(&with, 0));
-        }
-    }
     if (s0 != s1 || (s0 & 1) || !until || plat_now_ns() > until) return 0;
     uint64_t c8 = coop_rd_ptr(coop_rd_ptr(actor + 0x228) + 0x40), x = c8 ? coop_rd_ptr(c8 + 0x18) : 0, g = x ? coop_rd_ptr(x + 0x18) : 0;
     BlurFake *f = &blur_fake[k][b.serial & 1];
@@ -770,77 +520,3 @@ int coop_blur_hook(Cpu *c, uint64_t addr) {
     return 1;
 }
 
-// Test (TOTK_COOP_TEST_EQCMP=<s>[,<s2>...]): at those world seconds, this Link's EquipmentUser ([+0x228]+0x230) and each
-// stand-in's side by side: the weapon slot's record (+0x20, 0x18 bytes), its attach record (+0x570, 0x100 bytes) and
-// the in-hand bytes (+0x4620, 8), the words that differ (to find why a stand-in's sword "in hand" stays on its back).
-void coop_eqcmp_test(uint64_t me) {
-    static double at[8];
-    static int n = -1, next;
-    if (n < 0) {
-        n = 0;
-        const char *e = cfg_get("TOTK_COOP_TEST_EQCMP");
-        for (const char *p = e; p && *p && n < 8; ) { at[n++] = atof(p); p = strchr(p, ','); if (p) p++; }
-    }
-    if (next >= n || frame_step_world_us() / 1e6 < at[next]) return;
-    next++;
-    uint64_t co[COOP_MAX_PLAYERS];
-    int ids[COOP_MAX_PLAYERS], nc = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
-    uint64_t e0 = coop_rd_ptr(coop_rd_ptr(me + 0x228) + 0x230);
-    static const struct { unsigned off, len; } part[] = {{0x20, 0x18}, {0x570, 0x100}, {0x4620, 8}, {0x4600, 0x20}};
-    for (int w = 0; w < nc; w++) {
-        uint64_t e1 = coop_rd_ptr(coop_rd_ptr(co[w] + 0x228) + 0x230);
-        if (!e0 || !e1) continue;
-        for (unsigned p = 0; p < sizeof part / sizeof part[0]; p++) {
-            uint32_t a[64], b[64];
-            unsigned nw = part[p].len / 4;
-            if (!coop_rd(e0 + part[p].off, a, part[p].len) || !coop_rd(e1 + part[p].off, b, part[p].len)) continue;
-            char line[1500];
-            int m = snprintf(line, sizeof line, "coop: test: eqcmp %.1f s +%#x (this Link / stand-in):", frame_step_world_us() / 1e6, part[p].off);
-            for (unsigned i = 0; i < nw && m < 1400; i++)
-                if (a[i] != b[i]) m += snprintf(line + m, sizeof line - m, " +%#x %x/%x", part[p].off + i * 4, a[i], b[i]);
-            rt_log("%s", line);
-        }
-        // The two weapons (row 0's reference +0x40): each component of their +0x228 tables, 0x400 bytes, the words
-        // that differ where neither is an address
-        uint64_t w0 = coop_rd_ptr(coop_rd_ptr(e0 + 0x28) + 0x40), w1 = coop_rd_ptr(coop_rd_ptr(e1 + 0x28) + 0x40);
-        uint64_t t0 = w0 ? coop_rd_ptr(w0 + 0x228) : 0, t1 = w1 ? coop_rd_ptr(w1 + 0x228) : 0;
-        for (int k = -1; t0 && t1 && k < 128; k++) {
-            uint64_t c0 = k < 0 ? w0 : coop_rd_ptr(t0 + 8ull * k), c1 = k < 0 ? w1 : coop_rd_ptr(t1 + 8ull * k);
-            static uint32_t a[0x400 / 4], b[0x400 / 4];
-            if (!c0 || !c1 || !coop_rd(c0, a, sizeof a) || !coop_rd(c1, b, sizeof b)) continue;
-            char line[1500];
-            int m = snprintf(line, sizeof line, "coop: test: eqcmp weapon %s+%#x (vt main+%#llx):", k < 0 ? "actor" : "comp ", k < 0 ? 0 : k * 8,
-                             (unsigned long long)(coop_rd_ptr(c0) - MOD_MAIN_BASE)), any = 0;
-            for (unsigned i = 0; i < 0x400 / 4 && m < 1400; i++) {
-                uint32_t hi0 = i & 1 ? a[i] : a[i + 1 < 0x100 ? i + 1 : i], hi1 = i & 1 ? b[i] : b[i + 1 < 0x100 ? i + 1 : i];
-                int ptr = (hi0 >= 1 && hi0 < 0x80) || (hi1 >= 1 && hi1 < 0x80);   // (the high half of an address)
-                if (a[i] != b[i] && !ptr) m += snprintf(line + m, sizeof line - m, " +%#x %x/%x", i * 4, a[i], b[i]), any = 1;
-            }
-            if (any) rt_log("%s", line);
-        }
-    }
-}
-// Test (TOTK_COOP_TEST_WEAPLOG=1): twice a second, this Link's and each stand-in's weapon (EquipmentUser row 0's
-// reference +0x40): its actor's place, its model's world matrix place (model +0x1f8) and its holder's place.
-void coop_weaplog_test(uint64_t me) {
-    static int on = -1;
-    static uint64_t last;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_WEAPLOG") != NULL;
-    uint64_t now = plat_now_ns();
-    if (!on || now - last < 500000000ull) return;
-    last = now;
-    uint64_t co[COOP_MAX_PLAYERS];
-    int ids[COOP_MAX_PLAYERS], nc = coop_player_actors(co, ids, COOP_MAX_PLAYERS);
-    for (int w = 0; w <= nc; w++) {
-        uint64_t a = w ? co[w - 1] : me, eq = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x230);
-        uint64_t wp = eq ? coop_rd_ptr(coop_rd_ptr(eq + 0x28) + 0x40) : 0;
-        uint64_t model = wp ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(wp + 0x228) + 0x8) + 0x28) : 0;
-        float ap[3] = {0}, hp[3] = {0}, m[12] = {0};
-        if (!wp) continue;
-        coop_rd(wp + COOP_ACTOR_POS, ap, 12), coop_rd(a + COOP_ACTOR_POS, hp, 12);
-        if (model) coop_rd(model + 0x1f8, m, sizeof m);
-        uint8_t dirty = model ? LD8(model + 0x240) : 0;
-        rt_log("coop: test: weap %s %.2f s: actor %.2f %.2f %.2f, model %.2f %.2f %.2f (flags %02x), holder %.2f %.2f %.2f",
-               w ? "stand-in" : "this Link", frame_step_world_us() / 1e6, ap[0], ap[1], ap[2], m[3], m[7], m[11], dirty, hp[0], hp[1], hp[2]);
-    }
-}

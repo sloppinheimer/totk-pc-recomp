@@ -457,81 +457,6 @@ static void heartbeat(void) {   // (lock held)
         if (id != coop_net_id() && coop_net_live(id)) raw_send(id, &h, &hb, sizeof hb);
 }
 
-// ---- a load test (TOTK_COOP_TEST_CTRLOAD=<from s>[,<builds>]; plan P0 gate: "0 CTR drops with 3 builds")
-// Each game, from that world second for 60 s: per build a 200-byte unreliable state 30 times a second, a 7-chunk bulk
-// version (1100 bytes each, reliable) every 10 s, and a control message twice a second. The receiver checks that the
-// reliable ones come once each, in order, and logs a summary every 5 s.
-
-static void load_test(void) {
-    static double from = -1;
-    static int builds;
-    static uint32_t sent_ctl, sent_bulk, got_ctl, got_bulk, gaps, dups, states;
-    static uint32_t want_ctl[COOP_MAX_PLAYERS + 1], want_bulk[COOP_MAX_PLAYERS + 1];
-    static uint64_t last_state_ns, last_ctl_ns, last_bulk_ns, last_log_ns;
-    if (from == -1) {
-        const char *e = cfg_get("TOTK_COOP_TEST_CTRLOAD");
-        from = -2, builds = 3;
-        if (e) from = atof(e), builds = strchr(e, ',') ? atoi(strchr(e, ',') + 1) : 3;
-        if (builds < 1 || builds > 16) builds = 3;
-    }
-    if (from < 0) return;
-    double t = frame_step_world_us() / 1e6;
-    uint64_t now = plat_now_ns();
-    int on = t >= from && t < from + 60;
-    if (on && now - last_state_ns >= 33000000ull) {
-        last_state_ns = now;
-        for (int b = 0; b < builds; b++) {
-            uint8_t st[200] = {0};
-            uint64_t key = 0x5354415445000000ull | (uint64_t)b;   // ("STATE", build b)
-            memcpy(st, &key, 8), memcpy(st + 8, &now, 8);
-            coop_ctr_send(0, COOP_CTR_STATE, 0, st, sizeof st);
-        }
-        states++;
-    }
-    if (on && now - last_ctl_ns >= 500000000ull) {
-        last_ctl_ns = now;
-        uint32_t m[2] = {0x43544c00, sent_ctl};   // ("CTL", number)
-        if (coop_ctr_send(0, 200, COOP_CTR_RELIABLE, m, sizeof m)) sent_ctl++;
-    }
-    if (on && now - last_bulk_ns >= 10000000000ull) {
-        last_bulk_ns = now;
-        for (int b = 0; b < builds; b++)
-            for (int c = 0; c < 7; c++) {
-                uint8_t chunk[1100] = {0};
-                uint32_t m[2] = {0x424c4b00, sent_bulk};   // ("BLK", number)
-                memcpy(chunk, m, sizeof m);
-                if (coop_ctr_send(0, 201, COOP_CTR_RELIABLE | COOP_CTR_BULK, chunk, sizeof chunk)) sent_bulk++;
-            }
-    }
-    CoopCtrMsg msg;
-    while (coop_ctr_recv_type(200, &msg) || coop_ctr_recv_type(201, &msg)) {   // (only its own: other messages stay)
-        uint32_t m[2];
-        if (msg.len < 8 || msg.from_id < 1 || msg.from_id > COOP_MAX_PLAYERS) continue;
-        memcpy(m, msg.d, sizeof m);
-        uint32_t *want = msg.type == 200 ? &want_ctl[msg.from_id] : msg.type == 201 ? &want_bulk[msg.from_id] : NULL;
-        if (!want) continue;
-        if (m[1] == *want) (*want)++;
-        else if (m[1] > *want) gaps += m[1] - *want, *want = m[1] + 1;
-        else dups++;
-        if (msg.type == 200) got_ctl++; else got_bulk++;
-    }
-    if (t >= from && t < from + 75 && now - last_log_ns >= 5000000000ull) {
-        last_log_ns = now;
-        uint32_t od, idr;
-        coop_net_ctr_drops(&od, &idr);
-        int seen = 0;
-        for (int id = 1; id <= COOP_MAX_PLAYERS; id++) {
-            uint64_t age = 0;
-            uint8_t b[256];
-            for (int k = 0; k < builds; k++)
-                if (coop_ctr_latest(id, COOP_CTR_STATE, 0x5354415445000000ull | (uint64_t)k, b, sizeof b, &age) && age < 200000000ull) seen++;
-        }
-        rt_log("coop: ctr test: sent %u control, %u bulk, %u state rounds; got %u control, %u bulk; %u gaps, %u duplicates; "
-               "%d fresh state slots; net drops out %u in %u; resent %u, refused %u, bad %u",
-               sent_ctl, sent_bulk, states, got_ctl, got_bulk, gaps, dups, seen, od, idr, stat_resent, stat_refused, stat_bad);
-    }
-}
-
 // ---- the tick
 
 static void session_check(void) {   // (lock held) a new session (or none): a new incarnation, everything reset
@@ -584,7 +509,6 @@ void coop_ctr_tick(void) {
         heartbeat();
     }
     plat_mutex_unlock(&lock);
-    if (my_inc) load_test();
     static uint64_t last_log;
     uint64_t now = plat_now_ns();
     if (my_inc && now - last_log > 5000000000ull) {   // drops and resends, when there were any

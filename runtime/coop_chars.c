@@ -478,8 +478,6 @@ static char live_dir[2300];
 
 void coop_chars_tick(void) {
     coop_chars_init();
-    static unsigned ticks;
-    ticks++;
     take();
     job_poll();
     if (live_pending && job.state != COOP_JOB_RUNNING) {
@@ -487,27 +485,6 @@ void coop_chars_tick(void) {
         if (job.state == COOP_JOB_DONE) live_load(live_dir);
     }
     if (asking && asked_for[0] && coop_char_find(asked_for)) asking = 0;   // that character came in another way
-    {   // TOTK_COOP_TEST_CHARLIVE=<character mod folder> (a test): 10 s into the world, that mod's set made in a free
-        // slot (charmod.py slot) and added while the game runs, as after a fetch; TOTK_COOP_TEST_CHARLIVE_AGAIN=1: again
-        // into the next slot 40 s in (a second change of the same character)
-        static int runs;
-        const char *again = cfg_get("TOTK_COOP_TEST_CHARLIVE_AGAIN");
-        int due = runs == 0 ? ticks >= 600 : runs == 1 && again && *again == '1' && ticks >= 2400;
-        const char *t = due ? cfg_get("TOTK_COOP_TEST_CHARLIVE") : NULL;
-        char tag[8];
-        if (t && *t && job.state != COOP_JOB_RUNNING) {
-            runs++;
-            if (slot_next(tag, sizeof tag, live_dir, sizeof live_dir)) {
-                const char *args[] = {"slot", t, "--tag", tag, "--out", live_dir, NULL};
-                if (job_start("slot", args)) live_pending = 1;
-            } else rt_log("coop: characters: no stand-in slot left this run (each is used once); a restart frees them");
-        }
-    }
-    {   // TOTK_COOP_TEST_CHARLOOKUP=<link or id> (a test): that lookup once, as the Co-op tab's button does
-        static int done;
-        const char *t = done ? NULL : cfg_get("TOTK_COOP_TEST_CHARLOOKUP");
-        if (t && *t && job.state != COOP_JOB_RUNNING && !asking) done = 1, lookup(t);
-    }
     for (int id = 1; id <= COOP_MAX_PLAYERS && !asking && job.state != COOP_JOB_RUNNING; id++) {
         const char *key = party[id].key;
         if (strncmp(key, "gb:", 3) || coop_char_find(key) || is_declined(key) || !party[id].mod_id) continue;
@@ -530,9 +507,6 @@ void coop_chars_tick(void) {
             ask.ready = 1;
             rt_log("coop: characters: asking whether to download %s (%s, %llu bytes, %s)", ask.name, ask.file,
                    (unsigned long long)ask.size, ask.page);
-            // TOTK_COOP_TEST_CHARYES=1 (a test): yes, as if the player pressed Download
-            const char *y = cfg_get("TOTK_COOP_TEST_CHARYES");
-            if (y && *y == '1') rt_log("coop: characters: test: answered yes"), answer(1);
         }
     }
     give();

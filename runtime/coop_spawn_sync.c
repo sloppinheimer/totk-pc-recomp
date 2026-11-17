@@ -71,20 +71,6 @@ void coop_actor_created(uint64_t a) {   // coop_spawn.c, from the getActor hook 
     if (!a || !coop_net_on()) return;
     char nm[48];
     coop_actor_name(a, nm, sizeof nm);
-    {   // Test (TOTK_COOP_TEST_BORN=1): the first 60 actors handed over, by name and whether the spawn sync keeps it
-        static int on = -1;
-        static _Atomic int said;
-        if (on < 0) on = cfg_get("TOTK_COOP_TEST_BORN") != NULL;
-        static char seen[200][48];
-        static _Atomic int nseen;
-        int dup = 0;
-        for (int i = 0; on && i < atomic_load(&nseen) && i < 200; i++) dup |= !strcmp(seen[i], nm);
-        if (on && !dup && atomic_fetch_add(&said, 1) < 200) {
-            int i = atomic_fetch_add(&nseen, 1);
-            if (i < 200) snprintf(seen[i], sizeof seen[i], "%s", nm);
-            rt_log("coop: test: born %llx '%s' kind %d at %.1f s", (unsigned long long)a, nm, spawn_kind(nm), frame_step_world_us() / 1e6);
-        }
-    }
     if (!spawn_kind(nm)) return;   // (an enemy too, whichever enemy sync is on: its key here is its identity there)
     unsigned i = atomic_fetch_add(&born_n, 1) % BORN_N;
     atomic_store_explicit(&born[i].actor, 0, memory_order_release);

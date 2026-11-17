@@ -19,13 +19,6 @@
 
 int coop_enemy_new(void);   // coop_enemy.c: the enemy sync is on
 
-// An actor's main physics body ([[comps+0x50]+0x20]+0x150): a contact names the body it struck, and one sent to
-// another game says where that body sat from this one.
-static uint64_t enemy_body(uint64_t a) {
-    uint64_t phys = coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x50), ctl = phys ? coop_rd_ptr(phys + 0x20) : 0;
-    return ctl ? coop_rd_ptr(ctl + 0x150) : 0;
-}
-
 // An actor's reference object (+0x40 the actor), from a pointer in the actor's first 0x1000 bytes: what a hit record
 // names its attacker by. 0 none found.
 uint64_t coop_actor_ref(uint64_t a) {
@@ -44,62 +37,6 @@ uint64_t coop_actor_ref(uint64_t a) {
 static uint64_t contact_list(uint64_t dc) {
     uint64_t o = coop_rd_ptr(dc + 0x1910);
     return o ? coop_rd_ptr(o + 0x50) : 0;
-}
-// Test (TOTK_COOP_TEST_CONTACTS=1): every damage component's hit update with contacts waiting: its actor (dc+0x198),
-// and each contact's kind (+0x90), power (+0xa0), body (+0x58) and attacker handles' actors; 40 lines.
-static void contacts_test(uint64_t dc) {
-    static int on = -1;
-    static _Atomic int said;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_CONTACTS") != NULL;
-    if (!on || atomic_load(&said) > 40) return;
-    uint64_t l = contact_list(dc), base;
-    int32_t cnt = 0;
-    if (!l || !coop_rd(l + 0x18, &cnt, 4) || cnt <= 0 || !(base = coop_rd_ptr(l + 0x10))) return;
-    atomic_fetch_add(&said, 1);
-    char an[64] = "", line[600];
-    coop_actor_name(coop_rd_ptr(dc + 0x198), an, sizeof an);
-    int m = snprintf(line, sizeof line, "coop: test: contacts on %s (%d; its main body %llx):", an, cnt,
-                     (unsigned long long)enemy_body(coop_rd_ptr(dc + 0x198)));
-    for (int k = 0; k < cnt && k < 3; k++) {
-        uint8_t e[0xb0];
-        if (!coop_rd(base + (uint64_t)k * CONTACT_SZ, e, sizeof e)) break;
-        uint64_t body, r1, r2;
-        memcpy(&body, e + 0x58, 8), memcpy(&r1, e + 0x68, 8), memcpy(&r2, e + 0x80, 8);
-        char n1[48] = "", n2[48] = "";
-        if (r1) coop_actor_name(coop_rd_ptr(r1 + 0x40), n1, sizeof n1);
-        if (r2) coop_actor_name(coop_rd_ptr(r2 + 0x40), n2, sizeof n2);
-        uint32_t pw;
-        memcpy(&pw, e + 0xa0, 4);
-        // whose body: the first actor its first 0x200 bytes point to (directly or one level down), and where
-        char bn[48] = "?";
-        int boff = -1, blv = 0;
-        for (int w = 0; w < 0x200 / 8 && boff < 0; w++) {
-            uint64_t q = coop_rd_ptr(body + 8 * w);
-            for (int lv = 0; lv < 2 && q && boff < 0; lv++) {
-                char t[48] = "";
-                coop_actor_name(q, t, sizeof t);
-                if (t[0] && (!strncmp(t, "Player", 6) || !strncmp(t, "Weapon_", 7) || !strncmp(t, "Armor_", 6)))
-                    memcpy(bn, t, sizeof bn), boff = w * 8, blv = lv;
-                q = coop_rd_ptr(q);
-            }
-        }
-        m += snprintf(line + m, sizeof line - m, " [kind %u power %u body %llx (%s at +%#x%s) by %s / %s]", e[0x90], pw,
-                      (unsigned long long)body, bn, boff, blv ? " ->+0" : "", n1, n2);
-    }
-    rt_log("%s", line);
-    {   // and the first contact's every word, against the main body: a blocked one beside an unblocked one
-        static uint8_t e[CONTACT_SZ];
-        if (coop_rd(base, e, sizeof e)) {
-            char w2[1600];
-            int m2 = snprintf(w2, sizeof w2, "coop: test: contact words on %s:", an);
-            for (int w = 0; w < CONTACT_SZ / 4 && m2 < 1560; w++) {
-                uint32_t v;
-                memcpy(&v, e + 4 * w, 4);
-                if (v && v != 0xbf800000u) m2 += snprintf(w2 + m2, sizeof w2 - m2, " %x:%x", 4 * w, v);
-            }
-            rt_log("%s", w2);
-        }
-    }
 }
 // Whose Link an actor is: 1 this game's, 2 a co-op Link (another player's stand-in here), 0 neither.
 static int ct_is_link(uint64_t a) {
@@ -186,66 +123,6 @@ static void contacts_filter(uint64_t dc) {
         }
     }
 }
-// ---- a hit's contact replayed on a Zonai device (research, TOTK_COOP_TEST_DEVHIT). dev_contact keeps the first contact
-// a hit leaves on a device's damage component (its waiting list, as for an enemy) and, once coop_dev_hit names another
-// device, copies it onto that one's list at its next hit update, on the body the real hit landed on. The device runs the hit reaction (main+0x1b914e8) but does not turn on: see
-// docs/coop/re-notes.md "Device state on the copies".
-static _Alignas(16) uint8_t dev_tpl[CONTACT_SZ];
-static _Atomic int dev_tpl_ok;
-static uint8_t dev_tpl_b1cf;   // the hit device's damage component byte +0x1cf (0x41 on a hit fan, 0 on the others)
-static int64_t dev_tpl_brel;   // the hit body from its device's main body: a fan's hit lands on a body of its own
-static _Atomic uint64_t dev_hit_want;   // the device to start, 0 none
-static void dev_contact(uint64_t dc) {
-    uint64_t a = coop_rd_ptr(dc + 0x198), l, base;
-    int32_t cnt = 0, cap = 0;
-    uint64_t want = atomic_load_explicit(&dev_hit_want, memory_order_relaxed);
-    if (!a || (!want && atomic_load_explicit(&dev_tpl_ok, memory_order_relaxed))) return;
-    char nm[48];
-    if (strncmp(coop_actor_name(a, nm, sizeof nm), "SpObj_", 6)) return;
-    if (!(l = contact_list(dc)) || !coop_rd(l + 0x18, &cnt, 4) || !coop_rd(l + 8, &cap, 4) || !(base = coop_rd_ptr(l + 0x10)) || cnt < 0) return;
-    if (cnt > 0 && !atomic_load(&dev_tpl_ok)) {
-        memcpy(dev_tpl, (const void *)(uintptr_t)base, CONTACT_SZ);
-        uint64_t hb;
-        memcpy(&hb, dev_tpl + 0x58, 8);
-        dev_tpl_brel = (int64_t)(hb - enemy_body(a));
-        coop_rd(dc + 0x1cf, &dev_tpl_b1cf, 1);
-        atomic_store(&dev_tpl_ok, 1);
-        uint64_t r1, r2;
-        memcpy(&r1, dev_tpl + 0x68, 8), memcpy(&r2, dev_tpl + 0x80, 8);
-        char n1[48] = "", n2[48] = "";
-        if (r1) coop_actor_name(coop_rd_ptr(r1 + 0x40), n1, sizeof n1);
-        if (r2) coop_actor_name(coop_rd_ptr(r2 + 0x40), n2, sizeof n2);
-        rt_log("coop: devhit: a contact on %s kept (%d waiting; by %s with %s, kind %u)", nm, cnt, n2, n1, dev_tpl[0x90]);
-    }
-    if (want != a || !atomic_load(&dev_tpl_ok) || cnt >= cap) return;
-    if (!atomic_compare_exchange_strong(&dev_hit_want, &want, 0)) return;
-    uint8_t *e = (uint8_t *)(uintptr_t)(base + (uint64_t)cnt * CONTACT_SZ);
-    memcpy(e, dev_tpl, CONTACT_SZ);
-    uint64_t body = enemy_body(a) + (uint64_t)dev_tpl_brel;   // (the main body itself took the contact and did nothing)
-    memcpy(e + 0x58, &body, 8);
-    static uint32_t bump;   // a new contact id (+0x38) each time: one already taken may be passed over
-    uint32_t id;
-    memcpy(&id, e + 0x38, 4), id += ++bump * 0x1000, memcpy(e + 0x38, &id, 4);
-    cnt++;
-    memcpy((void *)(uintptr_t)(l + 0x18), &cnt, 4);
-    uint8_t was = 0;
-    const char *b1 = cfg_get("TOTK_COOP_TEST_DEVHIT1CF");   // =<hex>: that byte written there too (the hit fan had 0x41)
-    if (b1 && coop_rd(dc + 0x1cf, &was, 1)) {
-        uint8_t v = (uint8_t)strtoul(b1, NULL, 16);
-        ST8(dc + 0x1cf, v);
-        rt_log("coop: devhit: its +0x1cf %02x -> %02x (the kept hit's device had %02x)", was, v, dev_tpl_b1cf);
-    }
-    rt_log("coop: devhit: a contact put on %s %llx (body %llx)", nm, (unsigned long long)a, (unsigned long long)body);
-}
-int coop_dev_hit(uint64_t device) {   // 1: a contact is kept; 0: none yet (put on once the first one is kept)
-    atomic_store(&dev_hit_want, device);
-    return atomic_load(&dev_tpl_ok);
-}
 void coop_hit_update(Cpu *c) {
-    dev_contact(c->x[0]);
-    contacts_test(c->x[0]);
     contacts_filter(c->x[0]);
 }
-// Test (TOTK_COOP_TEST_HITWATCH=<from>-<to>[@<off>]): from that many seconds into the world to the other, a write
-// watch (coop_watch_win.c) on this Link's damage component at +<off> (default 0x1a4, the hit record's state word), 8
-// bytes: which game functions write it when an enemy's hit lands (logged when it is taken off).
