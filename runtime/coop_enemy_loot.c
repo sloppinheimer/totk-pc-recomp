@@ -66,6 +66,7 @@ int en_loot_hook(Cpu *c, uint64_t off) {
         deep = 0, tl_in_drop = 0;
         return 1;
     }
+    case 0x1b73be4:     // (the same arguments: a throw)
     case 0x1b738e4: {   // (x0 the equipment user, x1 the request, w2 the slot): an enemy this game runs lets go of what it holds
         uint64_t eu = c->x[0], ref = eu > 0x10000 && (uint32_t)c->x[2] < EN_EQ_N ? coop_rd_ptr(eu + 0x20 + (c->x[2] & 0xff) * 0x18 + 8) : 0, w = ref ? coop_rd_ptr(ref + 0x40) : 0;
         uint64_t holder = w ? coop_enemy_holder(w) : 0;
@@ -76,8 +77,12 @@ int en_loot_hook(Cpu *c, uint64_t off) {
             if (atomic_load(&let_go[i].actor) && f && frame - f < 300) continue;
             atomic_store(&let_go[i].actor, w), atomic_store(&let_go[i].frame, frame ? frame : 1);
             char wn[48], hn[48];
-            if (atomic_fetch_add(&n_weapons, 1) < 40) rt_log("coop: en: loot: %s lets go of its %s (slot %u): a loose object of this game's from here", coop_actor_name(holder, hn, sizeof hn), coop_actor_name(w, wn, sizeof wn), (uint32_t)c->x[2]);
+            if (atomic_fetch_add(&n_weapons, 1) < 40) rt_log("coop: en: loot: %s %s its %s (slot %u): a loose object of this game's from here", coop_actor_name(holder, hn, sizeof hn), off == 0x1b73be4 ? "throws" : "lets go of", coop_actor_name(w, wn, sizeof wn), (uint32_t)c->x[2]);
             break;
+        }
+        {   // the copies let go at once, not after the three looks of the held-things rule (0.8 s)
+            void en_equip_event(uint64_t holder, int slot);   // coop_enemy_copy.c
+            en_equip_event(holder, (int)(c->x[2] & 0xff));
         }
         return 0;
     }

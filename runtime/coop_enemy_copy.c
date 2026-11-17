@@ -76,8 +76,25 @@ void en_copy_burst(int id) {
         en_send(id, ENM_PLAY, &m, sizeof m);
     }
 }
+// An enemy this game runs let go of, or threw, what its slot held: told at once, so its copies let go at once.
+typedef struct { Enid id; uint32_t slot; } MEquip;
+void en_equip_event(uint64_t holder, int slot) {
+    EnCell *m = en_cell_of(holder);
+    int16_t ei = m ? atomic_load(&m->en) : -1;
+    if (ei < 0 || slot < 0 || slot >= EN_EQ_N) return;
+    MEquip q = {en_tab[ei].id, (uint32_t)slot};
+    en_send_all(ENM_EQUIP, &q, sizeof q);
+}
 int en_copy_msg(const CoopCtrMsg *m, int from) {
     (void)from;
+    if (m->type == ENM_EQUIP) {
+        const MEquip *q = (const MEquip *)m->d;
+        if (m->len != (int)sizeof *q || q->slot >= EN_EQ_N) return 1;
+        for (int i = 0; i < EN_N; i++)
+            if (en_tab[i].used && enid_eq(en_tab[i].id, q->id) && en_tab[i].cell >= 0 && en_tab[i].owner != coop_ctr_me())
+                atomic_fetch_or(&en_map[en_tab[i].cell].eq_drop, (uint8_t)(1u << q->slot));
+        return 1;
+    }
     if (m->type != ENM_PLAY) return 0;
     const MName *n = (const MName *)m->d;
     if (m->len == (int)sizeof *n && n->hash && memchr(n->name, 0, sizeof n->name)) name_add(n->hash, n->name);
@@ -541,7 +558,8 @@ int en_copy_hook(Cpu *c, uint64_t off) {
                key, (int)idx, flags, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], st);
         return 0;
     }
-    case 0x1c78060: case 0x1b738e4: case 0xb28394: { int en_loot_hook(Cpu *c, uint64_t off); return en_loot_hook(c, off); }   // coop_enemy_loot.c
+    case 0x21cd650: { void en_moon_local(void); en_moon_local(); return 0; }   // the blood moon begins here (coop_enemy.c)
+    case 0x1c78060: case 0x1b738e4: case 0x1b73be4: case 0xb28394: { int en_loot_hook(Cpu *c, uint64_t off); return en_loot_hook(c, off); }   // coop_enemy_loot.c
     case FN_BRAIN_VERB: {   // (x0 the brain, w1 the verb, w2 bit 0 force): a held brain keeps its owner's verb
         if (tl_brain_mine || !tl_grace_bsa || c->x[0] != tl_grace_bsa) return 0;
         static _Atomic int said;

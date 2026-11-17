@@ -314,6 +314,20 @@ static En *en_alloc(Enid id) {
     if (en_now() - said > 10 * SEC) said = en_now(), rt_log("coop: en: the table is full (%d entries): %016llx is not taken", EN_N, (unsigned long long)id.a);
     return NULL;
 }
+// A blood moon (enemy-sync-spec.md 10.5, B.12): the life number rises to `no`; every tombstone, resting record and
+// entry of a placement's earlier life is dropped (the moon resets the placements' dead flags and their enemies are
+// made again, bound anew under the new number). Entries of enemies made at run time stay. Under en_lock.
+// [open: a tombstone whose save flag the moon does not reset (reset masks 208 and 80: cave and sky ones) is dropped
+// too; the mask is not read yet.]
+static uint64_t moon_ns;
+static void moon_apply(uint32_t no, const char *why) {
+    if (no <= life_no) return;
+    int tombs = n_tomb, rests = 0, ents = 0;
+    life_no = no, moon_ns = en_now(), n_tomb = 0;
+    for (int i = 0; i < n_rest;) if (rest[i].id.b != EN_RT && rest[i].id.b < no) rest[i] = rest[--n_rest], rests++; else i++;
+    for (int i = 0; i < EN_N; i++) if (en_tab[i].used && en_tab[i].id.b != EN_RT && en_tab[i].id.b < no) en_free(&en_tab[i]), ents++;
+    rt_log("coop: en: moon: %s: life number %u now; %d tombstones, %d resting records and %d entries of the life before dropped", why, no, tombs, rests, ents);
+}
 
 void en_log_own(const En *e, const char *what, const char *why) {
     rt_log("coop: en: own: %s %016llx/%u epoch %u %s (%s)", e->name[0] ? e->name : "?", (unsigned long long)e->id.a, e->id.b, e->epoch, what, why);
@@ -741,6 +755,11 @@ static void take_msg(const CoopCtrMsg *m) {
         }
         break;
     }
+    case ENM_MOON: {   // another game's blood moon began
+        const MSyncEnd *s = (const MSyncEnd *)m->d;
+        if (m->len == (int)sizeof *s) moon_apply(s->life_no, "another game's blood moon");
+        break;
+    }
     case ENM_SYNC_END: {
         const MSyncEnd *s = (const MSyncEnd *)m->d;
         if (m->len != (int)sizeof *s) break;
@@ -1024,4 +1043,17 @@ int coop_enemy_calc(Cpu *c) {
     atomic_store_explicit(&m->frame, coop_sess_frame_no(), memory_order_relaxed);
     en_copy_precalc(c, actor, m);
     return 0;
+}
+
+// The blood moon's start in this game (main+0x21cd650, from en_copy_hook): the life number goes up by one and every
+// game is told, so each drops what the moon brings back. Not twice for one moon: a game told of the moon less than
+// five minutes ago does not raise the number again when its own moon begins.
+void en_moon_local(void) {
+    coop_lock_wait(&en_lock);
+    if (atomic_load(&en_active) && (!moon_ns || en_now() - moon_ns > 300 * SEC)) {
+        MSyncEnd se = {life_no + 1, 0};
+        moon_apply(se.life_no, "this game's blood moon");
+        en_send_all(ENM_MOON, &se, sizeof se);
+    }
+    plat_mutex_unlock(&en_lock);
 }
