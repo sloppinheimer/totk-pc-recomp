@@ -1,4 +1,4 @@
-// Co-op: session state the syncs share (docs/coop/enemy-sync-spec.md sections 1, 6.4 and 16.2).
+// Co-op: session state the syncs share (docs/coop/enemy-sync.md sections 1, 6.4 and 16.2).
 //
 // - The frame stamp: the performance counter read once a frame at phase 0 (GameDataMgr::calc, outside the parallel
 //   actor update). Every state read and every capture of that frame carries it. One clock for every game on a PC,

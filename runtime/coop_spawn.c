@@ -1,5 +1,5 @@
 // The co-op hook dispatcher (coop_hook) and per-poll tick (coop_tick), and the test spawn: TOTK_COOP_TEST_SPAWN and
-// TOTK_COOP_SPAWN_FILE ask the game's actor manager for an actor 2 m in front of Link (docs/coop/re-notes.md,
+// TOTK_COOP_SPAWN_FILE ask the game's actor manager for an actor 2 m in front of Link (docs/coop/facts/engine.md,
 // coop_ActorMgr_requestCreateActor). Runs on the game thread that polls the gamepad (ov_input.c npad_states), whose
 // Cpu rt_call needs.
 
@@ -416,7 +416,7 @@ static void p7_refresh(void) {
 // TOTK_COOP_PROF=8 (with TOTK_COOP_TRACE=calc, which tracks whose calc a thread runs): every function entered inside
 // this PC's Link's calc with a name-like string in x1..x3 (a char pointer, or a string object's +0 / +8 pointer to
 // one), kept as distinct (function, string) pairs and reported every 10 s by function, most strings first: where
-// the Player starts animations (AS) by name, for a proxy that replays them (docs/coop/proxy-plan.md stage 4).
+// the Player starts animations (AS) by name, for a proxy that replays them (docs/coop/facts/player.md stage 4).
 static int prof8;
 static struct { _Atomic uint64_t fn; uint32_t hash, hits; char s[40]; } p8[8192];
 static __thread uint64_t calc_actor;   // the Player whose ACTOR_CALC this thread runs (TOTK_COOP_TRACE set)
@@ -677,7 +677,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
         int coop_life_hook(Cpu *c, uint64_t addr);
         return coop_life_hook(c, addr);
     }
-    // contraption-sync.md Phase 0 tests (coop_autobuild.c coop_phase0_hook): a fan's push, the velocity and impulse
+    // entity-sync.md Phase 0 tests (coop_autobuild.c coop_phase0_hook): a fan's push, the velocity and impulse
     // writes it makes, the on/off node's calc and setter and the two gauge charges
     // contraption copies (coop_autobuild.c, TOTK_COOP_CONTRAPTION): the device switch update, the device force nodes and
     // the body setters they use

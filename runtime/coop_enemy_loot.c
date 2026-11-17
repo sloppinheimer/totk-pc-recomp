@@ -1,4 +1,4 @@
-// What a dying enemy leaves, in every game once (docs/coop/enemy-sync-spec.md B.9; research R13, G8).
+// What a dying enemy leaves, in every game once (docs/coop/enemy-sync.md B.9; research R13, G8).
 //
 // A copy rolls and makes no drops (both the reserve and the release of its death sit under the death component's
 // "no drops" bit, which a copy has), so loot is made in the owner's game alone, by main+0x1c78060: one create request

@@ -4,7 +4,7 @@
 
 #include "coop_net.h"
 
-// Message types (docs/coop/contraption-sync-v3.md, section 12.4). 200 and up are tests.
+// Message types (docs/coop/entity-sync.md, section 12.4). 200 and up are tests.
 enum {
     COOP_CTR_STATE = 1, COOP_CTR_ACK = 2, COOP_CTR_CENSUS = 3, COOP_CTR_HB = 4, COOP_CTR_HELLO = 5,
     COOP_CTR_TAKE = 10, COOP_CTR_GRANT = 11, COOP_CTR_COMMIT = 12, COOP_CTR_REFUSE = 13, COOP_CTR_ABORT = 14,

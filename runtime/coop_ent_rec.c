@@ -1,4 +1,4 @@
-// Co-op: entities, reconcile and bonds (docs/coop/contraption-sync-v4-spec.md sections 7 and 8, cited as S).
+// Co-op: entities, reconcile and bonds (docs/coop/entity-sync.md sections 7 and 8, cited as S).
 //
 // A game that does not own an island compares its world with the owner's statement and makes them equal: it creates
 // what is missing, replays deaths, breaks glue edges the statement lacks and makes stated bonds that have no edge.

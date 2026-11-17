@@ -1,4 +1,4 @@
-// Co-op: the element sync (docs/coop/element-sync-design.md, cited as D; element-sync-spec.md, cited as S).
+// Co-op: the element sync (docs/coop/facts/elements.md, cited as D; facts/elements.md, cited as S).
 //
 // One game decides each fire, and each element state of an enemy or a placed object, and states it; the others make
 // it so and never decide. Two kinds of thing are stated:
@@ -599,7 +599,7 @@ static int comp_hook(Cpu *c) {
             }
         }
     }
-    {   // The game's own "does not interact with the world" bit is NOT set on a mirror's component (enemy-sync-spec.md
+    {   // The game's own "does not interact with the world" bit is NOT set on a mirror's component (enemy-sync.md
         // B.1): the component's update turns it into the bit the element step reads to skip its whole contact step, this
         // game's Link included, and a copy's flame or fireball then burned no player in any game (a play session,
         // 2026-11-16). A mirror is kept from the world by the reaction hook (it reaches this game's Link alone) and the

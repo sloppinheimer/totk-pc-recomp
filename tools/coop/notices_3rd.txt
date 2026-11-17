@@ -8,7 +8,7 @@
 #     -ScriptB tools\coop\idle_3rd.txt -QuitBAfter 100
 #     -EnvA "TOTK_COOP_TEST_TRAVEL=40;TOTK_COOP_TEST_NOTICESHOT=1;TOTK_MENU_TEST_DIR=C:\Dev\totkCoop\build\notices\A"
 #     -EnvB "TOTK_COOP_TEST_NOTICESHOT=1;TOTK_MENU_TEST_DIR=C:\Dev\totkCoop\build\notices\B"
-# Log lines to see (docs/coop/proxy-plan.md, "Notices"):
+# Log lines to see (docs/coop/facts/player.md, "Notices"):
 #   A: coop: notices: 1256 places from Banc/MainField/... ; 303 places from Banc/MinusField/... ; 1533 of 1559 places named
 #   A and B: coop: notice: B joined (or "B is here") / coop: notice: A joined (or "A is here"); a player is in the
 #   list (coop_net_players) from its first state, sent once its game is in the world, so each line comes when the

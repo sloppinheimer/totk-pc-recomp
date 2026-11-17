@@ -1,4 +1,4 @@
-// Co-op: the enemy sync's shots (docs/coop/enemy-sync-spec.md section A; research notes R6 and R6b).
+// Co-op: the enemy sync's shots (docs/coop/enemy-sync.md section A; research notes R6 and R6b).
 //
 // An enemy does not create a projectile when it shoots. Its Shooter component ([[actor+0x228]+0x448]) makes its
 // projectiles in advance (a Fire Wizzrobe's fireballs, an Octorok's rock, a quiver of arrows), keeps a record of
@@ -477,7 +477,7 @@ int coop_enemy_shot_mirror(uint64_t proj) {
     return shooter && coop_enemy_role(shooter) == 2;
 }
 
-// ---- A Shooter put to sleep (docs/coop/enemy-sync-spec.md B.36; research R19, the shooter-state nodes) -----------------------
+// ---- A Shooter put to sleep (docs/coop/enemy-sync.md B.36; research R19, the shooter-state nodes) -----------------------
 // Besides prepare and shoot, the nodes of an enemy's graph put its Shooter's shots to sleep: a prepared arrow put away
 // when an archer gives up its shot (OneShotEquipmentUserCancelShooter, OneShotShooterRequestSleep, the "drop prepared"
 // nodes when the shot is no longer in the hand), all shots of a name (main+0x1bfa4e0), every prepared one

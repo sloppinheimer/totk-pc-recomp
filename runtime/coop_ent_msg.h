@@ -1,4 +1,4 @@
-// Co-op: the messages of the entity sync (docs/coop/contraption-sync-v4-spec.md section 6), over coop_ctr.c.
+// Co-op: the messages of the entity sync (docs/coop/entity-sync.md section 6), over coop_ctr.c.
 // Every unreliable message starts with an 8-byte slot key: the transport keeps the latest per (sender, type, key).
 #pragma once
 #include <stdint.h>

@@ -1,4 +1,4 @@
-// The rotating ground's sync: moved out of coop_world.c as it was (docs/coop/enemy-sync-spec.md B.28: the world file
+// The rotating ground's sync: moved out of coop_world.c as it was (docs/coop/enemy-sync.md B.28: the world file
 // is taken apart so the older enemy sync in it can go). Nothing here is the enemy sync's. Its packets come in on the
 // HIT channel, which the world file's peer_tick reads and hands to ground_take.
 #include <math.h>

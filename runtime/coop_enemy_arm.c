@@ -1,4 +1,4 @@
-// Co-op: an attack armed by an AI node, on a copy (docs/coop/enemy-sync-spec.md B.35; research R20, the SensorHit
+// Co-op: an attack armed by an AI node, on a copy (docs/coop/enemy-sync.md B.35; research R20, the SensorHit
 // component).
 //
 // An enemy's attack is not a held flag. The arm call main+0x1bf20cc(SensorHit component, request) is made again every

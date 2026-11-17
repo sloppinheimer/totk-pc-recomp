@@ -1,4 +1,4 @@
-// Co-op: a copy runs the action its owner is in (docs/coop/enemy-sync-spec.md B.38, B.41; research R22). Off unless
+// Co-op: a copy runs the action its owner is in (docs/coop/enemy-sync.md B.38, B.41; research R22). Off unless
 // TOTK_COOP_EN_ACT=1. Which actions: TOTK_COOP_EN_ACT_VERBS, a list of action verbs or `all` (default: 131 JumpAttack
 // and 145 OrderAttack, a Chuchu's attack; 108 Appear, a Yiga's); for which enemies: TOTK_COOP_EN_ACT_FAMILY, a list of
 // actor name prefixes (default: every enemy).

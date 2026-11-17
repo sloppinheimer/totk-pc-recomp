@@ -1,4 +1,4 @@
-// Co-op horses and animals: kinds of the enemy sync, and what they need besides it (docs/coop/horse-animal-sync-spec.md).
+// Co-op horses and animals: kinds of the enemy sync, and what they need besides it (docs/coop/facts/horses-animals.md).
 //
 // A horse or a land animal is an entry of the enemy sync's table like an enemy (coop_enemy.c kind_of takes the names
 // coop_mount_kind gives), so its identity, owner, copy switch, pose, animation commands, life and death are that

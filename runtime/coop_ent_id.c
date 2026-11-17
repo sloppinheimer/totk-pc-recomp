@@ -1,4 +1,4 @@
-// Co-op: entities, the identity of actors and the events of the hooks (docs/coop/contraption-sync-v4-spec.md sections
+// Co-op: entities, the identity of actors and the events of the hooks (docs/coop/entity-sync.md sections
 // 4 and 10, cited as S).
 //
 // A Zonai device the game makes here gets its Eid where the game marks the actor created: the create hook decides

@@ -17,7 +17,7 @@
 // picture, clipped to N_Cut_00's rectangle (the map's visible area in either pose), and a player outside it sits on its
 // edge.
 //
-// Finding the panes (1.4.3, read from the code; docs/coop/re-notes.md "Map and minimap markers"):
+// Finding the panes (1.4.3, read from the code; docs/coop/facts/engine.md "Map and minimap markers"):
 // - main+0x96c1ac is the AppMap screen's layout set-up (a vtable method, the table holding it at main+0x372b3f0 also
 //   points at "LayoutMsg/AppMap_00"): x0 the screen, [screen+0x28] its layout. coop_hook (coop_spawn.c) hands the
 //   screen to coop_markers_screen.

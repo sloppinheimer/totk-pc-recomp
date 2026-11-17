@@ -1,4 +1,4 @@
-// Co-op: entities (docs/coop/contraption-sync-v4-spec.md, cited as S; the design is contraption-sync-v4.md).
+// Co-op: entities (docs/coop/entity-sync.md, cited as S; the design is entity-sync.md).
 // TOTK_COOP_CONTRAPTION=0 turns it off. TotK 1.4.3 main offsets.
 //
 // An entity is a Zonai device, an Autobuild part, or an actor that became an end of a glue; it has one id for life

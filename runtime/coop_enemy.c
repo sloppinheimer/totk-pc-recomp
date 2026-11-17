@@ -1,4 +1,4 @@
-// Co-op: the enemy sync (docs/coop/enemy-sync-spec.md): the table, identity, ownership, messages and the record.
+// Co-op: the enemy sync (docs/coop/enemy-sync.md): the table, identity, ownership, messages and the record.
 //
 // One game runs each enemy (thinks it) and states it; in every other game that has the actor it is a copy that shows
 // what is stated and does not think (coop_enemy_copy.c). Ownership is per enemy, by an (epoch, incarnation) pair that
@@ -316,7 +316,7 @@ static En *en_alloc(Enid id) {
     if (en_now() - said > 10 * SEC) said = en_now(), rt_log("coop: en: the table is full (%d entries): %016llx is not taken", EN_N, (unsigned long long)id.a);
     return NULL;
 }
-// A blood moon (enemy-sync-spec.md 10.5, B.12): the life number rises to `no`; every tombstone, resting record and
+// A blood moon (enemy-sync.md 10.5, B.12): the life number rises to `no`; every tombstone, resting record and
 // entry of a placement's earlier life is dropped (the moon resets the placements' dead flags and their enemies are
 // made again, bound anew under the new number). Entries of enemies made at run time stay. Under en_lock.
 // [open: a tombstone whose save flag the moon does not reset (reset masks 208 and 80: cave and sky ones) is dropped

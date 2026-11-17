@@ -1,4 +1,4 @@
-// Co-op: the transport's one inbox, shared by the syncs that read it (docs/coop/enemy-sync-spec.md section 16.1).
+// Co-op: the transport's one inbox, shared by the syncs that read it (docs/coop/enemy-sync.md section 16.1).
 //
 // coop_ctr.c has one inbox of reliable messages for every type and one queue of join and leave events, and until now
 // the entity sync (coop_ent*.c) took all of both and dropped a type it did not know. Here each reader asks for its

@@ -1,4 +1,4 @@
-// What a copy's graphs would have asked of other systems (docs/coop/enemy-sync-spec.md B.17; research R16, R9).
+// What a copy's graphs would have asked of other systems (docs/coop/enemy-sync.md B.17; research R16, R9).
 //
 // A copy's graphs do not run, so three things its AI nodes do reach nobody in the copy's game:
 //

@@ -1,4 +1,4 @@
-// Co-op: actor lifetime hooks for contraption sync v3 (docs/coop/contraption-sync-v3.md, sections 4 G4, 7 and 10).
+// Co-op: actor lifetime hooks for contraption sync v3 (docs/coop/entity-sync.md, sections 4 G4, 7 and 10).
 //
 // - The delete request main+0x63baa8(actor, reason) and its deferring wrapper main+0x63b6b0, the death request
 //   main+0x1953184(actor, kind, 0) and the death component main+0x1b4b738 (the inlined lapse in main+0x2f48a0 calls it
@@ -11,7 +11,7 @@
 //   (IsGet.Obj_AutoBuilder through main+0x3d01a0) and the Autobuild ability singleton [main+0x3a62ef0] with its two
 //   BuildObjects (+0x51f0 the build, +0x51f8 the menu thumbnail; +0x3c80 1 marks the thumbnail).
 //
-// The research behind the addresses is outside this repository (docs/coop/contraption-sync-v3.md, notation).
+// The research behind the addresses is outside this repository (docs/coop/entity-sync.md, notation).
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -167,7 +167,7 @@ static void x3_message(Cpu *c) {
            sender, (unsigned long long)lr[0], (unsigned long long)lr[1], (unsigned long long)lr[2], (unsigned long long)lr[3]);
 }
 
-// G4 (contraption-sync-v3.md section 4): a part of a copy this game does not run takes no death from this game's own
+// G4 (entity-sync.md section 4): a part of a copy this game does not run takes no death from this game's own
 // rules: every death request on it (main+0x1953184, and the death component main+0x1b4b738 the inlined lapse calls
 // directly) is refused, and so are the deletes the green kill and the lapse fall back to (from main+0x272178,
 // main+0x2f9264, main+0x2f7528). The game that runs the contraption decides its parts' deaths (P4 replays them here).
@@ -526,7 +526,7 @@ int coop_life_v3(Cpu *c, uint64_t off) {
     return 0;
 }
 
-// I16 (contraption-sync-v3.md section 9): a stand-in never collides with a contraption part, in any game. The game
+// I16 (entity-sync.md section 9): a stand-in never collides with a contraption part, in any game. The game
 // decides every body pair through one predicate, main+0x40a240(filter, record A, record B, flags) -> 1 collide / 0 not.
 // Its two callers pass each body's collision filter record: main+0x6ab7d8 [body+0x140] + 8 (the first physics world),
 // main+0x75fc94 [body+0x148] + 8 (the second, for a body with flag bit 5 at +0x68). The hook answers 0 for a pair of

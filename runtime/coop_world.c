@@ -10,7 +10,7 @@
 //   an enemy is.
 // - Probes and tests of the research that found these.
 // The HIT channel's reader is coop_hitchan.c.
-// The enemies themselves are synced by coop_enemy.c and its files (docs/coop/enemy-sync-spec.md). The older enemy
+// The enemies themselves are synced by coop_enemy.c and its files (docs/coop/enemy-sync.md). The older enemy
 // sync that lived here, and the horses and animals that rode on it, are gone (spec B.30).
 #include <math.h>
 #include <stddef.h>

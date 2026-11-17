@@ -1,4 +1,4 @@
-// Co-op: autobuild research (TOTK_COOP_TEST_ABLOG=1; docs/coop/re-notes.md, "Autobuild copies"). TotK 1.4.3 main offsets.
+// Co-op: autobuild research (TOTK_COOP_TEST_ABLOG=1; docs/coop/facts/engine.md, "Autobuild copies"). TotK 1.4.3 main offsets.
 // The sync this led to is coop_bonds.c; the contraption copies' gates are coop_ent_hooks.c coop_phase0_hook.
 //
 // main+0x6898dc is the constructor of the actor class an autobuild device is made as (x0 the actor, x1 its create

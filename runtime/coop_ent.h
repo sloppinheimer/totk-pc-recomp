@@ -1,4 +1,4 @@
-// Co-op: entities (docs/coop/contraption-sync-v4-spec.md, cited as S). Shared by coop_ent.c (the table, identity,
+// Co-op: entities (docs/coop/entity-sync.md, cited as S). Shared by coop_ent.c (the table, identity,
 // reading the world, the passes), coop_ent_own.c (ownership and the messages), coop_ent_rec.c (reconcile, bonds, the
 // glue across owners) and coop_ctn.c (what was kept of the v3 code: the drive, the devices, the copy maker, the gates).
 // TotK 1.4.3 main offsets. Every timer is wall-clock milliseconds (ent_ms) unless a name ends in _us (world clock).

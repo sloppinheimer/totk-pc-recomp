@@ -1,4 +1,4 @@
-# The enemy sync's bench (docs/coop/enemy-sync-spec.md, section 15): a fixed set of two-game cases on the camp save, each
+# The enemy sync's bench (docs/coop/enemy-sync.md, section 15): a fixed set of two-game cases on the camp save, each
 # judged from the two games' logs, with one line per case and PASS or FAIL.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\coop\en_bench.ps1 [-Cases fight,wizzrobe,handover,quit] [-Out build\bench]

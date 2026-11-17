@@ -1,5 +1,5 @@
 // A blow's contacts: a stand-in takes no hits, an enemy copy keeps only this game's player's blows; the contact kept for a Zonai device's hit test. Moved out of coop_world.c as
-// it was (docs/coop/enemy-sync-spec.md B.28); the packets come in through that file's reader of the HIT channel.
+// it was (docs/coop/enemy-sync.md B.28); the packets come in through that file's reader of the HIT channel.
 #include <math.h>
 #include <stddef.h>
 #include <stdatomic.h>

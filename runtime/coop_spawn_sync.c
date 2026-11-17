@@ -1,4 +1,4 @@
-// The sync of enemies made at run time. Moved out of coop_world.c as it was (docs/coop/enemy-sync-spec.md B.28); its
+// The sync of enemies made at run time. Moved out of coop_world.c as it was (docs/coop/enemy-sync.md B.28); its
 // packets come in through that file's reader of the HIT channel. The key it gives an enemy is that enemy's identity
 // in the enemy sync (coop_world_spawn_key).
 #include <math.h>

@@ -1,4 +1,4 @@
-// A ragdoll's pose on a copy (docs/coop/enemy-sync-spec.md B.7; research R12).
+// A ragdoll's pose on a copy (docs/coop/enemy-sync.md B.7; research R12).
 //
 // A copy shows its owner's enemy by the root's place and the animation commands; a ragdoll is neither: its bones are
 // driven by physics bodies in the game that runs the enemy. The copy's own ragdoll is not started (it would fight the

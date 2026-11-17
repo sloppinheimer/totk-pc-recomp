@@ -1,5 +1,5 @@
-// Co-op: contraptions, what was kept of the v3 code (docs/coop/contraption-sync-v4-spec.md sections 9, 11 and 12; the v3
-// plan is docs/coop/contraption-sync-v3.md, an archive). TOTK_COOP_CONTRAPTION=0 turns it off. TotK 1.4.3 main offsets.
+// Co-op: contraptions, what was kept of the v3 code (docs/coop/entity-sync.md sections 9, 11 and 12; the v3
+// plan is docs/coop/entity-sync.md, an archive). TOTK_COOP_CONTRAPTION=0 turns it off. TotK 1.4.3 main offsets.
 //
 // The table of entities, who owns what and what is said between the games are in coop_ent*.c. This file holds the
 // code that touches the game for them and that the v3 runs showed to work: the rigid-field drive of a copy, the
@@ -591,7 +591,7 @@ int coop_ent_is(uint64_t a) { return ent_set_has(ENT_SET_ENT, a) || mk_part(a); 
 int coop_contraption_follower(uint64_t a) { return ent_set_has(ENT_SET_FOLLOWER, a) || mk_part(a); }
 int coop_ctn_follows(uint64_t a) { return ent_set_has(ENT_SET_FOLLOWER, a); }
 int coop_contraption_made(uint64_t a) { return ent_set_has(ENT_SET_COPY, a) || mk_part(a); }
-// G1 (contraption-sync-v3.md section 4): a core body of a part another game runs is written only by the drive here.
+// G1 (entity-sync.md section 4): a core body of a part another game runs is written only by the drive here.
 // Every other write to it is dropped: the velocity setters main+0x567750, 0x25a1f0, 0x40e490, the impulses
 // main+0x44be18, 0x29ae114, 0x29ae7a8, the force writes main+0x29ae7fc, 0x29a4afc and SetTransform main+0x25a450, so
 // devices, hits and pushes move a contraption only in the game that runs it. Passed: the drive's own writes

@@ -1,7 +1,7 @@
 // Co-op tracing: a read watchpoint in software. coop_watch_arm makes the pages of a guest range inaccessible; every
 // access to them faults, the handler counts the lifted function that touched the range (rt_lifted_function), lets the
 // instruction run once with the page restored (trap flag) and protects the page again. Test code for finding which
-// game code reads an object (docs/coop/re-notes.md); slow while armed.
+// game code reads an object (docs/coop/facts/engine.md); slow while armed.
 
 #include <windows.h>
 #include <stdint.h>

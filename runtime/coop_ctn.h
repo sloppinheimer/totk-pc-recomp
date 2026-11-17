@@ -1,5 +1,5 @@
 // Co-op: contraptions, the gates and notes the hooks call (coop_ctn.c; the entity sync is coop_ent.h, and
-// docs/coop/contraption-sync-v4-spec.md is its specification).
+// docs/coop/entity-sync.md is its specification).
 #pragma once
 #include <stdint.h>
 

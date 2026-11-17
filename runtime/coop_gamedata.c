@@ -43,7 +43,7 @@
 // game tracks again after a load, the log's changes that no longer read so leave it (slog_check), so the others'
 // catch-up brings them back.
 //
-// Addresses (1.4.3 main; how each was found: docs/coop/proxy-plan.md "Shared world progress", and the hand-over note):
+// Addresses (1.4.3 main; how each was found: docs/coop/facts/player.md "Shared world progress", and the hand-over note):
 //   main+0xa72b00  GameDataMgr::calc (x0 = the manager): 1.2.1 main+0xee9704, the same code (the same offsets 0xd0c,
 //                  0xce0, 0xd10, 0xcb8 and per-type queues); its one caller main+0xa72abc locks the manager's mutex
 //                  (+0x70) around it and passes [main+0x3ad66b0], as 1.2.1's main+0xee96cc does.
@@ -75,7 +75,7 @@
 // ResetTypeValue; u8 at +0xc the value), +0x10 queue capacity, +0x18 queue entries (8 bytes: u8 value, i32 index at
 // +4; -1 is empty), +0x20 the queue word.
 //
-// What is shared (decided here; written down in docs/coop/proxy-plan.md):
+// What is shared (decided here; written down in docs/coop/facts/player.md):
 //   - Bool64bitKey: a key whose reset type has none of the bits 0x1af set (0x50, 3537 of the 130375 keys) belongs to
 //     the player, the others (0x150, 0x58, 0x5a, 0xd0, 0x52) to the world. This is TotK Online's server rule
 //     (bitKeyMap value & 0x1AF); its bitKeyMap is the game's own GameDataList 1.4.0 Bool64bitKey ResetTypeValue, key for

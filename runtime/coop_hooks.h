@@ -7,16 +7,16 @@
 // function, so the test folds away everywhere else.
 // A nonzero return means the hook ran the function itself (coop_hook calls it again through rt_dispatch and the inner
 // entry returns 0), so this entry returns at once with the registers the inner call left.
-// Hooks the contraption sync v3 phases use (docs/coop/contraption-sync-v3.md sections 4 and 5), all registered at once so
+// Hooks the contraption sync v3 phases use (docs/coop/entity-sync.md sections 4 and 5), all registered at once so
 // a phase adding behaviour to one rebuilds only the runtime: they dispatch to coop_life.c coop_life_v3, a no-op until then.
 #define COOP_HOOKED_V3(a) ((a) == 0x700040e490ull || (a) == 0x700044be18ull || (a) == 0x700025a450ull || (a) == 0x700045ce70ull || (a) == 0x7000ae4300ull || (a) == 0x7001c02914ull || (a) == 0x70002f8b70ull || (a) == 0x7001c0aefcull || (a) == 0x700032eb90ull || (a) == 0x7002ae4d2cull || (a) == 0x7001c0b83cull || (a) == 0x7002ae6cf4ull || (a) == 0x7001c0bf20ull || (a) == 0x7001d67060ull || (a) == 0x7001d62f44ull || (a) == 0x70022fa1b0ull || (a) == 0x7002215364ull || (a) == 0x7001bf8df4ull || (a) == 0x700224e690ull || (a) == 0x7002b76c34ull || (a) == 0x7001d38a00ull || (a) == 0x7002474478ull || (a) == 0x700054cb00ull || (a) == 0x700191642cull || (a) == 0x700190d924ull || (a) == 0x7000502e60ull || (a) == 0x7000a1bc30ull)
-// Hooks of the enemy sync (docs/coop/enemy-sync-design.md), all registered at once so that work on it rebuilds only the
+// Hooks of the enemy sync (docs/coop/enemy-sync.md), all registered at once so that work on it rebuilds only the
 // runtime: the behaviour-graph runners and the node tick (section 4), the animation play requests, the slot update and the
 // look, model and ragdoll setters (5, 6), attack arming, the hit sensor pass and the guard record (8), the death tick,
 // drops and counters (9), equipment (10), spawners, placements, kill flags and the blood moon (11), targets and the
 // messages between enemies. They dispatch to coop_enemy_hooks.c coop_enemy_hook.
 #define COOP_HOOKED_EN(a) ((a) == 0x7001bfa698ull || (a) == 0x7001bfa87cull || (a) == 0x7001bfa4e0ull || (a) == 0x7000c448c8ull || (a) == 0x70024901b0ull || (a) == 0x70024902e0ull || (a) == 0x7000a80f28ull || (a) == 0x70025aafecull || (a) == 0x70021cdf44ull || (a) == 0x7001d71dfcull || (a) == 0x7002314ab0ull || (a) == 0x7001c78060ull || (a) == 0x70024f0a9cull || (a) == 0x7000001920ull || (a) == 0x700050b404ull || (a) == 0x700042e0c8ull || (a) == 0x70002beb80ull || (a) == 0x700044ff30ull || (a) == 0x70004dc628ull || (a) == 0x700042ec98ull || (a) == 0x7001bf20ccull || (a) == 0x7001b87a9cull || (a) == 0x7000bb0dd0ull || (a) == 0x7000ad9844ull || (a) == 0x70004e603cull || (a) == 0x7001bddcb0ull || (a) == 0x7000b28394ull || (a) == 0x70004f59ecull || (a) == 0x7001b738e4ull || (a) == 0x7001b73be4ull || (a) == 0x7001b70a04ull || (a) == 0x7001bb16a0ull || (a) == 0x7001ba7710ull || (a) == 0x700195321cull || (a) == 0x70021cd650ull || (a) == 0x7000a70a1cull || (a) == 0x7001bf9af8ull || (a) == 0x7001bfbc44ull || (a) == 0x7001bfbaa4ull || (a) == 0x7001bf8f74ull || (a) == 0x7001bfbb28ull || (a) == 0x7001bfd6a8ull || (a) == 0x7000a9c250ull || (a) == 0x7000d7ff68ull)
-// Hooks of the element sync (docs/coop/element-sync-design.md), all registered at once so that work on it rebuilds only
+// Hooks of the element sync (docs/coop/facts/elements.md), all registered at once so that work on it rebuilds only
 // the runtime: the ground-fire cells (their per-frame driver, the state step, the spread, the cell init, the contact
 // entry, the burn broadcast, the fire element's make), a chemical component's and an element's update, the reaction
 // entry and its two passes, the ignite and extinguish requests, the fire start and the lightning strike. They dispatch to

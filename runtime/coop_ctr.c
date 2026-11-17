@@ -1,4 +1,4 @@
-// Co-op: the contraption channel (docs/coop/contraption-sync-v3.md, sections 6.1, 10.6, 12 and 13). Incarnations, a
+// Co-op: the contraption channel (docs/coop/entity-sync.md, sections 6.1, 10.6, 12 and 13). Incarnations, a
 // reliable layer over the net layer's CTR packets, latest-only slots for streamed state, and the heartbeat (HB).
 //
 // It runs on the co-op poll (coop_spawn.c, "T2" in the plan), which also runs in menus and loads, and makes no guest

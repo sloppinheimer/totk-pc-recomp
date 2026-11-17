@@ -1,4 +1,4 @@
-// Co-op: game structures and calls (coop_game.h). Found and tested with coop_spawn.c; docs/coop/re-notes.md.
+// Co-op: game structures and calls (coop_game.h). Found and tested with coop_spawn.c; docs/coop/facts/engine.md.
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -12,7 +12,7 @@
 
 // Failed reads of a non-null address, counted per calling site (return address in this executable). A failed read is
 // unknown, not 0: a caller that takes the zero it gets back as game state decides on nothing (docs/coop/
-// contraption-sync-v3.md, harness rule H2). coop_rd_fail_report logs the sites every 5 s when any failed.
+// entity-sync.md, harness rule H2). coop_rd_fail_report logs the sites every 5 s when any failed.
 #define RD_SITES 128
 static struct { _Atomic uint64_t site; _Atomic uint32_t n; } rd_fail[RD_SITES];
 static _Atomic uint32_t rd_fail_lost;

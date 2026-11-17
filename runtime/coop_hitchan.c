@@ -2,7 +2,7 @@
 // the shared world progress (coop_gamedata.c), the rotating ground (coop_ground.c), a player's blow sent to the game
 // that runs the enemy (coop_contact.c), the sync of enemies made at run time (coop_spawn_sync.c) and the travel
 // notice (coop_notices.c); a packet is told by its size and the kind word each of them carries. Split out of
-// coop_world.c (docs/coop/enemy-sync-spec.md B.28).
+// coop_world.c (docs/coop/enemy-sync.md B.28).
 #include <stddef.h>
 #include <stdint.h>
 

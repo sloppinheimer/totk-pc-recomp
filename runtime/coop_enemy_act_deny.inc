@@ -1,6 +1,6 @@
 // The node classes a copy that runs its owner's action does not run itself: {vtable (main+), category}.
 // Made from the audit of the enemies' AI graphs (research R19: each outward-acting node class and where it
-// ends) joined with the node table; see docs/coop/enemy-sync-spec.md B.41 for the categories. Sorted.
+// ends) joined with the node table; see docs/coop/enemy-sync.md B.41 for the categories. Sorted.
 {0x3743808, 7},
 {0x3749210, 1},
 {0x3749c58, 7},

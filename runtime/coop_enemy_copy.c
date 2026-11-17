@@ -1,4 +1,4 @@
-// Co-op: the enemy sync's copies (docs/coop/enemy-sync-spec.md sections 5 to 7).
+// Co-op: the enemy sync's copies (docs/coop/enemy-sync.md sections 5 to 7).
 //
 // A copy is this game's own actor of an enemy another game runs. It does not think: the entries of its graph runners
 // are turned away (en_copy_hook) and the runner its calc holds inline is emptied before every calc (the four writes).
@@ -247,7 +247,7 @@ static void equip_read_more(uint64_t actor, uint32_t att[EN_EQ_N], uint8_t eqs[E
     }
 }
 
-// ---- An enemy's AI memory (enemy-sync-spec.md B.2) --------------------------------------------------------------------------
+// ---- An enemy's AI memory (enemy-sync.md B.2) --------------------------------------------------------------------------
 // What a graph keeps in the actor's blackboard and acts on later belongs to the enemy, not to the game that ran it: a
 // Wizzrobe's IsMagicWeather is set by its weather action and, while it is set, the graph that always runs asks for the
 // weather and shoots a fireball at intervals (research R8c). It stayed in the game that had run the summon: the rain
@@ -319,7 +319,7 @@ static void mem_write(uint64_t actor, uint8_t want, const char *name) {
     }
 }
 
-// ---- An enemy's brain at a change of owner (enemy-sync-spec.md B.6; research R10) ------------------------------------------
+// ---- An enemy's brain at a change of owner (enemy-sync.md B.6; research R10) ------------------------------------------
 // A copy's brain graph never started, so at its first tick as this game's own its root Enter picks an idle verb, the
 // idle module notices the player afresh (the Find clip) and everything that is cleared outside battle is cleared (a
 // Wizzrobe's IsMagicWeather). The owner states the brain verb ([BSA+0x58], BSA = [comps+0x158]) and whom target slot 0

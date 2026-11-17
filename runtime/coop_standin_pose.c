@@ -1,5 +1,5 @@
 // The players' body poses and the stand-in that shows them: moved out of coop_world.c as it was
-// (docs/coop/enemy-sync-spec.md B.28: the world file is taken apart so the older enemy sync in it can go). Nothing
+// (docs/coop/enemy-sync.md B.28: the world file is taken apart so the older enemy sync in it can go). Nothing
 // here is the enemy sync's.
 #include <math.h>
 #include <stddef.h>

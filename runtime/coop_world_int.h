@@ -1,4 +1,4 @@
-// What the files split out of coop_world.c share with it (docs/coop/enemy-sync-spec.md B.28). Declarations only.
+// What the files split out of coop_world.c share with it (docs/coop/enemy-sync.md B.28). Declarations only.
 #ifndef COOP_WORLD_INT_H
 #define COOP_WORLD_INT_H
 #include <stdint.h>

@@ -1,4 +1,4 @@
-// Co-op: entities, ownership and the messages (docs/coop/contraption-sync-v4-spec.md sections 5 and 6, cited as S).
+// Co-op: entities, ownership and the messages (docs/coop/entity-sync.md sections 5 and 6, cited as S).
 //
 // One game owns an entity and simulates it. Ownership moves by a request that is always answered (TAKE, then GRANT
 // or REFUSE), by a claim when the owner is gone, loading, paused and silent, or offers the island, and never any

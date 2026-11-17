@@ -1,4 +1,4 @@
-"""The enemy sync's report for two games' logs of one session on one PC (docs/coop/enemy-sync-spec.md, 14 and 15).
+"""The enemy sync's report for two games' logs of one session on one PC (docs/coop/enemy-sync.md, 14 and 15).
 
     python tools/coop/en_report.py <log of game A> <log of game B>
 

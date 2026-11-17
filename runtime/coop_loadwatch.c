@@ -3,7 +3,7 @@
 // A fast travel that changes the area runs the sequence node SeqExecuteDeleteAllActor (enter main+0x1fd9750, update
 // main+0xea8aec). Its enter sets bit 1 of the actor manager's byte +0xe1 ([[main+0x395e008]]); only
 // SeqOneShotAfterDeleteAllActor (main+0x1fe7824) clears it, and requestCreateActor (main+0x599670) refuses every create
-// while it is set. The update finishes only when all of these hold (docs/coop/re-notes.md, "Game 2 stuck in a load
+// while it is set. The update finishes only when all of these hold (docs/coop/facts/engine.md, "Game 2 stuck in a load
 // after a fast travel"):
 //   - the resource system H = [[main+0x3ad74b8]+8] has no unfinished job (main+0x67522c, H+0x678) and H+0x600 bit 5;
 //   - the actor system S = [main+0x3ad6d80]: its delete lists are empty (+0x3d0, +0x3e8, +0x400), its going-away list

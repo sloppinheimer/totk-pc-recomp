@@ -1,5 +1,5 @@
 // Co-op: game structures and calls shared by coop_players.c (the feature) and coop_spawn.c (tests and tracing).
-// Addresses are TotK 1.4.3 main offsets; docs/coop/re-notes.md says how each was found.
+// Addresses are TotK 1.4.3 main offsets; docs/coop/facts/engine.md says how each was found.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>

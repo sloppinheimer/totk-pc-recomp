@@ -1,4 +1,4 @@
-// Co-op: the enemy sync's hits and deaths (docs/coop/enemy-sync-spec.md sections 8 and 9).
+// Co-op: the enemy sync's hits and deaths (docs/coop/enemy-sync.md sections 8 and 9).
 //
 // Life. An enemy's life points are its owner's: a copy's are written from the owner's states before every calc.
 // A hit is decided in the game that saw it: the copy's damage step runs there as the game wrote it (so the blow, the
@@ -247,7 +247,7 @@ void en_hit_phase0(void) {
 }
 
 // ---- Messages (the net tick) ------------------------------------------------------------------------------------------------
-// How a copy's blow on this game's Link ended (enemy-sync-spec.md B.15), from the Link's hit update (coop_world.c): told
+// How a copy's blow on this game's Link ended (enemy-sync.md B.15), from the Link's hit update (coop_world.c): told
 // to the copy's owner once per blow. An enemy is found by the attacker actor, or by what it holds or shot.
 void coop_lock_wait(PlatMutex *m);   // coop_spawn.c
 static _Atomic uint32_t n_out_sent, n_out_taken;
