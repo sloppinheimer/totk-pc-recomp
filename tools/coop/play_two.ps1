@@ -18,7 +18,9 @@
 # (tools\coop\ent_report.py) is printed at the end and kept in build\ent_report.txt.
 param([string]$Name1 = "Player 1", [string]$Name2 = "Player 2", [string]$Size = "1904x1071", [switch]$Fresh, [switch]$TwoPads,
       [switch]$ShareWorld, [switch]$FrozenSaves, [string]$Bench = "", [int]$Seconds = 0, [string]$Script1 = "", [string]$Script2 = "",
-      [string]$Shots = "", [string]$Expect = "")
+      [string]$Shots = "", [string]$Expect = "", [string]$Spawn = "")
+# -Spawn Enemy_Chuchu_Middle[@40]: game 1 makes that actor beside its Link at that world second (TOTK_COOP_TEST_SPAWN;
+# 40 when no time is given), for trying one enemy by hand; game 2 gets its copy through the sync.
 # -Expect hand1,hand2,bonds=2: what the scripted run is meant to do (a player takes an entity with Ultrahand; the bonds
 # at the end); the report fails when it did not happen.
 # -Script1 / -Script2 <file>: with -Bench, the input script of game 1 / game 2 in place of the plain load (a script that
@@ -103,6 +105,7 @@ foreach ($g in @(@{dir = $a; n = 1; name = $Name1; pad = '0'}, @{dir = $b; n = 2
         $env:TOTK_SHOTS = $Shots; $env:TOTK_SHOTS_DIR = $sd
     }
     if ($ShareWorld) { $env:TOTK_COOP_SHARE_WORLD = '1' } else { Remove-Item Env:TOTK_COOP_SHARE_WORLD -ErrorAction SilentlyContinue }
+    if ($Spawn -and $g.n -eq 1) { $env:TOTK_COOP_TEST_SPAWN = $(if ($Spawn -match '@') { $Spawn } else { "$Spawn@40" }) } else { Remove-Item Env:TOTK_COOP_TEST_SPAWN -ErrorAction SilentlyContinue }
     $games += Start-NoConsole (Join-Path $g.dir 'totk.exe') '' $g.dir
     Start-Sleep 3
 }

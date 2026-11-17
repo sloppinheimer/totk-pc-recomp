@@ -1101,7 +1101,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
     }
     // the SwordBlur component's update (coop_world.c): a stand-in's runs with its owner's WeaponBlur event
     if (addr == MOD_MAIN_BASE + 0x275954) { int coop_blur_hook(Cpu *c, uint64_t addr); return coop_blur_hook(c, addr); }
-    if (addr == MOD_MAIN_BASE + 0x31dbc0) return 0;   // (a hit's delivery: hooked for the older enemy sync's replay, which is gone)
     if (addr == MOD_MAIN_BASE + 0x300a30) { void coop_hit_update(Cpu *c); coop_hit_update(c); return 0; }        // coop_world.c
     if (addr == MOD_MAIN_BASE + 0x50ad74) return 0;   // (an action request: the enemy sync saw it first, above)
     if (addr == MOD_MAIN_BASE + 0x96c1ac) { void coop_markers_screen(uint64_t); coop_markers_screen(c->x[0]); return 0; }   // coop_markers.c: the AppMap screen's set-up
@@ -1412,7 +1411,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // updates main+0x446a84 / main+0x49f5f8) keeps the receiver's component in x19, whose +0x18 is its actor. For an
     // enemy whose nearest Link is a co-op one, the manager holds that Link's data for this call only: enemies then
     // sense, chase and attack the player nearest to them (coop_world.c coop_nearest_link).
-    if (addr == MOD_MAIN_BASE + 0x45b930) return 0;   // (hooked for a test that held a co-op Link's data there for the call: gone with the older enemy sync)
     if (addr == MOD_MAIN_BASE + 0x49f5f8) {
         static int on = -1;
         if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "emit"); }

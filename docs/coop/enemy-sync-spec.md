@@ -549,6 +549,27 @@ the bytes being equal throughout; built, not seen to act. Not carried: the other
 0x100, extinguish 0x20000, re-fit 0x10000, change state, the attachment's activate and detach), which are requests
 the calc consumes, and the flag word +0x4600 (jump-fall attack bit 0x80000, arrow attachment bit 33).
 
+**B.35 An attack armed by a node** (research R20, the SensorHit component [comps+0x428]; `coop_enemy_arm.c`;
+built, not run: off with `TOTK_COOP_EN_ARM=0`). An attack is not a held flag: the arm call main+0x1bf20cc(component,
+request) is made again every frame while the attack is on, and the component's calc drops the armed bits each frame.
+The animation makes the call (main+0x42ec98, in the actor's calc, from the clip's AtCollision events), which happens
+on a copy too; and nodes of the AI graph make it (ExecuteSensorHitSetupAttack and about twenty other callers), which
+does not. By the graphs, seventeen actors are armed by nodes only (the plain, fire and ice Chuchus, a dungeon boss,
+the Keese swarms): their copies never hit. Thirty-four more are armed by both.
+- The request is 0x24 bytes without a pointer. The game that runs the enemy tells each call that does not return
+  into the animation's function (ARM, type 61); the copy's game makes the same call once a frame before the copy's
+  calc while the calls keep coming, and stops four frames after the last.
+- Two held values are stated with the enemy: the attack layer override (byte +0x23, 0x16 none), written when it
+  differs; and bit 0 of the "hit-receive sensors off" reasons word (+0x26), put on and off at its edges with the
+  game's own calls (main+0x4e0edc when the word was 0, main+0x4f2384 when it becomes 0).
+- Not known: whether the copy's pre-calc is early enough for the struck actor's own sensor calc in the same frame;
+  what the other node-armed pieces need (the eat layer, the confused enemy's sensors, the all-sensor mask, the
+  force-no-hit map [comps+0x258]).
+- In the hook list for the next pieces, with no handler yet: the lifter's calls (lift at once main+0x1ba75d0, throw
+  main+0x1ba796c, fall, the lifted actor's death, the lift requests), the shooter's sleep and drop-prepared calls,
+  the rider's get-off, the sweep-out state setter. Research R20 has a recipe for each. Whether a lifted object
+  already follows through the object mirror is to be seen in play before the lifter is built.
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is

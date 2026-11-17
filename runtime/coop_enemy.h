@@ -39,7 +39,7 @@ typedef struct {
     struct { float clock, weight; } c[EN_CTRL_N];
 } EnSlot;
 #define EN_EQ_N 8         // equipment slots
-typedef struct { EnSnap s; int32_t hp; uint32_t dstate; uint8_t nslot, rag, hide, vis, mem, verb, tgt, wx; uint32_t eq[EN_EQ_N]; uint32_t att[EN_EQ_N]; uint8_t eqs[EN_EQ_N]; uint32_t binfo, binfo2; uint8_t blink, gb, bpad[2]; float look[4]; uint8_t lk[4]; EnSlot sl[EN_SLOT_N]; } EnState;   // look, lk: its model controller's looks (B.33): floats +0x4c +0x54 +0x58 +0x5c, bytes +0x9b +0x9c +0x9e, lk[3] 1 when stated;   // gb: 0x80 stated, bit 0 its attack is a swift one (B.31);   // eq: the name hash of what each equipment slot holds   // one stated moment of an enemy
+typedef struct { EnSnap s; int32_t hp; uint32_t dstate; uint8_t nslot, rag, hide, vis, mem, verb, tgt, wx; uint32_t eq[EN_EQ_N]; uint32_t att[EN_EQ_N]; uint8_t eqs[EN_EQ_N]; uint32_t binfo, binfo2; uint8_t blink, gb, arm[2]; float look[4]; uint8_t lk[4]; EnSlot sl[EN_SLOT_N]; } EnState;   // look, lk: its model controller's looks (B.33): floats +0x4c +0x54 +0x58 +0x5c, bytes +0x9b +0x9c +0x9e, lk[3] 1 when stated;   // gb: 0x80 stated, bit 0 its attack is a swift one (B.31);   // eq: the name hash of what each equipment slot holds   // one stated moment of an enemy
 // (hide: the model controller's "not drawn" byte, [comps+0x280]+0x9d; vis: actor+0x444 bit 23)
 
 typedef struct {
@@ -71,6 +71,7 @@ typedef struct {
     uint8_t throw_slot, throw_due; uint64_t throw_x3, throw_x4; uint8_t throw_req[0x30];   // a throw of its owner's enemy to make here (B.14)
     _Atomic uint8_t tgt_back;   // the player (1 + net id) its target slot is to name again: a change too soon after the last (B.22)
     uint8_t show_gb;   // its owner's game-balance bits, as EnState.gb (B.31)
+    uint8_t show_arm[2];   // its owner's attack layer override and hit-receive-off bit (0x80 stated), as EnState.arm (B.35)
     float show_look[4]; uint8_t show_lk[4];   // its owner's model looks, as EnState.look and lk (B.33)
     uint32_t show_binfo; uint8_t show_blink, show_bhave;   // its owner's battle-info flags and whether it is in the battle manager's list (B.20)
     uint8_t wx_type, show_wx; uint32_t wx_frame;   // the magic weather its graph last asked for (type + 1) and when; what its owner states
@@ -163,10 +164,10 @@ void en_pose_of(uint64_t actor, float pose[7]);
 void en_quat_of_rot(const float r[9], float q[4]);
 void en_rot_of_quat(const float q[4], float r[9]);
 
-// Message types (60 to 89, through coop_msg.c). Not used, kept free: 61, 64, 66, 70, 73, 81, 85 (the design's BONES,
-// EVENT, HITACK, KILL, ORPHAN_ACK, PROJ_END and DEATH_SIGNAL, which the state-based sync never needed).
+// Message types (60 to 89, through coop_msg.c). Not used, kept free: 64, 66, 70, 73, 81, 85 (the design's EVENT,
+// HITACK, KILL, ORPHAN_ACK, PROJ_END and DEATH_SIGNAL, which the state-based sync never needed).
 enum {
-    ENM_STATE = 60, ENM_DECL = 62, ENM_PLAY = 63, ENM_HIT = 65,
+    ENM_STATE = 60, ENM_ARM = 61, ENM_DECL = 62, ENM_PLAY = 63, ENM_HIT = 65,
     ENM_OUTCOME = 67, ENM_DEATH = 68, ENM_DEATH_END = 69, ENM_TOMBS = 71, ENM_CLAIM = 72,
     ENM_REST = 74, ENM_OFFER = 75, ENM_GONE = 76, ENM_NEED = 77, ENM_INDEX = 78, ENM_SYNC_END = 79,
     ENM_PROJ = 80, ENM_EQUIP = 82, ENM_MOON = 83, ENM_UNSYNCED = 84, ENM_POSE = 86, ENM_ATTN = 87, ENM_FX = 88, ENM_PICK = 89,
