@@ -24,22 +24,6 @@
 // Packet: u16 bone count, u16 0, then per bone 12 bytes: the rotation as the smallest three of its quaternion
 // (3 x s16, the dropped component's index in the low 2 bits of the first) and the position in model space
 // (3 x s16, 1/4096 m).
-void coop_puppet_dump_input(uint64_t pose, uint64_t skel) {
-    static _Atomic int done;
-    uint64_t me = coop_player_actor(), s = me;
-    for (int i = 0; i < 8 && s; i++) s = coop_rd_ptr(s + coop_skel_path[i]);
-    if (!s || skel != s || atomic_exchange(&done, 1)) return;
-    uint16_t n = 0;
-    coop_rd(pose + 0xa, &n, 2);
-    uint64_t arr = coop_rd_ptr(pose);
-    rt_log("coop: puppet input pose %llx: %u bones at %llx", (unsigned long long)pose, n, (unsigned long long)arr);
-    for (int b = 0; b < 4; b++) {
-        float f[20];
-        if (!coop_rd(arr + b * 0x50, f, sizeof f)) break;
-        rt_log("coop: puppet input %d: %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f", b,
-               f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11], f[12], f[13], f[14], f[15], f[16], f[17], f[18], f[19]);
-    }
-}
 int16_t coop_pose_q16(float v, float scale) {
     float x = v * scale;
     return (int16_t)(x > 32767 ? 32767 : x < -32767 ? -32767 : x);
@@ -416,25 +400,6 @@ int coop_standin_put_pose(uint64_t skel, int id) {
     if (ok && atomic_fetch_add(&said, 1) == 0) rt_log("coop: stand-in: its owner's skeleton records go onto it");
     if (!ok && atomic_fetch_add(&said_no, 1) < 3) rt_log("coop: stand-in: its owner's records not put on (%d bytes)", len);
     return ok;
-}
-// Proxy mode, from the proxy driver (coop_players.c): the owner's records at the delayed moment straight into the
-// proxy's body skeleton. 0: not done (no records yet: the caller runs the writer with the input pose instead).
-int coop_proxy_put_records(uint64_t skel) {
-    if (!proxy_records_on()) return 0;
-    int n = atomic_load_explicit(&puppet_n, memory_order_relaxed);
-    for (int i = 0; skel && i < n; i++) {
-        if (skel != atomic_load_explicit(&puppet_skel[i], memory_order_relaxed)) continue;
-        static __thread uint8_t in[COOP_POSE_MAX];
-        uint64_t age = 0;
-        int id = atomic_load(&puppet_id[i]), len = coop_net_pose(id, in, sizeof in, &age);
-        if (!len || age >= 2000000000ull) return 0;
-        pose_hist_take(id, in, len, age);
-        int ok = pose_put_delayed(id, 0, skel);
-        static _Atomic int said;
-        if (ok && atomic_fetch_add(&said, 1) == 0) rt_log("coop: proxy: the owner's skeleton records go onto the proxy");
-        return ok;
-    }
-    return 0;
 }
 // Test (TOTK_COOP_TEST_IKDIFF=1): this Link's body skeleton local records (+0x18, 0x60 a bone: scale +0x10, rotation
 // rows +0x20 / +0x30 / +0x40, transposed against the input pose's, translation +0x50) against the last pose packed for sending (the writer's input):

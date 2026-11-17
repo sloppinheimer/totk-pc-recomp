@@ -30,8 +30,6 @@
 #define LINK_SET_FN 0x155ec
 #define HISTORY_MGR_SLOT 0x395f6f8
 #define BP_SIZE 0x1818          // a CmbAct: header, 21 parts of 0x118 from +0xc, 21 bonds of 12 from +0x1704, the tail
-#define VER_CHUNK 840
-#define VER_CHUNKS ((BP_SIZE + VER_CHUNK - 1) / VER_CHUNK)
 
 #include "coop_ent.h"
 
@@ -639,7 +637,6 @@ int coop_g1(Cpu *c, uint64_t off) {
     c->x[0] = 0;
     return 1;
 }
-void coop_g1_counts(uint32_t out[9]) { for (int i = 0; i < 9; i++) out[i] = atomic_load(&g1_dropped[i]); }
 // ---- Devices (plan 8.1, 8.2) -------------------------------------------------------------------------------------------
 // A device is switched by the message its on/off node takes as "set on" / "set off" (0x6b510000 / 0x6b510001: the
 // handler main+0x245c114 sets bit 0 / bit 1 of the node's event byte, and the node's calc turns its on latch on only
@@ -720,7 +717,6 @@ void coop_ctn_event_seen(uint64_t actor) {   // from the on/off calc of a follow
     if (ev_seen_n < EVQ) ev_seen[ev_seen_n].actor = actor, ev_seen[ev_seen_n].bits = b & 7, ev_seen[ev_seen_n].us = frame_step_world_us(), ev_seen_n++;
     plat_mutex_unlock(&ev_lock);
 }
-typedef struct { uint64_t inc; uint32_t serial, part, bits, v; } EvMsg;   // (v: the version part is a number of)
 // A hit here that would switch on a device another game runs (a build's part or a lone device) while this game's gauge
 // cannot pay is not sent: in the game a player whose battery is empty or recharging does not switch a device on, and
 // sent, the device went on where it runs and the other player's battery paid for it (plan 43, note 17). Switching off
@@ -942,7 +938,7 @@ static void floats_follow(Cpu *c) {
     coop_lock_wait(&grp_lock);
     for (int i = 0; i < REG_N; i++) {
         Grp *e = &reg[i];
-        if (!e->used || runs(e) || 0 || e->asked || !(e->fw | e->fk | e->fb)) continue;
+        if (!e->used || runs(e) || e->asked || !(e->fw | e->fk | e->fb)) continue;
         for (int r = 0; r < e->n && r < 21 && nw < 256; r++) {
             if (!e->parts[r] || (e->fp >> r & 1)) continue;   // (a spring: springs_phase0)
             int kind = e->fb >> r & 1 ? 3 : e->fw >> r & 1 ? 1 : e->fk >> r & 1 ? 2 : 0;
@@ -979,8 +975,6 @@ static void floats_follow(Cpu *c) {
 // the same death of their copy with the game's own request main+0x1953184(actor, kind, 0), at actor phase 0, with the
 // refusal lifted for that call. So a time bomb's blast, a burned board and a broken-off part's vanishing play on the
 // copy too. Death kinds: research notes sync-v3/m2/p5/rocket-timebomb (table at main+0x366f8b0).
-#define CTR_DEATH COOP_CTR_HIT   // (a message number of the channel the rebuilt core had left unused)
-typedef struct { uint64_t inc; uint32_t serial, part, kind, v; } DeathMsg;   // (v: the version part is a number of)
 static struct { uint64_t actor; uint32_t kind; int64_t us; uint32_t gen; } death_put[64];
 static int death_put_n;
 void coop_life_death_allow(int on);
@@ -1040,7 +1034,7 @@ static void rider_weight(Cpu *c) {
         int here = 0;
         coop_lock_wait(&grp_lock);
         for (int q = 0; q < REG_N && !here; q++)
-            for (int r = 0; reg[q].used && runs(&reg[q]) && 1 && !reg[q].asked && r < reg[q].n && !here; r++)
+            for (int r = 0; reg[q].used && runs(&reg[q]) && !reg[q].asked && r < reg[q].n && !here; r++)
                 here = reg[q].parts[r] == ridden[i];
         plat_mutex_unlock(&grp_lock);
         uint64_t body = here && alive(ridden[i]) ? main_body_of(ridden[i]) : 0;
@@ -1072,7 +1066,7 @@ static void burning_phase0(Cpu *c) {
         int np, mine;
         coop_lock_wait(&grp_lock);
         Grp *e = &reg[i];
-        int go = e->used && 1 && e->n && !e->asked;
+        int go = e->used && e->n && !e->asked;
         np = e->n, mine = go && runs(e), want = e->burn;
         memcpy(parts, e->parts, sizeof parts);
         plat_mutex_unlock(&grp_lock);
@@ -1222,7 +1216,7 @@ static void springs_phase0(Cpu *c) {
         read_us = now;
         coop_lock_wait(&grp_lock);
         for (int i = 0; i < REG_N; i++)
-            for (int r = 0; reg[i].used && runs(&reg[i]) && 1 && r < reg[i].n && n < SPR_N; r++)
+            for (int r = 0; reg[i].used && runs(&reg[i]) && r < reg[i].n && n < SPR_N; r++)
                 if (alive_as(reg[i].parts[r], reg[i].gen[r]) && spring_actor(reg[i].parts[r])) list[n++] = reg[i].parts[r];
         plat_mutex_unlock(&grp_lock);
         SprSt got[SPR_N];
@@ -1239,7 +1233,7 @@ static void springs_phase0(Cpu *c) {
     coop_lock_wait(&grp_lock);
     for (int i = 0; i < REG_N; i++) {
         Grp *e = &reg[i];
-        if (!e->used || runs(e) || 0 || e->asked) continue;
+        if (!e->used || runs(e) || e->asked) continue;
         for (int r = 0; r < e->n && nw < SPR_N; r++)
             if ((e->fp >> r & 1) && e->parts[r]) want[nw].actor = e->parts[r], want[nw].ext = e->pf[r][0], want[nw].limit = e->pf[r][1], want[nw].flags = (uint32_t)e->pf[r][2], nw++;
     }

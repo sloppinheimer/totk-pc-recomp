@@ -473,8 +473,6 @@ static void live_load(const char *dir) {
            c.key, c.actor, files, added);
 }
 
-int coop_chars_live_loaded(void) { return live_loaded; }
-
 static int live_pending;   // the running job makes a slot folder (live_dir) to add when it is done
 static char live_dir[2300];
 

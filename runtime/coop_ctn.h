@@ -26,7 +26,6 @@ int coop_ctn_parts_all(uint64_t *out, int max);   // every entity's actor here (
 int coop_ctn_emitter_of_followed(uint64_t a);     // a device followed here, or a shot of one (its hits are the owner's to count)
 int coop_ctn_sender_entry(uint64_t group);        // the entry of the group's on/off sender main+0x32eb90
 int coop_g1(Cpu *c, uint64_t off);           // G1: writes kept off the bodies of copies
-void coop_g1_counts(uint32_t out[9]);
 int coop_held_here(uint64_t a);              // this game's Link holds it with Ultrahand
 
 // Notes from the hooks.

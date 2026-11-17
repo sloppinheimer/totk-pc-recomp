@@ -110,8 +110,6 @@ static int kind_of(const char *nm) {
     return coop_mount_kind(nm);   // horses and land animals, with TOTK_COOP_MOUNTS=1 (coop_mount.c)
 }
 
-int coop_enemy_kind(const char *nm) { return kind_of(nm); }
-
 // ---- Reads of the game -----------------------------------------------------------------------------------------------
 int en_alive(uint64_t a, uint32_t gen) {
     int32_t st = 0;
@@ -454,7 +452,6 @@ static void unsynced_set(uint64_t hash, int why, int tell) {
     rt_log("coop: en: unsynced: %016llx %s: %s", (unsigned long long)hash, e->name, why == 1 ? "the games' actors there have different names" : why == 2 ? "a graph node ran on its copy" : "a peer said so");
     if (tell) { MUnsynced m = {hash, (uint8_t)why, {0}}; en_send_all(ENM_UNSYNCED, &m, sizeof m); }
 }
-void en_unsynced(uint64_t hash, int why) { unsynced_set(hash, why, 1); }
 
 // Everything this game knows, to one peer: at its join, after its load, and when it asks (S 10.6, 11.3).
 static void burst(int id) {
@@ -1017,23 +1014,6 @@ void coop_enemy_net(void) {
     }
     plat_mutex_unlock(&en_lock);
     STAGE(0), atomic_store(&tick_out_ns, en_now());
-}
-
-// Whether p is within m of a live enemy this game runs (coop_world.c coop_near_my_enemy, for the object mirror's
-// arrows: one made there is that enemy's shot). From the co-op tick.
-int coop_enemy_near_owned(const float p[3], float m) {
-    if (!atomic_load(&en_active)) return 0;
-    int near = 0;
-    uint64_t me = coop_ctr_me();
-    coop_lock_wait(&en_lock);
-    for (int i = 0; i < EN_N && !near; i++) {
-        const En *e = &en_tab[i];
-        if (!e->used || e->owner != me || e->life != EN_LIVE || e->cell < 0) continue;
-        float dx = p[0] - e->pose[0], dy = p[1] - e->pose[1], dz = p[2] - e->pose[2];
-        near = dx * dx + dy * dy + dz * dz < m * m;
-    }
-    plat_mutex_unlock(&en_lock);
-    return near;
 }
 
 // ---- Phase 0 ----------------------------------------------------------------------------------------------------------

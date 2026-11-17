@@ -15,7 +15,6 @@ double coop_sess_hold_s(void);            // how long a claim waits for a rival'
 
 // The clock estimate of a peer: a sample is a stamp that peer put on a state this game took in this frame.
 void coop_sess_clock_sample(int id, int64_t peer_stamp_ns);
-void coop_sess_clock_clear(int id);
 // Once a frame per peer: the time on that peer's clock at which its states are shown now, the delay in it, and how
 // often the estimate was set at once (a change of that count is a teleport for every copy). 0: no estimate yet.
 int coop_sess_clock(int id, uint64_t interval_ns, int64_t *t_ns, int64_t *delay_ns, uint32_t *teleports);

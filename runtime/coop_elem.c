@@ -366,24 +366,6 @@ static uint64_t comp_of(uint64_t actor) {
     uint64_t t = actor ? coop_rd_ptr(actor + 0x228) : 0;
     return t ? coop_rd_ptr(t + 0x180) : 0;
 }
-// An actor that is shown only (the enemy sync's mirror of another game's projectile): chemically it does nothing
-// (D 2.4). on 0 takes it out again; an actor that is gone is taken out by whoever made it inert.
-void coop_elem_inert(uint64_t actor, int on) {
-    if (!actor) return;
-    int at = -1, free_at = -1;
-    for (int i = 0; i < INERT_N; i++) {
-        uint64_t a = atomic_load(&inert[i]);
-        if (a == actor) at = i;
-        if (!a && free_at < 0) free_at = i;
-    }
-    if (on && at < 0 && free_at >= 0) atomic_store(&inert[free_at], actor);
-    if (!on && at >= 0) atomic_store(&inert[at], 0);
-    uint64_t comp = comp_of(actor), word;
-    if (comp && coop_rd(comp + 0x20, &word, 8)) {   // the game's own "does not interact with the world" (main+0x250cc48)
-        _Atomic uint64_t *p = (_Atomic uint64_t *)(uintptr_t)(comp + 0x20);
-        if (on) atomic_fetch_or(p, 1ull << 32); else atomic_fetch_and(p, ~(1ull << 32));
-    }
-}
 
 // A placed actor's name across games: its placement hash (0: it has none, or not yet).
 static uint64_t hash_of(uint64_t actor) {

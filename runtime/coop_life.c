@@ -139,18 +139,6 @@ static void x15_counts(void) {
 #define X3_N 21
 static struct { uint64_t actor[X3_N], body[X3_N], spr[X3_N]; int n; int64_t until; } x3w;
 static PlatMutex x3_lock = PLAT_MUTEX_INIT;
-void coop_life_watch_parts(const uint64_t *parts, int n, int64_t until_us) {
-    plat_mutex_lock(&x3_lock);
-    x3w.n = n < X3_N ? n : X3_N, x3w.until = until_us;
-    for (int i = 0; i < x3w.n; i++) {
-        uint64_t a = parts[i];
-        x3w.actor[i] = a;
-        x3w.body[i] = a ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x50) + 0x20) + 0x150) : 0;
-        x3w.spr[i] = a ? coop_rd_ptr(coop_rd_ptr(a + 0x228) + 0x480) : 0;
-    }
-    plat_mutex_unlock(&x3_lock);
-    rt_log("coop: x3: watching %d parts until %.2f s", n, until_us / 1e6);
-}
 static int x3_names(uint64_t v, char *out, size_t sz) {   // which watched thing v is (or points 0x150 into a body of)
     for (int i = 0; v && i < x3w.n; i++) {
         if (v == x3w.actor[i]) return snprintf(out, sz, "(part %d actor)", i);
@@ -263,7 +251,6 @@ static int g4_on(void) {
     return on;
 }
 static _Atomic uint32_t g4_refused;   // all refusals since the start (coop_life_refused, the clean-run line)
-uint32_t coop_life_refused(void) { return atomic_load(&g4_refused); }
 static __thread int death_allowed;   // (coop_ctn.c asks a copy the death its part had where the build runs)
 void coop_life_death_allow(int on) { death_allowed = on; }
 static int g4_refuse(Cpu *c, const char *what, uint64_t actor, uint64_t arg) {
@@ -424,8 +411,6 @@ int coop_phase0_hook(Cpu *c, uint64_t addr);
 int coop_ab_force_inert(void);
 static __thread int v3_inner, in_follow_sender, in_follow_cannon;
 static _Atomic uint32_t sender_dropped, shots_kept;
-uint32_t coop_life_sender_dropped(void) { return atomic_load(&sender_dropped); }
-uint32_t coop_life_shots_kept(void) { return atomic_load(&shots_kept); }
 static uint64_t v3_node_actor(uint64_t node) {   // an AI node's actor ([[node +8] +8] +0x1f8)
     return node ? coop_rd_ptr(coop_rd_ptr(coop_rd_ptr(node + 8) + 8) + 0x1f8) : 0;
 }
@@ -471,7 +456,6 @@ static int contact_of_standin(uint64_t rec, const uint64_t *st, int n) {
     return 0;
 }
 static _Atomic uint32_t standin_hits;
-uint32_t coop_life_standin_hits(void) { return atomic_load(&standin_hits); }
 static int only_standin_contacts(uint64_t victim) {
     uint64_t st[8];
     int n = coop_players_all(st, 8);

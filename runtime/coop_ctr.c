@@ -187,11 +187,6 @@ int coop_ctr_send(int to, int type, int flags, const void *d, int len) {
     return ok;
 }
 
-int coop_ctr_send_inc(uint64_t to, int type, int flags, const void *d, int len) {
-    int id = coop_ctr_route(to);
-    return id ? coop_ctr_send(id, type, flags, d, len) : 0;
-}
-
 int coop_ctr_route(uint64_t inc) {
     int id = 0;
     plat_mutex_lock(&lock);

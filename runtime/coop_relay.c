@@ -151,7 +151,6 @@ void coop_relay_stop(void) {
 }
 
 int coop_relay_port(void) { return relay_port; }
-int coop_relay_players(void) { return relay_players; }
 
 // This PC's addresses to give the other players: the one its traffic to the internet leaves from (a UDP "connect"
 // sends nothing), which is the LAN address behind a router.

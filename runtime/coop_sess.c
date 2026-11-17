@@ -184,9 +184,6 @@ void coop_sess_clock_sample(int id, int64_t peer_stamp_ns) {
     uint64_t now = atomic_load(&frame_ns);
     clock_sample(&clocks[id], now, (int64_t)now - peer_stamp_ns);
 }
-void coop_sess_clock_clear(int id) {
-    if (id >= 1 && id <= COOP_MAX_PLAYERS) clock_clear(&clocks[id]);
-}
 int coop_sess_clock(int id, uint64_t interval_ns, int64_t *t_ns, int64_t *delay_ns, uint32_t *teleports) {
     if (id < 1 || id > COOP_MAX_PLAYERS || !clocks[id].have) return 0;
     int64_t t = clock_step(&clocks[id], atomic_load(&frame_ns), interval_ns);

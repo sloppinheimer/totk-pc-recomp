@@ -40,7 +40,6 @@ void coop_ctr_tick(void);   // once per co-op poll
 // Sending: to a relay id (0: every other player here), or to an incarnation. Reliable messages are queued per stream
 // and sent again until acknowledged; 0 when nothing could be queued (no session, nobody to send to, a full queue).
 int coop_ctr_send(int to, int type, int flags, const void *d, int len);
-int coop_ctr_send_inc(uint64_t to, int type, int flags, const void *d, int len);
 // Receiving: reliable messages in order per stream (1 one taken, 0 none); unreliable ones as the latest per (sender,
 // type, key = the payload's first 8 bytes); its length, 0 none.
 int coop_ctr_recv(CoopCtrMsg *m);

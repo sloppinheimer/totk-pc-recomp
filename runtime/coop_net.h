@@ -126,7 +126,6 @@ int coop_net_players(int *ids, char (*names)[17], int max);   // the other playe
 int coop_relay_start(int port);
 void coop_relay_stop(void);
 int coop_relay_port(void);       // 0 when none runs here
-int coop_relay_players(void);
 int coop_local_address(char *out, size_t n);   // this PC's LAN address, for the other players
 #define COOP_PORT 41900
 void coop_host(const char *name);   // the relay here, joined at 127.0.0.1

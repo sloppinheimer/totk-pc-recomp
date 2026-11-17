@@ -656,7 +656,6 @@ static int frozen(void) {
 // matrix (+0x1f8, with its dirty bit) and puts the parts hung on body bones (items) on them.
 #define PROXY_MODEL_PUSH 0x24cc30
 static void owner_matrix(Slot *s, float m[12]);
-static float body_top(uint64_t actor);
 static float body_top_root(uint64_t actor, float *root_y);
 static void top_log(const char *who, uint64_t actor);
 uint64_t coop_puppet_pose_obj(uint64_t skel);   // coop_world.c
@@ -845,7 +844,6 @@ static float body_top_root(uint64_t actor, float *root_y) {
     top_bone = tb;
     return top - rec[0][13];
 }
-static float body_top(uint64_t actor) { return body_top_root(actor, NULL); }
 // TOTK_COOP_TOP_LOG=<s>: for 4 s from then, every frame, this PC's Link's and each puppet's body_top (to tell the
 // owner's own movement from jitter: game A's own Link against game B's puppet of it).
 // TOTK_COOP_TOP_LOG=<s>[,<length s>] (default 4 s). Also the actor's position (tools/coop/top_compare.py lines the
@@ -2406,52 +2404,6 @@ static void regive_gear(Cpu *c, uint64_t eq, int k, const char *name, int dye, i
 // (2026-11-07); TotK Online's stand-in has no AI and replays its owner's animation clips, which this needs as well.
 #define GEAR_SET_IN_HAND 0x4f5700
 #define GEAR_REMOVE_IN_HAND 0x4f5194
-// Test (TOTK_COOP_TEST_INHAND=1): before each in-hand call, what setEquipmentInHand (main+0x4f5700) reads: the object
-// at eq+0x1620 that its chain starts from, that object's +0x325 bit 0, its [+0x10], [+0x18] and the byte +0x2d2 that
-// gates the hand attach; and the same for this game's own Link (the stand-in held its sword only while this Link had
-// one equipped: The tester, 2026-11-07).
-static void inhand_probe(uint64_t eq, const char *who) {
-    static int on = -1, said;
-    if (on < 0) on = cfg_get("TOTK_COOP_TEST_INHAND") != NULL;
-    if (!on || !eq || said++ > 40) return;
-    uint64_t o = coop_rd_ptr(eq + 0x1620), o2 = o ? coop_rd_ptr(o + 0x10) : 0, o3 = o ? coop_rd_ptr(o + 0x18) : 0;
-    uint8_t b325 = 0, b2d2 = 0;
-    if (o) coop_rd(o + 0x325, &b325, 1), coop_rd(o + 0x2d2, &b2d2, 1);
-    char nm[48] = "";
-    if (o) coop_actor_name(o, nm, sizeof nm);
-    {   // what the record at +0x1620 points to: [+0x18] a reference object (+0x40 its actor), [+0x20] a serial
-        uint64_t r = o ? coop_rd_ptr(o + 0x18) : 0, ra = r ? coop_rd_ptr(r + 0x40) : 0;
-        uint32_t ser = 0, rser = 0;
-        if (o) coop_rd(o + 0x20, &ser, 4);
-        if (r) coop_rd(r + 0x48, &rser, 4);
-        char an[48] = "";
-        if (ra) coop_actor_name(ra, an, sizeof an);
-        rt_log("coop: test: inhand %s: record's ref %llx (actor %llx '%s', serial %u, record's %u); this Link %llx, stand-in %llx", who,
-               (unsigned long long)r, (unsigned long long)ra, an, rser, ser, (unsigned long long)coop_player_actor(),
-               (unsigned long long)(slots[0].actor));
-    }
-    rt_log("coop: test: inhand %s: eq %llx +0x1620 %llx ('%s') +0x325 %u [+0x10] %llx [+0x18] %llx +0x2d2 %u", who,
-           (unsigned long long)eq, (unsigned long long)o, nm, b325, (unsigned long long)o2, (unsigned long long)o3, b2d2);
-    // Where an actor holds that object: its first 0x1000 bytes and each of its components ([actor+0x228] table,
-    // 0x800 bytes each), for this game's Link and each stand-in, so the stand-in's own can be found at the same place.
-    uint64_t actors[1 + COOP_MAX_PLAYERS];
-    int na = 0;
-    actors[na++] = coop_player_actor();
-    for (int i = 0; i < COOP_MAX_PLAYERS; i++) if (slots[i].actor && slots[i].state == LIVE) actors[na++] = slots[i].actor;
-    for (int a = 0; o && a < na; a++) {
-        static uint64_t buf[0x200];
-        if (coop_rd(actors[a], buf, 0x1000))
-            for (int w = 0; w < 0x200; w++) if (buf[w] == o) rt_log("coop: test: inhand: actor %d (%llx) +%#x holds it", a, (unsigned long long)actors[a], w * 8);
-        uint64_t tbl = coop_rd_ptr(actors[a] + 0x228);
-        for (int ci = 0; tbl && ci < 0x80; ci++) {
-            uint64_t comp = coop_rd_ptr(tbl + (uint64_t)ci * 8);
-            if (!comp) continue;
-            if (comp == o) rt_log("coop: test: inhand: actor %d component %#x is it", a, ci * 8);
-            if (!coop_rd(comp, buf, 0x800)) continue;
-            for (int w = 0; w < 0x100; w++) if (buf[w] == o) rt_log("coop: test: inhand: actor %d component %#x (%llx) +%#x holds it", a, ci * 8, (unsigned long long)comp, w * 8);
-        }
-    }
-}
 static uint64_t eq_of_actor(uint64_t a);
 static void gear_hand(Cpu *c, uint64_t eq, int k, int in) {
     static const uint64_t row[3] = {0, 3, 4};
@@ -3087,31 +3039,6 @@ static int obj_take_over(Slot *s, int k) {
     rt_log("coop: slot %d: the copy of %s (%08x) is held here: this game's now (number %u), its owner is told", (int)(s - slots), nm, s->mir[k].id, props[e].id);
     s->mir[k].state = 0, s->mir[k].actor = 0;
     return 1;
-}
-// The copy a (a lone device of another player's) taken over by this game, as by a grab (note 21: its owner is in a
-// menu). Asked from the device's switch update on a game thread: queued, and taken over on the co-op tick, where the
-// object tables are written (review 2 finding 12); comp's toggle request (DeviceSwitch +0x8d bit 3) is set then, so the
-// hit switches it here once it is this game's.
-static struct { _Atomic uint64_t actor, comp; } take_q[8];
-int coop_obj_take_copy(uint64_t a, uint64_t comp) {
-    for (int i = 0; a && i < 8; i++) {
-        uint64_t none = 0;
-        if (atomic_compare_exchange_strong(&take_q[i].actor, &none, a)) { atomic_store(&take_q[i].comp, comp); return 1; }
-    }
-    return 0;
-}
-static void take_q_pass(void) {   // the co-op tick
-    for (int i = 0; i < 8; i++) {
-        uint64_t a = atomic_load(&take_q[i].actor), comp = atomic_load(&take_q[i].comp);
-        if (!a) continue;
-        Slot *s;
-        int k;
-        if (copy_of(a, &s, &k) && obj_take_over(s, k)) {
-            if (comp) __atomic_fetch_or((uint8_t *)(uintptr_t)(comp + 0x8d), (uint8_t)8, __ATOMIC_SEQ_CST);
-        } else
-            rt_log("coop: a device asked to be taken over (its owner in a menu) is no copy here now: not taken");
-        atomic_store(&take_q[i].comp, 0), atomic_store(&take_q[i].actor, 0);
-    }
 }
 // The old owner's side: its object (by its number, or by key for a placed one it moved) is the new owner's now. Its
 // actor stays where it is and becomes the copy of the new number, in a mirror slot taken with it.
@@ -4141,13 +4068,6 @@ int coop_own_sent_objects(uint64_t *out, int max) {
         if (props[e].actor && (props[e].made || props[e].touched) && actor_is(props[e].actor, props[e].name)) out[n++] = props[e].actor;
     return n;
 }
-int coop_copies_all(uint64_t *out, int max) {   // every live copy here of another game's object (coop_ctn.c)
-    int n = 0;
-    for (int i = 0; i < COOP_MAX_PLAYERS; i++)
-        for (int k = 0; k < COOP_OBJS && slots[i].state != FREE && n < max; k++)
-            if (slots[i].mir[k].state == 3 && slots[i].mir[k].actor && copy_alive(&slots[i], k)) out[n++] = slots[i].mir[k].actor;
-    return n;
-}
 int coop_is_copy(uint64_t a) {
     Slot *cs;
     int ck;
@@ -4575,25 +4495,6 @@ uint64_t coop_eq_bow_ref(uint64_t actor) {
         char nm[32];
         coop_actor_name(ref ? coop_rd_ptr(ref + 0x40) : 0, nm, sizeof nm);
         if (nm[0] && gear_kind(nm) == 1) return ref;
-    }
-    return 0;
-}
-// An item of a Link's (in this Link's or a co-op Link's EquipmentUser) or a copy of another player's object: not an
-// enemy's weapon (coop_world.c, enemy puppets).
-int coop_is_players_item(uint64_t a) {
-    Slot *s;
-    int k;
-    if (!a || copy_of(a, &s, &k)) return a != 0;
-    uint64_t links[COOP_MAX_PLAYERS + 1];
-    int n = 0;
-    links[n++] = coop_player_actor();
-    for (int i = 0; i < COOP_MAX_PLAYERS; i++) if (slots[i].actor && slots[i].state == LIVE) links[n++] = slots[i].actor;
-    for (int i = 0; i < n; i++) {
-        uint64_t eq = links[i] ? eq_of_actor(links[i]) : 0;
-        for (int row = 0; eq && row < 24; row++) {
-            uint64_t ref = coop_rd_ptr(eq + GEAR_TABLE + 0x18 * (uint64_t)row);
-            if (ref && coop_rd_ptr(ref + 0x40) == a) return 1;
-        }
     }
     return 0;
 }
@@ -5741,7 +5642,7 @@ void coop_players_tick(Cpu *c) {
         void coop_blur_pack(Cpu *c, uint64_t me, NetState *st);   // coop_world.c: the sword trail
         coop_blur_pack(c, me, &st);
         coop_net_publish(&st);
-        props_receive(c), take_q_pass(), ride_resolve(), ride_carry(c, me), destroy_watch(me), old_items_tick(c);   // placed objects co-op players move; riding them; destroyed
+        props_receive(c), ride_resolve(), ride_carry(c, me), destroy_watch(me), old_items_tick(c);   // placed objects co-op players move; riding them; destroyed
         props_test(c, me), props_test_where(), ride_test(c, me), pickup_test(c, me), chest_test(c, me), arrow_dump(), proxy_arrows_test(), bone_arrow_test(me), impact_test(), glide_log(me), newnear_test(me), beam_test(me), beam_end_tick(), link_hit_test(me);
     }
     armor_probe(me);
