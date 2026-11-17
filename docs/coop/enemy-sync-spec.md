@@ -315,6 +315,14 @@ request block (0x30 bytes) and its two last arguments with the EQUIP message; th
 copy's thrown thing is no loose object while it flies and is deleted once it rests (20 frames still, or 10 s); the
 owner's thrown thing is taken by the object mirror once it rests, and is the one object that stays in every game.
 
+**B.15 How a copy's blow on this game's Link ended** (research R11; built, not seen in a run: in the run after it
+the copies struck the other player only). The game classes each blow when it builds the hit entry (byte +0x0b: 0 a
+hit, 1 guarded, 3 guarded at the right moment, 4 avoided). In this Link's hit update each entry whose attacker is an
+enemy's copy, or a thing a copy holds or shot, is told to the copy's owner once per blow (OUTCOME). The owner's game,
+for a guarded blow, sets its enemy's attack pause as the game's own node does after a guard (the float at
+[[comps+0x268]+0x3c] = 10 + 5 x a random number below 1). Not built: the enemy's repelled or guard-break reaction
+(with B.10 on, the shield's contact on the copy may carry it), and anything for an avoided blow or a flurry rush.
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is

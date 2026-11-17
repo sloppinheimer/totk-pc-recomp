@@ -230,9 +230,48 @@ void en_hit_phase0(void) {
 }
 
 // ---- Messages (the net tick) ------------------------------------------------------------------------------------------------
+// How a copy's blow on this game's Link ended (enemy-sync-spec.md B.15), from the Link's hit update (coop_world.c): told
+// to the copy's owner once per blow. An enemy is found by the attacker actor, or by what it holds or shot.
+void coop_lock_wait(PlatMutex *m);   // coop_spawn.c
+typedef struct { Enid id; uint32_t cls, attack_id; } MOutcome;
+static _Atomic uint32_t n_out_sent, n_out_taken;
+void coop_enemy_outcome(uint64_t attacker, int cls, uint32_t attack_id) {
+    uint64_t coop_enemy_holder(uint64_t actor);
+    EnCell *m = en_cell_of(attacker);
+    if (!m) { uint64_t h = coop_enemy_holder(attacker); m = h ? en_cell_of(h) : NULL; }
+    if (!m || atomic_load(&m->state) != EM_COPY || (attack_id && m->out_id == attack_id)) return;
+    m->out_id = attack_id;
+    coop_lock_wait(&en_lock);   // (this is a hit update's thread: the table and the outbox are the co-op tick's)
+    int16_t ei = atomic_load(&m->en);
+    if (ei < 0 || !en_tab[ei].used) { plat_mutex_unlock(&en_lock); return; }
+    MOutcome o = {en_tab[ei].id, (uint32_t)cls, attack_id};
+    en_send(en_peer_id(en_tab[ei].owner), ENM_OUTCOME, &o, sizeof o);
+    plat_mutex_unlock(&en_lock);
+    if (atomic_fetch_add(&n_out_sent, 1) < 60) rt_log("coop: en: outcome: the blow of the copy of %s on this Link %s: told to its owner", en_tab[ei].name, cls == 0 ? "landed" : cls == 1 ? "was guarded" : cls == 3 ? "was guarded at the right moment" : cls == 4 ? "was avoided" : "ended in another way");
+}
 void en_hit_msg(const CoopCtrMsg *m, int from) {
     uint64_t me = coop_ctr_me();
     switch (m->type) {
+    case ENM_OUTCOME: {
+        const MOutcome *o = (const MOutcome *)m->d;
+        if (m->len != (int)sizeof *o) break;
+        for (int i = 0; i < EN_N; i++) {
+            En *e = &en_tab[i];
+            if (!e->used || !enid_eq(e->id, o->id) || e->owner != me || e->life != EN_LIVE || !e->actor) continue;
+            // A guarded blow: the enemy waits before its next attack, as the game's own node does after a guard
+            // (ExecuteGamebalancePauseAttackIntervalAfterGuard, main+0x2314ab0: the float at [[comps+0x268]+0x3c] is
+            // set to 10 + 5 * a random number below 1). The node runs in a behaviour graph on the enemy's own guard
+            // record, which this game's enemy never gets from a stand-in.
+            uint64_t gb = coop_rd_ptr(en_comps(e->actor) + 0x268);
+            float was = -1, to = 10.0f + 5.0f * (float)((en_now() >> 8) % 1000) / 1000.0f;
+            if ((o->cls == 1 || o->cls == 3) && gb && coop_rd(gb + 0x3c, &was, 4)) memcpy((void *)(uintptr_t)(gb + 0x3c), &to, 4);
+            if (atomic_fetch_add(&n_out_taken, 1) < 60)
+                rt_log("coop: en: outcome: %s %016llx's blow on another player %s%s", e->name, (unsigned long long)e->id.a, o->cls == 0 ? "landed" : o->cls == 1 ? "was guarded" : o->cls == 3 ? "was guarded at the right moment" : o->cls == 4 ? "was avoided" : "ended in another way",
+                       (o->cls == 1 || o->cls == 3) && gb ? ": its attack pause is set as after a guard" : "");
+        }
+        (void)from;
+        break;
+    }
     case ENM_HIT: {
         const MHit *h = (const MHit *)m->d;
         if (m->len != (int)sizeof *h) break;

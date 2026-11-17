@@ -2950,6 +2950,19 @@ static void contacts_filter(uint64_t dc) {
     // owns): its owner's game has the attack on the real Link from its copy of the enemy. Hit here, it played its own
     // reaction, ended in a T pose and put its sword on its back (pair test, attack_enemy_3rd.txt, 2026-11-07).
 
+    if (ct_is_link(a) == 1 && coop_enemy_new()) {
+        // This game's Link is the one struck: how each blow of an enemy's copy ended is told to the copy's owner (the
+        // entry's class byte +0x0b, set by the game when it builds the entry: 0 a hit, 1 guarded, 3 guarded at the
+        // right moment, 4 avoided; research R11). The owner's game has only a stand-in of this player and learns
+        // nothing of it by itself.
+        void coop_enemy_outcome(uint64_t attacker, int cls, uint32_t attack_id);   // coop_enemy_hit.c
+        for (int k = 0; k < cnt; k++) {
+            uint64_t e = base + (uint64_t)k * CONTACT_SZ, r2 = coop_rd_ptr(e + 0x80), by = r2 ? coop_rd_ptr(r2 + 0x40) : 0;
+            uint8_t cls = 0;
+            uint32_t aid = 0;
+            if (by && coop_rd(e + 0x0b, &cls, 1) && coop_rd(e + 0x38, &aid, 4)) coop_enemy_outcome(by, cls, aid);
+        }
+    }
     if (ct_is_link(a) == 2) {
         int32_t zero = 0;
         memcpy((void *)(uintptr_t)(l + 0x18), &zero, 4);
