@@ -227,6 +227,7 @@ static void spawn(Cpu *c, int k) {
     static const char empty[1] = "";
     ST64(sp + 0x28 + 0x40, (uint64_t)(uintptr_t)empty);   // a string the manager reads without a null check (main+0x59a9f0)
     arg[0x90] = 3;   // flags: bit 0 position, bit 1 rotation given (bit 2 would be scale)
+    if (rd_ptr((uint64_t)(uintptr_t)handles[k])) coop_handle_release(c, handles[k]);   // (an earlier request's: its record freed, coop_game.h)
     memset(handles[k], 0, sizeof handles[k]);
     c->sp = sp;
     uint64_t ok = rt_call(c, MOD_MAIN_BASE + REQUEST_CREATE, 8, mgr, sp + 0x20, sp + 0x28,
@@ -736,7 +737,7 @@ static int calc_wrap(Cpu *c, uint64_t addr) {
 // words, x4..x7 and the caller: an autobuild's devices against ours (coop_game.c request_create), for the green tint
 static void create_dump(Cpu *c) {
     static int on = -1;
-    if (on < 0) on = getenv("TOTK_COOP_TEST_CREATEDUMP") != NULL;
+    if (on < 0) on = cfg_get("TOTK_COOP_TEST_CREATEDUMP") != NULL;
     char nm[64] = "";
     uint64_t np = on ? rd_ptr(c->x[1]) : 0;
     if (!np || !rd(np, nm, sizeof nm - 1) || strncmp(nm, "SpObj_", 6)) return;
@@ -802,7 +803,7 @@ static void create_dump(Cpu *c) {
 static int create_trace(Cpu *c) {
     create_dump(c);
     static int on = -1;
-    if (on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); on = e && strstr(e, "create"); }
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_TRACE"); on = e && strstr(e, "create"); }
     if (!on) return 0;
     char nm[64] = "", who[40] = "";
     uint64_t np = rd_ptr(c->x[1]);
@@ -1274,7 +1275,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // ("To shield surf..."). A co-op Link's actions are its own player's, so nothing is written inside one (2026-11-04).
     if (addr == MOD_MAIN_BASE + 0x923d20) {   // TOTK_COOP_TRACE=gdata: every write, with its time, key, value, caller
         static int tr = -1;
-        if (tr < 0) { const char *e = getenv("TOTK_COOP_TRACE"); tr = e && strstr(e, "gdata"); }
+        if (tr < 0) { const char *e = cfg_get("TOTK_COOP_TRACE"); tr = e && strstr(e, "gdata"); }
         if (tr) {
             uint32_t key = 0;
             rd(c->x[2], &key, 4);
@@ -1325,7 +1326,7 @@ int coop_hook(Cpu *c, uint64_t addr) {
         uint64_t a = c->x[0];
         // (getenv once: it ran for every actor's update every frame, on every thread, code review 2026-11-06)
         static int trace_on = -1;
-        if (trace_on < 0) trace_on = getenv("TOTK_COOP_TRACE") != NULL;
+        if (trace_on < 0) trace_on = cfg_get("TOTK_COOP_TRACE") != NULL;
         if (trace_on && !calc_actor && a && !strcmp(actor_name(a, nm, sizeof nm), "Player")) {
             calc_actor = a;
             int r = calc_wrap(c, addr);
@@ -1573,7 +1574,7 @@ static void standpush_test(Cpu *c) {
 
 void coop_tick(struct Cpu *c) {
     static int trace_on = -1;   // (getenv once)
-    if (trace_on < 0) trace_on = getenv("TOTK_COOP_TRACE") != NULL;
+    if (trace_on < 0) trace_on = cfg_get("TOTK_COOP_TRACE") != NULL;
     if (trace_on) log_callers(c);
     player_actor_cached = player_actor();
     coop_trace_tick(player_actor_cached);   // coop_trace.c: TOTK_COOP_TRACE_AT
@@ -1651,7 +1652,7 @@ void coop_tick(struct Cpu *c) {
         rt_log("coop: TOTK_COOP_PROF=%s", e ? e : "(unset)");
     }
     static int player_trace = -1;   // TOTK_COOP_TRACE=player: the callers of the named lookup for "Player", every 10 s
-    if (player_trace < 0) { const char *e = getenv("TOTK_COOP_TRACE"); player_trace = e && strstr(e, "player"); }
+    if (player_trace < 0) { const char *e = cfg_get("TOTK_COOP_TRACE"); player_trace = e && strstr(e, "player"); }
     if (player_trace) {
         static int t2;
         if (++t2 % 300 == 0) {
@@ -1844,6 +1845,11 @@ void coop_tick(struct Cpu *c) {
         int st = handle_status(k);
         if (st != last_status[k]) rt_log("coop: %s handle status %d", names[k], st);
         last_status[k] = st;
+        if (st == 4) {   // the game would not make it: the request's record freed, so the next spawn can ask again
+            coop_handle_release(c, handles[k]);
+            memset(handles[k], 0, sizeof handles[k]);
+            continue;
+        }
         if (st == 3) {
             memset(links[k], 0, sizeof links[k]);
             uint64_t got = guest_call(c, MOD_MAIN_BASE + CLAIM_ACTOR, (uint64_t)(uintptr_t)handles[k],

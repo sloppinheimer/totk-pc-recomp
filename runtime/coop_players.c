@@ -1039,7 +1039,7 @@ int coop_players_calc(Cpu *c, uint64_t addr) {
     coop_fill_controller(own, buttons, stick, &s->prev, s->held);
     ST64(mgr + 0xa0, own);
     static int diff_on = -1;   // TOTK_COOP_TRACE=diff: main's writable data the co-op Link's calc changes
-    if (diff_on < 0) { const char *e = getenv("TOTK_COOP_TRACE"); diff_on = e && strstr(e, "diff"); }
+    if (diff_on < 0) { const char *e = cfg_get("TOTK_COOP_TRACE"); diff_on = e && strstr(e, "diff"); }
     if (diff_on) diff_before();
     inside = 1;
     c->pc = addr;
@@ -5694,7 +5694,7 @@ void coop_players_tick(Cpu *c) {
         if (s->state == WANTED) spawn_slot(c, s);
         else if (s->state == REQUESTED) {
             int st = coop_handle_status(s->handle);
-            if (st == 4) { rt_log("coop: slot %d: the game could not make the Player", i); s->state = s->leaving ? FREE : WANTED; }
+            if (st == 4) { rt_log("coop: slot %d: the game could not make the Player", i); coop_handle_release(c, s->handle); s->state = s->leaving ? FREE : WANTED; }
             if (st != 3) continue;
             s->actor = coop_claim(c, s->handle, s->link, &s->ref);
             // Its player left while it was being made: set FREE then, the create was left unclaimed and an extra
