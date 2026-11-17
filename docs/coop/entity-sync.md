@@ -1,6 +1,6 @@
 # The entity sync (contraptions), as built
 
-This page says what the contraption sync does now, read from the code on branch `coop-clean` (2026-11-17). The code
+This page says what the contraption sync does now, read from the code on `main` (2026-11-17). The code
 calls it the **entity sync**: what it keeps the same is any *entity* (a Zonai device, an Autobuild part, or anything
 glued to one), and a contraption is one island of entities. Hence the page's name.
 
@@ -92,8 +92,9 @@ is greater, or equal with a greater incarnation. All members of an island share 
   (TAKE_GRAB), or this Link rides another game's steering stick (TAKE_RIDE). Sent again every 0.3 s.
 - **The owner's answer** (`take_in`): GRANT at epoch + 1, to everyone, when the island is idle (not held or ridden
   there), not offered, and the asker's digest and layout agree with the owner's. Else REFUSE: not the owner (the
-  request is forwarded once to the owner named), stale, held, or ridden. A GRANT is sent again every 0.5 s until the
-  new owner is heard or 5 s have passed.
+  request is forwarded once to the owner named), stale, held, or ridden. An island that is offered, or an owned
+  entity with no stored island, gets no answer (`take_in`). A GRANT is sent again every 0.5 s until the new owner is
+  heard or 5 s have passed.
 - **A grab or ride that is not granted**: a refusal, or 1.5 s with no answer, ends this Link's hold with the game's own
   refusal message (0x20510006, main+0x2b76c34; read back and sent up to three times, `own_end_hold`) or its ride with
   the game's get-off (main+0xc448c8, `own_end_ride`). A grab of an island whose owner holds or rides it is ended at once,
@@ -103,8 +104,8 @@ is greater, or equal with a greater incarnation. All members of an island share 
 - **An unload** of an owned entity with no delete seen freezes its island and offers it for 2 s (POSE with the offer
   flag, `own_unload`). With no claim, each member whose actor went is stated GONE (a map entity: FREE, nobody's).
 - **A load**: OFFER_ALL to everyone at once and every 0.5 s while loading (`own_net`).
-- **Paused** (no phase 0 for 300 ms, `ent_paused`): incoming messages wait in a pause queue of 1024; GRANT, REFUSE and
-  TAKE are still answered from the net tick.
+- **Paused or loading** (no phase 0 for 300 ms, `ent_paused`): incoming messages wait in a pause queue of 1024; GRANT
+  and REFUSE are still taken from the net tick, and TAKE is answered there while paused and not loading (`own_net`).
 - An entity this game owns, alive by the table, with no actor here for 3 s, is stated GONE (FREE for a map entity).
 
 ## Statements and copies
@@ -133,7 +134,9 @@ INDEX_END answer it.
 3. If nothing of a 2+ island is here and a recipe came, the island is made whole by the **copy maker**: the game's own
    Autobuild part maker and confirm, run from the owner's record, at no cost to this player (`coop_ctn.c
    ctn_make_start`, `ctn_make_pass`; `coop_life.c coop_life_free_confirm`). It waits while another make runs, a design
-   is selected, a preview is open, or this Link is in the way (`ctn_make_waits`).
+   is selected or a preview is open (`ctn_make_waits`); where this Link stands in the way the copy is made that far
+   above its place (`ctn_make_lift`). It is not used when this player has no Autobuild build object, when a member
+   may be bound to an actor of the object mirror's, or when a member's name is one no statement makes.
 4. Otherwise each missing member is made by a plain create (`coop_request_create`, or `_autobuilt` for a green part),
    or bound to the actor the object mirror has for it.
 5. Bonds: an edge here that the statement lacks is broken (main+0x1cf54d4, `rec_break`); a stated bond with no edge
@@ -187,8 +190,9 @@ motion. What a physics step takes off the written vertical velocity (gravity, da
 - **Strain and the 21-part cap** belong to the owner: on a strand with an end in another game's entity, the strain
   check (main+0x190f034), the glue manager's list add (main+0x191642c) and the cap's kill (main+0x190d924) are skipped
   (`coop_ent_rec.c coop_ent_strand_hook`).
-- A copy's devices hit enemies only in the owner's count (`coop_contact.c contacts_filter`, via
-  `coop_ctn_emitter_of_followed`).
+- A copy's device striking an enemy that is a copy here is left to the game that runs that enemy
+  (`coop_contact.c contacts_filter`, via `coop_ctn_emitter_of_followed`). Striking an enemy this game runs, it counts
+  in both games ([open] in the code: possibly twice the damage; PLAN.md step 0).
 
 ## Devices
 

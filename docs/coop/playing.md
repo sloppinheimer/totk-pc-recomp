@@ -91,3 +91,12 @@ reports in `tools/coop/` read. The launchers below and `play_two.ps1` set it.
 ## Test tools
 - `tools/coop/run_test.ps1`: one game, scripted input, a copy of the profile.
 - `tools/coop/run_pair.ps1`: two games on this PC in one session through a local relay (`server/coop_relay.py`).
+- `tools/coop/run_suite.ps1`: a few run_pair cases, each passed on log lines both games must print and on
+  `sync_audit.py`'s comparison of the two games' audit files (players' places, gear, hands, fused materials, dyes as
+  the game's create was given them, objects); fewer than 10 compared snapshots is not a pass.
+- `tools/coop/en_bench.ps1`: the enemy sync's cases (enemy-sync.md, "Checks").
+- `tools/coop/ent_suite.ps1` and `ent_report.py`: the contraption bench scenes (`TOTK_COOP_BENCH`), passed on both
+  games' audit lines of every entity.
+- `tools/coop/run_session.ps1`: a session hosted from game A's Co-op tab (the in-game relay, code `TEST42`) and joined
+  by game B; it prints, it does not judge.
+- `tools/coop/gamedata_test.ps1`: shared world progress between two games; it prints, it does not judge.

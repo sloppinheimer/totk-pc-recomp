@@ -1,6 +1,6 @@
 # The enemy sync, as built
 
-This page says what the enemy sync does now, read from the code on branch `coop-clean` (2026-11-17). The plan for
+This page says what the enemy sync does now, read from the code on `main` (2026-11-17). The plan for
 where it goes next is [PLAN.md](PLAN.md). The older design and spec pages were removed on 2026-11-17 (their game facts are in
 [facts/](facts/README.md); the pages themselves are in git history, commit 2604efb8); a "B.NN" or "S n.n" in a code
 comment names one of their sections.
@@ -46,7 +46,8 @@ comes nearer, strikes the enemy, or the owner leaves, loads or pauses.
   function-entry hooks): reads only its own map cell.
 
 Phase 0 and the net tick hold `en_lock`. Some hooks on actor threads take it too (the outcome, the action owner, FX,
-ARM, SHS).
+ARM, SHS), and so do this game's blood moon (`en_moon_local`) and the wild-herd hook (`coop_mount.c
+coop_mount_herd_hook`).
 
 ## Which actors are enemies here
 
@@ -220,7 +221,7 @@ itself.
 (OFFER to that game) when:
 
 - that player's Link is within 35 m of it and at least 6 m nearer than this game's Link, and this game has had it for
-  at least 6 s, and no offer to that game failed in the last 10 s; or
+  at least 6 s, and no offer of it failed in the last 10 s (to any game: `no_offer_until_ns` is the enemy's); or
 - that player struck it in the last 5 s (HIT), this game has had it for at least 3 s, that player's Link is within
   80 m, and it is nearer than this game's Link or this game's Link is over 15 m away.
 
@@ -398,7 +399,8 @@ MOUNT; a ridden horse belongs to its rider's game (`coop_mount_claim`, `coop_mou
 ## Leftovers in the code
 
 - `runtime/coop_hooks.h COOP_HOOKED_EN` still lists game functions with no handler: the three PLAN step 2 will block
-  (remove main+0x1b70a04, pick up main+0x1bb16a0, lifter throw main+0x1ba7710, kept on purpose), and also
+  (remove main+0x1b70a04; main+0x1bb16a0, the AI's memory of a weapon; main+0x1ba7710, the lifter's release setter;
+  kept on purpose, PLAN.md step 2), and also
   main+0x2314ab0, 0x42ec98, 0x1b87a9c, 0x195321c, 0xa70a1c, 0x4e603c, 0x4f59ec and 0xc448c8. Each costs one test on every
   call of that function.
 - Comments that no longer match: `coop_enemy.c`'s file comment and the net tick's first log line still say
