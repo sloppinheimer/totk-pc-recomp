@@ -39,7 +39,7 @@ typedef struct {
     struct { float clock, weight; } c[EN_CTRL_N];
 } EnSlot;
 #define EN_EQ_N 8         // equipment slots
-typedef struct { EnSnap s; int32_t hp; uint32_t dstate; uint8_t nslot, rag, hide, vis, mem, pad[3]; uint32_t eq[EN_EQ_N]; EnSlot sl[EN_SLOT_N]; } EnState;   // eq: the name hash of what each equipment slot holds   // one stated moment of an enemy
+typedef struct { EnSnap s; int32_t hp; uint32_t dstate; uint8_t nslot, rag, hide, vis, mem, verb, tgt, pad[1]; uint32_t eq[EN_EQ_N]; EnSlot sl[EN_SLOT_N]; } EnState;   // eq: the name hash of what each equipment slot holds   // one stated moment of an enemy
 // (hide: the model controller's "not drawn" byte, [comps+0x280]+0x9d; vis: actor+0x444 bit 23)
 
 typedef struct {
@@ -66,7 +66,8 @@ typedef struct {
     uint8_t show_on, show_teleport;
     EnSlot show_slot[EN_SLOT_N];
     uint8_t show_nslot, show_hold;
-    int32_t show_hp; uint32_t show_dstate; uint8_t show_rag, show_hide, show_mem;
+    int32_t show_hp; uint32_t show_dstate; uint8_t show_rag, show_hide, show_mem, show_verb, show_tgt;
+    uint8_t grace_verb, grace_tgt; uint32_t grace_frame, brain_log_frame;   // a taken-over enemy's brain is held at its owner's verb and target until this frame (B.6)
     // Hits and death (coop_enemy_hit.c).
     _Atomic int32_t hit_dmg;          // life this game's hits took from the copy since phase 0 last looked
     int32_t hit_hp; uint64_t hit_ns;  // the copy's life after this game's last hit, and when

@@ -236,6 +236,21 @@ copy makes it.
 player-wide settings (GameBalance), UI, boss and event nodes, physics set-up, chemical switches, movement, lifting
 and throwing, camera shake.
 
+**B.6 The brain at a change of owner** (research R10). A copy's brain graph never started: at its first tick as this
+game's own its root Enter picks an idle verb, the idle module notices the player afresh and plays the Find clip, and
+what is cleared outside battle is cleared. "In battle" is no flag: it is the brain verb ([BSA+0x58]; 12 land battle,
+6 discovered, 18 wander) with target slot 0 naming a live actor (holder [comps+0x4b0], slot k at +0x28 + k*0xe8, its
+actor link at +8, kind 2 at +0xe2). STATE carries the verb and whom slot 0 names as a player (0 no one, 1 + net id,
+0xff another actor). The game that takes an enemy over, before its graphs first run: writes the memory of B.2, fills
+slot 0 with its own actor of that player (its Link or its stand-in) by main+0xa70a1c(slot, link, options) and clears
+slot 6 (main+0x83be9c), asks the verb with force (main+0xad9844(BSA, verb, 1)), and for four frames turns away a
+different verb asked by the graphs and the target slots' reset (main+0x24f0a9c), putting both back at each of those
+frames' pre-calc. Measured [m]: a Fire Wizzrobe whose owner left: verb 0 -> 12, slot 0 filled, the start's verb 18
+and the reset turned away, and the next clips were MagicAttack, Disappear, Fly with no Find. Handed to the nearer
+player's game with both staying: verb 12 and `IsMagicWeather` kept for 6 s, then the brain went to 6 (discovered) and
+back to 12, with a Find clip: the target it was given is the other player's stand-in, and what an enemy does with a
+stand-in in slot 0 is section 12's open question. Not done on a copy: asking the verb while it is a copy (R10 4 ii).
+
 **B.5 Order.** B.1 (the bit) with a run that also says whether the flame is seen again; B.3's run; B.2; then effects
 and sounds by key and the weather request, each when a play session or a run shows it missing.
 

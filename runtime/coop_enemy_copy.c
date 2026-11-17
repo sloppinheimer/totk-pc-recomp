@@ -219,6 +219,97 @@ static void mem_write(uint64_t actor, uint8_t want, const char *name) {
     }
 }
 
+// ---- An enemy's brain at a change of owner (enemy-sync-spec.md B.6; research R10) ------------------------------------------
+// A copy's brain graph never started, so at its first tick as this game's own its root Enter picks an idle verb, the
+// idle module notices the player afresh (the Find clip) and everything that is cleared outside battle is cleared (a
+// Wizzrobe's IsMagicWeather). The owner states the brain verb ([BSA+0x58], BSA = [comps+0x158]) and whom target slot 0
+// names, as a player (0 no one, 1 + that player's net id, 0xff some other actor); the game that takes the enemy over
+// fills its own slot 0 with its actor of that player (main+0xa70a1c(slot, link, options), as the game's modules fill a
+// slot from an actor link), clears slot 6 (the noticed one), asks the verb with force (main+0xad9844(BSA, verb, 1)),
+// and for a few frames turns away what the brain's start would undo: another verb asked by a graph, and the reset of
+// the target slots (main+0x24f0a9c). The target holder is [comps+0x4b0], slot k at +0x28 + k*0xe8: its actor link at
+// +8 (reference +0x10, id +0x18), +0x84 the emitter id, +0xe2 the kind (2: an actor).
+#define FN_BRAIN_VERB 0xad9844
+#define FN_SLOT_FILL 0xa70a1c
+#define FN_SLOT_CLEAR 0x83be9c
+#define FN_TARGETS_RESET 0x24f0a9c
+#define BRAIN_GRACE 4
+static __thread uint64_t tl_grace_bsa;   // the brain of the actor whose calc this thread is in, while it is held
+static __thread uint8_t tl_grace_verb;
+static __thread int tl_brain_mine;       // inside this file's own call of the verb request
+uint64_t coop_player_standin(int net_id);   // coop_players.c
+static uint64_t brain_bsa(uint64_t actor) { return coop_rd_ptr(en_comps(actor) + 0x158); }
+static uint64_t brain_slot(uint64_t actor, int k) {
+    uint64_t holder = coop_rd_ptr(en_comps(actor) + 0x4b0);
+    return holder ? holder + 0x28 + (uint64_t)k * 0xe8 : 0;
+}
+static uint64_t brain_slot_actor(uint64_t slot) {
+    uint8_t kind = 0;
+    uint64_t ref;
+    if (!slot || !coop_rd(slot + 0xe2, &kind, 1) || kind != 2 || !(ref = coop_rd_ptr(slot + 0x10))) return 0;
+    return coop_rd_ptr(ref + 0x40);
+}
+static void brain_read(uint64_t actor, uint8_t *verb, uint8_t *tgt) {
+    uint64_t bsa = brain_bsa(actor), ta = brain_slot_actor(brain_slot(actor, 0));
+    uint32_t v = 0;
+    if (bsa) coop_rd(bsa + 0x58, &v, 4);
+    *verb = v < 0xff ? (uint8_t)v : 0, *tgt = 0;
+    if (!ta) return;
+    *tgt = 0xff;
+    if (ta == coop_player_actor()) *tgt = (uint8_t)(1 + coop_net_id());
+    else for (int id = 0; id < 32; id++) if (coop_player_standin(id) == ta) { *tgt = (uint8_t)(1 + id); break; }
+}
+// An actor's link reference: the object the game's actor links point at ([ref+0x40] the actor, [ref+0x48] its id, which
+// is the u32 at actor+0x10). The actor keeps a pointer to it; found by its content, once per call.
+static uint64_t brain_ref_of(uint64_t actor) {
+    uint32_t id = 0, rid = 0;
+    if (!coop_rd(actor + 0x10, &id, 4)) return 0;
+    for (int o = 0; o < 0x400; o += 8) {
+        uint64_t p = coop_rd_ptr(actor + (uint64_t)o);
+        if (p > 0x10000 && p != actor && coop_rd_ptr(p + 0x40) == actor && coop_rd(p + 0x48, &rid, 4) && rid == id) return p;
+    }
+    return 0;
+}
+static void brain_hold(Cpu *c, uint64_t actor, EnCell *m, const char *when) {
+    uint64_t bsa = brain_bsa(actor), slot0 = brain_slot(actor, 0), holder = coop_rd_ptr(en_comps(actor) + 0x4b0);
+    uint64_t want = !m->grace_tgt || m->grace_tgt == 0xff ? 0 : m->grace_tgt - 1 == coop_net_id() ? coop_player_actor() : coop_player_standin(m->grace_tgt - 1);
+    uint32_t v = 0;
+    int filled = 0, asked = 0;
+    if (!bsa || !slot0) return;
+    if (want && brain_slot_actor(slot0) != want) {
+        static __thread _Alignas(16) uint64_t link[4];
+        static __thread _Alignas(16) uint8_t opts[16];
+        uint64_t ref = brain_ref_of(want);
+        uint32_t id = 0;
+        coop_rd(want + 0x10, &id, 4);
+        if (ref) {
+            memset(link, 0, sizeof link), memset(opts, 0, sizeof opts);
+            link[0] = coop_rd_ptr(slot0 + 8), link[1] = ref, memcpy(&link[2], &id, 4), opts[1] = 1;
+            coop_guest_call(c, MOD_MAIN_BASE + FN_SLOT_FILL, slot0, (uint64_t)(uintptr_t)link, (uint64_t)(uintptr_t)opts, 0);
+            coop_guest_call(c, MOD_MAIN_BASE + FN_SLOT_CLEAR, holder, 6, 0, 0);
+            filled = brain_slot_actor(slot0) == want ? 1 : -1;
+        } else filled = -2;
+    }
+    coop_rd(bsa + 0x58, &v, 4);
+    if (m->grace_verb && v != m->grace_verb) {
+        uint32_t zero = 0;
+        tl_brain_mine = 1;
+        coop_guest_call(c, MOD_MAIN_BASE + FN_BRAIN_VERB, bsa, m->grace_verb, 1, 0);
+        tl_brain_mine = 0;
+        memcpy((void *)(uintptr_t)(bsa + 0x5c), &zero, 4);
+        asked = 1;
+    }
+    if (filled || asked) {
+        char an[48] = "", tn[48] = "";
+        uint8_t kind = 0;
+        uint32_t em = 0, now_v = 0;
+        coop_rd(slot0 + 0xe2, &kind, 1), coop_rd(slot0 + 0x84, &em, 4), coop_rd(bsa + 0x58, &now_v, 4);
+        rt_log("coop: en: brain: %s %llx %s: verb %u -> %u (its owner's %u)%s; target slot 0 %s %s (kind %u, emitter %d)", coop_actor_name(actor, an, sizeof an), (unsigned long long)actor, when, v, now_v, m->grace_verb,
+               asked ? ", asked with force" : "", filled == 1 ? "filled with" : filled == -1 ? "NOT filled with" : filled == -2 ? "not filled (no link reference found) with" : "is",
+               want ? coop_actor_name(want, tn, sizeof tn) : "no one", kind, (int)em);
+    }
+}
+
 // ---- What enemies hold ---------------------------------------------------------------------------------------------------
 // Every actor an enemy of a listed kind holds here, and what is fused to it (a held weapon's attachment: the link at
 // +0xb0 of the weapon's component [[w+0x228]+0x208]), as a set the object mirror asks (coop_players.c prop_fn): such an
@@ -423,6 +514,21 @@ int en_copy_hook(Cpu *c, uint64_t off) {
                key, (int)idx, flags, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], st);
         return 0;
     }
+    case FN_BRAIN_VERB: {   // (x0 the brain, w1 the verb, w2 bit 0 force): a held brain keeps its owner's verb
+        if (tl_brain_mine || !tl_grace_bsa || c->x[0] != tl_grace_bsa) return 0;
+        static _Atomic int said;
+        int drop = (uint32_t)c->x[1] != tl_grace_verb;
+        if (atomic_fetch_add(&said, 1) < 80) rt_log("coop: en: brain: a verb asked of a held brain: %u (force %llu) from main+%#llx: %s", (uint32_t)c->x[1], (unsigned long long)(c->x[2] & 1), (unsigned long long)(c->x[30] - MOD_MAIN_BASE), drop ? "turned away" : "let through");
+        if (!drop) return 0;
+        c->x[0] = 0;
+        return 1;
+    }
+    case FN_TARGETS_RESET: {   // the reset of the target slots, in the calc of a held brain's actor
+        if (!tl_grace_bsa) return 0;
+        static _Atomic int said;
+        if (atomic_fetch_add(&said, 1) < 40) rt_log("coop: en: brain: the target slots' reset of a held brain turned away (from main+%#llx)", (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
+        return 1;
+    }
     case 0xbb0dd0: {   // the model controller's show/hide (x0 the controller, w1 visible, w2 the reason): logged for known enemies
         static _Atomic int said;
         uint64_t a = coop_rd_ptr(c->x[0] + 0x18);
@@ -568,6 +674,26 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         else off = 0;
     }
     tl_off_actor = off ? actor : 0;
+    tl_grace_bsa = 0;
+    if (!off && m->grace_frame) {
+        uint32_t frame = coop_sess_frame_no();
+        if ((int32_t)(m->grace_frame - frame) > 0) {
+            brain_hold(c, actor, m, "held");
+            tl_grace_bsa = brain_bsa(actor), tl_grace_verb = m->grace_verb;
+        } else {
+            m->grace_frame = 0, m->brain_log_frame = frame;
+            rt_log("coop: en: brain: %llx is let go: its own from here", (unsigned long long)actor);
+        }
+    }
+    if (!off && m->brain_log_frame && !m->grace_frame) {   // the record: once a second for 10 s after a take-over
+        uint32_t frame = coop_sess_frame_no(), d = frame - m->brain_log_frame;
+        if (d > 300) m->brain_log_frame = 0;
+        else if (d && !(d % 30)) {
+            uint8_t v, t;
+            brain_read(actor, &v, &t);
+            rt_log("coop: en: brain: %llx %u s after its take-over: verb %u, target %u (0 no one, 1 + player, 255 another actor); memory %02x", (unsigned long long)actor, d / 30, v, t, mem_read(actor));
+        }
+    }
     if (!off && !m->sw_on) { en_hit_precalc(c, actor, m, 0); return; }
     int32_t ast = 0;
     if (!coop_rd(actor + COOP_ACTOR_STATE, &ast, 4) || ast < 2 || ast > 6) return;
@@ -583,6 +709,12 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         }
         en_hit_leave(actor, m);
         if (body && m->body_static) coop_guest_call(c, MOD_MAIN_BASE + FN_MOTION_TYPE, body, 2, 0, 0);
+        if (st == EM_OWNED && m->show_verb && !en_test_skip('b')) {   // this game runs it from here: its brain goes on where its owner's was
+            m->grace_verb = m->show_verb, m->grace_tgt = m->show_tgt, m->grace_frame = coop_sess_frame_no() + BRAIN_GRACE;
+            mem_write(actor, m->show_mem, "the enemy taken over");
+            brain_hold(c, actor, m, "taken over");
+            tl_grace_bsa = brain_bsa(actor), tl_grace_verb = m->grace_verb;
+        }
         {   // It is drawn again, with what it holds: the game that takes an enemy over when its owner left or paused may get
             // it unseen, and its own graphs would not know to show it.
             uint64_t who[1 + EN_EQ_N * 2], eu = coop_rd_ptr(en_comps(actor) + 0x230);
@@ -822,6 +954,7 @@ void en_copy_phase0(Cpu *c) {
                 if (hm != s->hide || vb != s->vis) { e->send_burst = 3; rt_log("coop: en: hide: %s %016llx (run here) mask %02x -> %02x, bit %u -> %u, slot 0 plays %08x", e->name, (unsigned long long)e->id.a, s->hide, hm, s->vis, vb, s->nslot ? s->sl[0].cmd : 0); }
                 s->hide = hm, s->vis = vb;
             }
+            brain_read(e->actor, &s->verb, &s->tgt);
             {   // its AI memory (B.2)
                 uint8_t mm = mem_read(e->actor);
                 if (mm != s->mem) { e->send_burst = 3; if (s->mem) rt_log("coop: en: memory: %s %016llx (run here) %02x -> %02x (bit 0 IsMagicWeather, 1 IsShootMagicObj)", e->name, (unsigned long long)e->id.a, s->mem, mm); }
@@ -927,7 +1060,7 @@ void en_copy_phase0(Cpu *c) {
         // The owner's enemy began a flinch (a partial ragdoll, by its own player's blow or anything else): the copy's is
         // asked of its own ragdoll component, unless this game's player just struck it and it flinched here already.
         if (sl->rag == 2 && m->show_rag != 2 && now - m->hit_ns > SEC) atomic_store(&m->flinch, 1);
-        m->show_rag = sl->rag, m->show_hide = sl->hide, m->show_mem = sl->mem;
+        m->show_rag = sl->rag, m->show_hide = sl->hide, m->show_mem = sl->mem, m->show_verb = sl->verb, m->show_tgt = sl->tgt;
         m->show_nslot = sl->nslot, m->show_hold = (uint8_t)hold, m->show_teleport = (uint8_t)jump, m->show_hp = sl->hp, m->show_dstate = sl->dstate;
         for (int k = 0; k < sl->nslot; k++) {
             m->show_slot[k] = sl->sl[k];
