@@ -589,7 +589,7 @@ int en_copy_hook(Cpu *c, uint64_t off) {
     if (tl_act_actor) {   // a copy runs its owner's action (B.38): this one call tree goes through the switch, whole
         extern __thread uint32_t tl_act_ticks, tl_act_runs, tl_act_other;   // (counted for the prototype's log)
         extern __thread uint64_t tl_act_lr;
-        if (off == 0x1920) { void en_act_tick_seen(uint64_t node); tl_act_ticks++; en_act_tick_seen(c->x[0]); return 0; }
+        if (off == 0x1920) { int en_act_tick_seen(uint64_t node); tl_act_ticks++; return en_act_tick_seen(c->x[0]); }
         if (off == 0x50ad74 && coop_rd_ptr(c->x[0] + 0x18) == tl_act_actor) return 0;
         if (off == 0x50b404 && c->x[30] - MOD_MAIN_BASE == 0x50afe4 && coop_rd_ptr(c->x[0] + 0x1f8) == tl_act_actor) { tl_act_runs++; return 0; }
         if (off == 0x50b404 || off == 0x50ad74 || off == 0x2beb80 || off == 0x44ff30 || off == 0x42e0c8) tl_act_other++, tl_act_lr = (c->x[30] - MOD_MAIN_BASE) | off << 32;
@@ -1271,6 +1271,14 @@ void en_copy_phase0(Cpu *c) {
                 uint8_t gb = cl && coop_rd(cl + 0x34, &w34, 4) ? (uint8_t)(0x80 | (w34 >> 7 & 1)) : 0;
                 if (gb != s->gb) e->send_burst = 3;
                 s->gb = gb;
+                {   // its character controller's move state and velocity, for a copy that runs its action (B.38)
+                    int en_act_cct_read(uint64_t actor, uint8_t *idx, float vel[3]);   // coop_enemy_act.c
+                    uint8_t ci = 0;
+                    float cv[3] = {0};
+                    if (!en_act_cct_read(e->actor, &ci, cv)) ci = 0;
+                    if (ci != s->cct) e->send_burst = 3;
+                    s->cct = ci, memcpy(s->cvel, cv, 12);
+                }
                 uint8_t ar[2];
                 void en_arm_read(uint64_t actor, uint8_t out[2]);   // coop_enemy_arm.c
                 en_arm_read(e->actor, ar);
@@ -1386,7 +1394,7 @@ void en_copy_phase0(Cpu *c) {
         // The owner's enemy began a flinch (a partial ragdoll, by its own player's blow or anything else): the copy's is
         // asked of its own ragdoll component, unless this game's player just struck it and it flinched here already.
         // (no flinch is asked of the copy's own ragdoll component any more: see en_copy_hook, the ragdoll start)
-        m->show_rag = sl->rag, m->show_hide = sl->hide, m->show_mem = sl->mem, m->show_verb = sl->verb, m->show_tgt = sl->tgt, m->show_wx = sl->wx, m->show_binfo = sl->binfo, m->show_blink = sl->blink, m->show_bhave = 1, m->show_gb = sl->gb, memcpy(m->show_arm, sl->arm, 2), memcpy(m->show_look, sl->look, sizeof m->show_look), memcpy(m->show_lk, sl->lk, sizeof m->show_lk);
+        m->show_rag = sl->rag, m->show_hide = sl->hide, m->show_mem = sl->mem, m->show_verb = sl->verb, m->show_tgt = sl->tgt, m->show_wx = sl->wx, m->show_binfo = sl->binfo, m->show_blink = sl->blink, m->show_bhave = 1, m->show_gb = sl->gb, m->show_cct = sl->cct, memcpy(m->show_cvel, sl->cvel, 12), memcpy(m->show_arm, sl->arm, 2), memcpy(m->show_look, sl->look, sizeof m->show_look), memcpy(m->show_lk, sl->lk, sizeof m->show_lk);
         m->show_nslot = sl->nslot, m->show_hold = (uint8_t)hold, m->show_teleport = (uint8_t)jump, m->show_hp = sl->hp, m->show_dstate = sl->dstate;
         for (int k = 0; k < sl->nslot; k++) {
             m->show_slot[k] = sl->sl[k];

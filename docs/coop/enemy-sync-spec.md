@@ -629,11 +629,25 @@ research R21, R22; from a play session, 2026-11-17).
   JumpAttack). The node classes it ticked are the action's own: for the Chuchu the basic-attack module's (the clip,
   the jump, the facing, the verb's arguments); for the Yiga the appear module's, its `Sign` node
   (ExecuteXLinkSearchAndEmitAndFade, node 11) among them: the copy's own node started the rune ring.
-- [m] Where it stops. The Chuchu's copy never reached the tackle (node 13) or the node that arms the attack (node
-  28): its sequence waits at a selector on QueryPhysicsCctIsPreLand (node 23), which a copy's character controller
-  never answers, its body being static and its place written from its owner's. No attack was armed on the copy and
-  the copy game's Link took no hit (the owner's took 30). An action's own progress reads facts of the actor that a
-  copy does not have.
+- [m] The character controller. At first the Chuchu's copy never reached the tackle (node 13) or the node that
+  arms the attack (node 28): its sequence waits at a selector on QueryPhysicsCctIsPreLand (node 23; true when the
+  controller's move state is the ground's, in the air only when falling with ground close below), and a copy's
+  controller sat in move state 1 where its owner's was in 0. An action's own progress reads facts of the actor that
+  a copy does not have. Built: STATE carries the controller's move state index and velocity (`cct`, `cvel`:
+  [[comps+0x50]+0x20]+0x10 the controller, K = [controller+8], the index at [K+0x40]+0x50, the velocity at
+  [K+0x18]+0xf8), written on the copy before its action is asked for. With that the copy passed the check, ran the
+  tackle and the arming node, and its own node made the arm call (main+0x1bf20cc from main+0x2444e70) every frame
+  of the attack, with the same request bytes as its owner's and the same component flags and layer. (Turning away
+  the copy's own OneShotPhysicsCctJump, tried first and kept, did not by itself end the wait.)
+- [open, the next thing] Whether a copy's blow hurts this game's player at all. The copy game's Link took no hit in
+  any of these runs, and none in a camp fight where the animation armed the copies' attacks as often as their
+  owners' (over 200 calls each) while the owner's Link took 13 melee hits; a fire field and arrows of copies did
+  hurt it. But no run has shown the copy game's Link to be inside a copy's swing: the owner's Link is knocked away
+  by each hit and the enemy follows it, and the test that writes this Link's place onto the other player's stand-in
+  each frame (`TOTK_COOP_EN_TEST_SHADOW=1`) may not move its hit shapes. A tester's words from play: an enemy
+  "can't hurt the other player if the other player gets in the way of its attack". Not explained: the arming is
+  the same, so the cause is after it. The armed bits of the SensorHit component (+0x20, +0x21) read 0 in the game
+  that runs the enemy too, at its node's arm call, while its blows land: they do not tell armed from not.
 - Not right yet in the prototype: the held effect of B.23 was also started by the replay for the same Yiga (the ring
   twice); the form key is assumed to be the default; only the Main slot.
 - What it would take to be the sync's method (not built): the character controller's state stated with the pose

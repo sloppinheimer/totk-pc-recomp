@@ -20,6 +20,7 @@
 // the reasons word +0x26), put on and off at its edges with the game's own two calls.
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "cfg.h"
@@ -50,7 +51,23 @@ static int arm_on(void) {
 int en_arm_hook(Cpu *c, uint64_t off) {
     (void)off;
     uint64_t lr = c->x[30] - MOD_MAIN_BASE;
-    if (lr >= 0x42ec98 && lr < 0x42f550) return 0;   // the animation's: a copy's own clip makes it
+    if (lr >= 0x42ec98 && lr < 0x42f550) {   // the animation's: a copy's own clip makes it
+        // (counted, for both kinds of enemy: whether a copy's clip does arm its attack is what a play session put in doubt)
+        static _Atomic uint32_t n_own, n_copy, n_log;
+        uint64_t ac0 = c->x[0], a0 = ac0 > 0x10000 ? coop_rd_ptr(ac0 + 0x18) : 0;
+        EnCell *m0 = a0 > 0x10000 ? en_cell_of(a0) : NULL;
+        int st0 = m0 ? atomic_load_explicit(&m0->state, memory_order_relaxed) : 0;
+        if (st0 == EM_OWNED) atomic_fetch_add(&n_own, 1);
+        else if (st0 == EM_COPY) atomic_fetch_add(&n_copy, 1);
+        if (st0 == EM_OWNED || st0 == EM_COPY) {
+            uint32_t k = atomic_fetch_add(&n_log, 1);
+            if (k < 6 || k % 200 == 0) {
+                char nm[48];
+                rt_log("coop: en: arm: the animation arms an attack of %s %llx (%s); so far %u calls for enemies run here, %u for copies", coop_actor_name(a0, nm, sizeof nm), (unsigned long long)a0, st0 == EM_COPY ? "a copy" : "run here", atomic_load(&n_own), atomic_load(&n_copy));
+            }
+        }
+        return 0;
+    }
     if (!arm_on()) return 0;
     uint64_t ac = c->x[0], actor = ac > 0x10000 ? coop_rd_ptr(ac + 0x18) : 0;
     EnCell *m = actor > 0x10000 ? en_cell_of(actor) : NULL;
@@ -58,12 +75,31 @@ int en_arm_hook(Cpu *c, uint64_t off) {
         static _Atomic int said;
         uint32_t type = 0;
         coop_rd(c->x[1] + 4, &type, 4);
-        if (atomic_fetch_add(&said, 1) % 120 == 0) rt_log("coop: en: arm: the copy %llx's own node arms an attack (type %u, from main+%#llx; %d so far)", (unsigned long long)actor, type, (unsigned long long)lr, atomic_load(&said));
+        if (atomic_fetch_add(&said, 1) % 40 == 0) {
+            uint8_t b[8] = {0}, q[ARM_SZ] = {0};
+            char hex[ARM_SZ * 2 + 1];
+            coop_rd(ac + 0x20, b, 8), coop_rd(c->x[1], q, ARM_SZ);
+            for (int i = 0; i < ARM_SZ; i++) snprintf(hex + i * 2, 3, "%02x", q[i]);
+            rt_log("coop: en: arm: the copy %llx's own node arms an attack (type %u, from main+%#llx; %d so far): its component before: armed %02x, last frame %02x, flags %02x, layer %02x, +0x24 %02x %02x, tg-off %02x%02x; request %s", (unsigned long long)actor, type, (unsigned long long)lr, atomic_load(&said), b[0], b[1], b[2], b[3], b[4], b[5], b[7], b[6], hex);
+        }
     }
     if (!m || atomic_load_explicit(&m->state, memory_order_relaxed) != EM_OWNED) return 0;
     MArm a;
     memset(&a, 0, sizeof a);
     if (!coop_rd(c->x[1], a.p, ARM_SZ)) return 0;
+    {   // (log: the component's bits in the game that runs it, at the node's arm call)
+        uint8_t b[8] = {0};
+        static _Atomic int said;
+        if (coop_rd(ac + 0x20, b, 8) && atomic_fetch_add(&said, 1) % 30 == 0) {
+            float p[3] = {0}, lp[3] = {0};
+            uint64_t link = coop_player_actor();
+            coop_rd(actor + COOP_ACTOR_POS, p, 12);
+            if (link) coop_rd(link + COOP_ACTOR_POS, lp, 12);
+            char hex[ARM_SZ * 2 + 1];
+            for (int i = 0; i < ARM_SZ; i++) snprintf(hex + i * 2, 3, "%02x", a.p[i]);
+            rt_log("coop: en: arm: %llx (run here) at its node's arm call: armed now %02x, last frame %02x, flags %02x, layer %02x, +0x24 %02x %02x, tg-off %02x%02x; it is at %.2f %.2f %.2f, this Link at %.2f %.2f %.2f; request %s", (unsigned long long)actor, b[0], b[1], b[2], b[3], b[4], b[5], b[7], b[6], p[0], p[1], p[2], lp[0], lp[1], lp[2], hex);
+        }
+    }
     coop_lock_wait(&en_lock);
     int16_t ei = atomic_load(&m->en);
     if (ei >= 0 && en_tab[ei].used) {

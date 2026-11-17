@@ -82,7 +82,7 @@ static uint32_t verb_of(const uint8_t *req) {
 
 // The request's entry in the game that runs the enemy (x0 the BSA, x1 the request, w2 the mode), from en_copy_hook.
 static __thread uint32_t tl_act_verb;
-void en_act_tick_seen(uint64_t node);
+int en_act_tick_seen(uint64_t node);
 void en_act_owner(Cpu *c) {
     if (!en_act_on()) return;
     uint64_t actor = coop_rd_ptr(c->x[0] + 0x18);
@@ -158,6 +158,36 @@ int en_act_msg(const CoopCtrMsg *m) {
     return 1;
 }
 
+// The character controller's move state and velocity. An action's own waits read them (QueryPhysicsCctIsPreLand: true
+// when the move state is the ground's, type 0; in the air only when falling with ground close below; IsOnGround,
+// IsFalling and the rest of that family likewise), and a copy's controller never changes them by itself, its body
+// being static and its place written. The controller is [[comps+0x50]+0x20]+0x10; K = [controller+8]; the state
+// machine [K+0x40] keeps three state objects from +0x38 (each its type at +8) and the current one's index at +0x50;
+// the velocity is three floats at [K+0x18]+0xf8 (the getter main+0x298ce1c). 1: read (the index with 0x80).
+int en_act_cct_read(uint64_t actor, uint8_t *idx, float vel[3]) {
+    uint64_t ph = coop_rd_ptr(en_comps(actor) + 0x50), cc = ph ? coop_rd_ptr(ph + 0x20) : 0, cct = cc ? coop_rd_ptr(cc + 0x10) : 0;
+    uint64_t k = cct ? coop_rd_ptr(cct + 8) : 0, sm = k ? coop_rd_ptr(k + 0x40) : 0, vb = k ? coop_rd_ptr(k + 0x18) : 0;
+    uint32_t i = 0;
+    if (!sm || !vb || !coop_rd(sm + 0x50, &i, 4) || i > 2 || !coop_rd(vb + 0xf8, vel, 12)) return 0;
+    *idx = (uint8_t)(0x80 | i);
+    return 1;
+}
+// The copy's controller given its owner's move state and velocity, before its action is asked for.
+static void cct_write(uint64_t actor, EnCell *m) {
+    if (!(m->show_cct & 0x80)) return;
+    uint64_t ph = coop_rd_ptr(en_comps(actor) + 0x50), cc = ph ? coop_rd_ptr(ph + 0x20) : 0, cct = cc ? coop_rd_ptr(cc + 0x10) : 0;
+    uint64_t k = cct ? coop_rd_ptr(cct + 8) : 0, sm = k ? coop_rd_ptr(k + 0x40) : 0, vb = k ? coop_rd_ptr(k + 0x18) : 0;
+    uint32_t own = 0, want = m->show_cct & 3;
+    float ov[3] = {0};
+    if (!sm || !vb || !coop_rd(sm + 0x50, &own, 4) || !coop_rd(vb + 0xf8, ov, 12) || want > 2) return;
+    if (own != want) {
+        static _Atomic int said;
+        if (atomic_fetch_add(&said, 1) < 40) rt_log("coop: en: act: the copy %llx's controller is in move state %u (velocity %.2f %.2f %.2f), its owner's in %u (%.2f %.2f %.2f): given its owner's", (unsigned long long)actor, own, ov[0], ov[1], ov[2], want, m->show_cvel[0], m->show_cvel[1], m->show_cvel[2]);
+        memcpy((void *)(uintptr_t)(sm + 0x50), &want, 4);
+    }
+    memcpy((void *)(uintptr_t)(vb + 0xf8), m->show_cvel, 12);
+}
+
 // The copy's pre-calc: its owner's action asked of its own Main slot. 1 while the copy runs an action (the caller
 // then leaves the arm replay and the held effects to the action's own nodes).
 int en_act_precalc(Cpu *c, uint64_t actor, EnCell *m) {
@@ -196,6 +226,7 @@ int en_act_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     uint64_t inst = coop_rd_ptr(ip);
     coop_rd(ctrl + 0x19c, &root0, 4), coop_rd(slot + 0x7c, &s7c0, 4), coop_rd(slot + 0x78, &s780, 4), coop_rd(inst + 0x90, &q0, 4);
     tl_act_ticks = tl_act_runs = tl_act_other = 0, tl_act_lr = 0;
+    cct_write(actor, m);
     tl_act_verb = stop ? VERB_WAIT : actq[k].verb;
     tl_act_actor = actor;
     uint64_t ret = coop_guest_call(c, MOD_MAIN_BASE + FN_ACT, bsa, (uint64_t)(uintptr_t)req, mode, 0);
@@ -206,6 +237,18 @@ int en_act_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         actq[k].said = 1;
     }
     actq[k].sum_runs += tl_act_runs, actq[k].sum_ticks += tl_act_ticks, actq[k].sum_calls++;
+    {   // (the prototype's log: the SensorHit component's armed bits right after the action ran, when any is set)
+        uint64_t ac = coop_rd_ptr(en_comps(actor) + 0x428);
+        uint8_t b[8] = {0};
+        static _Atomic int said;
+        if (ac && coop_rd(ac + 0x20, b, 8) && (b[0] || b[1]) && atomic_fetch_add(&said, 1) % 30 == 0) {
+            float p[3] = {0}, lp[3] = {0};
+            uint64_t link = coop_player_actor();
+            coop_rd(actor + COOP_ACTOR_POS, p, 12);
+            if (link) coop_rd(link + COOP_ACTOR_POS, lp, 12);
+            rt_log("coop: en: act: the copy %llx after its action: armed now %02x, last frame %02x, flags %02x, layer %02x, +0x24 %02x %02x, tg-off %02x%02x; it is at %.2f %.2f %.2f, this Link at %.2f %.2f %.2f", (unsigned long long)actor, b[0], b[1], b[2], b[3], b[4], b[5], b[7], b[6], p[0], p[1], p[2], lp[0], lp[1], lp[2]);
+        }
+    }
     if (frame - actq[k].sum_frame >= 60) {
         static _Atomic int said;
         if (atomic_fetch_add(&said, 1) < 60) rt_log("coop: en: act: the copy %llx in verb %u: %u calls, its slot's graph run %u times, %u node ticks in the last second", (unsigned long long)actor, actq[k].verb, actq[k].sum_calls, actq[k].sum_runs, actq[k].sum_ticks);
@@ -215,21 +258,53 @@ int en_act_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     return 1;
 }
 
+// A node of a copy's action that the copy must not run itself (1: its tick is turned away, the node left as one that
+// succeeded). The node's tick main+0x1920 takes the node and returns nothing; a leaf turned away this way leaves its
+// parent a finished child, which is not the half-run tick of B.37 (a parent ticked with a child never made).
+// First of the list: OneShotPhysicsCctJump (vtable main+0x3800740). A copy's place is its owner's and its body is
+// static: its own jump put its character controller in the air for good, and the action then waited for ever on
+// QueryPhysicsCctIsPreLand (true on the ground; in the air only when falling with ground close below).
+// TOTK_COOP_EN_ACT_DENY=<vtable offset>[,...] replaces the list (0: none).
+static int act_denied(uint64_t vt) {
+    static uint64_t list[32];
+    static int n = -1;
+    if (n < 0) {
+        const char *e = cfg_get("TOTK_COOP_EN_ACT_DENY");
+        int k = 0;
+        for (const char *q = e && *e ? e : "0x3800740"; q && *q && k < 32; q = strchr(q, ','), q = q ? q + 1 : NULL) {
+            uint64_t v = strtoull(q, NULL, 0);
+            if (v) list[k++] = MOD_MAIN_BASE + v;
+        }
+        n = k;
+    }
+    for (int i = 0; i < n; i++) if (list[i] == vt) return 1;
+    return 0;
+}
+
 // The prototype's log: each node class a copy's action ticks, once, by its vtable (the node table of the research
-// names it), with the verb the copy was in.
+// names it), with the verb the copy was in. Returns whether the node's tick is turned away.
 static _Atomic uint64_t seen_vt[96];
-void en_act_tick_seen(uint64_t node) {
+int en_act_tick_seen(uint64_t node) {
     uint64_t vt = node > 0x10000 ? coop_rd_ptr(node) : 0;
-    if (!vt) return;
+    if (!vt) return 0;
+    int deny = act_denied(vt), isnew = 0;
+    if (deny) {
+        uint32_t fl = 0;
+        if (coop_rd(node + 0x18, &fl, 4)) { fl = (fl & 0x3fffffffu) | 0x80000000u; memcpy((void *)(uintptr_t)(node + 0x18), &fl, 4); }
+    }
     for (int i = 0; i < 96; i++) {
         uint64_t have = atomic_load_explicit(&seen_vt[i], memory_order_relaxed);
-        if (have == vt) return;
+        if (have == vt) break;
         if (!have) {
-            if (!atomic_compare_exchange_strong(&seen_vt[i], &have, vt)) { if (have == vt) return; continue; }
-            uint16_t idx = 0;
-            coop_rd(node + 0x1c, &idx, 2);
-            rt_log("coop: en: act: a copy in verb %u ticks a node of class vtable main+%#llx (node index %u)", tl_act_verb, (unsigned long long)(vt - MOD_MAIN_BASE), idx);
-            return;
+            if (!atomic_compare_exchange_strong(&seen_vt[i], &have, vt)) { if (have == vt) break; continue; }
+            isnew = 1;
+            break;
         }
     }
+    if (isnew) {
+        uint16_t idx = 0;
+        coop_rd(node + 0x1c, &idx, 2);
+        rt_log("coop: en: act: a copy in verb %u ticks a node of class vtable main+%#llx (node index %u)%s", tl_act_verb, (unsigned long long)(vt - MOD_MAIN_BASE), idx, deny ? ": turned away, left as succeeded" : "");
+    }
+    return deny;
 }

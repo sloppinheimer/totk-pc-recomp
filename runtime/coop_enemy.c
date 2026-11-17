@@ -1043,6 +1043,23 @@ void coop_enemy_phase0(Cpu *c) {
     if (!atomic_load(&en_active)) { plat_mutex_unlock(&en_lock); return; }
     uint64_t now = en_now();
     uint32_t frame = coop_sess_frame_no();
+    {   // Test (TOTK_COOP_EN_TEST_SHADOW=1, in one game): this game's Link is put where the first other player's stand-in
+        // stands, every frame, so that whatever strikes that player in the game that runs the enemy would strike this
+        // Link from the enemy's copy here: the measure of whether a copy's blow hurts this game's player.
+        static int on = -1;
+        if (on < 0) on = cfg_get("TOTK_COOP_EN_TEST_SHADOW") != NULL;
+        if (on) {
+            int coop_player_actors(uint64_t *actors, int *net_ids, int max);   // coop_players.c
+            uint64_t co[1], link = coop_player_actor();
+            int ids[1];
+            float p[3];
+            if (link && coop_player_actors(co, ids, 1) == 1 && co[0] && coop_rd(co[0] + COOP_ACTOR_POS, p, 12)) {
+                memcpy((void *)(uintptr_t)(link + COOP_ACTOR_POS), p, 12);
+                static int said;
+                if (!said++) rt_log("coop: en: test: this Link is kept where player %d's stand-in stands (%.1f %.1f %.1f)", ids[0], p[0], p[1], p[2]);
+            }
+        }
+    }
     {   // The record: this game's Link's life at each change (what an owner's and a copy's attacks take from it).
         static int32_t was = -1;
         static int said;
