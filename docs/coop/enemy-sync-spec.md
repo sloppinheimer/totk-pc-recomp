@@ -373,8 +373,10 @@ in battle has 0x720 there in the game that runs it (0x1720, 0x1f20 and 0x10720 a
 0x200. STATE carries the owner's word and the record prints both at each change. Writing the owner's word on the
 copy each pre-calc did not hold: the copy's own component puts its own value back every frame. What works the flags
 out on an enemy that runs (so what a copy lacks) is not read, and the list the battle manager keeps
-([*main+0x395e090]+0x4548) links a component at an offset of its own, not at +0x58. [open: the marks, the gauge's
-battle state and the battle music for an enemy another game runs.]
+([*main+0x395e090]+0x4548) links a component at an offset of its own, not at +0x58. **Answered by B.21** [m]: with
+the copy's brain verb asked the game's way, the game's own procedures work the flags out on the copy too. In a camp
+fight the copy's word was the owner's 0x720 while its enemy fought (0x520 for a moment at the change), where it had
+been 0 or 0x200. [open: the marks, the gauge and the battle music themselves were not looked at or listened to.]
 
 **B.21 A copy holds its owner's brain verb and battle target all the time** [m] (research R10 4 ii, R15 3 and 4). Not
 only at a take-over (B.6): at each of a copy's pre-calcs, when its verb differs from the stated one it is asked with
