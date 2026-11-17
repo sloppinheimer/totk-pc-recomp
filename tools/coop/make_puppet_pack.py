@@ -3,7 +3,7 @@
 TotK Online (read for behaviour only; none of its files are used) shows each other player as an actor of its own
 named PlayerPuppet: Link's model, animation set, equipment user and physics, but no Player component, so no player
 state machine and no AI. Its game copies the owner's animation slots onto it and draws its gear with the game's own
-in-hand calls; nothing in the actor fights them (docs/coop/facts/player.md, "Parity with TotK Online").
+in-hand calls; nothing in the actor fights them (docs/coop/facts/player.md, section 7).
 
 This pack is made here from the player's own Player.pack.zs: every member kept, plus
 Actor/PlayerPuppet.engine__actor__ActorParam.bgyml, the Player's actor parameters with the category Enemy (as the
@@ -95,7 +95,7 @@ for f in pack.get_files():
 # emitter: facts/player.md). Enemies and horses have resident false (EnemyCommon) and are sensed through their emitter's
 # sensor sublayer. With --target-fix the stand-in gets the Player's emitter with resident false, and its GameActorInfo
 # row the Player's DefaultAffiliation: a Bokoblin 3 m away then notices it (awareness c882), but fights this game's
-# own Link 30 m off, as if "the player" were always that one (docs/coop/facts/player.md "Enemies and the stand-in",
+# own Link 30 m off, as if "the player" were always that one (docs/coop/facts/player.md, section 6,
 # 2026-11-07). So it is off: an enemy that saw a stand-in would run at this game's Link.
 EMITTER = f'Component/PerceptionEmitterParam/{NAME}.game__component__PerceptionEmitterParam.bgyml'
 if args.target_fix:
@@ -111,7 +111,7 @@ if args.target_fix:
 # Its chemical parameters: the Player's with IsEquipmentAvoidLightningTarget true, as the Lynels', Ganondorf's and
 # the Sage golem's (the only three in 1.4.3 that set it): a thunderstorm in this game does not take the metal the
 # stand-in holds for a lightning target. Only its owner's game builds the static on that player and strikes it
-# (docs/coop/facts/elements.md 5.6).
+# (docs/coop/facts/elements.md, section 6).
 CHEMICAL = f'Component/ChemicalParam/{NAME}.game__component__ChemicalParam.bgyml'
 ref = param['Components']['ChemicalRef']
 chem = byml.read(bytes(pack.get_file(ref.lstrip('?')).data))

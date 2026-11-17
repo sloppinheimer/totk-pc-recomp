@@ -4,7 +4,7 @@
 // Shown with the port's overlay (ui/coop_notices.cpp, the way ui/coop_tags.cpp draws the name tags), not the game's
 // own banners: the game's location banner (layout Pa_LocationName, opened by the sequence node
 // SeqOneShotRequestOpenLocation) takes a location, not a text, and putting our text into one of its panes was not
-// found; docs/coop/facts/player.md, "Notices", has what was looked at.
+// found; docs/coop/facts/engine.md, section 11.4, has what was looked at.
 //
 // Joins and leaves: coop_net.c learns them (a player's first STATE, a LEAVE from the relay) and keeps the list that
 // coop_net_players reads; each overlay frame compares that list with the last frame's. A player's name comes with the

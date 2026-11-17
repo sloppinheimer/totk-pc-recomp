@@ -1218,7 +1218,7 @@ static int is_preview(uint64_t a) {
 }
 // TOTK_COOP_AUTOBUILT=1: a copy of an owner's autobuilt device is made as an autobuild makes it
 // (coop_request_create_autobuilt), so it carries the label too. Off by default: the label alone neither tints the copy
-// green nor joins the copies into one contraption (docs/coop/facts/engine.md, "Autobuild copies"), and what else in the
+// green nor joins the copies into one contraption (docs/coop/facts/zonai.md, section 7), and what else in the
 // game treats labelled devices differently is not known.
 static int autobuilt_on(void) {
     static int on = -1;
@@ -4289,7 +4289,7 @@ void coop_players_tick(Cpu *c) {
         // the Sage's thunder field node (main+0x2438e60) and the EquipmentUser's request 0x75e90009 (main+0xe26964,
         // sent only from that node's code, main+0x2439a34); an arrow shot meanwhile carries lightning
         // (ShootableArrow_IsLightningWait, main+0x1d1fb70). A thunderstorm's static warning on metal gear is not this
-        // bit but the gear's own chemistry (docs/coop/facts/elements.md 5.6). Sent as NetState flags bit 12.
+        // bit but the gear's own chemistry (docs/coop/facts/elements.md, section 6). Sent as NetState flags bit 12.
         if (my_eq && eq_points_to(my_eq, me) && (LD64(my_eq + 0x4600) >> 16 & 1)) st.flags |= 1u << 12;
         // The weapon's attack is on (EquipmentUser +0x660, 1 for about 0.1 s in each swing in 1.4.3 as in 1.2.1:
         // TOTK_COOP_TEST_EQDIFF, 2026-11-07): flags bit 13. TotK Online writes it onto its stand-in every frame (read

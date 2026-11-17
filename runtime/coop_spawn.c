@@ -408,7 +408,7 @@ static void p7_refresh(void) {
 // TOTK_COOP_PROF=8 (with TOTK_COOP_TRACE=calc, which tracks whose calc a thread runs): every function entered inside
 // this PC's Link's calc with a name-like string in x1..x3 (a char pointer, or a string object's +0 / +8 pointer to
 // one), kept as distinct (function, string) pairs and reported every 10 s by function, most strings first: where
-// the Player starts animations (AS) by name, for a proxy that replays them (docs/coop/facts/player.md stage 4).
+// the Player starts animations (AS) by name, for a proxy that replays them (docs/coop/facts/engine.md, section 7.4).
 static int prof8;
 static struct { _Atomic uint64_t fn; uint32_t hash, hits; char s[40]; } p8[8192];
 static __thread uint64_t calc_actor;   // the Player whose ACTOR_CALC this thread runs (TOTK_COOP_TRACE set)
