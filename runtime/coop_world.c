@@ -290,7 +290,8 @@ int coop_world_n_enemies;
 static void dup_one(int cell, uint64_t a, void *arg) {
     (void)arg, (void)cell;
     char nm[64];
-    if (!strncmp(coop_actor_name(a, nm, sizeof nm), "Enemy_", 6) && coop_world_n_enemies < 512) coop_world_enemies[coop_world_n_enemies++] = a;
+    int coop_mount_kind(const char *nm);   // coop_mount.c: horses and animals, which the spawn sync takes too
+    if ((!strncmp(coop_actor_name(a, nm, sizeof nm), "Enemy_", 6) || coop_mount_kind(nm)) && coop_world_n_enemies < 512) coop_world_enemies[coop_world_n_enemies++] = a;
 }
 static void dup_count(void) { coop_world_n_enemies = 0, each_live(dup_one, NULL); }
 // Whether a live enemy of this game (synced or not) stands within m of p: a weapon there is in its hand (or was), not
