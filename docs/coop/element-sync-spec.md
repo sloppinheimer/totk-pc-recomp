@@ -159,8 +159,10 @@ frame number no older than 3 frames.
 
 ### 5.5 Inert actors
 
-`coop_elem_inert(actor, on)` keeps a list of at most 64 actors. An inert actor is treated as a copy in 5.4, is never
-asked anything, and has bit 32 of its component's word +0x20 set (the game's "does not interact with the world").
+`coop_elem_inert(actor, on)` keeps a list of at most 64 actors. An inert actor is shown only (5.6) and is never asked
+anything; it also has bit 32 of its component's word +0x20 set (the game's "does not interact with the world"), which
+stops its whole contact step, the hits on this game's Link included: a mirrored projectile does not get the bit for
+that reason.
 
 ### 5.5a An enemy's conditions
 
@@ -312,24 +314,17 @@ projectiles; nothing calls it yet.
 - **A lightning strike 2 m from that enemy**: its element was electrified for one frame in A and it died of the
   blast (the enemy sync's death); B showed the strike 11 ms after A; A lit 34 cells and B copied all 34.
 
-- **A mirrored fireball is inert** (the enemy sync's replay names its projectiles as mirrors from their prepare call;
-  a mirror's component gets the game's "does not interact with the world" bit, taken off again when the actor is no
-  mirror any more, since the projectiles are used again and the enemy's owner can change). Fire Wizzrobe runs: 14 to
-  18 mirrors made inert in the copying game; the same cells burned in both games, 5 to 12 where 36 and more burned
-  before; copies a median 57 to 79 ms behind. The copying game still decides a few burn events, and a trace of what
-  reaches the ground there (`TOTK_COOP_ELEM_TEST_CONTACTS=1`) named only that game's own Link: its Link stands in the
-  copied fire, burns, and lights the cell under it, which is that game's to decide and is stated to the other.
-
-- **An enemy shocked** (a lightning strike 2 m from a Bokoblin made beside A's Link): its shock condition lasted
-  2.02 s in A; B's copy was shocked 110 ms after A's and its shock ended 85 ms after (53 ms and 27 ms in the run
-  before, in which a statement a moment old shocked the copy a second time; that is now held off). In the pictures
-  the enemy stands in the strike's fire in both games; whether the shock's own sparks show on the copy cannot be
-  told from them. One run of three missed the enemy with the strike.
-
-- **A Link set alight** (A's own, by the test): it burned 12.0 s in A; B put the flame on its stand-in of A 58 ms
-  after and took it off 58 ms after A's ended. B's own Link, standing in the grass A's lit, caught fire, and A put
-  the flame on its stand-in of B 31 ms later. A picture from B shows the flame on the stand-in.
-- **A Link frozen** (A's own, by the test, 6.0 s): a picture from B shows its stand-in of A white with the ice look.
+- **A mirrored fireball lights nothing** (the enemy sync's replay names its projectiles as mirrors from their
+  prepare call). At first a mirror's component also got the game's "does not interact with the world" bit; the enemy
+  sync found that this stops the element's whole contact step, this game's Link included, so a copy's flame hurt no
+  player, and took the bit out (its specification, section B.1; `TOTK_COOP_ELEM_TEST_MIRRORBIT=1` sets it as before).
+  Without the bit the reaction hook (a shown-only actor reaches this game's Link alone) and the ground contact hook
+  keep a mirror from the world. Fire Wizzrobe runs, with the bit: the same cells burned in both games, 5 to 12 where
+  36 and more burned before, copies a median 57 to 79 ms behind. Without the bit: 6 cells in a run without a change of
+  owner, the same in both games, and the trace of what reaches the ground (`TOTK_COOP_ELEM_TEST_CONTACTS=1`) names no
+  projectile in the copying game, only that game's own Link (it stands in the copied fire and lights the cell under
+  it, which is its to decide); 34 cells in a run in which the enemy changed owner, the same in both games, copies a
+  median 66 ms behind.
 
 ### Left, and known faults
 
