@@ -176,12 +176,13 @@ enum { C_BOOL, C_INT, C_ENUM, C_FLOAT, NCAT };   // the name sets
 // coop_world.c peer_tick takes HIT packets into a LinkHitPacket (616 bytes) and drops a longer one, so a packet is kept
 // to 8 + 25 * 24 = 608 bytes. Each change carries its stamp (stamp_new: the order of changes across the games).
 #define GD_KIND 0x54444d47u   // "GMDT"
-#define GD_VER 3
+#define GD_VER 4
 #define GD_PER_PACKET 25
 // id: the name's hash, or the key; for a hello, the sender's id and (bits 16..) whom it answers. value: for a hello, 0
 // when it asks for an answer, else the player it answers.
 typedef struct { uint64_t id, stamp; uint32_t value; uint8_t type, pad[3]; } GdEntry;
-typedef struct { uint32_t kind; uint8_t n, ver; uint16_t to; GdEntry e[GD_PER_PACKET]; } GdPacket;   // to: 0 for all
+typedef struct { uint32_t kind; uint8_t n, ver; uint16_t to; GdEntry e[GD_PER_PACKET]; } GdPacket;   // to: the player (0 all), GD_CATCHUP set for a catch-up
+#define GD_CATCHUP 0x8000   // (in to: a catch-up sent to everyone is a catch-up too, not live changes)
 _Static_assert(sizeof(GdPacket) <= 616, "GdPacket fits coop_world.c's HIT receive buffer");
 _Static_assert(sizeof(GdPacket) <= COOP_HIT_MAX, "GdPacket fits a HIT packet");
 
@@ -795,7 +796,7 @@ static void out_flush(uint64_t now) {
     }
     // the catch-up, with what is left of this frame's packets
     while (cu.on && budget > 0 && now >= cu.next_ns) {
-        p.kind = GD_KIND, p.ver = GD_VER, p.n = 0, p.to = (uint16_t)cu.to;
+        p.kind = GD_KIND, p.ver = GD_VER, p.n = 0, p.to = (uint16_t)(cu.to | GD_CATCHUP);
         plat_mutex_lock(&slog_lock);
         while (cu.cursor < SLOG_N && p.n < GD_PER_PACKET) {
             uint32_t i = cu.cursor++;
@@ -831,7 +832,8 @@ int coop_gamedata_take(const void *data, int n, int from) {   // coop_world.c's 
     if (p->ver != GD_VER || p->n < 1 || p->n > GD_PER_PACKET || n != (int)(offsetof(GdPacket, e) + p->n * sizeof(GdEntry))) return 1;
     if (!share_on()) return 1;
     if (!atomic_load(&gate)) { atomic_fetch_add(&n_closed_drop, p->n); return 1; }
-    if (p->to && p->to != coop_net_id()) { atomic_fetch_add(&n_not_mine, p->n); return 1; }
+    int to = p->to & ~GD_CATCHUP, catchup = (p->to & GD_CATCHUP) != 0;
+    if (to && to != coop_net_id()) { atomic_fetch_add(&n_not_mine, p->n); return 1; }
     plat_mutex_lock(&in_lock);
     for (int i = 0; i < p->n; i++) {
         uint8_t t = p->e[i].type;
@@ -839,11 +841,11 @@ int coop_gamedata_take(const void *data, int n, int from) {   // coop_world.c's 
         if (in_n == IN_N) { atomic_fetch_add(&n_in_full, 1); continue; }
         // a key is 64 bits; every other id is a 32-bit hash (so one value has one id in the session log)
         in[in_n].id = t == T_KEY ? p->e[i].id : (uint32_t)p->e[i].id;
-        in[in_n].stamp = p->e[i].stamp, in[in_n].type = t, in[in_n].from = from, in[in_n].catchup = p->to != 0;
+        in[in_n].stamp = p->e[i].stamp, in[in_n].type = t, in[in_n].from = from, in[in_n].catchup = (uint8_t)catchup;
         in[in_n].value = t == T_BOOL || t == T_KEY ? p->e[i].value & 1 : p->e[i].value;
         in_n++;
         if (t != T_HELLO) atomic_fetch_add(&n_recv, 1);
-        if (p->to) atomic_fetch_add(&n_catchup_in, 1);
+        if (catchup) atomic_fetch_add(&n_catchup_in, 1);
     }
     plat_mutex_unlock(&in_lock);
     return 1;
