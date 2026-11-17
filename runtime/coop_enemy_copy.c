@@ -379,6 +379,7 @@ static void mem_write(uint64_t actor, uint8_t want, const char *name) {
 // without force, and the target slots' reset are turned away; any other verb is the brain's own business.
 #define BRAIN_HOLD 600
 static __thread uint64_t tl_grace_bsa;   // the brain of the actor whose calc this thread is in, while it is held
+static __thread uint64_t tl_grace_actor; // that actor
 static __thread uint8_t tl_grace_verb;
 static __thread int tl_grace_narrow;     // the narrow form of the hold
 static __thread EnCell *tl_grace_cell;
@@ -628,7 +629,11 @@ int en_copy_hook(Cpu *c, uint64_t off) {
     if (tl_act_actor) {   // a copy runs its owner's action (B.38): this one call tree goes through the switch, whole
         extern __thread uint32_t tl_act_ticks, tl_act_runs, tl_act_other;   // (counted for the prototype's log)
         extern __thread uint64_t tl_act_lr;
-        if (off == 0x1920) { int en_act_tick_seen(uint64_t node); tl_act_ticks++; return en_act_tick_seen(c->x[0]); }
+        if (off == 0x1920) {   // a node of the copy's action (its actor, [[[node+8]+8]+0x1f8], the marked one): counted, denied by class
+            uint64_t ctrl = coop_rd_ptr(coop_rd_ptr(c->x[0] + 8) + 8);
+            if (ctrl && coop_rd_ptr(ctrl + 0x1f8) == tl_act_actor) { int en_act_tick_seen(uint64_t node); tl_act_ticks++; return en_act_tick_seen(c->x[0]); }
+            // (another actor's node under the mark, were one calc ever run inside another's: not the copy's, judged below)
+        }
         if (off == 0x50ad74 && coop_rd_ptr(c->x[0] + 0x18) == tl_act_actor) return 0;
         if (off == 0x50b404 && c->x[30] - MOD_MAIN_BASE == 0x50afe4 && coop_rd_ptr(c->x[0] + 0x1f8) == tl_act_actor) { tl_act_runs++; return 0; }
         if (off == 0x50b404 || off == 0x50ad74 || off == 0x2beb80 || off == 0x44ff30 || off == 0x42e0c8) tl_act_other++, tl_act_lr = (c->x[30] - MOD_MAIN_BASE) | off << 32;
@@ -707,8 +712,10 @@ int en_copy_hook(Cpu *c, uint64_t off) {
         c->x[0] = 0;
         return 1;
     }
-    case FN_TARGETS_RESET: {   // the reset of the target slots, in the calc of a held brain's actor
-        if (!tl_grace_bsa) return 0;
+    case FN_TARGETS_RESET: {   // the reset of the target slots of a held brain's actor (x0 points at the actor)
+        // Keyed on the call's own actor: the mark stays set after the held actor's calc, through the calcs of every
+        // actor this sync does not map, until the next mapped enemy's, and their resets are their own.
+        if (!tl_grace_bsa || coop_rd_ptr(c->x[0]) != tl_grace_actor) return 0;
         static _Atomic int said;
         if (tl_grace_narrow && tl_grace_cell) tl_grace_cell->hold_frame = coop_sess_frame_no() + 2;
         if (atomic_fetch_add(&said, 1) < 40) rt_log("coop: en: brain: the target slots' reset of a held brain turned away (from main+%#llx)", (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
@@ -883,18 +890,18 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         } else off = 0;
     }
     tl_off_actor = off ? actor : 0;
-    tl_grace_bsa = 0, tl_grace_narrow = 0, tl_grace_cell = NULL;
+    tl_grace_bsa = 0, tl_grace_actor = 0, tl_grace_narrow = 0, tl_grace_cell = NULL;
     if (off) m->grace_frame = m->hold_frame = 0;
     if (!off && m->grace_frame) {
         uint32_t frame = coop_sess_frame_no();
         if ((int32_t)(m->grace_frame - frame) > 0) {
             brain_hold(c, actor, m, "held");
-            tl_grace_bsa = brain_bsa(actor), tl_grace_verb = m->grace_verb;
+            tl_grace_bsa = brain_bsa(actor), tl_grace_actor = actor, tl_grace_verb = m->grace_verb;
         } else m->grace_frame = 0, m->brain_log_frame = frame, m->hold_frame = frame + BRAIN_HOLD;
     }
     if (!off && !m->grace_frame && m->hold_frame) {
         uint32_t frame = coop_sess_frame_no();
-        if ((int32_t)(m->hold_frame - frame) > 0) tl_grace_bsa = brain_bsa(actor), tl_grace_verb = m->grace_verb, tl_grace_narrow = 1, tl_grace_cell = m;
+        if ((int32_t)(m->hold_frame - frame) > 0) tl_grace_bsa = brain_bsa(actor), tl_grace_actor = actor, tl_grace_verb = m->grace_verb, tl_grace_narrow = 1, tl_grace_cell = m;
         else {
             m->hold_frame = 0;
             rt_log("coop: en: brain: %llx is let go, %u frames after its take-over: its own from here", (unsigned long long)actor, frame - m->brain_log_frame);
@@ -946,7 +953,7 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             m->grace_verb = m->show_verb, m->grace_tgt = m->show_tgt, m->grace_frame = coop_sess_frame_no() + BRAIN_GRACE;
             mem_write(actor, m->show_mem, "the enemy taken over");
             brain_hold(c, actor, m, "taken over");
-            tl_grace_bsa = brain_bsa(actor), tl_grace_verb = m->grace_verb;
+            tl_grace_bsa = brain_bsa(actor), tl_grace_actor = actor, tl_grace_verb = m->grace_verb;
         }
         {   // It is drawn again, with what it holds: the game that takes an enemy over when its owner left or paused may get
             // it unseen, and its own graphs would not know to show it.

@@ -115,7 +115,9 @@ Left, and where it goes:
 - With step 2 (engine reads): SYNC-006, whether one actor's calc can run inside another's (an enemy copy's
   thread-local marks stay set across other actors' calcs, and a held brain's grace may turn away another actor's
   target reset). Its change was taken back (4d217dc4): the calc is reached only through its vtable entry, but a call
-  through that entry from inside another calc is not ruled out by reading. PERF-001 was settled by reading the calc's
+  through that entry from inside another calc is not ruled out by reading. Step 2's part 3 keys the node tick and the
+  target reset on the call's own actor, which holds either way; whether calcs nest is still not read (R26 names the
+  run that decides). PERF-001 was settled by reading the calc's
   entry and fixed again (see its commit).
 - A protocol change for contraption ownership (SEC-007 in the report; no step yet). The session code keeps it to
   invited players.

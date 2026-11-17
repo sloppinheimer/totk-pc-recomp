@@ -243,7 +243,9 @@ A copy's game **takes** the enemy (`coop_enemy.c own_pass`, `take`, epoch + 1) w
 On a take-over (`en_copy_precalc`) the interrupt graph gets its saved fields back, the body becomes dynamic again, the
 copy and what it holds are drawn again, the AI memory bools are written, and the brain is forced to the owner's verb
 and target for 4 frames. After that a narrower hold turns away only the brain's idle verbs and the reset of the target
-slots, for up to 600 frames, until the brain's own start has come and gone.
+slots, for up to 600 frames, until the brain's own start has come and gone. The hold's marks are thread-local and stay
+set until the next mapped enemy's pre-calc on that thread, so each decision checks the call's own actor: the verb
+request's brain, and the target reset's actor ([x0], main+0x24f0a9c).
 
 A game whose world stands (a menu: no graph runner entered for any enemy it runs for a second) says PAUSED in its
 heartbeat (`en_world_stands`, `coop_sess.c`), which is what lets another game take a fight over.
@@ -395,8 +397,9 @@ rule 3), which en_bench does not run yet.
 `TOTK_COOP_EN_ACT_FAMILY` limits it to name prefixes). The copy makes the same request on its own Main slot when this
 game shows the owner at the request's time (`en_act_precalc`), after writing the owner's controller move state and
 velocity (`cct_write`). Under that call (`tl_act_actor`) `en_copy_hook` lets the one call tree through the switch. A
-node tick whose class is in `coop_enemy_act_deny.inc` (267 classes in 10 categories) is turned away and marked
-succeeded (`en_act_tick_seen`). A play the action asks for is answered "played" and not made, since the copy's slots
+node tick of the copy's own (the node's actor, [[[node+8]+8]+0x1f8], is the marked one) whose class is in
+`coop_enemy_act_deny.inc` (267 classes in 10 categories) is turned away and marked succeeded (`en_act_tick_seen`); a
+node of another actor under the mark, were one calc ever run inside another's, is judged as outside it. A play the action asks for is answered "played" and not made, since the copy's slots
 already play the owner's commands (`TOTK_COOP_EN_ACT_PLAYS=1` lets them through). When the owner's verb leaves the
 list, or nothing comes for half a second, the copy is asked for Wait (verb 40) once. While a copy runs an action the
 ARM replay is skipped and an effect its own node started is not started again.
