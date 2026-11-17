@@ -127,37 +127,61 @@ static void snap_actor(FILE *f, int first, const EnCell *m, uint64_t a, const ch
 // ---- What the enemies do, seen where the game does it (any thread): attacks armed, effects and sounds by key, blows
 // between an enemy and a Link. The hooks look an actor up in a table the tick makes of the listed actors near the
 // Links (its SensorHit component [comps+0x428], its effect and sound users [[comps+0x68]+0x70] and +0x78), so they
-// cost a short scan, and nothing at all before the record is on.
+// cost a short scan, and nothing at all before the record is on. The table holds the first USERS_N of those within
+// 120 m of a Link, in the map's order; one left out is counted ("over" in the second's line) and fails the check.
 static _Atomic int ev_on;
-#define USERS_N 128
-static struct { _Atomic uint64_t actor, eu, su, sh; } users[2][USERS_N];
+#define USERS_N 256
+static struct { _Atomic uint64_t actor, eu, su; } users[2][USERS_N];
 static _Atomic int users_cur, users_n[2];
-static uint64_t user_actor(uint64_t p, int what) {   // what: 0 the SensorHit component, 1 the effect user, 2 the sound user
+static uint64_t user_actor(uint64_t p, int what) {   // what: 1 the effect user, 2 the sound user
     int b = atomic_load_explicit(&users_cur, memory_order_acquire), n = atomic_load_explicit(&users_n[b], memory_order_relaxed);
     for (int i = 0; p && i < n; i++) {
-        uint64_t v = atomic_load_explicit(what == 0 ? &users[b][i].sh : what == 1 ? &users[b][i].eu : &users[b][i].su, memory_order_relaxed);
+        uint64_t v = atomic_load_explicit(what == 1 ? &users[b][i].eu : &users[b][i].su, memory_order_relaxed);
         if (v == p) return atomic_load_explicit(&users[b][i].actor, memory_order_relaxed);
     }
     return 0;
 }
 // Attacks armed (main+0x1bf20cc, made again every frame while an attack is on, by the clip's event or an AI node, or
 // by the enemy sync's replay on a copy): the attack types armed, per actor, with the frame.
-#define ARMS_N 256
-static struct { _Atomic uint64_t actor; _Atomic uint32_t frame, mask; } arms[ARMS_N];
+// The actor is the component's +0x18 (as coop_enemy_arm.c en_arm_hook reads it). Per actor (open addressing, 8 probes):
+// the frame and the mask in one word, so a call in a new frame starts the mask afresh without losing another thread's
+// bit of that frame.
+#define ARMS_N 1024
+static struct { _Atomic uint64_t actor, fm; } arms[ARMS_N];   // fm: frame << 32 | mask
+static _Atomic uint32_t arms_full;
 void coop_check_arm(Cpu *c) {
     if (!atomic_load_explicit(&ev_on, memory_order_relaxed)) return;
-    uint64_t a = user_actor(c->x[0], 0);
+    uint64_t a = c->x[0] > 0x10000 ? coop_rd_ptr(c->x[0] + 0x18) : 0;
     uint32_t type = 0;
-    if (!a || !coop_rd(c->x[1] + 4, &type, 4)) return;
-    uint32_t fr = coop_sess_frame_no(), k = (uint32_t)((a >> 4) * 2654435761u) % ARMS_N;
-    atomic_store_explicit(&arms[k].actor, a, memory_order_relaxed);
-    if (atomic_exchange_explicit(&arms[k].frame, fr, memory_order_relaxed) != fr) atomic_store_explicit(&arms[k].mask, 0, memory_order_relaxed);
-    atomic_fetch_or_explicit(&arms[k].mask, 1u << (type & 31), memory_order_relaxed);
+    if (a <= 0x10000 || !en_cell_of(a) || !coop_rd(c->x[1] + 4, &type, 4)) return;
+    uint32_t fr = coop_sess_frame_no(), h = (uint32_t)((a >> 4) * 2654435761u);
+    for (int p = 0; p < 8; p++) {
+        uint32_t k = (h + (uint32_t)p) % ARMS_N;
+        uint64_t was = atomic_load_explicit(&arms[k].actor, memory_order_relaxed);
+        if (was != a) {
+            // (a slot whose actor has not armed for a second is free again)
+            uint64_t fm = atomic_load_explicit(&arms[k].fm, memory_order_relaxed);
+            if (was && fr - (uint32_t)(fm >> 32) < 60) continue;
+            if (!atomic_compare_exchange_strong(&arms[k].actor, &was, a)) continue;
+        }
+        uint64_t old = atomic_load_explicit(&arms[k].fm, memory_order_relaxed), nv;
+        do {
+            uint32_t m = (uint32_t)(old >> 32) == fr ? (uint32_t)old : 0;
+            nv = (uint64_t)fr << 32 | m | 1u << (type & 31);
+        } while (!atomic_compare_exchange_weak(&arms[k].fm, &old, nv));
+        return;
+    }
+    atomic_fetch_add(&arms_full, 1);
 }
 static uint32_t arm_mask(uint64_t a) {   // armed in this frame or the one before
-    uint32_t k = (uint32_t)((a >> 4) * 2654435761u) % ARMS_N, fr = coop_sess_frame_no();
-    if (atomic_load_explicit(&arms[k].actor, memory_order_relaxed) != a || fr - atomic_load_explicit(&arms[k].frame, memory_order_relaxed) > 1) return 0;
-    return atomic_load_explicit(&arms[k].mask, memory_order_relaxed);
+    uint32_t h = (uint32_t)((a >> 4) * 2654435761u), fr = coop_sess_frame_no();
+    for (int p = 0; p < 8; p++) {
+        uint32_t k = (h + (uint32_t)p) % ARMS_N;
+        if (atomic_load_explicit(&arms[k].actor, memory_order_relaxed) != a) continue;
+        uint64_t fm = atomic_load_explicit(&arms[k].fm, memory_order_relaxed);
+        return fr - (uint32_t)(fm >> 32) <= 1 ? (uint32_t)fm : 0;
+    }
+    return 0;
 }
 // Events (effects, sounds, blows): a ring the hooks fill and the tick writes out as "e" lines.
 #define EV_N 1024
@@ -235,7 +259,10 @@ static void ev_flush(FILE *f) {
     if (w - r > EV_N) r = w - EV_N;
     for (; r != w; r++) {
         Ev *e = &evs[r % EV_N];
-        if (!atomic_load_explicit(&e->ready, memory_order_acquire)) break;   // (still being filled: next tick)
+        if (!atomic_load_explicit(&e->ready, memory_order_acquire)) {
+            if (w - r < EV_N / 2) break;   // (still being filled: next tick)
+            continue;                      // (a hole: its event was lost, ev_lost counts it; not waited on for good)
+        }
         fprintf(f, "{\"k\":\"e\",\"t\":%.6f,\"w\":\"%c\",\"a\":\"%s\"", e->ns / 1e9, e->kind, e->a);
         if (e->kind == 'h') fprintf(f, ",\"by\":\"%s\",\"cls\":%u,\"aid\":%u}\n", e->b, e->cls, e->aid);
         else fputs(",\"key\":", f), put_str(f, e->key), fputs("}\n", f);
@@ -258,9 +285,13 @@ void coop_check_tick(Cpu *c, uint64_t me) {
         if (on) rt_log("coop: check: recording to logs/check.jsonl");
         atomic_store(&ev_on, on);
     }
-    if (!on || !me) return;
+    if (!on) return;
     ev_flush(f);
-    int ub = 1 - atomic_load(&users_cur), un = 0;   // the users' table made again in the half the hooks do not read
+    if (!me) {   // (out of the world: no table, so no stale address names an event)
+        atomic_store(&users_n[0], 0), atomic_store(&users_n[1], 0);
+        return;
+    }
+    int ub = 1 - atomic_load(&users_cur), un = 0, over = 0;   // the users' table made again in the half the hooks do not read
     float lp[COOP_MAX_PLAYERS + 1][3];
     int nl = links_of(me, lp);
     uint64_t now = plat_now_ns(), sec = now / 1000000000ull;
@@ -287,11 +318,10 @@ void coop_check_tick(Cpu *c, uint64_t me) {
         if (un < USERS_N) {
             uint64_t comps = en_comps(a), xl = comps ? coop_rd_ptr(comps + 0x68) : 0;
             atomic_store_explicit(&users[ub][un].actor, a, memory_order_relaxed);
-            atomic_store_explicit(&users[ub][un].sh, comps ? coop_rd_ptr(comps + 0x428) : 0, memory_order_relaxed);
             atomic_store_explicit(&users[ub][un].eu, xl ? coop_rd_ptr(xl + 0x70) : 0, memory_order_relaxed);
             atomic_store_explicit(&users[ub][un].su, xl ? coop_rd_ptr(xl + 0x78) : 0, memory_order_relaxed);
             un++;
-        }
+        } else over++;
         char id[24];
         ident(m, a, id, sizeof id);
         if (snap) snap_actor(f, !sn++, m, a, id, pose);
@@ -308,7 +338,7 @@ void coop_check_tick(Cpu *c, uint64_t me) {
     }
     atomic_store_explicit(&users_n[ub], un, memory_order_relaxed);
     atomic_store_explicit(&users_cur, ub, memory_order_release);
-    if (snap) fputs("]}\n", f);
+    if (snap) fprintf(f, "],\"over\":%d,\"arms_full\":%u}\n", over, atomic_load(&arms_full));   // (actors the hooks' tables left out)
     if (fn && fo < (int)sizeof fl - 4) fputs(fl, f), fputs("]}\n", f);
     if (snap) fflush(f);
 }

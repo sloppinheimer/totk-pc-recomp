@@ -275,19 +275,21 @@ def motion(own, cop, skip):
     # copy had one within 50 ms; of the copy's armed frames, the share the owner had none within 50 ms of
     if cop[0][5] is not None and own[0][5] is not None:
         cts = [r[0] for r in cop]
+        # (with no lag measured, a copy standing still: a nominal 100 ms and a window of 150 ms each way)
+        alag, win = (lag, 0.05) if best else (0.1, 0.15)
 
         def armed_near(ser, tss, t):
-            j0, j1 = bisect.bisect_left(tss, t - 0.05), bisect.bisect_right(tss, t + 0.05)
+            j0, j1 = bisect.bisect_left(tss, t - win), bisect.bisect_right(tss, t + win)
             return any(ser[j][5] for j in range(j0, j1))
         need = found = carmed = extra = 0
         for r in cop:
-            j = bisect.bisect_right(ts, r[0] - lag)
+            j = bisect.bisect_right(ts, r[0] - alag)
             if 0 < j < len(ts) and own[j - 1][5]:
                 need += 1
                 found += armed_near(cop, cts, r[0])
             if r[5]:
                 carmed += 1
-                extra += not armed_near(own, ts, r[0] - lag)
+                extra += not armed_near(own, ts, r[0] - alag)
         res.update(arm_need=need, arm_found=found / need if need else None, arm_extra=extra / carmed if carmed else None)
     rates, top = defaultdict(list), defaultdict(float)   # per command: the owner's clock per second, its highest clock
     for k in range(1, len(own)):
@@ -422,6 +424,16 @@ def main():
     if not measured:
         print('  no enemy within 40 m was run by one game and shown by the other')
     compare_events(EA, EB, owner, ser, names, fail)
+    # (a hook that never fires records nothing, and nothing would fail: each record must have something in it)
+    armed = sum(1 for g in (0, 1) for s in ser[g].values() for r in s if r[5])
+    nfx = sum(1 for E in (EA, EB) for e in E if e['w'] in 'xs')
+    nblow = sum(1 for E in (EA, EB) for e in E if e['w'] == 'h')
+    print(f'Records: {armed} armed frames, {nfx} effects and sounds by key, {nblow} blow contacts (both games).')
+    empty = [n for n, v in (('attacks armed', armed), ('effects by key', nfx), ('blows', nblow)) if not v]
+    over = max([s.get('over', 0) for s in SA + SB] or [0])
+    arms_full = max([s.get('arms_full', 0) for s in SA + SB] or [0])
+    if over or arms_full:
+        fail.append(f'the record left actors out ({over} over its effect table, {arms_full} arm calls over its arm table)')
 
     def planted(key):   # the planted desync's own "pos", inside its window
         kind, i = key
@@ -438,8 +450,11 @@ def main():
         for f_ in fail:
             print(f'  {f_}')
         return 1
-    if not moved:
-        print('NOT JUDGED: no enemy copy moved enough (2 s) to measure lag, place error at that lag and stutter.')
+    if not moved or empty:
+        if not moved:
+            print('NOT JUDGED: no enemy copy moved enough (2 s) to measure lag, place error at that lag and stutter.')
+        if empty:
+            print(f"NOT JUDGED: nothing recorded of {', '.join(empty)} (a fight has all three; a hook that never fires has none).")
         return 2
     print('PASS')
     return 0
@@ -506,13 +521,23 @@ def compare_events(EA, EB, owner, ser, names, fail):
         print(f"  {tag}: {made} by the owner, {found} in the copy's game too" +
               (f"; {extra} of the copy's {copys} the owner had not" if copys else '') +
               (f"; missing {sorted(set(miss))[:6]}" if miss else '') + (f"; extra {sorted(set(ext))[:6]}" if ext else ''))
-        if made >= 5 and fr < TARGET['fx_found']:
+        if made and fr < TARGET['fx_found']:
             fail.append(f"{tag}: effects by key found in the copy's game {fr * 100:.0f} % (under {TARGET['fx_found'] * 100:.0f} %)")
-        if copys >= 5 and xr > TARGET['fx_extra']:
+        if copys and xr > TARGET['fx_extra']:
             fail.append(f"{tag}: effects by key the owner had not {xr * 100:.0f} % (over {TARGET['fx_extra'] * 100:.0f} %)")
 
     print('Blows between an enemy and a Link (each must be in both games):')
-    blows = [[e for e in E[g] if e['w'] == 'h'] for g in (0, 1)]
+    blows = [[], []]
+    for g in (0, 1):   # (one blow per swing: a contact seen in more than one hit update is one blow; a pair named by an
+        last = {}      # address, this game's alone, cannot be matched)
+        for e in E[g]:
+            if e['w'] != 'h' or e['a'].startswith('a') or e['by'].startswith('a'):
+                continue
+            k = (e['a'], e['by'], e['aid'])
+            if k in last and e['t'] - last[k] < 1.0:
+                continue
+            last[k] = e['t']
+            blows[g].append(e)
     one, differ, both_n = [], [], 0
     for g in (0, 1):
         for e in blows[g]:

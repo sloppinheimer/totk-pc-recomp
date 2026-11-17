@@ -567,6 +567,12 @@ static int beam_hook(Cpu *c, uint64_t addr) {
     return 1;
 }
 int coop_hook(Cpu *c, uint64_t addr) {
+    // an effect or a sound started by key (ELink main+0xa98cf8, SLink main+0xa98d00), hot: the mismatch checker's record
+    if (addr == MOD_MAIN_BASE + 0xa98cf8 || addr == MOD_MAIN_BASE + 0xa98d00) {
+        void coop_check_emit(Cpu *c, int sound);   // coop_check.c
+        coop_check_emit(c, addr == MOD_MAIN_BASE + 0xa98d00);
+        return 0;
+    }
     if (addr == MOD_MAIN_BASE + 0x40a240) {   // the body-pair collision predicate (hot): stand-ins off contraptions (coop_life.c)
         int coop_life_veto(Cpu *c);
         return coop_life_veto(c);
@@ -703,8 +709,6 @@ int coop_hook(Cpu *c, uint64_t addr) {
     // the SwordBlur component's update (coop_world.c): a stand-in's runs with its owner's WeaponBlur event
     if (addr == MOD_MAIN_BASE + 0x275954) { int coop_blur_hook(Cpu *c, uint64_t addr); return coop_blur_hook(c, addr); }
     if (addr == MOD_MAIN_BASE + 0x300a30) { void coop_hit_update(Cpu *c); coop_hit_update(c); return 0; }        // coop_world.c
-    // an effect or a sound started by key (ELink main+0xa98cf8, SLink main+0xa98d00): the mismatch checker's record
-    if (addr == MOD_MAIN_BASE + 0xa98cf8 || addr == MOD_MAIN_BASE + 0xa98d00) { void coop_check_emit(Cpu *c, int sound); coop_check_emit(c, addr == MOD_MAIN_BASE + 0xa98d00); return 0; }
     if (addr == MOD_MAIN_BASE + 0x50ad74) return 0;   // (an action request: the enemy sync saw it first, above)
     if (addr == MOD_MAIN_BASE + 0x96c1ac) { void coop_markers_screen(uint64_t); coop_markers_screen(c->x[0]); return 0; }   // coop_markers.c: the AppMap screen's set-up
     // main+0x1d1fc70 (x0 an actor link): the 1.4.3 copy of the function TotK Online makes return 1 for PlayerPuppet
