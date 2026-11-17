@@ -157,7 +157,7 @@ per-frame record. Targets (set before the first measurement; a step is not done 
 Done when: it runs on a scripted pair, its report lists differences by actor and kind, and a deliberate desync
 (an enemy moved in one game by a test key) shows up in it.
 
-Built (2026-11-17, not yet run in the game): `runtime/coop_check.c` writes each game's `logs/check.jsonl` (with
+Built (2026-11-17): `runtime/coop_check.c` writes each game's `logs/check.jsonl` (with
 `TOTK_COOP_DEBUG=1`), read from the game's memory with the enemy sync's readers of slots and equipment
 (`en_read_anim`, `en_read_equip`, which tell no other game anything); `tools/coop/check.py` compares the two
 (enemy-sync.md, "Checks"); `run_pair.ps1`, `run_session.ps1` and `play_two.ps1` run it at the end. The deliberate
@@ -175,6 +175,30 @@ games showed it beside the Links, then running off, then gone. A commit review o
 `check.py` could pass on too little or judge wrongly (a nudge asked for and never made, no copy that moved, two
 owners, unreadable lines, duplicate identities, the owner per second, the lag match, phase per command); all fixed:
 a run where no copy moved enough is now "not judged" (exit 2), not a pass.
+
+Gate runs (2026-11-17, both Links standing, a test Bokoblin at 20 s, the planted desync asked of game B at 35 s for
+8 s, pictures from both games):
+- `run_pair.ps1` (the Python relay): PASS. The planted desync was listed on that Bokoblin for its 8 s and nothing else
+  was; the Bokoblin stayed (its AI asked its far delete every 3.3 s, refused) and ran about, so movement was judged for
+  the first time: lag 60 ms, place error p95 0.11 m, stutter 0.71x, the owner's command 100 % of frames, phase p95
+  0.004 s, all within the targets. 27 enemy-seconds compared once a second.
+- `run_session.ps1` (game A hosts from its Co-op tab, B joins with the code): FAIL, on a real desync. The Links stood at
+  the platform's edge there and fell about 38 m at 26 s (the Bokoblin was at them); A handed the Bokoblin to B, whose
+  Link was then nearer (26.5 m against 34.1 m: the rule working); in B it took ForceReturnHome and its actor went
+  (B's log: "offered (this game's actor is gone)"; the keep is only in the game that spawned it, so very likely the same
+  far delete, not logged in B); A took it back from its copy; and B never had it again: "missing", 26 s, until the
+  end. The planted desync was not made (B had no copy at 35 s), and check.py says so. While B ran it, lag 60 ms and
+  place error p95 0.11 m both ways.
+- Found: **a run-time enemy whose actor is gone in one game while it lives on in another is never made again in the
+  first** (the spawn sync makes copies only when an enemy is made). In play: a run-time enemy that one game unloads
+  (its player walks off) and another takes over is gone for the first player when they come back. Goes to step 3's
+  list (no change made yet).
+- Pictures: `TOTK_SHOTS` times each game's pictures by its own world clock, and game B starts 3 to 4 s after A, so
+  pictures of a moving enemy are not of one moment; they show it is there in both, not where. The checker's places are
+  of one moment (the PC's clock).
+
+Step 1 is done by its "done when": the checker runs on a scripted pair, lists differences by actor and kind, finds the
+planted desync, and one run hosted from the Co-op tab.
 
 ### 2. Block at engine functions
 
@@ -200,6 +224,9 @@ class missing from the list is found.
 Done when: each function is read and blocked, and a scripted run with every verb on logs the refusals with no crash.
 
 ### 3. All slots and interrupts, for the Bokoblin family
+
+Also from step 1's runs: a run-time enemy whose actor went in one game (unloaded, or its own far delete) is never made
+again there while it lives on in another; the checker lists it as "missing".
 
 - Requests of all five slots, not only Main: the owner sends each slot's request (`en_act_owner` returns for any
   slot but 0 today), and a copy keeps one per slot (`actq` holds one).
