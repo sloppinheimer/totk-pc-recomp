@@ -57,8 +57,12 @@ static int kind_of(const char *nm) {
     // (the first four are one shape; the others were each tried by spawning one beside a Link with a second game
     // watching, and in a tester's session: made in the other game, followed, no leak. A swarm is not one actor.)
     static const char *const pre[] = { "Enemy_Bokoblin", "Enemy_Moriblin", "Enemy_Horablin", "Enemy_Lizalfos", "Enemy_Chuchu", "Enemy_Keese",
-                                       "Enemy_Octarock", "Enemy_Wizzrobe", "Enemy_Zonau_Robot", "Enemy_Zonau_Golem", "Enemy_Assassin" };
-    if (strstr(nm, "Swarm")) return 0;
+                                       "Enemy_Octarock", "Enemy_Wizzrobe", "Enemy_Zonau_Robot", "Enemy_Zonau_Golem", "Enemy_Assassin",
+                                       // (2026-11-17, each spawned beside a Link with a second game watching, standing: made in the
+                                       // other game, bound, followed with the same command in 98.7 to 100 % of samples, no leak.
+                                       // Not fought yet. A baby Frox was 94 % and 25 cm off its pose and is left out.)
+                                       "Enemy_LikeLike", "Enemy_Lynel", "Enemy_Treant", "Enemy_Zombie_", "Enemy_Toby" };
+    if (strstr(nm, "Swarm") || strstr(nm, "WeakPoint") || strstr(nm, "Dummy") || strstr(nm, "Bullet") || strstr(nm, "Boss")) return 0;   // (not one whole enemy, or a boss)
     for (unsigned i = 0; i < sizeof pre / sizeof *pre; i++)
         if (!strncmp(nm, pre[i], strlen(pre[i]))) return (int)i + 1;
     // Test (TOTK_COOP_EN_KINDS=<prefix>[,<prefix>...]): more kinds by the start of their actor names, for trying a family.

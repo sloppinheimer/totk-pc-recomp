@@ -359,6 +359,14 @@ the owner's flinch (state 2) is sent as bones like a full ragdoll (B.7). Measure
   the held-things rule gives the copy the weapon. [open: a placed weapon nobody has moved is not known to the mirror
   and stays lying in the copy's game.]
 
+**B.19 Five more families** [m] (2026-11-17). Each was spawned beside one game's Link with the other game watching,
+standing: Like Like (same command in 99.3 % of samples), Lynel (99.7 %, 19 cm at worst while moving), Evermean
+(Treant, 98.7 %), Gibdo (Zombie, 100 %; 98.9 % and 0.5 cm in a camp fight), soldier construct (Toby, 99.2 %): made in
+the other game, bound, followed, no leak, tables equal. They are in the default list (`kind_of`). A baby Frox was
+94 % and 25 cm off its pose and is left out; an Aerocuda's actor name was not found. Names with WeakPoint, Dummy,
+Bullet or Boss are left out. None of the five was fought beyond the Gibdo's run: their attacks, parts and special
+moves (a Like Like swallowing, a Lynel's charge and bow, an Evermean's disguise) are not looked at.
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is
