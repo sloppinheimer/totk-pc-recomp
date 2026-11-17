@@ -609,6 +609,40 @@ Yiga was made a copy and asked for its owner's brain verb).
   held since B.21 are asked of brains that never entered. [open: which; the guard watches the interrupt graph, and
   the crash is not proven impossible.]
 
+**B.38 A copy runs the action its owner is in: a prototype** (`coop_enemy_act.c`; off unless `TOTK_COOP_EN_ACT=1`;
+research R21, R22; from a play session, 2026-11-17).
+- Why. The play session's faults across unrelated enemies (effects only in the owner's game, a Chuchu's copy that
+  cannot hurt, a rock picked up for ever) and the reading of B.33 say one thing: a copy has no AI, and most of what an
+  enemy is seen to do is done by nodes of its AI graphs, not by its animation. Sections B.17 to B.36 make such acts
+  again one entry point at a time; there are about 9,700 node instances of them.
+- The layering (R22, read). The deciding units (brain, utility, the scheduler with its ActionSeq) choose an action
+  and ask for it by main+0x50ad74(BSA, request, mode). The request (0x60 bytes) names a root of the slot's action
+  graph by form key, verb (+0x28 forced, else +0x4c) and variation (+0x38, valid +0x40), and the call's tail
+  (the call of main+0x50b404 at main+0x50afe0) is the only place a slot's graph is ticked from.
+- The prototype. The game that runs an enemy tells its Main slot's request each frame its verb is a listed one
+  (ACT, type 66; `TOTK_COOP_EN_ACT_VERBS`, default 131 JumpAttack, 145 OrderAttack, 108 Appear). The copy's game
+  makes the same call before the copy's calc with a flag up that lets this one call tree through the switch, whole:
+  the request itself, main+0x50b404 only from that tail, every node tick under it. When the owner's verb is no longer
+  listed the copy is asked for Wait (40) once, so its root is left.
+- [m] A Chuchu and a Yiga footsoldier spawned beside a Link, 80 s each: no crash, no leak, tables equal. The copy's
+  Main slot graph ran every frame of its owner's action (60 runs and 500 to 840 node ticks a second for a Chuchu's
+  JumpAttack). The node classes it ticked are the action's own: for the Chuchu the basic-attack module's (the clip,
+  the jump, the facing, the verb's arguments); for the Yiga the appear module's, its `Sign` node
+  (ExecuteXLinkSearchAndEmitAndFade, node 11) among them: the copy's own node started the rune ring.
+- [m] Where it stops. The Chuchu's copy never reached the tackle (node 13) or the node that arms the attack (node
+  28): its sequence waits at a selector on QueryPhysicsCctIsPreLand (node 23), which a copy's character controller
+  never answers, its body being static and its place written from its owner's. No attack was armed on the copy and
+  the copy game's Link took no hit (the owner's took 30). An action's own progress reads facts of the actor that a
+  copy does not have.
+- Not right yet in the prototype: the held effect of B.23 was also started by the replay for the same Yiga (the ring
+  twice); the form key is assumed to be the default; only the Main slot.
+- What it would take to be the sync's method (not built): the character controller's state stated with the pose
+  (in the air, about to land, landed), so an action's waits end on a copy when they end for its owner; a net for the
+  nodes a copy must never run itself (a death request, a delete, a drop, a shot, a message, a game-data write: R9's
+  "never replay" list, turned away at the shared one-shot enter and about ten execute enters); the other slots; then
+  the listed verbs widened family by family, and the hand-made replays of B.17 to B.36 taken out where the action
+  does the same.
+
 **B.8 One enemy's blow on another** [m]: on a copy, the hits of other enemies, of what they hold and of the
 projectiles they shot are taken out of its contact list (`coop_world.c contacts_filter`); the game that runs the
 struck enemy counts the blow from its own actor of the attacker. A hit that arrives after its enemy changed owner is

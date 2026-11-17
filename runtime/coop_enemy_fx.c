@@ -198,7 +198,8 @@ void en_fx_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         if (atomic_load_explicit(&fxq[k].cell, memory_order_relaxed) != cell) continue;
         uint64_t xl = coop_rd_ptr(en_comps(actor) + 0x68), eu = xl ? coop_rd_ptr(xl + 0x70) : 0, su = xl ? coop_rd_ptr(xl + 0x78) : 0;
         memcpy(key, fxq[k].key, sizeof key);
-        if (fxq[k].mode && frame - fxq[k].frame < 600) {   // a held one: its handles are kept, or it is stopped
+        if (fxq[k].mode && m->act_run) {   // (the copy runs its owner's action: the node's own enter and leave start and stop it, B.38)
+        } else if (fxq[k].mode && frame - fxq[k].frame < 600) {   // a held one: its handles are kept, or it is stopped
             int h = -1, fr = -1;
             for (int j = 0; j < 8; j++) { if (held[j].cell == cell && !strcmp(held[j].key, key)) h = j; else if (!held[j].cell && fr < 0) fr = j; }
             if (fxq[k].mode == 1 && h < 0 && fr >= 0) {

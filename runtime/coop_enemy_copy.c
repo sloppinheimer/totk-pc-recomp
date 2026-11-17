@@ -128,6 +128,7 @@ int en_copy_msg(const CoopCtrMsg *m, int from) {
     (void)from;
     { int en_fx_msg(const CoopCtrMsg *m); if (en_fx_msg(m)) return 1; }   // coop_enemy_fx.c
     { int en_arm_msg(const CoopCtrMsg *m); if (en_arm_msg(m)) return 1; }   // coop_enemy_arm.c
+    { int en_act_msg(const CoopCtrMsg *m); if (en_act_msg(m)) return 1; }   // coop_enemy_act.c
     { int en_shs_msg(const CoopCtrMsg *m); if (en_shs_msg(m)) return 1; }   // coop_enemy_shot.c
     if (m->type == ENM_ATTN) {
         const MAttn *q = (const MAttn *)m->d;
@@ -582,8 +583,17 @@ static void held_rebuild(void) {
 // ---- The switch (S 5) --------------------------------------------------------------------------------------------------
 static __thread uint64_t tl_off_actor;   // the switched-off actor whose calc this thread entered last (the leak net)
 
+extern __thread uint64_t tl_act_actor;   // coop_enemy_act.c: the copy whose action request the mod is making
 int en_copy_hook(Cpu *c, uint64_t off) {
     if (!atomic_load_explicit(&en_active, memory_order_relaxed)) return 0;
+    if (tl_act_actor) {   // a copy runs its owner's action (B.38): this one call tree goes through the switch, whole
+        extern __thread uint32_t tl_act_ticks, tl_act_runs, tl_act_other;   // (counted for the prototype's log)
+        extern __thread uint64_t tl_act_lr;
+        if (off == 0x1920) { void en_act_tick_seen(uint64_t node); tl_act_ticks++; en_act_tick_seen(c->x[0]); return 0; }
+        if (off == 0x50ad74 && coop_rd_ptr(c->x[0] + 0x18) == tl_act_actor) return 0;
+        if (off == 0x50b404 && c->x[30] - MOD_MAIN_BASE == 0x50afe4 && coop_rd_ptr(c->x[0] + 0x1f8) == tl_act_actor) { tl_act_runs++; return 0; }
+        if (off == 0x50b404 || off == 0x50ad74 || off == 0x2beb80 || off == 0x44ff30 || off == 0x42e0c8) tl_act_other++, tl_act_lr = (c->x[30] - MOD_MAIN_BASE) | off << 32;
+    } else if (off == 0x50ad74) { void en_act_owner(Cpu *c); en_act_owner(c); }   // (of an enemy this game runs: told)
     uint64_t actor;
     switch (off) {
     case 0x50b404: case 0x2beb80: case 0x42e0c8: actor = coop_rd_ptr(c->x[0] + 0x1f8); break;
@@ -1049,7 +1059,8 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             // component puts its own value back every frame (measured: still 0 or 0x200 at phase 0 against its owner's
             // 0x720 in battle). What works them out on an enemy that runs is not read: B.20, open.)
             { void en_fx_precalc(Cpu *c, uint64_t actor, EnCell *m); en_fx_precalc(c, actor, m); }   // coop_enemy_fx.c
-            { void en_arm_precalc(Cpu *c, uint64_t actor, EnCell *m); en_arm_precalc(c, actor, m); }   // coop_enemy_arm.c
+            { int en_act_precalc(Cpu *c, uint64_t actor, EnCell *m); m->act_run = (uint8_t)en_act_precalc(c, actor, m); }   // coop_enemy_act.c
+            { void en_arm_precalc(Cpu *c, uint64_t actor, EnCell *m); if (!m->act_run) en_arm_precalc(c, actor, m); }   // coop_enemy_arm.c
             { void en_shs_precalc(Cpu *c, uint64_t actor, EnCell *m); en_shs_precalc(c, actor, m); }   // coop_enemy_shot.c
             if (m->show_lk[3]) {   // its owner's model looks, each written with its dirty bit as the game's setters do (B.33)
                 uint64_t g = coop_rd_ptr(en_comps(actor) + 0x280);

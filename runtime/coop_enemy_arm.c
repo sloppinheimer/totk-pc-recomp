@@ -54,6 +54,12 @@ int en_arm_hook(Cpu *c, uint64_t off) {
     if (!arm_on()) return 0;
     uint64_t ac = c->x[0], actor = ac > 0x10000 ? coop_rd_ptr(ac + 0x18) : 0;
     EnCell *m = actor > 0x10000 ? en_cell_of(actor) : NULL;
+    if (m && atomic_load_explicit(&m->state, memory_order_relaxed) == EM_COPY) {   // (a copy arming by a node of its own: the action layer's, B.38)
+        static _Atomic int said;
+        uint32_t type = 0;
+        coop_rd(c->x[1] + 4, &type, 4);
+        if (atomic_fetch_add(&said, 1) % 120 == 0) rt_log("coop: en: arm: the copy %llx's own node arms an attack (type %u, from main+%#llx; %d so far)", (unsigned long long)actor, type, (unsigned long long)lr, atomic_load(&said));
+    }
     if (!m || atomic_load_explicit(&m->state, memory_order_relaxed) != EM_OWNED) return 0;
     MArm a;
     memset(&a, 0, sizeof a);

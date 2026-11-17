@@ -47,6 +47,8 @@ typedef struct {
     _Atomic uint32_t gen, frame;      // frame: the frame number of its last calc
     _Atomic uint32_t run_frame;       // the frame a graph runner of it was last entered (let through or turned away): the game thinks it
     uint32_t born_frame;              // the frame its cell was made
+    uint32_t act_verb;                // (run here) the action verb last told to its copies, 0 none (B.38)
+    uint8_t act_run;                  // (a copy) it runs its owner's action this frame: the arm replay and the held effects are its nodes' (B.38)
     uint8_t graph_started;            // its interrupt graph had started when it was first switched off; without it nothing is asked of its brain (B.37)
     _Atomic uint8_t warm;             // its interrupt graph has started (or 30 frames passed): only then may the switch turn it off
     _Atomic uint8_t state;            // EM_*
@@ -177,10 +179,9 @@ void en_pose_of(uint64_t actor, float pose[7]);
 void en_quat_of_rot(const float r[9], float q[4]);
 void en_rot_of_quat(const float q[4], float r[9]);
 
-// Message types (60 to 89, through coop_msg.c). Not used, kept free: 66, 70, 73, 81, 85 (the design's
-// HITACK, KILL, ORPHAN_ACK, PROJ_END and DEATH_SIGNAL, which the state-based sync never needed).
+// Message types (60 to 89, through coop_msg.c). Not used, kept free: 70, 73, 81, 85 (the design's KILL, ORPHAN_ACK, PROJ_END and DEATH_SIGNAL, which the state-based sync never needed).
 enum {
-    ENM_STATE = 60, ENM_ARM = 61, ENM_DECL = 62, ENM_PLAY = 63, ENM_SHS = 64, ENM_HIT = 65,
+    ENM_STATE = 60, ENM_ARM = 61, ENM_DECL = 62, ENM_PLAY = 63, ENM_SHS = 64, ENM_HIT = 65, ENM_ACT = 66,
     ENM_OUTCOME = 67, ENM_DEATH = 68, ENM_DEATH_END = 69, ENM_TOMBS = 71, ENM_CLAIM = 72,
     ENM_REST = 74, ENM_OFFER = 75, ENM_GONE = 76, ENM_NEED = 77, ENM_INDEX = 78, ENM_SYNC_END = 79,
     ENM_PROJ = 80, ENM_EQUIP = 82, ENM_MOON = 83, ENM_UNSYNCED = 84, ENM_POSE = 86, ENM_ATTN = 87, ENM_FX = 88, ENM_PICK = 89,
