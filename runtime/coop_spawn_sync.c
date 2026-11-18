@@ -224,6 +224,29 @@ static void spawn_scan(void) {
     memcpy(seen, next, (size_t)nnext * sizeof next[0]), memcpy(seen_n, next_n, (size_t)nnext * sizeof next_n[0]), nseen = nnext;
 }
 static void remake_tick(Cpu *c);   // (below: the enemy sync's re-makes made)
+// Test (TOTK_COOP_TEST_FOE_DROP=<s>, PLAN.md step 3 part 5): this game deletes its own actor of the test enemy once, s
+// seconds after it first holds one as a copy (not its own making, another game running it), as step 1's session run lost it to its AI's far delete
+// (which the test keep now refuses in every game). The enemy sync then sees this game's actor gone while another game
+// runs it, and its re-make (coop_enemy.c remake_pass) should make it here again.
+static void foe_drop_test(Cpu *c, uint64_t now) {
+    static int on = -1, done;
+    static uint64_t seen_ns;
+    static float after_s;
+    if (on < 0) { const char *e = cfg_get("TOTK_COOP_TEST_FOE_DROP"); on = e && *e; after_s = on ? (float)atof(e) : 0; }
+    uint32_t k = atomic_load_explicit(&test_foe_key, memory_order_relaxed);
+    if (!on || done || !k) return;
+    for (int i = 0; i < 64; i++) if (spawned_mine[i].key == k) { done = 1; return; }   // (the maker: not this test)
+    uint64_t a = 0;
+    for (int i = 0; i < KEYED_N && !a; i++)
+        if (atomic_load_explicit(&keyed[i].key, memory_order_relaxed) == k) a = atomic_load_explicit(&keyed[i].actor, memory_order_acquire);
+    int coop_enemy_role(uint64_t actor);   // coop_enemy.c: 2 a copy (another game runs it)
+    if (!a || keyed_of(a) != k || coop_enemy_role(a) != 2) return;   // (only while it is a copy here)
+    if (!seen_ns) { seen_ns = now; return; }
+    if ((double)(now - seen_ns) / 1e9 < after_s) return;
+    done = 1;
+    uint64_t r = coop_guest_call(c, MOD_MAIN_BASE + COOP_REQUEST_DELETE, a, 0, 0, 0);
+    rt_log("coop: spawn sync: test: this game's actor %llx of the test enemy %08x is deleted (the request answered %llu)", (unsigned long long)a, k, (unsigned long long)(r & 1));
+}
 void spawn_tick(Cpu *c) {
     if (!spawn_on()) return;
     far_copy_test(c);
@@ -248,6 +271,7 @@ void spawn_tick(Cpu *c) {
     }
     spawn_scan();
     remake_tick(c);
+    foe_drop_test(c, now);
     for (int k = 0; k < 32; k++) {   // the copies being made; made ones let go of 10 s on (handed over by then)
         if (made[k].state == 2 && now - made[k].ns > 10000000000ull) made[k].state = 0, made[k].actor = 0;
         if (made[k].state != 1) continue;

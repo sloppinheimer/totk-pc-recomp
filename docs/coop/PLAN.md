@@ -598,6 +598,20 @@ find; the clip stepped twice in those frames and ran ahead. Fixed: the mod's AS_
 left without one (G+0xd8 unmoved since its previous entry, our own call not counted). Built; to be run again, with the
 session run. Item 3 decided nothing this run (no blow without its owner armed).
 
+Fifth gate run (2026-11-17, e4daee10; `build/gate9`; 59 fps): FAIL on two items. The double step is gone: the Dark's
+copy now gets about 60 AS_update runs a second in every state, ours filling the reduced-body frames. Movement, commands
+(99 to 100 %), copy blows (6 of 6 with the owner armed) and every other copy's arming (96 to 100 %) pass. Failing:
+- the Dark Bokoblin's copy in B armed with its owner 91 %: every owner window has a copy window, but in the seconds its
+  calc takes the reduced body (actor+0x3fc 0x2901, ours driving) the copy's windows start 8 to 34 ms after the
+  owner's instead of the usual 60 to 90 ms and end 30 to 90 ms early: its clip runs a few frames ahead while the mod
+  drives it. Not read yet;
+- the Dark's shield (slot 4, Weapon_Shield_006) held by its owner in A and not by its copy in B for 15 s from 32915.
+  Not read yet.
+
+For part 5's session run, a test setting: `TOTK_COOP_TEST_FOE_DROP=<s>` makes a game delete its own actor of the test
+enemy once, s seconds after it first holds it as a copy, since the test keep now refuses the far delete that lost it in
+step 1's run (coop_spawn_sync.c foe_drop_test). Built; not yet run.
+
 ### 4. One camp fight in play
 
 Asked of the tester, by name, with the layer on for Bokoblins. The checker runs and screenshots are taken from both
