@@ -360,7 +360,17 @@ main+0x38011a8, makes the same request as the denied OneShotPhysicsCctJump, read
 controller's move state written by index each frame (`coop_enemy_act.c cct_write`), which skips the state change's
 leave and edge flags; or chance (three cases). What the take-over does not undo: the controller's state and the
 action's queue cell. Next: the same gate run (it decides the first), then, if flights remain, read `ChangeMoveState`
-main+0x298f7a8, the jump module's vtable +0x60 and the result pass main+0x240440 before changing `cct_write`. The layer does help arming with the
+main+0x298f7a8, the jump module's vtable +0x60 and the result pass main+0x240440 before changing `cct_write`.
+
+Gate run again with SetJumpHeight denied (2026-11-17, 5a0147cb): no FATAL; frames where an enemy moved more than
+0.5 m: 58 (the first gate run 138, the layer off 0). Two of the three enemies that flew no longer do; the Dark
+Bokoblin still flew in B (its owner then) after a take-over, and its copy in A showed it. So the jump request was one
+cause and not the only one: the move state written by index (`cct_write`) or what a take-over leaves on the
+controller stays, and the reading above comes next. Otherwise: stutter 0.82 to 1.48x on every copy measured (within
+target), place error p95 under 0.3 m but the flier's 0.29; every copy's blow on a Link came while its owner had an
+attack armed (5 of 5); a Link's blow on an enemy in both games 18 times, in one only 4; attacks armed with the owner
+under 95 % for two Bokoblins game A ran; 8 differences held two seconds, as in the baseline (the bow held in one game
+only, ragdoll states 2 to 5 s, short animation differences). The layer does help arming with the
 owner: 94 to 100 % per copy with it, 81 and 43 % for two Bokoblins without it (a clip started at the owner's command
 still arms by its own clock). Next: read what moves a copy's body while its action runs (`cct_write`, the
 controller's move state and velocity, and the action's own movement requests) against `en_copy_precalc`'s placing,
