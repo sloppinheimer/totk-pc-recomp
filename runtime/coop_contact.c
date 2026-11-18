@@ -41,6 +41,57 @@ static int ct_is_link(uint64_t a) {
     return 0;
 }
 uint32_t coop_sess_frame_no(void);   // coop_sess.c
+
+// The record of a blow on this game's Link that an enemy struck, by its own body or by what it holds, once per enemy and
+// attack id: the enemy and whether this game runs it; the contact's attacker ([entry+0x80]+0x40) and striking object
+// ([entry+0x68]+0x40) with their places, their distances from this Link and the striking object's holder; the enemy's
+// ragdoll state ([comps+0x3e8]+0x20); the contact's victim body (+0x58), type, level and the two bytes after
+// (+0x90..+0x93), power (+0xa0, an int: main+0x1cd263c multiplies it into the damage), attack id (+0x38) and class
+// (+0x0b) (fields: research R14). Step 3's third gate run had a blow on a Link named after a copy that had nothing armed,
+// 6.6 m off, while an enemy this game ran stood 2.4 m from the Link with a rising blow armed; the record does not say
+// which body struck (research R34 3). 60 lines, and every one of the enemy TOTK_COOP_EN_LOG_KEY names.
+static void enemy_blow_log(uint64_t e) {
+    int coop_enemy_role(uint64_t actor), coop_enemy_key(uint64_t actor, uint64_t *a, uint32_t *b), coop_enemy_log_all(uint64_t key);
+    uint64_t coop_enemy_holder(uint64_t actor);
+    uint64_t r1 = coop_rd_ptr(e + 0x68), r2 = coop_rd_ptr(e + 0x80), by = r2 ? coop_rd_ptr(r2 + 0x40) : 0, w = r1 ? coop_rd_ptr(r1 + 0x40) : 0;
+    uint64_t en = by && coop_enemy_role(by) ? by : by ? coop_enemy_holder(by) : 0;
+    if (!en && w) en = coop_enemy_role(w) ? w : coop_enemy_holder(w);
+    if (!en || !coop_world_me) return;
+    uint32_t aid = 0;
+    coop_rd(e + 0x38, &aid, 4);
+    // (a contact waits in several hit updates: one line per enemy and attack id; one with no id, per enemy and half
+    // second; the enemy is in the key in case attack ids are counted per attacker, which is not read)
+    uint64_t dk = (uint64_t)(aid ? aid : coop_sess_frame_no() / 30 | 0x80000000u) << 32 | (uint32_t)(en >> 4);
+    static _Atomic uint64_t seen[16];
+    static _Atomic uint32_t seen_w;
+    for (int k = 0; k < 16; k++) if (atomic_load_explicit(&seen[k], memory_order_relaxed) == dk) return;
+    atomic_store_explicit(&seen[atomic_fetch_add(&seen_w, 1) % 16], dk, memory_order_relaxed);
+    uint64_t ka = 0;
+    uint32_t kb = 0;
+    coop_enemy_key(en, &ka, &kb);
+    static _Atomic int said;
+    if (!coop_enemy_log_all(ka) && atomic_fetch_add(&said, 1) >= 60) return;
+    uint8_t tl[4] = {0}, cls = 0;
+    int32_t power = 0, rs = -1;
+    coop_rd(e + 0x90, tl, 4), coop_rd(e + 0xa0, &power, 4), coop_rd(e + 0x0b, &cls, 1);
+    uint64_t rag = coop_rd_ptr(coop_rd_ptr(en + 0x228) + 0x3e8);   // (the enemy's components, then its ragdoll)
+    if (rag) coop_rd(rag + 0x20, &rs, 4);
+    float lp[3] = {0}, bp[3] = {0}, wp[3] = {0};
+    coop_rd(coop_world_me + COOP_ACTOR_POS, lp, 12);
+    if (by) coop_rd(by + COOP_ACTOR_POS, bp, 12);
+    if (w) coop_rd(w + COOP_ACTOR_POS, wp, 12);
+    float db = sqrtf((bp[0] - lp[0]) * (bp[0] - lp[0]) + (bp[1] - lp[1]) * (bp[1] - lp[1]) + (bp[2] - lp[2]) * (bp[2] - lp[2]));
+    float dw = sqrtf((wp[0] - lp[0]) * (wp[0] - lp[0]) + (wp[1] - lp[1]) * (wp[1] - lp[1]) + (wp[2] - lp[2]) * (wp[2] - lp[2]));
+    uint64_t wh = w ? coop_enemy_holder(w) : 0;
+    char en_n[48], by_n[48], w_n[48], wh_n[48];
+    rt_log("coop: contact: this Link struck by the enemy %s %016llx (%s): attacker %s at %.2f %.2f %.2f, %.1f m from this Link; "
+           "striking object %s at %.2f %.2f %.2f, %.1f m, held by %s; the enemy's ragdoll state %d; victim body %llx, type %u level %u, %u %u, power %d, attack id %u, class %u",
+           coop_actor_name(en, en_n, sizeof en_n), (unsigned long long)ka, coop_enemy_role(en) == 2 ? "a copy here" : "this game decides for it",
+           by ? coop_actor_name(by, by_n, sizeof by_n) : "-", bp[0], bp[1], bp[2], by ? db : -1.f,
+           w ? coop_actor_name(w, w_n, sizeof w_n) : "-", wp[0], wp[1], wp[2], w ? dw : -1.f, wh ? coop_actor_name(wh, wh_n, sizeof wh_n) : "nothing",
+           (int)rs, (unsigned long long)coop_rd_ptr(e + 0x58), tl[0], tl[1], tl[2], tl[3], (int)power, aid, cls);
+}
+
 static void contacts_filter(uint64_t dc) {
     static int on = -1;
     if (on < 0) { const char *e = cfg_get("TOTK_COOP_CONTACT_FILTER"); on = !(e && *e == '0'); }
@@ -66,6 +117,7 @@ static void contacts_filter(uint64_t dc) {
             uint64_t e = base + (uint64_t)k * CONTACT_SZ, r2 = coop_rd_ptr(e + 0x80), by = r2 ? coop_rd_ptr(r2 + 0x40) : 0;
             uint8_t cls = 0;
             uint32_t aid = 0;
+            enemy_blow_log(e);
             if (by && coop_rd(e + 0x0b, &cls, 1) && coop_rd(e + 0x38, &aid, 4)) coop_enemy_outcome(by, cls, aid);
         }
     }

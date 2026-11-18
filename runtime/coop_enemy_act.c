@@ -263,7 +263,8 @@ void en_act_owner(Cpu *c) {
             uint32_t f7c = 0, qn = 0;
             if (ct) coop_rd(ct + 0x19c, &rt, 4), coop_rd(sl + 0x7c, &f7c, 4);
             if (ino) coop_rd(ino + 0x90, &qn, 4);
-            if (atomic_fetch_add(&n_told, 1) < 80) rt_log("coop: en: act: %s %016llx (run here) %s slot %u%s verb %u%s%s%s%s, mode %u: told to its copies (its slot before the call: root %d, +0x7c %x, queue %u; asked from main+%#llx)", en_tab[ei].name, (unsigned long long)en_tab[ei].id.a, a.stop ? "leaves the action of" : "asks", slot, a.intr ? " (an interrupt, told as a forced request)" : "", v, a.var[0] ? " variation " : "", a.var, a.form[0] ? " form " : "", a.form, a.mode, rt, f7c, qn, (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
+            int coop_enemy_log_all(uint64_t key);   // coop_enemy.c (TOTK_COOP_EN_LOG_KEY: every line of one enemy)
+            if (coop_enemy_log_all(en_tab[ei].id.a) || atomic_fetch_add(&n_told, 1) < 80) rt_log("coop: en: act: %s %016llx (run here) %s slot %u%s verb %u%s%s%s%s, mode %u: told to its copies (its slot before the call: root %d, +0x7c %x, queue %u; asked from main+%#llx)", en_tab[ei].name, (unsigned long long)en_tab[ei].id.a, a.stop ? "leaves the action of" : "asks", slot, a.intr ? " (an interrupt, told as a forced request)" : "", v, a.var[0] ? " variation " : "", a.var, a.form[0] ? " form " : "", a.form, a.mode, rt, f7c, qn, (unsigned long long)(c->x[30] - MOD_MAIN_BASE));
         }
     }
     plat_mutex_unlock(&en_lock);
@@ -504,14 +505,19 @@ static uint64_t act_call(Cpu *c, uint64_t actor, uint64_t bsa, int k, int stop, 
     if (ctrl) coop_rd(ctrl + 0x19c, &root1, 4);
     if (sl) coop_rd(sl + 0x7c, &s7c1, 4), coop_rd(sl + 0x78, &s781, 4);
     if (inst) coop_rd(inst + 0x90, &q1, 4);
+    // (the copy's key, for TOTK_COOP_EN_LOG_KEY: that one enemy's lines are not capped, coop_enemy.c coop_enemy_log_all)
+    int coop_enemy_key(uint64_t actor, uint64_t *a, uint32_t *b), coop_enemy_log_all(uint64_t key);
+    uint64_t ka = 0;
+    uint32_t kb = 0;
+    int all = coop_enemy_key(actor, &ka, &kb) && coop_enemy_log_all(ka);
     if (mode || stop || !actq[k].said || (uint32_t)ret) {
-        if (atomic_fetch_add(&n_made, 1) < 120) rt_log("coop: en: act: the copy %llx's slot %u is asked for %s verb %u, mode %u: the call answered %u, the slot's root %d -> %d; slot +0x7c %x -> %x, +0x78 %u -> %u, queue %u -> %u; under the call: the slot's graph run %u times, %u node ticks, %u other entries turned away (last main+%#llx from main+%#llx), %u engine calls refused", (unsigned long long)actor, s, stop ? (s ? "None, leaving" : "Wait, leaving") : "its owner's", v, (unsigned)mode, (unsigned)ret, root0, root1, s7c0, s7c1, s780, s781, q0, q1, tl_act_runs, tl_act_ticks, tl_act_other, (unsigned long long)(tl_act_lr >> 32), (unsigned long long)(tl_act_lr & 0xffffffffu), tl_act_refused);
+        if (all || atomic_fetch_add(&n_made, 1) < 120) rt_log("coop: en: act: the copy %llx's slot %u is asked for %s verb %u, mode %u: the call answered %u, the slot's root %d -> %d; slot +0x7c %x -> %x, +0x78 %u -> %u, queue %u -> %u; under the call: the slot's graph run %u times, %u node ticks, %u other entries turned away (last main+%#llx from main+%#llx), %u engine calls refused", (unsigned long long)actor, s, stop ? (s ? "None, leaving" : "Wait, leaving") : "its owner's", v, (unsigned)mode, (unsigned)ret, root0, root1, s7c0, s7c1, s780, s781, q0, q1, tl_act_runs, tl_act_ticks, tl_act_other, (unsigned long long)(tl_act_lr >> 32), (unsigned long long)(tl_act_lr & 0xffffffffu), tl_act_refused);
         actq[k].said = 1;
     }
     actq[k].sum_runs += tl_act_runs, actq[k].sum_ticks += tl_act_ticks, actq[k].sum_calls++;
     if (frame - actq[k].sum_frame >= 60) {
         static _Atomic int said;
-        if (atomic_fetch_add(&said, 1) < 60) rt_log("coop: en: act: the copy %llx's slot %u in verb %u: %u calls, its graph run %u times, %u node ticks in the last second", (unsigned long long)actor, s, actq[k].verb, actq[k].sum_calls, actq[k].sum_runs, actq[k].sum_ticks);
+        if (all || atomic_fetch_add(&said, 1) < 60) rt_log("coop: en: act: the copy %llx's slot %u in verb %u: %u calls, its graph run %u times, %u node ticks in the last second", (unsigned long long)actor, s, actq[k].verb, actq[k].sum_calls, actq[k].sum_runs, actq[k].sum_ticks);
         actq[k].sum_runs = actq[k].sum_ticks = actq[k].sum_calls = 0, actq[k].sum_frame = frame;
     }
     return ret;

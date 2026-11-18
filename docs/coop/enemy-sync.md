@@ -132,7 +132,9 @@ Before each calc, `en_copy_precalc`:
   the matrix (COOP_FORCE_MATRIX) and the actor's own transforms.
 - **Animation.** `slots_apply` plays the owner's command in each slot by the game's own play request (main+0x4dc628)
   when it differs, at once; a command the slot did not take (read back after the play) is asked again 12 frames later
-  at the soonest. Clocks more than 3 units off are written; smaller errors bend the rate by up to 10 %.
+  at the soonest. Clocks more than 3 units off are written. A copy behind by more than half a unit is caught up by up
+  to 10 % of the rate; one ahead by more than half a unit has its next step cut so its clock lands half a unit ahead
+  (the rate down to 0, never below), so an owner's clip that stands (hit-stop) holds the copy's too (research R34 4).
 - **Clip kept playing** (`clip_drive`, first in `en_copy_precalc`, PLAN.md step 3 part 7). The calc may skip
   AS_update (main+0x432fa0) for a copy; AS_update adds 1 to G+0xd8 on every run (G the animation player). A copy
   within 40 m (horizontal) of any Link shown here whose count did not move since its previous calc entry gets one
@@ -206,7 +208,11 @@ passed on, at most twice.
 
 **A copy's blow on this game's Link.** It is built in this game from this game's copy, as any enemy's blow, from
 an attack armed by the copy's clip, by the ARM replay, or by the action layer when it is on. How it ended (hit, guarded, guarded at the right moment, avoided) is
-told to the owner as **OUTCOME** (`coop_enemy_hit.c coop_enemy_outcome`). On a guarded outcome the owner's enemy
+told to the owner as **OUTCOME** (`coop_enemy_hit.c coop_enemy_outcome`). Every blow on this game's Link that names an enemy, by its own body or
+by what it holds, owned here or a copy, is logged once per enemy and attack id ("coop: contact: this Link struck by the enemy",
+`coop_contact.c enemy_blow_log`, 60 lines): the contact's attacker and striking object with their places and
+distances from the Link, the striking object's holder, the enemy's ragdoll state, and the contact's type, level, power
+and class, so a blow named after an enemy that had nothing armed can be told from a neighbour's (research R34 3). On a guarded outcome the owner's enemy
 waits 10 to 15 s before its next attack, as the game's own node does after a guard (`en_hit_msg`).
 
 ### 6. Dying
@@ -216,14 +222,20 @@ enemy (`en_hit_phase0`). Every game keeps the tombstone; a placement's actor see
 
 A copy never dies by itself. Its death component's bits 0x81 are set (no drops, no requests but the sync's). On DEATH
 its death is asked with the owner's causes (main+0x1b4b738), it waits at its third phase, and it is given the "Die
-ran" signal when the owner's death has passed that phase (`en_hit_precalc`). A copy's kill-counter writer
+ran" signal when the owner's death has passed that phase (`en_hit_precalc`). The causes come from the owner's word in
+the state the copy shows; until a shown state has a valid word (a copy shows its owner about 70 ms late), from the word
+DEATH carried, which is kept when valid, in a phase and with a cause 0 to 20 (`En.death_word`, `EnCell.death_word`);
+with neither, LifeDepleted with second cause 1. The line "asked of the copy" says which (research R34 5c). A copy's kill-counter writer
 (main+0xb28394) is turned off by setting its done bit (`coop_enemy_loot.c en_loot_hook`).
 
 Loot is the owner's: `coop_enemy_loot.c` notes each drop item as the owner's drop makes it, and each weapon an owned
 enemy drops or throws. The object mirror then sends them as this game's objects (`coop_enemy_loot_take`).
 
 When the owner's actor is gone, **DEATH_END** frees the entry everywhere (`en_dead`). A copy still dying ends by
-itself.
+itself; one whose death has not passed its third phase is first marked (`EnCell.death_sig_frame`, 2 s), and once it
+thinks again its own thread gives it the signal at phase 3 (`coop_enemy_hit.c death_signal_due`), so its death tick
+runs on to the delete instead of its own Die action and ragdoll (research R34 5d: 2 s longer, sliding 4 m). The "dead"
+line gives the copy's phase at DEATH_END.
 
 ### 7. Handed over
 
@@ -235,7 +247,13 @@ itself.
 - that player struck it in the last 5 s (HIT), this game has had it for at least 3 s, that player's Link is within
   80 m, and it is nearer than this game's Link or this game's Link is over 15 m away.
 
-Never in the middle of an interrupt action, and never while the enemy is not drawn (a Wizzrobe in its unseen flight).
+Never in the middle of an interrupt action, never while the enemy is not drawn (a Wizzrobe in its unseen flight), and
+never while a hit or a flinch is under way here: a hit received and not yet applied (`pend_dmg`, applied by
+`en_hit_phase0` after the hand-over pass), a flinch asked of pre-calc (`EnCell.flinch`) or of the ragdoll (rag+0x149
+bit 0), or a ragdoll state other than none (rag+0x20). The flinch is the game's native partial ragdoll and plays only
+in the game that applies the hit; offered in the same pass, it played in the game that gave the enemy away and not in
+the striker's (research R34 5b). A held offer is logged once per enemy and epoch ("not offered to player N yet"), and
+a game whose enemy became a copy logs what was still under way then ("became a copy with a hit of ...").
 An offer not taken in 2 s is withdrawn, and not made again for 10 s.
 
 When this game no longer runs the enemy (for half a second) or no longer has its actor, it offers it to everyone. In
@@ -368,6 +386,7 @@ For finding a fault (tests):
 | Setting | What |
 |---|---|
 | `TOTK_COOP_EN_KINDS=<prefix>,...` | more kinds by name prefix |
+| `TOTK_COOP_EN_LOG_KEY=<key>` | every action line ("told to its copies", the copy's per-call and per-second lines) and blow line of the one enemy with that key (16 hex digits, as the logs print it), past their caps (`coop_enemy.c coop_enemy_log_all`) |
 | `TOTK_COOP_EN_NOSWITCH=1` | ownership runs, no copy is switched off or moved |
 | `TOTK_COOP_EN_TEST_SKIP=<letters>` | leave a part of the copy out: `b` take-over brain, `v` copy brain hold, `s` static body, `r` ragdoll refusal, `h` life write, `d` death switches, `t` target no-flicker |
 | `TOTK_COOP_EN_TEST_BLIND=<s>` | take none of this game's own actors for that long after the session began |

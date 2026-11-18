@@ -19,14 +19,21 @@ sync's key for one made at run time). A difference counts when it holds in two p
   rot         rotation: more than 25 degrees apart
   life        life points
   dead        actor state alive / going away, or the death word
-  ragdoll     ragdoll state
+  ragdoll     ragdoll state. Of an owner and its copy, only a copy in a ragdoll state while its owner is in none, and
+              that from one second: a copy's own ragdoll starts are turned away and its owner's ragdoll comes to it as
+              bones (judged by place), so a copy reads 0 while its owner lies, by design, and any other state on a copy
+              is a flinch or fall that game alone plays (research R34 5a, 5b). Of a pair with no single owner, any
+              difference.
   drawn       the model's hidden mask or the actor's drawn bit
-  anim        a slot's command
+  anim        a slot's command; not in a second where either game's clock of that slot is below the copy's nominal
+              delay in clip units: a command that changed that recently may be one the copy has not reached yet
+              (research R34 2)
   equip       a slot's held thing, or drawn / put away
 Nothing is compared in the first 10 s after both games are in the world.
 
 Every frame, for actors within 40 m of a Link, the copy against its owner (the game that runs it; "r" in the record):
-  lag         the delay that best lines the copy's path up with the owner's (only while the owner moves)
+  lag         the delay that best lines the copy's path up with the owner's (only while the owner moves 2 s or more;
+              otherwise the measures below take a nominal 70 ms, the copy's usual delay)
   error       the copy's distance from the owner at that delay: p50, p95, max
   stutter     the copy's frame-to-frame acceleration (RMS) over the owner's
   command     the share of the copy's frames playing the owner's command (first slot) at that delay
@@ -34,7 +41,9 @@ Every frame, for actors within 40 m of a Link, the copy against its owner (the g
               and loop length are taken from the owner's own frames)
   armed       attacks armed (main+0x1bf20cc, by the clip or an AI node): of the owner's armed moments, the share the
               copy had one within 50 ms; of the copy's armed frames, the share the owner had none
-The owner is taken per second, so an enemy handed over is compared the right way round on each side of the change.
+The owner is taken per second, so an enemy handed over is compared the right way round on each side of the change;
+the copy's frames of the second in which the owner changed are left out, since the new owner's first frames there
+would be judged as the old owner's copy (research R34 1).
 
 Events, each game's own, matched with the other game's within 0.3 s before to 0.8 s after:
   effects     effects and sounds an enemy starts by key (ELink main+0xa98cf8, SLink main+0xa98d00): of the owner's, the
@@ -67,6 +76,8 @@ TARGET = dict(lag_ms=200, err_p95=0.3, stutter=1.5, cmd_share=0.95, phase_p95=0.
 MATCH_S = 0.8   # an event of the other game counts as the same one when it comes this long after (or 0.3 s before)
 MISS_NEAR = 60.0
 SETTLE = 10.0
+NOMINAL_LAG = 0.07   # a copy's usual delay behind its owner, seconds (60 to 80 ms measured, research R34 1)
+CLIP_RATE = 60.0     # clip clock units a second, when the record has no frames to measure it from
 
 
 def load(d):
@@ -105,6 +116,26 @@ def log_lines(d):
 NUDGE = re.compile(r'coop: check: test: nudge: (\S+) ([0-9a-f]{16}) put ([\d.]+) m east from ([\d.]+) s for ([\d.]+) s')
 
 
+POS_OWN = re.compile(r'coop: en: pos: (\d+) [0-9a-f]{16} o ')
+TAKE = re.compile(r"coop: en: own: \S+ ([0-9a-f]{16})/\d+ epoch \d+ (?:taken over by this game|another game's now: "
+                  r"this game's is a copy)")
+
+
+def takeovers_of(lines, out):
+    """when each owner change was logged in one game's log, into out[key]: the stamp of that game's last "en: pos:" line
+    of an enemy it ran (stamped with the PC clock, in ns) before the change's line, so never later than the change. (A
+    copy's "en: pos:" line is stamped with its owner's moment, about 70 ms earlier, so it is not used.)"""
+    last = None
+    for l in lines:
+        m = POS_OWN.search(l)
+        if m:
+            last = int(m.group(1)) / 1e9
+            continue
+        m = TAKE.search(l)
+        if m and last is not None:
+            out[m.group(1)].append(last)
+
+
 def dist(a, b):
     return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
 
@@ -131,8 +162,11 @@ def pct(xs, p):
 
 # ---- once a second ---------------------------------------------------------------------------------------------------
 
-def compare_snaps(SA, SB, names):
-    """{(kind, id): [(t, detail)]} of differences that held two paired seconds in a row; plus 'far' notes and counts"""
+def compare_snaps(SA, SB, names, clip_rate=CLIP_RATE):
+    """{(kind, id): [(t, detail)]} of differences that held two paired seconds in a row (or count from one second:
+    `single`); plus 'far' notes and counts. clip_rate: clip clock units a second, for the 'anim' rule"""
+    fresh = NOMINAL_LAG * clip_rate   # (a slot clock under this: its command began within the copy's usual delay)
+    single = set()                    # (kind, id, sec): a difference that counts from that one second
     bysec = [{int(s['t']): s for s in S} for S in (SA, SB)]
     secs = sorted(set(bysec[0]) & set(bysec[1]))
     start = None
@@ -200,14 +234,26 @@ def compare_snaps(SA, SB, names):
                 seen[('life', i)].append((s, f"A {a['hp']} B {b['hp']}"))
             if alive(a['st']) != alive(b['st']) or a['ds'] != b['ds']:
                 seen[('dead', i)].append((s, f"A state {a['st']} death {a['ds']:#x}, B state {b['st']} death {b['ds']:#x}"))
-            if a['rag'] != b['rag']:
+            if roles.count('o') == 1 and roles.count('c') == 1:
+                # (an owner and its copy: the copy reads 0 while its owner lies, by design, since its ragdoll starts
+                # are turned away and the owner's pose comes as bones; a copy in a ragdoll state of its own is a flinch
+                # or fall played in that game alone, never expected, so one second is enough; research R34 5a, 5b)
+                if cop['rag'] != 0 and own['rag'] == 0:
+                    seen[('ragdoll', i)].append((s, f"A {a['rag']} B {b['rag']} (the copy's, its owner in none)"))
+                    single.add(('ragdoll', i, s))
+            elif a['rag'] != b['rag']:
                 seen[('ragdoll', i)].append((s, f"A {a['rag']} B {b['rag']}"))
             if a['hide'] != b['hide'] or a['vis'] != b['vis']:
                 seen[('drawn', i)].append((s, f"A mask {a['hide']:#x} bit {a['vis']}, B mask {b['hide']:#x} bit {b['vis']}"))
             for k in range(max(len(a['anim']), len(b['anim']))):
                 x = a['anim'][k][0] if k < len(a['anim']) else ''
                 y = b['anim'][k][0] if k < len(b['anim']) else ''
-                if x != y:
+                # (each game samples on its own first frame of the second and the copy plays its owner's commands
+                # about 70 ms late, so a command begun within that delay on either side is one the other game may not
+                # have reached yet: that second is not judged; research R34 2)
+                cx = a['anim'][k][1] if x else None
+                cy = b['anim'][k][1] if y else None
+                if x != y and not any(c is not None and c < fresh for c in (cx, cy)):
                     seen[('anim', i)].append((s, f'slot {k}: A {x or "-"} B {y or "-"}'))
             for k in range(min(len(a['eq']), len(b['eq']))):
                 if a['eq'][k] != b['eq'][k]:
@@ -216,7 +262,7 @@ def compare_snaps(SA, SB, names):
     held = {}
     for key, occ in seen.items():
         secs_set = {s for s, _ in occ}
-        keep = [(s, d) for s, d in occ if s - 1 in secs_set or s + 1 in secs_set]
+        keep = [(s, d) for s, d in occ if s - 1 in secs_set or s + 1 in secs_set or (key[0], key[1], s) in single]
         if keep:
             held[key] = keep
     return held, far, compared, (secs[0] if secs else None), start, rest_old
@@ -230,6 +276,19 @@ def series(frames):
         for a in r['a']:
             out[a[0]].append((r['t'], a[1:4], a[4:8], a[8], a[9], a[10] if len(a) > 10 else None))
     return out
+
+
+def clip_rate(ser):
+    """clip clock units a second: the median rate of every slot-0 clock over frames that kept their command, both
+    games (CLIP_RATE when the record has none)"""
+    rates = []
+    for g in ser:
+        for s in g.values():
+            for k in range(1, len(s)):
+                dt = s[k][0] - s[k - 1][0]
+                if s[k][3] == s[k - 1][3] and s[k][3] != '00000000' and 0 < dt < 0.1 and s[k][4] > s[k - 1][4]:
+                    rates.append((s[k][4] - s[k - 1][4]) / dt)
+    return pct(rates, 0.5) if rates else CLIP_RATE
 
 
 def stand_ins(frames):
@@ -283,7 +342,9 @@ def motion(own, cop, skip):
                         errs.append(dist(r[1], o[0]))
             if len(errs) > 20 and (best is None or sum(errs) / len(errs) < best[1]):
                 best = (lag_ms, sum(errs) / len(errs))
-    lag = best[0] / 1000 if best else 0.0
+    # (a copy that moved too little to measure its lag still plays its owner's commands its usual delay late: at lag 0
+    # every command change of its owner would count that delay as a mismatch; research R34 1)
+    lag = best[0] / 1000 if best else NOMINAL_LAG
     res['lag_ms'] = best[0] if best else None
     errs, same, both, phase = [], 0, 0, []
     for r in cop:
@@ -376,7 +437,8 @@ def main():
         return 1
 
     names = {}
-    held, far, compared, first, start, rest_old = compare_snaps(SA, SB, names)
+    ser = [series(FA), series(FB)]
+    held, far, compared, first, start, rest_old = compare_snaps(SA, SB, names, clip_rate(ser))
     nudges = []
     for d, who, S in ((args[0], 'A', SA), (args[1], 'B', SB)):
         for l in log_lines(d):
@@ -432,13 +494,15 @@ def main():
                 skip[i].append((n['t0'] - 1, n['t1'] + 1))
 
     # every frame
+    takeovers = defaultdict(list)   # key -> [PC seconds]: when an owner change was logged, in either game
+    for d in args:
+        takeovers_of(log_lines(d), takeovers)
     owner = defaultdict(dict)   # id -> {second: the game that runs it then}
     for S, who in ((SA, 0), (SB, 1)):
         for s in S:
             for a in s['a']:
                 if a['r'] == 'o':
                     owner[a['id']][int(s['t'])] = who
-    ser = [series(FA), series(FB)]
     print('Every frame (copy against owner):')
     measured = moved = 0
     for i in sorted(owner):
@@ -448,7 +512,16 @@ def main():
             # set a calm copy against a violent owner or the reverse; research R27)
             secs = owner[i]
             own = [r for r in ser[who].get(i, []) if any(secs.get(int(r[0]) + d) == who for d in (-1, 0, 1))]
-            cop = [r for r in ser[1 - who].get(i, []) if secs.get(int(r[0])) == who]   # (its frames while who ran it)
+            # (the copy's frames while who ran it; in a second after whose sample the other game took the enemy over,
+            # only those before the take-over: from then on the frames there are the new owner's own, not a copy's.
+            # With no take-over moment in the logs for that second, the whole second is left out; research R34 1)
+            def before_take(t):
+                s = int(t)
+                if secs.get(s + 1, who) == who:
+                    return True
+                tk = [x for x in takeovers.get(i[1:], []) if s <= x < s + 1]
+                return bool(tk) and t < min(tk)
+            cop = [r for r in ser[1 - who].get(i, []) if secs.get(int(r[0])) == who and before_take(r[0])]
             if not own or not cop:
                 continue
             r = motion(own, cop, skip.get(i, []))
