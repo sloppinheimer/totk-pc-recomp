@@ -59,7 +59,7 @@ foreach ($d in $a, $b) { Remove-Item -Force (Join-Path $d 'logs\check.jsonl') -E
 $relayLog = "build\relay$Tag.log"
 $relay = Start-Quiet (Join-Path $root '.venv\Scripts\pythonw.exe') "server\coop_relay.py --port $Port --log $relayLog" $root
 $games = @()
-foreach ($g in @(@{dir = $a; prof = "build\prof-coop-a$Tag"; script = $ScriptA; name = 'A'; input = $null},
+foreach ($g in @(@{dir = $a; prof = "build\prof-coop-a$Tag"; script = $ScriptA; name = 'A'; input = 'none'},
                  @{dir = $b; prof = "build\prof-coop-b$Tag"; script = $ScriptB; name = 'B'; input = 'none'})) {
     $p = Join-Path $root $g.prof
     if (Test-Path $p) { Remove-Item -Recurse -Force $p }

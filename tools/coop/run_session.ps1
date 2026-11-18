@@ -31,7 +31,7 @@ foreach ($d in $a, $b) { Remove-Item -Force (Join-Path $d 'logs\check.jsonl') -E
 . (Join-Path $PSScriptRoot 'quiet.ps1')
 Remove-Item Env:TOTK_COOP_RELAY, Env:TOTK_COOP_HOST_CODE, Env:TOTK_COOP_TEST_HOST, Env:TOTK_COOP_TEST_JOIN, Env:TOTK_COOP_TEST_LEAVE, Env:TOTK_MENU_TEST, Env:TOTK_MENU_TEST_DIR -ErrorAction SilentlyContinue
 $games = @()
-foreach ($g in @(@{dir = $a; prof = 'build\prof-coop-a'; script = $ScriptA; name = 'A'; input = $null},
+foreach ($g in @(@{dir = $a; prof = 'build\prof-coop-a'; script = $ScriptA; name = 'A'; input = 'none'},
                  @{dir = $b; prof = 'build\prof-coop-b'; script = $ScriptB; name = 'B'; input = 'none'})) {
     $p = Join-Path $root $g.prof
     if (Test-Path $p) { Remove-Item -Recurse -Force $p }
