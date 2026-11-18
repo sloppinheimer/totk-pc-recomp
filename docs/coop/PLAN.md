@@ -398,17 +398,79 @@ still arms by its own clock). Next: read what moves a copy's body while its acti
 controller's move state and velocity, and the action's own movement requests) against `en_copy_precalc`'s placing,
 before any change.
 
-Also from step 1's runs: a run-time enemy whose actor went in one game (unloaded, or its own far delete) is never made
-again there while it lives on in another; the checker lists it as "missing".
+### 3. All slots and interrupts, for the Bokoblin family
 
-- Requests of all five slots, not only Main: the owner sends each slot's request (`en_act_owner` returns for any
-  slot but 0 today), and a copy keeps one per slot (`actq` holds one).
-- Interrupt requests (skipped today by `flags & 1`). They start reactions (flinch, stagger) that a copy now shows
-  from stated animation and bones.
-- The form key: which enemies have more than one, read before assuming the default.
+The aim, from the start: requests of all five slots, interrupt requests, and the form key. Added from steps 1 and 2:
+the five desyncs carried above. Read in research R29 (slots, interrupts, form), R30 (bow, two games running an enemy
+as their own, the run-time enemy not made again) and R31 (a Link's blows in one game, late arming), 2026-11-17; their
+code claims checked against `main` and Ghidra (main+0x3486a4) the same day.
 
-Done when: a scripted camp fight of Bokoblins with all slots and interrupts on shows no crash and the checker's
-difference list is read and explained.
+What was found:
+- **Slots** (R29 1). The action request (main+0x50ad74) takes its slot from the request; each slot has its own state,
+  and only Main runs the move-control adjustment and the interrupt teardown. A Bokoblin uses Main for every action
+  and Sub only for the lower body while riding a horse (verbs 24 Ride, 0 None, asked once at a state's enter and
+  leave). It has no SP graphs. The camp fight has no horse, so its gate cannot show Sub working.
+- **Interrupts** (R29 2). Today an interrupt request on the owner is told as a stop, so a hit sends its copies to
+  Wait. Sent with the interrupt bit, a copy would tear down its own action and could stay in "interrupt requested".
+  Sent with that bit cleared and the force bit kept, the light reactions (SmallHit, MediumHit, Repelled, Guard,
+  GuardBreak, GuardJustRepelled, StealthHit, Paralyze, Combust, Fall, SightDown) enter the right root and act on
+  nothing step 2 leaves open. The heavy ones (Die, Struggle, Thrown, HugeHit, CriticalHit, WeakPointHit, Smash,
+  Frozen, BrokenArmor) switch the body to rigid-body mode and push it, R28's launch shape.
+- **Form key** (R29 3). BSA+0x2628 is a pointer to text; the default builds no prefix. A Bokoblin's forms are
+  `Sleep`, `HorseRide`, `RideSeat`, and the form decides which root a verb finds (`Sleep_InterruptSmallHit`). Nothing
+  carries the owner's form today.
+- **Bow** (R30 1). The copy drops its own bow: while the owner's Guard nocks an arrow its bow's attachment link holds
+  the arrow, the copy's does not, and the held-things rule drops the bow "to make it again with the attachment". The
+  two creates fail, the tries never reset, and a take-over by that game then deletes the real bow in the other.
+- **Both games' own** (R30 2). Not a desync of what players see: the enemy rests because neither game runs it (parked
+  by the game's battle LOD manager, or both Links far). The checker reads it as two owners.
+- **Run-time enemy not made again** (R30 3). Nothing makes a copy again: the spawn sync makes copies only on the
+  maker's one SPAWN, and the enemy sync binds only actors that appear. Also: the maker's SPAWN_GONE deletes the
+  enemy everywhere even when another game owns and fights it.
+- **A Link's blows in one game** (R31 1). The checker's: it asks for the stand-in's contact in the other game, which
+  `contacts_filter` throws away by design. Life agreed in both games all run.
+- **Late arming** (R31 2). Copies 20 m or more from their game's Link stop advancing their clip between the clocks
+  `slots_apply` writes, so its events, the arm among them, never come. The game is not updating those copies'
+  animation; what gates it is not read (main+0x348680 skips when bits 17 or 18 of the player's +0x124 are set).
+  R29's copy calls answered 3 ("this slot already took a request this frame", 8 % and 33 % of calls) also show
+  copies whose calc did not run between two of our calls [guess: the same throttle].
+
+Design:
+1. **Owner, every slot** (`coop_enemy_act.c en_act_owner`). Tell every slot, keeping the last verb, variation and form
+   per slot. Mode 1 when any of the three changed, not only the verb. For slots 1 to 4, verb 0 (None) is a real
+   request and is told. Light interrupts are told with an interrupt mark; heavy ones and every other unlisted
+   request stay a stop, as today.
+2. **Message** (`MAct`). Add the slot and the form text (32 bytes). Checked on receipt: slot below 5 (5 and over run
+   on Main), verb in range, flags only bits 0 and 8, texts ended and printable, the form one of the family's known
+   ones or empty.
+3. **Copy** (`en_act_precalc`). One queue per copy and slot. Each frame: set the form if it changed (main+0x88d524,
+   then main+0xd141fc, outside the action mark; the text kept in a table the mod never frees), then call Main, then
+   the other slots that hold a request. The interrupt bit is cleared, the force bit kept. Stop per slot: Main asks
+   Wait with mode 1, as today; slots 1 to 4 ask None the way the game's own fill does (mode 0, +0x24 4, +0x28 0x11c).
+   The half-second rule ("nothing told: Wait") stays for Main only; other slots hold their request until told. A
+   take-over leaves slots 1 to 4 with None.
+4. **Bow** (`coop_enemy_copy.c`). `equip_read_more` reads no attachment for slot 3. `eq_tries` and `eq_att_tries` go
+   back to 0 after 10 s, and a create's failure bit (eu+0x4600, bit 0x200000000000, research G8 3.2) is logged.
+5. **Run-time enemy made again** (`coop_enemy.c` phase 0, a new `coop_spawn_sync.c coop_spawn_remake`). For an entry
+   that is run-time, alive, owned by another game, has no actor here and has a name: when the owner's latest STATE
+   place is within 60 m of this game's Link [guess: inside a Bokoblin's unload radius, facts 13.5 open] and no
+   remake was asked in the last 10 s, make it by name at that place under the same key, through `spawn_take`'s
+   create path. `cell_resolve` then binds it as a copy and `far_sweep` covers it. The maker sends SPAWN_GONE only when
+   no other game owns a live entry of that key. The test foe's keep from its own far delete applies in every game,
+   not only the maker's, so the test does not bounce between games.
+6. **Checker.** `coop_check.c role()` writes "r" for an OWN cell this game does not run (a reader of `runs()` in
+   `coop_enemy.c`); check.py lists "owner" only when no game has "o" and one has "l". A Link's blow on an enemy is
+   judged in the striker's game; the other game's stand-in contact is listed, not judged. A per-frame line for each
+   stand-in (its weapon attack byte +0x660 and weapon place) is recorded as information.
+7. **Far copies' clips** (R31 2.4). Read first: who sets bits 17 and 18 of the animation player's +0x124, what
+   main+0xb51440 and main+0x1b5666c are, and whether the calc's per-slot status loop (main+0x41df6c..0x41e03c) runs
+   on a copy (R29 2.2). Then, if the throttle has a per-actor switch, keep a copy updating while it is within 40 m of
+   any Link shown in its game. Designed after that read.
+
+Done when: the camp fight with the layer on, every verb, all slots and the light interrupts runs with no crash; no
+`lets go of its Weapon_Bow_004` line in either game; no "owner" finding for a resting enemy; every copy within 40 m
+arms with its owner at 95 % or more; and the checker's difference list is read and explained. A session run
+(`run_session.ps1`, the test foe) shows the run-time enemy made again in the game that lost it.
 
 ### 4. One camp fight in play
 
