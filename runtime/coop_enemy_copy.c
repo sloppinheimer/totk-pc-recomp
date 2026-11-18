@@ -890,24 +890,47 @@ static void slots_apply(Cpu *c, uint64_t actor, EnCell *m, const EnSlot *want, i
 // bit 0 is set. Called at the calc's entry, before any guest call of en_copy_precalc, x1 is still that pointer. [guess:
 // the calc's other path, when actor+0x5b4 differs from the frame counter (main+0x41c798), was not followed to its
 // AS_update; the same step is used.]
+//
+// Only after CLIP_WAIT calcs in a row without the game's AS_update: the stalls of research R32 3.3 last 10 to 40 s,
+// while a hit-stop or another short freeze the game means lasts a few frames and is left to the game. The same wait
+// keeps a clip from being stepped twice in one frame whenever a gate opens again after a frame or two.
 #define CLIP_NEAR_M 40.f
+#define CLIP_WAIT 30
+// The Links shown in this game (its own and the stand-ins), read once a frame per calc thread: a calc thread runs many
+// copies' calcs a frame, and the player lookup scans the resident actors by name.
+static int clip_links(float lp[][3]) {
+    static __thread uint32_t at = ~0u;
+    static __thread int n;
+    static __thread float pos[COOP_MAX_PLAYERS + 1][3];
+    uint32_t fr = coop_sess_frame_no();
+    if (fr != at) {
+        int coop_player_actors(uint64_t *actors, int *net_ids, int max);   // coop_players.c
+        uint64_t acts[COOP_MAX_PLAYERS + 1], link = coop_player_actor();
+        int ids[COOP_MAX_PLAYERS], k = coop_player_actors(acts, ids, COOP_MAX_PLAYERS);
+        if (link) acts[k++] = link;
+        n = 0;
+        for (int i = 0; i < k; i++) if (coop_rd(acts[i] + COOP_ACTOR_POS, pos[n], 12)) n++;
+        at = fr;
+    }
+    memcpy(lp, pos, sizeof(float) * 3 * (size_t)n);
+    return n;
+}
 static void clip_drive(Cpu *c, uint64_t actor, EnCell *m) {
     uint64_t dtp = c->x[1];
     uint64_t comps = en_comps(actor), ac = comps ? coop_rd_ptr(comps + 0x40) : 0, g = anim_g(actor), d8 = 0;
-    if (!ac || !g || !coop_rd(g + 0xd8, &d8, 8)) { m->clip_have = 0; return; }
+    if (!ac || !g || !coop_rd(g + 0xd8, &d8, 8)) { m->clip_have = 0, m->clip_miss = 0; return; }
     int missed = m->clip_have && d8 == m->clip_d8;
     m->clip_have = 1, m->clip_d8 = d8;
+    if (!missed) { m->clip_miss = 0; return; }
+    if (m->clip_miss < 255) m->clip_miss++;
     uint8_t g126 = 0;
-    if (!missed || !coop_rd(g + 0x126, &g126, 1) || (g126 & 6)) return;
+    if (m->clip_miss < CLIP_WAIT || !coop_rd(g + 0x126, &g126, 1) || (g126 & 6)) return;
     {   // near a Link shown here: this game's or another player's stand-in
-        int coop_player_actors(uint64_t *actors, int *net_ids, int max);   // coop_players.c
-        float p[3], lp[3];
-        uint64_t acts[COOP_MAX_PLAYERS + 1], link = coop_player_actor();
-        int ids[COOP_MAX_PLAYERS], n = coop_player_actors(acts, ids, COOP_MAX_PLAYERS), near = 0;
-        if (link) acts[n++] = link;
+        float p[3], lp[COOP_MAX_PLAYERS + 1][3];
+        int n = clip_links(lp), near = 0;
         if (!coop_rd(actor + COOP_ACTOR_POS, p, 12)) return;
         for (int i = 0; i < n && !near; i++)
-            if (coop_rd(acts[i] + COOP_ACTOR_POS, lp, 12) && (p[0] - lp[0]) * (p[0] - lp[0]) + (p[2] - lp[2]) * (p[2] - lp[2]) <= CLIP_NEAR_M * CLIP_NEAR_M) near = 1;
+            if ((p[0] - lp[i][0]) * (p[0] - lp[i][0]) + (p[2] - lp[i][2]) * (p[2] - lp[i][2]) <= CLIP_NEAR_M * CLIP_NEAR_M) near = 1;
         if (!near) return;
     }
     uint32_t f5ac = 0;
@@ -934,6 +957,7 @@ static void clip_drive(Cpu *c, uint64_t actor, EnCell *m) {
 void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     int st = atomic_load_explicit(&m->state, memory_order_relaxed);
     if (st == EM_COPY) clip_drive(c, actor, m);   // (first: it reads the calc's own x1)
+    else m->clip_have = 0, m->clip_miss = 0;   // (a copy again later starts its count afresh)
     int off = is_off(st) && !noswitch() && atomic_load_explicit(&en_active, memory_order_relaxed);
     if (!atomic_load_explicit(&m->warm, memory_order_relaxed)) {
         // A new actor thinks until its interrupt graph has started (its instance has a queue count or a bit word), at

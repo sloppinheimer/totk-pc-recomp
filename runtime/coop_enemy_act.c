@@ -319,7 +319,7 @@ int en_act_msg(const CoopCtrMsg *m) {
             if (cc == cell && actq[k].slot == a->slot) have = k;
             // (free, or a queue whose copy has had no calc for 5 s: deleted or unloaded without a stop, as a Sub held in
             // Ride whose copy went is)
-            else if (f < 0 && (!cc || (cc > 0 && cc <= EN_MAP_N && fr - atomic_load(&en_map[cc - 1].frame) > 300))) f = k, fz = cc;
+            else if (f < 0 && (!cc || (cc > 0 && cc <= EN_MAP_N && (int32_t)(fr - atomic_load(&en_map[cc - 1].frame)) > 300))) f = k, fz = cc;   // (signed: a calc thread may stamp a frame newer than fr)
         }
         if (have < 0 && (a->stop || f < 0)) return 1;
         int k = have >= 0 ? have : f, z = fz;
