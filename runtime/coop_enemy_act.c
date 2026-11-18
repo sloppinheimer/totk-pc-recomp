@@ -280,24 +280,23 @@ static int text_ok(const char *s, size_t n) {
 }
 // What another game tells is checked here, where it is received (docs/coop/README.md rule 7): the slot below 5 (5 and
 // over would run on Main) and the request's own slot the same; the verb in range; flags only bits 0 (interrupt, with
-// the mark) and 8 (force restart); the numbers finite (NaN is the request's "none") and within the world; texts ended
-// and printable, the form one of the known keys or empty. 0: refused.
+// the mark) and 8 (force restart); the variation's valid byte 0 or 1; texts ended and printable, the form one of the
+// known keys or empty. 0: passed; else the number of the check that refused it (en_act_msg logs it).
 static int act_msg_ok(const MAct *a) {
-    if (a->slot >= ACT_SLOTS || a->mode > 1 || a->stop > 1 || a->intr > 1) return 0;
-    if (!text_ok(a->var, sizeof a->var) || !text_ok(a->form, sizeof a->form) || !form_known(a->form)) return 0;
-    if (a->stop) return 1;   // (a stop's request is not used: the copy asks Wait or None of its own)
+    if (a->slot >= ACT_SLOTS || a->mode > 1 || a->stop > 1 || a->intr > 1) return 1;
+    if (!text_ok(a->var, sizeof a->var) || !text_ok(a->form, sizeof a->form)) return 2;
+    if (!form_known(a->form)) return 3;
+    if (a->stop) return 0;   // (a stop's request is not used: the copy asks Wait or None of its own)
     uint32_t f28, v4c, slot;
     uint16_t fl;
     memcpy(&f28, a->req + 0x28, 4), memcpy(&v4c, a->req + 0x4c, 4), memcpy(&slot, a->req + 0x48, 4), memcpy(&fl, a->req + 0x50, 2);
-    if (slot != a->slot || f28 > VERB_NONE || (f28 == VERB_NONE && v4c >= VERB_NONE)) return 0;
-    if ((fl & ~0x101u) || (fl & 1) != a->intr || a->req[0x40] > 1 || (a->var[0] && a->req[0x40] != 1)) return 0;
-    static const uint8_t fo[] = {0, 4, 8, 0xc, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x2c, 0x30};
-    for (size_t i = 0; i < sizeof fo; i++) {
-        float x;
-        memcpy(&x, a->req + fo[i], 4);
-        if (!isnan(x) && (!isfinite(x) || fabsf(x) > 1e5f)) return 0;
-    }
-    return 1;
+    if (slot != a->slot || f28 > VERB_NONE || (f28 == VERB_NONE && v4c >= VERB_NONE)) return 4;
+    if ((fl & ~0x101u) || (fl & 1) != a->intr) return 5;
+    if (a->req[0x40] > 1 || (a->var[0] && a->req[0x40] != 1)) return 6;
+    // (The numbers are not limited in size: a request may hold "no limit" values, and every Run request of step 3's
+    // first gate run was refused while a size limit stood here (research R33). A number is a number to the game; only
+    // the two addresses, +0x38 and +0x58, are replaced on the copy's side.)
+    return 0;
 }
 
 // A message of this file's (from en_copy_msg). 1: it was one.
@@ -305,8 +304,26 @@ int en_act_msg(const CoopCtrMsg *m) {
     if (m->type != ENM_ACT) return 0;
     const MAct *a = (const MAct *)m->d;
     uint64_t me = coop_ctr_me();
-    if (m->len != (int)sizeof *a || !act_msg_ok(a)) {
-        if (atomic_fetch_add(&n_refused_msg, 1) < 10) rt_log("coop: en: act: a request from %016llx refused: it does not pass the checks (length %d)", (unsigned long long)m->from, m->len);
+    int why = m->len != (int)sizeof *a ? 9 : act_msg_ok(a);
+    if (why) {
+        // (said once for each check and verb, up to 64 such pairs: which check, and the request's verb and flags)
+        static _Atomic uint32_t said[64];
+        uint32_t v = 0, v4c = 0;
+        uint16_t fl = 0;
+        if (why != 9) memcpy(&v, a->req + 0x28, 4), memcpy(&v4c, a->req + 0x4c, 4), memcpy(&fl, a->req + 0x50, 2);
+        if (v == VERB_NONE) v = v4c;
+        uint32_t key = (uint32_t)why << 16 | (v & 0xffff), z = 0;
+        atomic_fetch_add(&n_refused_msg, 1);
+        for (int i = 0; i < 64; i++) {
+            uint32_t k = atomic_load(&said[i]);
+            if (k == key + 1) break;
+            if (!k && atomic_compare_exchange_strong(&said[i], &z, key + 1)) {
+                rt_log("coop: en: act: a request from %016llx refused by check %d (1 slot or mode, 2 a text, 3 an unknown form '%.31s', 4 the slot or verb, 5 the flags, 6 the variation byte, 9 the length %d): verb %u, flags %04x, slot %u",
+                       (unsigned long long)m->from, why, why != 9 ? a->form : "", m->len, v, fl, why != 9 ? a->slot : 0);
+                break;
+            }
+            z = 0;
+        }
         return 1;
     }
     for (int i = 0; i < EN_N; i++) {

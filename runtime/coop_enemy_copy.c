@@ -877,11 +877,11 @@ static void slots_apply(Cpu *c, uint64_t actor, EnCell *m, const EnSlot *want, i
 // slots_apply writes, so a clip's events, the attack arm among them, never came (research R31 2). The calc is entered
 // every frame; inside it AS_update (main+0x432fa0, x0 the animation player G, s0 the step) is skipped by one of four
 // gates: a global flag with AC+0x9c bit 0 and G+0x124 bit 12, the IsAS pause mask (actor+0x3fc bit 18), the 0xc4 pause
-// masks without the exemption of [comps+0x88]+0x20 bit 4, or a missing AC, [AC+0x18] or G (research R32 3.1). Who
-// turns them on for a copy is not found. AS_update adds 1 to G+0xd8 on every run (read in Ghidra), so at the calc's
-// entry a count unmoved since the previous entry means the previous calc did not run it. For such a copy within
-// CLIP_NEAR_M (horizontal) of any Link shown in this game, the mod makes that one call itself, with the step the calc
-// would give it: the calc's dt times AC+0x98 (main+0x41ca18..0x41ca30; AC = [comps+0x40], G = [[AC+0x18]+0x18]).
+// masks without the exemption of [comps+0x88]+0x20 bit 4, or a missing AC, [AC+0x18] or G (research R32 3.1); and,
+// before all of them, the reduced body below. For a copy in the reduced body within CLIP_NEAR_M (horizontal) of any
+// Link shown in this game, the mod makes the call itself, with the step the calc would give it: the calc's dt times
+// AC+0x98 (main+0x41ca18..0x41ca30; AC = [comps+0x40], G = [[AC+0x18]+0x18]). AS_update adds 1 to G+0xd8 on every
+// run (read in Ghidra); the record line below counts the runs with it.
 // AS_update returns at once when G+0x126 & 6 (bits 17 and 18 of +0x124), so that case is left alone. A clip whose
 // step is 0 inside AS_update ([G+0x38]+0x190 bit 1, research R32 case E) is not helped by this.
 //
@@ -891,11 +891,16 @@ static void slots_apply(Cpu *c, uint64_t actor, EnCell *m, const EnSlot *want, i
 // the calc's other path, when actor+0x5b4 differs from the frame counter (main+0x41c798), was not followed to its
 // AS_update; the same step is used.]
 //
-// Only after CLIP_WAIT calcs in a row without the game's AS_update: the stalls of research R32 3.3 last 10 to 40 s,
-// while a hit-stop or another short freeze the game means lasts a few frames and is left to the game. The same wait
-// keeps a clip from being stepped twice in one frame whenever a gate opens again after a frame or two.
+// Which copies (research R33, step 3's first gate run): the calc tests actor+0x3fc & 3 at its entry and, when either
+// bit is set, takes a reduced body at main+0x41cab0 (main+0x41bb84..0x41bb90, read in Ghidra) that reaches neither
+// AS_update nor the arm poll main+0x42ec98, which is the only route a Bokoblin's clip-event attacks arm by. Every
+// owner-armed frame whose copy missed the arm in that run fell in seconds with bit 0 set; copies in the full body armed
+// 96 %. So the mod acts exactly in that state, read at the entry: one AS_update, then the arm poll as the full body
+// makes it (main+0x421a64..0x421a7c: x0 = [comps+0x428], the SensorHit component, when its byte +0x22 has bit 1; x1
+// the step record, which the poll does not read). The game's own body does neither in that frame, so nothing runs
+// twice, and a hit-stop or other pause mask (gates B and C) is left to the game. [guess: the full body also skips the
+// poll when [sp+0x148] bit 0 is set; what that bit is was not read.] What sets bits 0 and 1 is not read (R33).
 #define CLIP_NEAR_M 40.f
-#define CLIP_WAIT 30
 // The Links shown in this game (its own and the stand-ins), read once a frame per calc thread: a calc thread runs many
 // copies' calcs a frame, and the player lookup scans the resident actors by name.
 static int clip_links(float lp[][3]) {
@@ -917,14 +922,12 @@ static int clip_links(float lp[][3]) {
 }
 static void clip_drive(Cpu *c, uint64_t actor, EnCell *m) {
     uint64_t dtp = c->x[1];
-    uint64_t comps = en_comps(actor), ac = comps ? coop_rd_ptr(comps + 0x40) : 0, g = anim_g(actor), d8 = 0;
-    if (!ac || !g || !coop_rd(g + 0xd8, &d8, 8)) { m->clip_have = 0, m->clip_miss = 0; return; }
-    int missed = m->clip_have && d8 == m->clip_d8;
-    m->clip_have = 1, m->clip_d8 = d8;
-    if (!missed) { m->clip_miss = 0; return; }
-    if (m->clip_miss < 255) m->clip_miss++;
+    uint8_t b3fc = 0;
+    if (!coop_rd(actor + 0x3fc, &b3fc, 1) || !(b3fc & 3)) return;   // (the full body: the game updates and arms)
+    atomic_fetch_add_explicit(&m->clip_red, 1, memory_order_relaxed);
+    uint64_t comps = en_comps(actor), ac = comps ? coop_rd_ptr(comps + 0x40) : 0, g = anim_g(actor);
     uint8_t g126 = 0;
-    if (m->clip_miss < CLIP_WAIT || !coop_rd(g + 0x126, &g126, 1) || (g126 & 6)) return;
+    if (!ac || !g || !coop_rd(g + 0x126, &g126, 1) || (g126 & 6)) return;
     {   // near a Link shown here: this game's or another player's stand-in
         float p[3], lp[COOP_MAX_PLAYERS + 1][3];
         int n = clip_links(lp), near = 0;
@@ -949,15 +952,19 @@ static void clip_drive(Cpu *c, uint64_t actor, EnCell *m) {
     memcpy(&bits, &step, 4);
     c->v[0] = bits;
     coop_guest_call(c, MOD_MAIN_BASE + 0x432fa0, g, 0, 0, 0);
-    memcpy(c->v, v, sizeof v);
-    coop_rd(g + 0xd8, &m->clip_d8, 8);
     atomic_fetch_add_explicit(&m->clip_ours, 1, memory_order_relaxed);
+    uint64_t sh = coop_rd_ptr(comps + 0x428);
+    uint8_t s22 = 0;
+    if (sh && coop_rd(sh + 0x22, &s22, 1) && (s22 & 2)) {
+        coop_guest_call(c, MOD_MAIN_BASE + 0x42ec98, sh, dtp, 0, 0);
+        atomic_fetch_add_explicit(&m->clip_polls, 1, memory_order_relaxed);
+    }
+    memcpy(c->v, v, sizeof v);
 }
 
 void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     int st = atomic_load_explicit(&m->state, memory_order_relaxed);
     if (st == EM_COPY) clip_drive(c, actor, m);   // (first: it reads the calc's own x1)
-    else m->clip_have = 0, m->clip_miss = 0;   // (a copy again later starts its count afresh)
     int off = is_off(st) && !noswitch() && atomic_load_explicit(&en_active, memory_order_relaxed);
     if (!atomic_load_explicit(&m->warm, memory_order_relaxed)) {
         // A new actor thinks until its interrupt graph has started (its instance has a queue count or a bit word), at
@@ -1662,8 +1669,8 @@ void en_copy_phase0(Cpu *c) {
                 if (lod) coop_rd(lod + 0xb6, &lb6, 1), coop_rd(lod + 0x84, &l84, 4);
                 if (gl) coop_rd(gl + 0x48, &gfl, 1);
                 coop_rd(a + 0x3fc, &a3fc, 4);
-                rt_log("coop: en: clip: %016llx %llx: AS_update runs %llu (%u of them ours) in the last second; G+0x11c %.4f, G+0x124 %08x, actor+0x3fc %08x, [comps+0x88]+0x20 %04x, AC+0x98 %.3f, AC+0x9c %02x, global +0x48 %02x, LOD +0xb6 %02x +0x84 %08x",
-                       (unsigned long long)e->id.a, (unsigned long long)a, (unsigned long long)(d8 - m->clip_mark), atomic_exchange(&m->clip_ours, 0), g11c, g124, a3fc, c20, ac98, ac9c, gfl, lb6, l84);
+                rt_log("coop: en: clip: %016llx %llx: AS_update runs %llu (%u of them ours), %u calcs in the reduced body, %u arm polls of ours in the last second; G+0x11c %.4f, G+0x124 %08x, actor+0x3fc %08x, [comps+0x88]+0x20 %04x, AC+0x98 %.3f, AC+0x9c %02x, global +0x48 %02x, LOD +0xb6 %02x +0x84 %08x",
+                       (unsigned long long)e->id.a, (unsigned long long)a, (unsigned long long)(d8 - m->clip_mark), atomic_exchange(&m->clip_ours, 0), atomic_exchange(&m->clip_red, 0), atomic_exchange(&m->clip_polls, 0), g11c, g124, a3fc, c20, ac98, ac9c, gfl, lb6, l84);
                 m->clip_mark = d8;
             }
         }

@@ -509,6 +509,16 @@ known form keys leave out keys that come through graph links.
 - Still in the list: ragdoll states for 4 to 6 s (three enemies), one shield held in one game for 2 s, one Bokoblin
   missing in one game for 2 s after dying.
 
+Cause (research R33, 2026-11-17; its two key reads checked in Ghidra): not the action layer. A copy whose
+actor+0x3fc has bit 0 or 1 set takes the calc's reduced body (main+0x41bb8c), which reaches neither AS_update nor the
+arm poll (main+0x42ec98, from main+0x421a7c), nor the slots' per-frame clear (hence "answered 3" and "graph run 0").
+Every missed arm fell in seconds with bit 0 set; copies in the full body armed 96 %. Step 2's gate had the same zero
+for a copy 20 to 25 m off, and passed only because its fight kept copies nearer. Separately, every Run (verb 4) request
+was refused by the new checks [guess: the float size limit]. Fixed: part 7 now acts exactly when the reduced body is
+taken (read at the entry), making AS_update and then the arm poll as the full body does; the 30-calc wait is gone; the
+request checks no longer limit the numbers' size, and a refusal logs which check and the verb. What sets bits 0 and 1
+is not read. Built; the gate is to be run again.
+
 ### 4. One camp fight in play
 
 Asked of the tester, by name, with the layer on for Bokoblins. The checker runs and screenshots are taken from both
