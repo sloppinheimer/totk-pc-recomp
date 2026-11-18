@@ -925,9 +925,6 @@ static void clip_drive(Cpu *c, uint64_t actor, EnCell *m) {
     uint8_t b3fc = 0;
     if (!coop_rd(actor + 0x3fc, &b3fc, 1) || !(b3fc & 3)) return;   // (the full body: the game updates and arms)
     atomic_fetch_add_explicit(&m->clip_red, 1, memory_order_relaxed);
-    uint64_t comps = en_comps(actor), ac = comps ? coop_rd_ptr(comps + 0x40) : 0, g = anim_g(actor);
-    uint8_t g126 = 0;
-    if (!ac || !g || !coop_rd(g + 0x126, &g126, 1) || (g126 & 6)) return;
     {   // near a Link shown here: this game's or another player's stand-in
         float p[3], lp[COOP_MAX_PLAYERS + 1][3];
         int n = clip_links(lp), near = 0;
@@ -936,24 +933,30 @@ static void clip_drive(Cpu *c, uint64_t actor, EnCell *m) {
             if ((p[0] - lp[i][0]) * (p[0] - lp[i][0]) + (p[2] - lp[i][2]) * (p[2] - lp[i][2]) <= CLIP_NEAR_M * CLIP_NEAR_M) near = 1;
         if (!near) return;
     }
+    // The update, when it can be made: AS_update needs the player and a sane step, and returns at once when
+    // G+0x126 & 6. The arm poll below does not depend on it: it reads the slots' hold events as they stand.
+    uint64_t comps = en_comps(actor), ac = comps ? coop_rd_ptr(comps + 0x40) : 0, g = anim_g(actor);
+    uint8_t g126 = 0;
     uint32_t f5ac = 0;
-    float dt = 0, rate = 0;
-    coop_rd(actor + 0x5ac, &f5ac, 4);
-    if (f5ac & 1) {
-        uint64_t gp = coop_rd_ptr(MOD_MAIN_BASE + 0x395da70);
-        if (!gp || !coop_rd(gp + 0x10, &dt, 4)) return;
-    } else if (dtp < 0x10000 || !coop_rd(dtp + 4, &dt, 4)) return;
-    if (!coop_rd(ac + 0x98, &rate, 4)) return;
-    float step = dt * rate;
-    if (!isfinite(step) || step < 0.f || step > 1.f) return;
+    float dt = -1, rate = 0, step = -1;
+    if (ac && g && coop_rd(g + 0x126, &g126, 1) && !(g126 & 6) && coop_rd(ac + 0x98, &rate, 4)) {
+        coop_rd(actor + 0x5ac, &f5ac, 4);
+        if (f5ac & 1) {
+            uint64_t gp = coop_rd_ptr(MOD_MAIN_BASE + 0x395da70);
+            if (!gp || !coop_rd(gp + 0x10, &dt, 4)) dt = -1;
+        } else if (dtp < 0x10000 || !coop_rd(dtp + 4, &dt, 4)) dt = -1;
+        step = dt * rate;
+    }
     __uint128_t v[8];
-    uint32_t bits;
     memcpy(v, c->v, sizeof v);
-    memcpy(&bits, &step, 4);
-    c->v[0] = bits;
-    coop_guest_call(c, MOD_MAIN_BASE + 0x432fa0, g, 0, 0, 0);
-    atomic_fetch_add_explicit(&m->clip_ours, 1, memory_order_relaxed);
-    uint64_t sh = coop_rd_ptr(comps + 0x428);
+    if (dt >= 0.f && isfinite(step) && step >= 0.f && step <= 1.f) {
+        uint32_t bits;
+        memcpy(&bits, &step, 4);
+        c->v[0] = bits;
+        coop_guest_call(c, MOD_MAIN_BASE + 0x432fa0, g, 0, 0, 0);
+        atomic_fetch_add_explicit(&m->clip_ours, 1, memory_order_relaxed);
+    }
+    uint64_t sh = comps ? coop_rd_ptr(comps + 0x428) : 0;
     uint8_t s22 = 0;
     if (sh && coop_rd(sh + 0x22, &s22, 1) && (s22 & 2)) {
         coop_guest_call(c, MOD_MAIN_BASE + 0x42ec98, sh, dtp, 0, 0);

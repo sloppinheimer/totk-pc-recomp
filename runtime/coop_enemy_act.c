@@ -319,7 +319,7 @@ int en_act_msg(const CoopCtrMsg *m) {
             if (k == key + 1) break;
             if (!k && atomic_compare_exchange_strong(&said[i], &z, key + 1)) {
                 rt_log("coop: en: act: a request from %016llx refused by check %d (1 slot or mode, 2 a text, 3 an unknown form '%.31s', 4 the slot or verb, 5 the flags, 6 the variation byte, 9 the length %d): verb %u, flags %04x, slot %u",
-                       (unsigned long long)m->from, why, why != 9 ? a->form : "", m->len, v, fl, why != 9 ? a->slot : 0);
+                       (unsigned long long)m->from, why, why >= 3 && why != 9 ? a->form : "", m->len, v, fl, why != 9 ? a->slot : 0);
                 break;
             }
             z = 0;
