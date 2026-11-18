@@ -981,6 +981,15 @@ static void clip_drive(Cpu *c, uint64_t actor, EnCell *m) {
         coop_guest_call(c, MOD_MAIN_BASE + 0x432fa0, g, 0, 0, 0);
         atomic_fetch_add_explicit(&m->clip_ours, 1, memory_order_relaxed);
         coop_rd(g + 0xd8, &m->clip_d8, 8);   // (our own run is not the game's)
+        // The game's cheap animation step main+0x348680 (called for an on-screen actor from main+0x64f0b4) advances
+        // the clip nodes' own times without raising events or counting G+0xd8, so the next entry read "missed" and our
+        // AS_update stepped the node times, and the events, a second time: the Dark Bokoblin's copy armed at about
+        // twice its clock (research R36 1). That function runs the full AS_update itself while the s16 G+0xe0 is above
+        // 0, which AS_update counts down (main+0x432fe0); set to 1 here, after ours, its next call makes the full update
+        // (events raised, G+0xd8 counted) and ours stays out. Off screen nothing calls it, and ours fills the frame as
+        // before. [guess: G+0xe0's other writers and readers were not searched.]
+        int16_t e0 = 0;
+        if (coop_rd(g + 0xe0, &e0, 2) && e0 < 1) { e0 = 1; memcpy((void *)(uintptr_t)(g + 0xe0), &e0, 2); }
     }
     uint64_t sh = comps ? coop_rd_ptr(comps + 0x428) : 0;
     uint8_t s22 = 0;
@@ -1156,7 +1165,14 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             for (size_t j = 0; wn && j < sizeof no_eq / sizeof *no_eq; j++) if (!strncmp(wn, no_eq[j], strlen(no_eq[j]))) wn = NULL;
             uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230);
             uint32_t fr = coop_sess_frame_no();
-            if (!wn || !eu || fr - m->eq_made_frame < 120 || m->eq_tries[k] >= 2) continue;
+            // The create's second argument is an equipment kind, not the holder's slot: the game's own node
+            // OneShotEquipAndAttachmentByLevelSensor passes 8 for a shield and 7 for a bow (main+0x25237d8, 0x25238d4),
+            // the stand-in's gear the same table (coop_players.c coop_gear_slot), and 0 for a weapon. Asked by slot (4,
+            // 3), a create was accepted and never filled the slot: the Guard's bow and the Dark's shield of steps 2 and 3
+            // (research R36 2). Slots with no kind read are not made.
+            static const int8_t kind_of_slot[EN_EQ_N] = {0, -1, -1, 7, 8};
+            int kind = k < (int)(sizeof kind_of_slot / sizeof *kind_of_slot) ? kind_of_slot[k] : -1;
+            if (!wn || !eu || kind < 0 || fr - m->eq_made_frame < 120 || m->eq_tries[k] >= 2) continue;
             m->eq_made_frame = fr, m->eq_tries[k]++, m->eq_try_frame[k] = fr;
             for (int j = 0; j < 2; j++) {
                 uint8_t *st = m->eq_str[j];
@@ -1175,7 +1191,7 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             // G8 3.2; logged before and after, since the create may finish later, when the next try's line shows it)
             uint64_t fw0 = 0, fw1 = 0;
             coop_rd(eu + 0x4600, &fw0, 8);
-            uint64_t r = rt_call(c, MOD_MAIN_BASE + 0xaf100c, 8, eu, (uint64_t)k, (uint64_t)(uintptr_t)m->eq_str[0], (uint64_t)1, (uint64_t)(uint32_t)-1,
+            uint64_t r = rt_call(c, MOD_MAIN_BASE + 0xaf100c, 8, eu, (uint64_t)kind, (uint64_t)(uintptr_t)m->eq_str[0], (uint64_t)1, (uint64_t)(uint32_t)-1,
                                  (uint64_t)(uint32_t)-1, (uint64_t)(uintptr_t)m->eq_str[1], (uint64_t)1);
             c->sp = sp0;
             coop_rd(eu + 0x4600, &fw1, 8);

@@ -619,6 +619,19 @@ for its 10 s and was given up ("could not be made (2)"); the first copy, made fr
 The enemy was "missing" in B 39 s to the end. The re-make also logged "made again" once before the first copy was
 bound, harmlessly (that create was already in flight). Why a later create of the same name stays pending is not read.
 
+Explained (research R36, 2026-11-17; its key reads checked in Ghidra and the code), and fixed (built):
+- The re-make's creates did not stay pending: each was given up in the tick it was asked. `spawn_tick` read `now`
+  before `remake_tick`, the create was stamped after it, and the unsigned "given up after 10 s" test wrapped. Fixed:
+  `now` is read again after `remake_tick`.
+- The shield (and the Guard's bow since step 2): the copy's equipment create passed the holder's slot (4, 3) where the
+  game wants an equipment kind (8 shield, 7 bow, 0 weapon; the game's own node at main+0x25237d8 / 0x25238d4).
+  Accepted, never filled. Fixed: the slot is mapped to its kind, and slots with no kind read are not made.
+- The Dark's early arms: the game's cheap animation step (main+0x348680, for an on-screen actor) advances the clip
+  nodes' own times without raising events or counting G+0xd8, so part 7 saw "missed" and stepped the node times a
+  second time; the events came at about twice the clock. Fixed [guess, to be confirmed by the run]: after the mod's
+  AS_update, G+0xe0 is set to 1, which makes that cheap step run the full AS_update itself (events raised, counted),
+  so the mod stays out.
+
 ### 4. One camp fight in play
 
 Asked of the tester, by name, with the layer on for Bokoblins. The checker runs and screenshots are taken from both

@@ -272,6 +272,8 @@ void spawn_tick(Cpu *c) {
     spawn_scan();
     remake_tick(c);
     foe_drop_test(c, now);
+    now = plat_now_ns();   // (again: a create remake_tick asked just now is stamped after the first read, and the made[] loop's
+                           // unsigned "given up after 10 s" test wrapped and cancelled it in the same tick: research R36 3)
     for (int k = 0; k < 32; k++) {   // the copies being made; made ones let go of 10 s on (handed over by then)
         if (made[k].state == 2 && now - made[k].ns > 10000000000ull) made[k].state = 0, made[k].actor = 0;
         if (made[k].state != 1) continue;
