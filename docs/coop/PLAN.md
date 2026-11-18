@@ -612,6 +612,13 @@ For part 5's session run, a test setting: `TOTK_COOP_TEST_FOE_DROP=<s>` makes a 
 enemy once, s seconds after it first holds it as a copy, since the test keep now refuses the far delete that lost it in
 step 1's run (coop_spawn_sync.c foe_drop_test). Built; not yet run.
 
+Session run (2026-11-17, be8e87d9; `build/session3`; game A made the test Bokoblin at 20 s, game B dropped its copy
+10 s after it had one): FAIL. The drop worked and the re-make fired at once ("lives on in player 1's game and has no
+actor here: made again here", 2.1 to 2.6 m from B's Link), but every create it asked stayed pending (handle status 2)
+for its 10 s and was given up ("could not be made (2)"); the first copy, made from A's SPAWN, had been made at once.
+The enemy was "missing" in B 39 s to the end. The re-make also logged "made again" once before the first copy was
+bound, harmlessly (that create was already in flight). Why a later create of the same name stays pending is not read.
+
 ### 4. One camp fight in play
 
 Asked of the tester, by name, with the layer on for Bokoblins. The checker runs and screenshots are taken from both
