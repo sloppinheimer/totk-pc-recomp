@@ -645,6 +645,20 @@ second try made it ("made again for the enemy sync: requested here", then "made 
 the first try found the deleted actor still keyed. Fixed: an actor of that key, or one made for it, counts only while
 alive (coop_spawn_sync.c spawn_make). Built.
 
+Seventh gate run (2026-11-17, 6667dec1, the second review's four fixes in; `build/gate11`; 59 fps): FAIL, small. No
+difference held two seconds; every copy armed with its owner 95 to 100 %; every copy blow on a Link with its owner
+armed (4 of 4); movement within target (lag 60 to 70 ms, error p95 0.04 to 0.07 m, stutter 1.10 to 1.21x); no "lets go
+of its Weapon_Bow" line in either game; the pictures show the fight in both games, nothing in the air. Failing:
+- "armed without the owner" over 5 % on two copies in B (the Dark, 10 % of a few dozen frames; p5cb495b, 5 %): both
+  copies took the full body all fight (part 7 made no call for them), so not the G+0xe0 cycle; edge frames of short
+  windows, not read further;
+- the parked Guard pacb28d's phase p95 over 0.1 s, in both games' copies (it stood all fight; its copy in A was
+  driven by part 7, about 40 of 60 updates ours and the rest the game's, the one in B not at all). Not read further.
+- Not exercised: the equipment-kind fix (no "is given" line: no copy lost a held thing this run).
+Session run (`build/session5`): PASS for part 5. B dropped its copy and the re-make made it again on the first try;
+no difference held two seconds (arming and blows not judged: no fight in that run).
+Part 8 (hit effects) is not part of this step's Done; it carries to its own batch after step 3.
+
 ### 4. One camp fight in play
 
 Asked of the tester, by name, with the layer on for Bokoblins. The checker runs and screenshots are taken from both
