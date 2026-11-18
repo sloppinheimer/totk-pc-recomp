@@ -272,8 +272,16 @@ heartbeat (`en_world_stands`, `coop_sess.c`), which is what lets another game ta
   (`spawn_scan`). Part actors of an enemy (weak points, dummies, bullets) are announced too.
 - Each other game makes one by name at that place (`spawn_take`, `coop_request_create`), or gives the key to its own
   actor of that name within 3 m.
-- When the maker's enemy goes away without dying (unloaded), SPAWN_GONE deletes the others'. An enemy seen dead is left
-  to the enemy sync, whose death the copies are still playing.
+- When the maker's enemy goes away without dying (unloaded), SPAWN_GONE deletes the others', unless another game owns
+  a live entry of that key (`coop_enemy.c coop_enemy_rt_kept_elsewhere`): that game fights it. An enemy seen dead is
+  left to the enemy sync, whose death the copies are still playing.
+- A run-time enemy that another game runs and this game has no actor of is made again here (`coop_enemy.c
+  remake_pass`, phase 0): alive, its name declared, its owner's game running, the owner's latest STATE (under 2 s old)
+  within 60 m of this game's Link, not asked in the last 10 s. `coop_spawn_remake` queues it and `spawn_tick` makes it
+  through `spawn_make`, the create part `spawn_take` uses (without the per-player rate and 500 m checks, which are
+  about another game's SPAWN). `cell_resolve` binds it as the copy by its key; `far_sweep` covers it.
+- The enemy `TOTK_COOP_TEST_SPAWN` made is marked in its SPAWN (`pad` 1, only 0 or 1 taken), and every game keeps the
+  actor of that key from its own AI's far delete (`coop_life.c`, `coop_spawn_is_test_foe`).
 - A copy made here for another game is deleted when it is more than 1000 m from every player (`far_sweep`,
   `coop_far.c`; `TOTK_COOP_FAR=0`, `TOTK_COOP_FAR_M`).
 - These packets ride the HIT channel (`coop_net_hit_send`), not the enemy stream. Nothing orders a SPAWN against a

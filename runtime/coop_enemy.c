@@ -690,6 +690,49 @@ static void own_pass(uint64_t now, uint32_t frame) {
     }
 }
 
+// An enemy made at run time that lives on in another game and has no actor here (its actor went: unloaded, or its own
+// far delete while this game ran it) is made again here, as a copy, when the owner's latest state places it within
+// REMAKE_M of this game's Link (research R30 3, PLAN.md step 3 part 5). Nothing else would: the spawn sync makes a copy
+// only on its maker's one SPAWN, and an entry binds only to an actor that appears. The spawn sync makes it by name at
+// that place under the same key (coop_spawn_sync.c coop_spawn_remake); cell_resolve then finds the entry by the key
+// and binds it as the copy, and far_sweep deletes it when far, as any copy made for another game. Not asked again for
+// an entry within 10 s (a create takes up to 10 s; one the game unloads again would be asked every frame).
+// [guess: 60 m is inside a Bokoblin's own unload radius; facts/enemies.md 13.5 leaves those radii open.]
+#define REMAKE_M 60.f
+static void remake_pass(uint64_t now) {
+    int coop_spawn_remake(uint32_t key, const char *name, const float pos[3], const float rot[9], int from);   // coop_spawn_sync.c
+    int en_owner_place(const En *e, float pos[3], float quat[4]);   // coop_enemy_copy.c
+    uint64_t me = coop_ctr_me(), link = coop_player_actor();
+    float lp[3];
+    if (!link || !coop_rd(link + COOP_ACTOR_POS, lp, 12)) return;
+    for (int i = 0; i < EN_N; i++) {
+        En *e = &en_tab[i];
+        if (!e->used || e->id.b != EN_RT || e->life != EN_LIVE || !e->owner || e->owner == me || e->cell >= 0) continue;
+        if (!e->have_decl || !e->name[0] || (e->id.a >> 32) || (e->remake_ns && now - e->remake_ns < 10 * SEC)) continue;
+        int id = en_peer_id(e->owner);
+        if (!id || coop_sess_peer(id) != COOP_SESS_RUNS) continue;
+        float pos[3], quat[4], r[9];
+        if (!en_owner_place(e, pos, quat)) continue;
+        float d = sqrtf((pos[0] - lp[0]) * (pos[0] - lp[0]) + (pos[1] - lp[1]) * (pos[1] - lp[1]) + (pos[2] - lp[2]) * (pos[2] - lp[2]));
+        if (d > REMAKE_M) continue;
+        en_rot_of_quat(quat, r);
+        e->remake_ns = now;
+        if (coop_spawn_remake((uint32_t)e->id.a, e->name, pos, r, id))
+            rt_log("coop: en: own: %s %016llx/%u lives on in player %d's game and has no actor here: made again here, at its owner's place %.1f m from this Link", e->name, (unsigned long long)e->id.a, e->id.b, id, d);
+    }
+}
+// For the spawn sync (coop_spawn_sync.c): whether another game owns a live entry of the enemy of that key made at run
+// time. Its maker then does not send SPAWN_GONE when its own actor goes: the other game fights it.
+int coop_enemy_rt_kept_elsewhere(uint32_t key) {
+    if (!coop_enemy_new()) return 0;
+    uint64_t me = coop_ctr_me();
+    for (int i = 0; i < EN_N; i++) {
+        const En *e = &en_tab[i];
+        if (e->used && e->id.a == key && e->id.b == EN_RT && e->life == EN_LIVE && e->owner && e->owner != me) return 1;
+    }
+    return 0;
+}
+
 // ---- Messages taken (the net tick) --------------------------------------------------------------------------------------
 static void peer_left(uint64_t inc) {
     uint64_t now = en_now();
@@ -1042,6 +1085,7 @@ void coop_enemy_phase0(Cpu *c) {
         if (st == EM_NEW || st == EM_OWN) cell_resolve(m, now, frame);
     }
     own_pass(now, frame);
+    remake_pass(now);
     en_hit_phase0();
     en_copy_phase0(c);
     en_shot_phase0();

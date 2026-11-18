@@ -1575,3 +1575,17 @@ void en_copy_phase0(Cpu *c) {
 }
 
 uint64_t en_state_key(Enid id) { return key_of(id); }
+// Where the owner's latest STATE of an entry places it (its epoch's, under 2 s old), for an entry this game has no
+// actor of (coop_enemy.c's re-make of an enemy made at run time; phase 0's own pass skips those). 1: read.
+int en_owner_place(const En *e, float pos[3], float quat[4]) {
+    int id = en_peer_id(e->owner);
+    MState ms;
+    uint64_t age = 0;
+    if (!id) return 0;
+    int len = coop_ctr_latest(id, ENM_STATE, key_of(e->id), &ms, sizeof ms, &age);
+    if (len < (int)(offsetof(MState, st) + offsetof(EnState, sl)) || !enid_eq(ms.id, e->id) || ms.epoch != e->epoch || age >= 2 * SEC) return 0;
+    for (int k = 0; k < 3; k++) if (!isfinite(ms.st.s.pos[k]) || fabsf(ms.st.s.pos[k]) > 1e5f) return 0;
+    for (int k = 0; k < 4; k++) if (!isfinite(ms.st.s.quat[k]) || fabsf(ms.st.s.quat[k]) > 2.f) return 0;
+    memcpy(pos, ms.st.s.pos, 12), memcpy(quat, ms.st.s.quat, 16);
+    return 1;
+}
