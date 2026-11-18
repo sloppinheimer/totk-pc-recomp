@@ -238,7 +238,7 @@ static EnCell *map_touch(uint64_t actor) {
         atomic_store(&m->turned, 0), atomic_store(&m->leaks, 0);
         for (int k = 0; k < EN_EQ_N; k++) atomic_store(&m->eq_make[k], 0);
         m->eq_made_frame = 0, memset(m->eq_tries, 0, sizeof m->eq_tries), memset(m->eq_att_tries, 0, sizeof m->eq_att_tries), memset(m->eq_try_frame, 0, sizeof m->eq_try_frame);
-        m->act_told = 0;
+        m->act_told = 0, m->clip_have = 0, m->clip_mark = 0, atomic_store(&m->clip_ours, 0);
         atomic_store(&m->eq_drop, 0), atomic_store(&m->hit_dmg, 0), atomic_store(&m->dying, 0), atomic_store(&m->kill_req, 0), atomic_store(&m->put_away, 0), atomic_store(&m->flinch, 0);
         m->put_done = m->dc_saved = m->req_tries = m->pinned = 0, m->hit_ns = 0, m->show_dstate = 0, m->hp_written = 0;
         for (int k = 0; k < EN_SLOT_N; k++) m->slot_try[k] = 0;

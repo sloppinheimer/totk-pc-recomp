@@ -133,6 +133,13 @@ Before each calc, `en_copy_precalc`:
 - **Animation.** `slots_apply` plays the owner's command in each slot by the game's own play request (main+0x4dc628)
   when it differs, at once; a command the slot did not take (read back after the play) is asked again 12 frames later
   at the soonest. Clocks more than 3 units off are written; smaller errors bend the rate by up to 10 %.
+- **Clip kept playing** (`clip_drive`, first in `en_copy_precalc`, PLAN.md step 3 part 7). The calc may skip
+  AS_update (main+0x432fa0) for a copy; AS_update adds 1 to G+0xd8 on every run (G the animation player). A copy
+  within 40 m (horizontal) of any Link shown here whose count did not move since its previous calc entry gets one
+  AS_update call from the mod, with s0 = the calc's dt ([x1+4] of the calc's argument, or [[main+0x395da70]+0x10]
+  when actor+0x5ac bit 0) times AC+0x98 (AC = [comps+0x40]); not when G+0x126 & 6, where AS_update returns at once.
+  With `TOTK_COOP_DEBUG=1` a line a second per copy (`coop: en: clip:`) gives the runs and the mod's calls that
+  second and the words the calc's gates read.
 - **Life and death.** `coop_enemy_hit.c en_hit_precalc` (below).
 - **Equipment.** Every 16 frames phase 0 compares what the copy holds with what the owner's enemy holds. After three
   differing looks, a thing the owner does not hold is deleted, and a missing one is made by the game's equipment create
