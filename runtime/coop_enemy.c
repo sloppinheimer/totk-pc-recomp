@@ -197,6 +197,19 @@ int coop_enemy_key(uint64_t actor, uint64_t *a, uint32_t *b) {
     *a = m->hash, *b = m->rt ? EN_RT : en_life_no();
     return 1;
 }
+// TOTK_COOP_EN_LOG_KEY=<an enemy's key, the 16 hex digits the logs print>: the capped action lines and blow line
+// (coop_enemy_act.c, coop_contact.c) are written every time for that one enemy, so an enemy far into a fight can be
+// followed after the caps are used up (research R34 2 and 3). 1: key is that enemy's.
+int coop_enemy_log_all(uint64_t key) {
+    static _Atomic int read;
+    static _Atomic uint64_t want;
+    if (!atomic_load(&read)) {
+        const char *v = cfg_get("TOTK_COOP_EN_LOG_KEY");
+        atomic_store(&want, v ? strtoull(v, NULL, 16) : 0), atomic_store(&read, 1);
+    }
+    uint64_t k = atomic_load_explicit(&want, memory_order_relaxed);
+    return k && key == k;
+}
 // The cell of an actor at its calc, made when the actor is of a listed kind and has none. Only the actor's own update
 // thread inserts it, so one actor is never inserted twice at once.
 static EnCell *map_touch(uint64_t actor) {

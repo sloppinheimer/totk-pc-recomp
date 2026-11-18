@@ -208,7 +208,11 @@ passed on, at most twice.
 
 **A copy's blow on this game's Link.** It is built in this game from this game's copy, as any enemy's blow, from
 an attack armed by the copy's clip, by the ARM replay, or by the action layer when it is on. How it ended (hit, guarded, guarded at the right moment, avoided) is
-told to the owner as **OUTCOME** (`coop_enemy_hit.c coop_enemy_outcome`). On a guarded outcome the owner's enemy
+told to the owner as **OUTCOME** (`coop_enemy_hit.c coop_enemy_outcome`). Every blow on this game's Link that names an enemy, by its own body or
+by what it holds, owned here or a copy, is logged once per attack id ("coop: contact: this Link struck by the enemy",
+`coop_contact.c enemy_blow_log`, 60 lines): the contact's attacker and striking object with their places and
+distances from the Link, the striking object's holder, the enemy's ragdoll state, and the contact's type, level, power
+and class, so a blow named after an enemy that had nothing armed can be told from a neighbour's (research R34 3). On a guarded outcome the owner's enemy
 waits 10 to 15 s before its next attack, as the game's own node does after a guard (`en_hit_msg`).
 
 ### 6. Dying
@@ -382,6 +386,7 @@ For finding a fault (tests):
 | Setting | What |
 |---|---|
 | `TOTK_COOP_EN_KINDS=<prefix>,...` | more kinds by name prefix |
+| `TOTK_COOP_EN_LOG_KEY=<key>` | every action line ("told to its copies", the copy's per-call and per-second lines) and blow line of the one enemy with that key (16 hex digits, as the logs print it), past their caps (`coop_enemy.c coop_enemy_log_all`) |
 | `TOTK_COOP_EN_NOSWITCH=1` | ownership runs, no copy is switched off or moved |
 | `TOTK_COOP_EN_TEST_SKIP=<letters>` | leave a part of the copy out: `b` take-over brain, `v` copy brain hold, `s` static body, `r` ragdoll refusal, `h` life write, `d` death switches, `t` target no-flicker |
 | `TOTK_COOP_EN_TEST_BLIND=<s>` | take none of this game's own actors for that long after the session began |
