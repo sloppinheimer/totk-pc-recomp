@@ -538,6 +538,37 @@ request refused, no bow difference, no "owner" finding. Movement within target o
   (three enemies); one Bokoblin in A only for 2 s and one with differing death words for 4 s, both around a death.
 Not explained yet: the logs cap the action lines, and none of the Guard's lines in A show the 6 s.
 
+Explained (research R34, 2026-11-17; its code claims checked):
+- Checker artefacts: the command share of a copy that moved under 2 s is taken at lag 0, so every owner change counts
+  the copy's normal 70 ms delay (at 70 ms the three pass, 95.6 to 99.1 %); the Guard's "Run against Wait" is six
+  separate seconds whose samples fell on a command change; a copy's ragdoll state reads 0 by design while its owner's
+  bones show the ragdoll; a take-over's second is judged against the old owner.
+- Real, small: (5b) a hand-over is offered in the same pass that applies the striker's hit, so the flinch plays in the
+  game that gave the enemy away and not in the striker's; (5c) a copy's death word takes a fallback second cause,
+  since the DEATH message's word is not used; (5d) a copy still waiting at death phase 3 when its owner's actor goes
+  is freed and runs its own Die and ragdoll 2 s longer, sliding 4 m.
+- A timing limit: (4) after the other player's blow the owner's clip stands about 0.1 s (hit-stop) and the copy's does
+  not, so it swings about 43 ms early; one episode in six, enough to fail 95 %.
+- Open: (3) a blow on L1 named the Junior copy (nothing armed, 6.6 m off) while the Dark Bokoblin beside L1 had a rising
+  horn blow armed. Which body struck is not in the record.
+
+Fixes (one batch, one build):
+1. check.py: a copy whose lag was not measured is compared at a nominal 70 ms; a take-over's second is left out of the
+   per-frame comparison; an "anim" difference skips a second where either side's sampled clock is below the copy's
+   delay; "ragdoll" counts only where the owner's state is 0 and the copy's is not. Shown on `build/gate7` (those
+   findings go, 5b's stays) and on step 1's planted-desync run `build/gate1` (it still fails).
+2. coop_enemy.c handover: no offer while the entry has an unapplied hit or the actor's ragdoll state is not 0 (5b).
+3. coop_enemy_hit.c: ENM_DEATH keeps the owner's death word, and a copy's death request takes cause and second cause
+   from it when no stated state has one yet (5c); ENM_DEATH_END gives a copy waiting at phase 3 the signal before its
+   entry is freed (5d).
+4. coop_enemy_copy.c slots_apply: when the copy is ahead, the rate bend may go down to 0, so an owner's stand-still
+   holds the copy (4). Stutter is watched in the gate run.
+5. Logs, before the next run: each contact on this game's Link from an enemy (attacker, striking object, type, level,
+   power, attack id, attacker place and ragdoll state; item 3); the hand-over line with the unapplied hit and ragdoll
+   state; the copy's death line with where its word came from, and the phase at DEATH_END; a setting that lifts the
+   action lines' caps for one named enemy.
+Item 3's own fix waits for its log line. Still to run for step 3's Done: the session run with the test foe (part 5).
+
 ### 4. One camp fight in play
 
 Asked of the tester, by name, with the layer on for Bokoblins. The checker runs and screenshots are taken from both
