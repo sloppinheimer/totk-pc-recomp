@@ -370,7 +370,15 @@ controller stays, and the reading above comes next. Otherwise: stutter 0.82 to 1
 target), place error p95 under 0.3 m but the flier's 0.29; every copy's blow on a Link came while its owner had an
 attack armed (5 of 5); a Link's blow on an enemy in both games 18 times, in one only 4; attacks armed with the owner
 under 95 % for two Bokoblins game A ran; 8 differences held two seconds, as in the baseline (the bow held in one game
-only, ragdoll states 2 to 5 s, short animation differences). The layer does help arming with the
+only, ragdoll states 2 to 5 s, short animation differences).
+
+Read (2026-11-17, research enemy/gaps/R28): the flights are not the layer's. Every one (4 of 4, both gate runs) began
+within 0.15 s of a partial ragdoll started on an enemy in a full one (or on the same frame), and the partial one was
+the flinch our sync asks for another game's hit (`coop_enemy_hit.c`): a killing hit, or a hit while the enemy lay
+ragdolled. It only met enemies game B owned, and B owned only enemies it had taken over (which had been layer copies
+there), which is why it looked like the layer's; the layer-off run never met the pair. Fixed: no flinch for a
+killing hit (`en_hit_phase0`) and none while the ragdoll state is 3 (`en_hit_precalc`). Built; not yet run.
+SetJumpHeight stays denied (it is the same act as the denied jump). The layer does help arming with the
 owner: 94 to 100 % per copy with it, 81 and 43 % for two Bokoblins without it (a clip started at the owner's command
 still arms by its own clock). Next: read what moves a copy's body while its action runs (`cct_write`, the
 controller's move state and velocity, and the action's own movement requests) against `en_copy_precalc`'s placing,

@@ -62,9 +62,13 @@ void en_hit_leave(uint64_t actor, EnCell *m) {
 void en_hit_precalc(Cpu *c, uint64_t actor, EnCell *m, int off) {
     uint64_t dc = dc_of(actor);
     if (atomic_load_explicit(&m->flinch, memory_order_relaxed)) {   // a flinch not of this game's making: asked as the damage step asks
+        // Not while the enemy lies in a full ragdoll (its ragdoll state [rag+0x20] 3): main+0x1bddcb0 takes a partial
+        // request there too and turns the controller's follow back on, and the enemy was launched (10 m up in 0.1 s,
+        // sliding at 30 to 66 m/s: four of four such pairs flew, no full or partial ragdoll alone did; research R28).
         uint64_t rag = coop_rd_ptr(en_comps(actor) + 0x3e8);
+        int32_t rs = 0;
         atomic_store(&m->flinch, 0);
-        if (rag) __atomic_fetch_or((uint8_t *)(uintptr_t)(rag + 0x149), 1, __ATOMIC_SEQ_CST);
+        if (rag && coop_rd(rag + 0x20, &rs, 4) && rs != 3) __atomic_fetch_or((uint8_t *)(uintptr_t)(rag + 0x149), 1, __ATOMIC_SEQ_CST);
     }
     if (!off) {
         if (atomic_load_explicit(&m->kill_req, memory_order_relaxed) && dc) {   // the owner's enemy lost its last life to another game's hit
@@ -221,7 +225,9 @@ void en_hit_phase0(void) {
             if (to < 0) to = 0;
             if (hp > 0) {
                 hp_write(e->actor, to);
-                atomic_store(&m->flinch, 1);
+                // (no flinch for the killing blow: the death starts a full ragdoll, and a partial one started with it
+                // launched the enemy, research R28)
+                if (to > 0) atomic_store(&m->flinch, 1);
                 if (!to) atomic_store(&m->kill_req, 1);
                 rt_log("coop: en: hit: another player's hits take %d life from %s %016llx: %d -> %d", e->pend_dmg, e->name, (unsigned long long)e->id.a, hp, to);
             }

@@ -722,6 +722,11 @@ the rush: **open**. **read** (research enemy/gaps/G7, R4 5, R18; was: spec B.31)
 - Start main+0x1bddcb0(rag, request {subtype, list name, key, strength, impulse, ids, +0x32, +0x33 partial}): hands
   the controller's follow target to the ragdoll body. Recover main+0x1bdf2b4, end main+0x1bdc9a0(rag, 0). The
   controller-follow byte is [C+0x38]+0x9d. **read**
+- A partial start on an enemy in a full ragdoll (state 3), or on the same frame as one, launches it: 10 m up in 0.1 s,
+  falling at 90 m/s or sliding at 30 to 66 m/s, until the partial one ends (2 -> 0). main+0x1bddcb0 takes the partial
+  request in state 3 and turns the controller's follow back on. **measured** 2026-11-17, four of four such pairs in
+  two camp fights, no full or partial start alone (10 and 71); **read** (research enemy/gaps/R28). The co-op flinch for
+  another game's hit was the partial one (`coop_enemy_hit.c`): it is no longer asked on a killing hit or in state 3.
 - **The flinch is native**: when the damage step works out damage of 1 or more, the life's damage handler sets a
   request bit (rag+0x149 bit 0); the ragdoll update (main+0x432884) then starts a partial ragdoll in the hit's
   direction (main+0x1bdd810 -> main+0x1bddcb0, request byte +0x33 = 1, state 2) and ends it by itself. **read**
