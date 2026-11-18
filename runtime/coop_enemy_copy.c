@@ -989,7 +989,8 @@ static void clip_drive(Cpu *c, uint64_t actor, EnCell *m) {
         // (events raised, G+0xd8 counted) and ours stays out. Off screen nothing calls it, and ours fills the frame as
         // before. [guess: G+0xe0's other writers and readers were not searched.]
         int16_t e0 = 0;
-        if (coop_rd(g + 0xe0, &e0, 2) && e0 == 0) {   // (only from 0: a negative value is left as the game set it) e0 = 1; memcpy((void *)(uintptr_t)(g + 0xe0), &e0, 2); }
+        // (only from 0: a negative value is left as the game set it)
+        if (coop_rd(g + 0xe0, &e0, 2) && e0 == 0) { e0 = 1; memcpy((void *)(uintptr_t)(g + 0xe0), &e0, 2); }
     }
     uint64_t sh = comps ? coop_rd_ptr(comps + 0x428) : 0;
     uint8_t s22 = 0;
