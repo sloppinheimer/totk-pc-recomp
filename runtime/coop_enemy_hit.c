@@ -62,7 +62,9 @@ static int dword_ok(uint32_t w) { return (w & 1) && ((w >> 1) & 7) && ((w >> 4) 
 static void death_signal_due(uint64_t actor, EnCell *m, uint64_t dc) {
     uint32_t until = atomic_load_explicit(&m->death_sig_frame, memory_order_relaxed), w = 0;
     if (!until) return;
-    if ((int32_t)(until - coop_sess_frame_no()) < 0 || !dc || !coop_rd(dc + 0x20, &w, 4)) { atomic_store(&m->death_sig_frame, 0); return; }
+    // (only while the cell is bound to no entry, the copy freed at DEATH_END: bound again, the actor is an enemy of
+    // the sync once more, owned here or a copy, and a death of its own is not to be cut; a review, 2026-11-17)
+    if ((int32_t)(until - coop_sess_frame_no()) < 0 || atomic_load(&m->en) >= 0 || !dc || !coop_rd(dc + 0x20, &w, 4)) { atomic_store(&m->death_sig_frame, 0); return; }
     if (!(w & 1) || ((w >> 1) & 7) < 3) return;   // (not dying yet, or before its third phase: waited for)
     if ((w & 0xe) != 6) { atomic_store(&m->death_sig_frame, 0); return; }   // (past the third phase already: its own tick ends it)
     uint32_t to = (w & ~0xeu) | 8;
