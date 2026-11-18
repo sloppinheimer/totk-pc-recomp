@@ -411,7 +411,8 @@ rule 3), which en_bench does not run yet.
 `coop_enemy_act.c`. The owner sends each action request its enemy asks of any of its five slots (ACT: the slot, the
 request, the variation and the form key's text) whenever it is for a listed verb (`en_act_owner`; default verbs 131,
 145, 108; `TOTK_COOP_EN_ACT_VERBS=all` for every verb; `TOTK_COOP_EN_ACT_FAMILY` limits it to name prefixes), and
-once more, as a stop, when it no longer is. For slots 1 to 4 verb 0 (None) is a request and is told. It keeps the
+once more, as a stop, when it no longer is. For slots 1 to 4 verb 0 (None) goes as that slot's stop once after a told
+request (the copy's stop is the game's own None; the scheduler's fill asks None of empty slots over and over). It keeps the
 last verb, variation and form per slot, and tells mode 1 when any of them changed. An interrupt request (flags bit
 0) is told, with a mark, only for the light reactions (verbs 151, 152, 155, 160, 162, 164, 166, 167, 169, 173, 237);
 the heavy ones (death and the rigid-body reactions) are a stop. A form the receiver would refuse makes the request a

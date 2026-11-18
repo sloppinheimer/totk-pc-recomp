@@ -27,8 +27,9 @@
 // scheduler (Main) before its utility (Sub). A Bokoblin uses Main for every action and Sub for the lower body while it
 // rides (Ride at a state's enter, None at its leave). When the owner's request is no longer a listed one, the copy's
 // Main is asked for Wait once, so the root it was in is left and what it held (a Yiga's `Sign`) is stopped by the
-// node's own leave; a slot 1 to 4 is asked for None, as the game's own fill asks it. For slots 1 to 4 None is itself a
-// request and is told.
+// node's own leave; a slot 1 to 4 is asked for None, as the game's own fill asks it. For slots 1 to 4 None is a real
+// request (the leave of a riding state): it is told as that slot's stop, once after a told request, since the
+// scheduler's fill asks None of every empty slot 1 to 4 again and again and the copy's stop is that same request.
 //
 // Interrupt requests (flags bit 0) tear down the Main action sequence and set the status byte BSA+0x26a8 to 1, which
 // a copy might never clear. So a copy runs an interrupt as a forced plain request of the same verb (bit 0 cleared, the
@@ -219,7 +220,8 @@ void en_act_owner(Cpu *c) {
     uint32_t v = verb_of(req);
     int intr = (int)(flags & 1);
     char an[48];
-    int listed = family_listed(coop_actor_name(actor, an, sizeof an)) && (verb_listed(v) || (slot && !v));
+    // (None on slots 1 to 4 is never "listed": after a told request it goes as the slot's stop, the game's own None)
+    int listed = family_listed(coop_actor_name(actor, an, sizeof an)) && verb_listed(v) && !(slot && !v);
     if (intr && !light_interrupt(v)) listed = 0;   // (a heavy interrupt: a stop, as before step 3)
     char form[32];
     form_of(bsa, form);
@@ -246,7 +248,7 @@ void en_act_owner(Cpu *c) {
         memcpy(&vp, req + 0x38, 8);
         read_text(vp, a.var, sizeof a.var);
     }
-    if (!listed) a.req[0x40] = 0;
+    a.req[0x40] = a.var[0] ? 1 : 0;   // (the valid byte as the copy uses it: a variation sent or none)
     uint32_t key = fnv_txt(fnv_txt(2166136261u, a.var), a.form);
     int changed = listed && (!told || v != m->act_verb[slot] || key != m->act_key[slot]);
     if (changed) a.mode = 1;
