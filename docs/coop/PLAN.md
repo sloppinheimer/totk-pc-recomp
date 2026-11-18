@@ -528,6 +528,16 @@ verb 1 requests carry flag bits 1 and 2 (0x2, 0x6), which "bits 0 and 8 only" re
 before was not it. The check now passes every bit but the interrupt bit as asked, as step 2 did (their meaning is
 not read). To be run again on a quiet PC.
 
+Third gate run (2026-11-17, f543f837; records in `build/gate7`; both games 59 to 60 fps): FAIL, near. No crash, no
+request refused, no bow difference, no "owner" finding. Movement within target on every copy measured (lag 60 to
+70 ms, error p95 0.05 to 0.09 m, stutter 0.54 to 1.06x). Attacks armed with the owner 100 % on every copy but one
+(p5cb495b's copy in A: 88 %, and 9 % armed without its owner). What fails:
+- command same under 95 % on three copies in game A of enemies game B ran, each of which moved little (87 to 91 %);
+- one copy's blow on a Link with its owner not armed (A, p8e74ea9 at 29293.2);
+- once a second: a Guard Bokoblin's slot 0 "Run" in A against "Wait" in B for 6 s; ragdoll states for 2 to 6 s
+  (three enemies); one Bokoblin in A only for 2 s and one with differing death words for 4 s, both around a death.
+Not explained yet: the logs cap the action lines, and none of the Guard's lines in A show the 6 s.
+
 ### 4. One camp fight in play
 
 Asked of the tester, by name, with the layer on for Bokoblins. The checker runs and screenshots are taken from both
