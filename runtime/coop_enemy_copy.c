@@ -974,6 +974,7 @@ static void clip_drive(Cpu *c, uint64_t actor, EnCell *m) {
     }
     __uint128_t v[8];
     memcpy(v, c->v, sizeof v);
+    int ours = 0;
     if (missed && dt >= 0.f && isfinite(step) && step >= 0.f && step <= 1.f) {
         uint32_t bits;
         memcpy(&bits, &step, 4);
@@ -981,16 +982,39 @@ static void clip_drive(Cpu *c, uint64_t actor, EnCell *m) {
         coop_guest_call(c, MOD_MAIN_BASE + 0x432fa0, g, 0, 0, 0);
         atomic_fetch_add_explicit(&m->clip_ours, 1, memory_order_relaxed);
         coop_rd(g + 0xd8, &m->clip_d8, 8);   // (our own run is not the game's)
-        // The game's cheap animation step main+0x348680 (called for an on-screen actor from main+0x64f0b4) advances
-        // the clip nodes' own times without raising events or counting G+0xd8, so the next entry read "missed" and our
-        // AS_update stepped the node times, and the events, a second time: the Dark Bokoblin's copy armed at about
-        // twice its clock (research R36 1). That function runs the full AS_update itself while the s16 G+0xe0 is above
-        // 0, which AS_update counts down (main+0x432fe0); set to 1 here, after ours, its next call makes the full update
-        // (events raised, G+0xd8 counted) and ours stays out. Off screen nothing calls it, and ours fills the frame as
-        // before. [guess: G+0xe0's other writers and readers were not searched.]
-        int16_t e0 = 0;
-        // (only from 0: a negative value is left as the game set it)
-        if (coop_rd(g + 0xe0, &e0, 2) && e0 == 0) { e0 = 1; memcpy((void *)(uintptr_t)(g + 0xe0), &e0, 2); }
+        ours = 1;
+    }
+    // The game's cheap animation step main+0x348680 (called for an on-screen actor from main+0x64f0b4) advances the clip
+    // nodes' own times without raising events or counting G+0xd8, so the next entry read "missed" and our AS_update
+    // stepped the node times, and the events, a second time: the Dark Bokoblin's copy armed at about twice its clock
+    // (research R36 1). That function runs the full AS_update itself while the s16 G+0xe0 is above 0, which AS_update
+    // counts down (main+0x432fe0): set to 1, its next call makes the full update (events raised, G+0xd8 counted) and
+    // ours stays out; off screen nothing calls it, and ours fills the frame. Written in every frame this code acts, not
+    // only after its own AS_update: a write is used up by the next update, and written only after ours the driven
+    // copies' events still ran about 1.5x their clock (research R37 3). Only from 0: a negative value is left as the
+    // game set it. [guess: G+0xe0's other writers and readers were not searched. If forcing the full path doubles a
+    // counted update, the clip line shows more than 60 AS_update runs a second.]
+    int16_t e0 = 0, e0in = 0;
+    if (g && coop_rd(g + 0xe0, &e0in, 2)) {
+        e0 = e0in;
+        if (e0 == 0) { e0 = 1; memcpy((void *)(uintptr_t)(g + 0xe0), &e0, 2); }
+    }
+    {   // (record, research R37 3: per frame for the one enemy TOTK_COOP_EN_LOG_KEY names, at most 2400 lines: where an
+        // extra animation step of a driven copy comes from; node 0's own time is the clip node's, which the events follow)
+        int coop_enemy_key(uint64_t actor, uint64_t *a, uint32_t *b), coop_enemy_log_all(uint64_t key);
+        uint64_t ka = 0;
+        uint32_t kb = 0;
+        static _Atomic int said;
+        if (g && coop_enemy_key(actor, &ka, &kb) && coop_enemy_log_all(ka) && atomic_fetch_add(&said, 1) < 2400) {
+            uint64_t d8 = 0, sl = coop_rd_ptr(g + 0x20), s0 = sl ? coop_rd_ptr(sl) : 0, nd = s0 ? coop_rd_ptr(s0 + 0x178) : 0;
+            uint32_t g124 = 0;
+            uint8_t g150 = 0;
+            float t0 = -1;
+            coop_rd(g + 0xd8, &d8, 8), coop_rd(g + 0x124, &g124, 4), coop_rd(g + 0x150, &g150, 1);
+            if (nd) coop_rd(nd + 4, &t0, 4);
+            rt_log("coop: en: clip frame: %016llx f %u e0 %d/%d 150 %u d8 %llu 124 %08x ours %d missed %d node0 t %.3f",
+                   (unsigned long long)ka, coop_sess_frame_no(), e0in, e0, g150, (unsigned long long)d8, g124, ours, missed, t0);
+        }
     }
     uint64_t sh = comps ? coop_rd_ptr(comps + 0x428) : 0;
     uint8_t s22 = 0;

@@ -314,8 +314,9 @@ def at(ser, ts, t):
     return p, a[3], clock
 
 
-def motion(own, cop, skip):
-    """the copy's motion against its owner's; skip: time windows (the planted desync) left out"""
+def motion(own, cop, skip, stalls=(), crate=None):
+    """the copy's motion against its owner's; skip: time windows (the planted desync) left out; stalls: the moments the
+    copy's game's own Link struck an enemy (that game's hit-stop); crate: the record's clip clock rate"""
     own.sort(key=lambda r: r[0])
     cop.sort(key=lambda r: r[0])
     ts = [r[0] for r in own]
@@ -366,18 +367,30 @@ def motion(own, cop, skip):
         # (with no lag measured, a copy standing still: a nominal 100 ms and a window of 150 ms each way)
         alag, win = (lag, 0.05) if best else (0.1, 0.15)
 
-        def armed_near(ser, tss, t):
-            j0, j1 = bisect.bisect_left(tss, t - win), bisect.bisect_right(tss, t + win)
+        # (A blow of the copy's own game's Link on an enemy stalls every enemy's clip in that game about 0.1 s, the
+        # game's hit-stop, which the other game does not have: a copy armed in that second may arm and end up to about
+        # 0.1 s late. Each game has its own hit-stop, a known limit (research R37 1). Only the late side is widened, to
+        # 150 ms, for the copy's frames from 0.05 s before to 1 s after such a blow: a stall cannot make a copy early,
+        # and an early arm is a real fault, research R36 1 and R37 3.)
+        st = sorted(stalls)
+
+        def stalled(t):
+            k = bisect.bisect_right(st, t + 0.05)
+            return k > 0 and t - st[k - 1] <= 1.0
+
+        def armed_near(ser, tss, t, early, late):
+            j0, j1 = bisect.bisect_left(tss, t - early), bisect.bisect_right(tss, t + late)
             return any(ser[j][5] for j in range(j0, j1))
         need = found = carmed = extra = 0
         for r in cop:
+            late = max(win, 0.15) if stalled(r[0]) else win
             j = bisect.bisect_right(ts, r[0] - alag)
             if 0 < j < len(ts) and own[j - 1][5]:
                 need += 1
-                found += armed_near(cop, cts, r[0])
+                found += armed_near(cop, cts, r[0], win, late)   # (the copy may arm later than its lag)
             if r[5]:
                 carmed += 1
-                extra += not armed_near(own, ts, r[0] - alag)
+                extra += not armed_near(own, ts, r[0] - alag, late, win)   # (or stay armed after its owner ended)
         res.update(arm_need=need, arm_found=found / need if need else None, arm_extra=extra / carmed if carmed else None)
     rates, top = defaultdict(list), defaultdict(float)   # per command: the owner's clock per second, its highest clock
     for k in range(1, len(own)):
@@ -390,6 +403,11 @@ def motion(own, cop, skip):
         rate = pct(rates[cmd], 0.5) if rates.get(cmd) else None
         if not rate:
             continue
+        # (a command whose owner's clock crawls, a parked enemy's wait clip: a few hundredths of a second of clip time
+        # off, divided by a near-zero rate, read as most of a second; the rate is taken at no less than half the
+        # record's clip rate, research R37 2)
+        if crate:
+            rate = max(rate, crate / 2)
         if top[cmd] > 0 and abs(d) > top[cmd] / 2:   # one side has looped round already
             d -= math.copysign(top[cmd], d)
         ph.append(abs(d) / rate)
@@ -503,6 +521,17 @@ def main():
             for a in s['a']:
                 if a['r'] == 'o':
                     owner[a['id']][int(s['t'])] = who
+    me_ids = []
+    for S in (SA, SB):   # (each game's own Link: "L<its net id>", the id most of its seconds' lines carry)
+        cnt = defaultdict(int)
+        for x in S:
+            if x.get('me'):
+                cnt[x['me']] += 1
+        me_ids.append(max(cnt, key=cnt.get) if cnt else None)
+    # (each game's own Link's blows on an enemy: that game's hit-stops, for the arm check's late side)
+    stalls = [[e['t'] for e in E if e['w'] == 'h' and me_ids[g] is not None and e.get('by') == f'L{me_ids[g]}'
+               and not str(e.get('a', '')).startswith('L')] for g, E in enumerate((EA, EB))]
+    crate = clip_rate(ser)
     print('Every frame (copy against owner):')
     measured = moved = 0
     for i in sorted(owner):
@@ -524,7 +553,7 @@ def main():
             cop = [r for r in ser[1 - who].get(i, []) if secs.get(int(r[0])) == who and before_take(r[0])]
             if not own or not cop:
                 continue
-            r = motion(own, cop, skip.get(i, []))
+            r = motion(own, cop, skip.get(i, []), stalls[1 - who], crate)
             if not r.get('frames'):
                 continue
             measured += 1
@@ -532,13 +561,6 @@ def main():
             report_motion(i, who, r, names, fail)
     if not measured:
         print('  no enemy within 40 m was run by one game and shown by the other')
-    me_ids = []
-    for S in (SA, SB):   # (each game's own Link: "L<its net id>", the id most of its seconds' lines carry)
-        cnt = defaultdict(int)
-        for x in S:
-            if x.get('me'):
-                cnt[x['me']] += 1
-        me_ids.append(max(cnt, key=cnt.get) if cnt else None)
     blows_unjudged = compare_events(EA, EB, owner, ser, names, fail, me_ids, (stand_ins(FA), stand_ins(FB)))
     # (a hook that never fires records nothing, and nothing would fail: each record must have something in it)
     armed = sum(1 for g in (0, 1) for s in ser[g].values() for r in s if r[5])

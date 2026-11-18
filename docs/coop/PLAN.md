@@ -659,6 +659,26 @@ Session run (`build/session5`): PASS for part 5. B dropped its copy and the re-m
 no difference held two seconds (arming and blows not judged: no fight in that run).
 Part 8 (hit effects) is not part of this step's Done; it carries to its own batch after step 3.
 
+Explained (research R37, 2026-11-17; its G+0x150 branch and code claims checked):
+- The extra armed frames: a blow of a game's own Link on an enemy stalls every enemy's clip in that game about 0.1 s
+  (the game's hit-stop), and the other game does not stall; a copy armed then runs about 0.09 s late. Real, small and
+  inherent: each game has its own hit-stop. A known limit. [guess: main+0x1b946f4, which runs after the hit request
+  (research R35), may be that hit-stop; if so, part 8 is where it could be carried across.] check.py: for the copy's
+  frames from 0.05 s before to 1 s after such a blow, the arm check's late side is 150 ms; the early side stays 50 ms,
+  so an early arm still fails.
+- The parked Guard's phase: a checker artefact. A crawling wait clip's few hundredths of a second, divided by its
+  near-zero owner rate, read as 0.17 to 0.44 s; the phase rate is now at least half the record's clip rate. Why the
+  owner's clock crawls after a take-over is open.
+- Real, still: driven copies' events run about 1.5x their clock in some windows (gate10's p8e74ea9 early window). The
+  G+0xe0 write is now made in every frame part 7 acts, not only after its own AS_update; a per-frame line for the
+  enemy `TOTK_COOP_EN_LOG_KEY` names ("coop: en: clip frame:") shows G+0xe0, G+0x150, G+0xd8, G+0x124 and node 0's time.
+Checked both ways on the records: gate11's four findings go; gate10 still fails on p8e74ea9's early arm; gate8 and
+gate9 are unchanged; step 1's planted desync (`build/gate1`) is still found. Built.
+Next gate run, pass: driven copies' arm edges inside a command at about 1x their owner's, AS_update runs at most about
+61 a second. Fail: more than 60 runs a second (forcing the full path doubles a counted update); the per-frame line then
+names the path, G+0x150 among them.
+Open, not failing: full-body copies the game updates only 14 to 24 times a second (a part 7 gap, R37 3).
+
 ### 4. One camp fight in play
 
 Asked of the tester, by name, with the layer on for Bokoblins. The checker runs and screenshots are taken from both
