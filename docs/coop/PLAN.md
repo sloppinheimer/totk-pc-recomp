@@ -480,6 +480,10 @@ Done when: the camp fight with the layer on, every verb, all slots and the light
 arms with its owner at 95 % or more; and the checker's difference list is read and explained. A session run
 (`run_session.ps1`, the test foe) shows the run-time enemy made again in the game that lost it.
 
+Built (2026-11-17, merge 606f6f71: seven commits, reviewed, the review's eight findings fixed; no warning); not yet
+run. Not checked in code: the request's +0x24 field from the other game, and the known form keys leave out keys that
+come through graph links.
+
 ### 4. One camp fight in play
 
 Asked of the tester, by name, with the layer on for Bokoblins. The checker runs and screenshots are taken from both
