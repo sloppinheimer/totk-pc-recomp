@@ -989,7 +989,7 @@ static void clip_drive(Cpu *c, uint64_t actor, EnCell *m) {
         // (events raised, G+0xd8 counted) and ours stays out. Off screen nothing calls it, and ours fills the frame as
         // before. [guess: G+0xe0's other writers and readers were not searched.]
         int16_t e0 = 0;
-        if (coop_rd(g + 0xe0, &e0, 2) && e0 < 1) { e0 = 1; memcpy((void *)(uintptr_t)(g + 0xe0), &e0, 2); }
+        if (coop_rd(g + 0xe0, &e0, 2) && e0 == 0) {   // (only from 0: a negative value is left as the game set it) e0 = 1; memcpy((void *)(uintptr_t)(g + 0xe0), &e0, 2); }
     }
     uint64_t sh = comps ? coop_rd_ptr(comps + 0x428) : 0;
     uint8_t s22 = 0;
@@ -1170,7 +1170,7 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             // the stand-in's gear the same table (coop_players.c coop_gear_slot), and 0 for a weapon. Asked by slot (4,
             // 3), a create was accepted and never filled the slot: the Guard's bow and the Dark's shield of steps 2 and 3
             // (research R36 2). Slots with no kind read are not made.
-            static const int8_t kind_of_slot[EN_EQ_N] = {0, -1, -1, 7, 8};
+            static const int8_t kind_of_slot[EN_EQ_N] = {0, -1, -1, 7, 8, -1, -1, -1};   // (all eight written: a missing one would read 0, a weapon)
             int kind = k < (int)(sizeof kind_of_slot / sizeof *kind_of_slot) ? kind_of_slot[k] : -1;
             if (!wn || !eu || kind < 0 || fr - m->eq_made_frame < 120 || m->eq_tries[k] >= 2) continue;
             m->eq_made_frame = fr, m->eq_tries[k]++, m->eq_try_frame[k] = fr;

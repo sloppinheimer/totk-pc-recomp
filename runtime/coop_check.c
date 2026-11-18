@@ -255,7 +255,7 @@ void coop_check_hits(uint64_t dc) {
         {
             uint64_t r1 = coop_rd_ptr(en + 0x68), w = r1 ? coop_rd_ptr(r1 + 0x40) : 0;
             char wid[24];
-            if (w && w != by && !link_ident(w, wid, sizeof wid) && any_ident(w, wid, sizeof wid)) by = w;
+            if (w && w != by && w != v && !link_ident(w, wid, sizeof wid) && any_ident(w, wid, sizeof wid)) by = w;
         }
         int blink = link_ident(by, bid, sizeof bid);
         if (!blink && !any_ident(by, bid, sizeof bid)) continue;
