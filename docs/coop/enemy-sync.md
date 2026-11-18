@@ -136,8 +136,10 @@ Before each calc, `en_copy_precalc`:
 - **Life and death.** `coop_enemy_hit.c en_hit_precalc` (below).
 - **Equipment.** Every 16 frames phase 0 compares what the copy holds with what the owner's enemy holds. After three
   differing looks, a thing the owner does not hold is deleted, and a missing one is made by the game's equipment create
-  (main+0xaf100c), at most once in 2 s and twice per slot. A thing with the wrong fused attachment is let go of and made
-  again. Draw and sheathe follow the owner's (main+0x4f59ec, at most once a second). The slot's shown byte follows the
+  (main+0xaf100c), at most once in 2 s and twice per slot, tried again 10 s after the last try; the log line of each
+  create shows the equipment user's create-failed bit (+0x4600, 0x200000000000) before and after. A thing with the
+  wrong fused attachment is let go of and made again, twice per slot, again 10 s on. No attachment is stated or
+  compared for the bow (slot 3): its link holds the nocked arrow while the owner aims. Draw and sheathe follow the owner's (main+0x4f59ec, at most once a second). The slot's shown byte follows the
   owner's. A drop is told at once (EQUIP) and the copy lets go at once.
 - **Throws.** When the owner's enemy throws (EQUIP, thrown), the copy makes the same throw with the owner's request
   (main+0x1b73be4). The thrown thing in this game is this game's own; it can hurt this game's Link. It is deleted once
@@ -392,16 +394,29 @@ rule 3), which en_bench does not run yet.
 
 ### The action layer (`TOTK_COOP_EN_ACT=1`, off)
 
-`coop_enemy_act.c`. The owner sends its enemy's Main-slot action request (ACT) each frame it asks for a listed verb
-(`en_act_owner`; default verbs 131, 145, 108; `TOTK_COOP_EN_ACT_VERBS=all` for every verb;
-`TOTK_COOP_EN_ACT_FAMILY` limits it to name prefixes). The copy makes the same request on its own Main slot when this
-game shows the owner at the request's time (`en_act_precalc`), after writing the owner's controller move state and
-velocity (`cct_write`). Under that call (`tl_act_actor`) `en_copy_hook` lets the one call tree through the switch. A
+`coop_enemy_act.c`. The owner sends each action request its enemy asks of any of its five slots (ACT: the slot, the
+request, the variation and the form key's text) whenever it is for a listed verb (`en_act_owner`; default verbs 131,
+145, 108; `TOTK_COOP_EN_ACT_VERBS=all` for every verb; `TOTK_COOP_EN_ACT_FAMILY` limits it to name prefixes), and
+once more, as a stop, when it no longer is. For slots 1 to 4 verb 0 (None) is a request and is told. It keeps the
+last verb, variation and form per slot, and tells mode 1 when any of them changed. An interrupt request (flags bit
+0) is told, with a mark, only for the light reactions (verbs 151, 152, 155, 160, 162, 164, 166, 167, 169, 173, 237);
+the heavy ones (death and the rigid-body reactions) are a stop. A form the receiver would refuse makes the request a
+stop. The receiving game checks the message (`act_msg_ok`): from the enemy's owner, slot below 5 and the request's
+own, verb in range, flags only bits 0 and 8, numbers finite or NaN and within 1e5, texts ended and printable, the form
+one of the known keys or empty. It keeps one queue per copy and slot. The copy makes the requests on its own slots
+when this game shows the owner at the request's time (`en_act_precalc`): first the owner's form, by the game's own
+setter (main+0x88d524 then main+0xd141fc, or for the default form main+0x88d524 with the default key and
+main+0x88d794, as OneShotBSAChangeForm and OneShotBSAResetForm do), with the text kept in a table never freed; then
+Main, then the other slots that hold a request, after writing the owner's controller move state and velocity
+(`cct_write`). An interrupt runs with bit 0 cleared; the force bit 8 is kept only on the call of a request just
+taken. Under that call (`tl_act_actor`) `en_copy_hook` lets the one call tree through the switch. A
 node tick of the copy's own (the node's actor, [[[node+8]+8]+0x1f8], is the marked one) whose class is in
 `coop_enemy_act_deny.inc` (276 classes in 10 categories) is turned away and marked succeeded (`en_act_tick_seen`); a
 node of another actor under the mark, were one calc ever run inside another's, is judged as outside it. A play the action asks for is answered "played" and not made, since the copy's slots
-already play the owner's commands (`TOTK_COOP_EN_ACT_PLAYS=1` lets them through). When the owner's verb leaves the
-list, or nothing comes for half a second, the copy is asked for Wait (verb 40) once. While a copy runs an action the
+already play the owner's commands (`TOTK_COOP_EN_ACT_PLAYS=1` lets them through). A stop, or for Main nothing for
+half a second, asks Main for Wait (verb 40) with mode 1 once, and a slot 1 to 4 for None with mode 0, as the game's
+own fill (main+0x46f020); slots 1 to 4 hold their request until told. A copy that thinks again (`en_act_leave`, from
+`en_copy_precalc`) drops its queues and asks None of each slot 1 to 4 that holds a started request other than None. While a copy runs an action the
 ARM replay is skipped and an effect its own node started is not started again.
 
 Under the same mark, whichever node makes the call, `en_act_refuse` skips the engine functions an action's outward acts
@@ -420,8 +435,7 @@ the per-call line counts the refusals. The calls are routed as before: `en_copy_
 `COOP_HOOKED_EN` addresses, `coop_spawn.c coop_hook` for the creates, `coop_life.c` for the deaths and the prepare, each
 asking `en_act_refuse` first. The mod's own replays run before the action call, outside the mark.
 
-Not built, from the file's own list and PLAN.md: the other four slots, interrupt requests (`flags & 1` are not sent),
-and the form key. The refusals have not been run (PLAN.md step 2's gate). `TOTK_COOP_EN_ACT_ALLOW` and `TOTK_COOP_EN_ACT_DENY` change
+The five slots, the light interrupts and the form key (PLAN.md step 3, parts 1 to 3) are built and not yet run. `TOTK_COOP_EN_ACT_ALLOW` and `TOTK_COOP_EN_ACT_DENY` change
 the deny table for a test. PLAN.md lists what was measured with it.
 
 ### The Shooter-sleep replay

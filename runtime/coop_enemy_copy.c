@@ -232,7 +232,11 @@ static void equip_read(uint64_t actor, uint32_t eq[EN_EQ_N], int learn) {
     }
 }
 // The same, with what is fused to each held thing (the link at +0xb0 of its [comps+0x208]) and the slot's state byte
-// ([equipment user+0x4620+slot]: 2 drawn, 4 put away; research R13 section 3).
+// ([equipment user+0x4620+slot]: 2 drawn, 4 put away; research R13 section 3). No attachment is read for the bow
+// (slot 3): while an enemy nocks an arrow (ArrowReload, ArrowDraw) that link gives the arrow its prepare made, which a
+// copy, whose prepare is refused or replayed apart, never has; stated, it made the copy let go of its bow to make it
+// again "with the attachment", which failed and left the bow gone in one game for good (research R30 1). A bow takes
+// no fused material in the enemies' placements (research G8 3.1).
 static void equip_read_more(uint64_t actor, uint32_t att[EN_EQ_N], uint8_t eqs[EN_EQ_N], int learn) {
     uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230);
     for (int s = 0; s < EN_EQ_N; s++) {
@@ -250,7 +254,7 @@ static void equip_read_more(uint64_t actor, uint32_t att[EN_EQ_N], uint8_t eqs[E
         uint64_t wc = coop_rd_ptr(en_comps(held) + 0x208), aref = wc ? coop_rd_ptr(wc + 0xb0 + 8) : 0, a = aref ? coop_rd_ptr(aref + 0x40) : 0;
         int32_t ast = 0;
         char nm[40] = "";
-        if (!a || !coop_rd(a + COOP_ACTOR_STATE, &ast, 4) || ast < 2 || ast > 6) continue;
+        if (s == 3 || !a || !coop_rd(a + COOP_ACTOR_STATE, &ast, 4) || ast < 2 || ast > 6) continue;
         coop_actor_name(a, nm, sizeof nm);
         if (!nm[0]) continue;
         att[s] = fnv_str(nm);
@@ -950,6 +954,7 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             if (atomic_fetch_add(&said, 1) < 12) rt_log("coop: en: switch: %llx thinks again: its interrupt graph gets back queue count %u, bits %x, root %d, pending root %d", (unsigned long long)actor, m->sw_qcount, m->sw_bits, (int)m->sw_root, (int)m->sw_pend);
         }
         en_hit_leave(actor, m);
+        { void en_act_leave(Cpu *c, uint64_t actor, EnCell *m); en_act_leave(c, actor, m); }   // (its slots 1 to 4 left with None: coop_enemy_act.c)
         if (body && m->body_static) coop_guest_call(c, MOD_MAIN_BASE + FN_MOTION_TYPE, body, 2, 0, 0);
         if (st == EM_OWNED && m->show_verb && !en_test_skip('b')) {   // this game runs it from here: its brain goes on where its owner's was
             m->grace_verb = m->show_verb, m->grace_tgt = m->show_tgt, m->grace_frame = coop_sess_frame_no() + BRAIN_GRACE;
@@ -1032,7 +1037,7 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230);
             uint32_t fr = coop_sess_frame_no();
             if (!wn || !eu || fr - m->eq_made_frame < 120 || m->eq_tries[k] >= 2) continue;
-            m->eq_made_frame = fr, m->eq_tries[k]++;
+            m->eq_made_frame = fr, m->eq_tries[k]++, m->eq_try_frame[k] = fr;
             for (int j = 0; j < 2; j++) {
                 uint8_t *st = m->eq_str[j];
                 memset(st, 0, 0x60);
@@ -1046,10 +1051,16 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             uint64_t stack[6] = {0, 0, 0, (uint64_t)(uint32_t)-1, 0, (uint64_t)(uint32_t)-1};   // arguments 9 to 14
             memcpy((void *)(uintptr_t)sp, stack, sizeof stack);
             c->sp = sp;
+            // (the equipment user's flag word +0x4600: bit 0x200000000000 is set when a create request failed, research
+            // G8 3.2; logged before and after, since the create may finish later, when the next try's line shows it)
+            uint64_t fw0 = 0, fw1 = 0;
+            coop_rd(eu + 0x4600, &fw0, 8);
             uint64_t r = rt_call(c, MOD_MAIN_BASE + 0xaf100c, 8, eu, (uint64_t)k, (uint64_t)(uintptr_t)m->eq_str[0], (uint64_t)1, (uint64_t)(uint32_t)-1,
                                  (uint64_t)(uint32_t)-1, (uint64_t)(uintptr_t)m->eq_str[1], (uint64_t)1);
             c->sp = sp0;
-            rt_log("coop: en: equip: the copy %llx is given %s in slot %d, as its owner's enemy holds (the create answered %llx; try %d)", (unsigned long long)actor, wn, k, (unsigned long long)r, m->eq_tries[k]);
+            coop_rd(eu + 0x4600, &fw1, 8);
+            rt_log("coop: en: equip: the copy %llx is given %s in slot %d, as its owner's enemy holds (the create answered %llx; try %d; the create-failed bit %s before, %s after)", (unsigned long long)actor, wn, k, (unsigned long long)r, m->eq_tries[k],
+                   fw0 & 0x200000000000ull ? "set" : "clear", fw1 & 0x200000000000ull ? "set" : "clear");
             break;
         }
         {   // Drawn or put away as its owner's (main+0x4f59ec(equipment user, slot, 1 draw | 2 sheathe)): the slot's link is
@@ -1497,6 +1508,10 @@ void en_copy_phase0(Cpu *c) {
         }
         if ((frame & 15) == (uint32_t)(i & 15)) {   // what the copy holds against what its owner's enemy holds
             uint32_t eq[EN_EQ_N];
+            // (a slot whose creates or attachment drops gave up is tried again 10 s after the last: one failure no longer
+            // lasts the session)
+            for (int k = 0; k < EN_EQ_N; k++)
+                if ((m->eq_tries[k] || m->eq_att_tries[k]) && frame - m->eq_try_frame[k] >= 600) m->eq_tries[k] = 0, m->eq_att_tries[k] = 0;
             equip_read(e->actor, eq, 0);
             if (memcmp(eq, sl->eq, sizeof eq)) {
                 if (!e->eq_off++ || rec)
@@ -1523,7 +1538,10 @@ void en_copy_phase0(Cpu *c) {
                 uint8_t eqs[EN_EQ_N], drop = 0;
                 equip_read_more(e->actor, att, eqs, 0);
                 for (int k = 0; k < EN_EQ_N; k++) if (eq[k] && sl->att[k] && !att[k] && m->eq_att_tries[k] < 2) drop |= (uint8_t)(1u << k), m->eq_att_tries[k]++;
-                if (drop && ++e->eq_att_off >= 3) atomic_store(&m->eq_drop, drop), e->eq_att_off = 0;
+                if (drop && ++e->eq_att_off >= 3) {
+                    atomic_store(&m->eq_drop, drop), e->eq_att_off = 0;
+                    for (int k = 0; k < EN_EQ_N; k++) if (drop >> k & 1) m->eq_try_frame[k] = frame;
+                }
                 else if (!drop) e->eq_att_off = 0;
                 else for (int k = 0; k < EN_EQ_N; k++) if (drop >> k & 1) m->eq_att_tries[k]--;
             }
