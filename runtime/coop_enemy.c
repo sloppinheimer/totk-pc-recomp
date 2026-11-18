@@ -495,6 +495,14 @@ static int en_apply_owner(Enid id, uint64_t owner, uint32_t epoch, const char *w
     if (e->cell >= 0) en_map[e->cell].show_on = 0, en_map[e->cell].hp_written = 0, en_map[e->cell].show_rag = 0, atomic_store(&en_map[e->cell].state, owner == me ? EM_OWNED : EM_COPY);
     if (owner != me) e->need_ns = en_now();
     en_log_own(e, owner == me ? (was ? "taken over by this game" : "claimed by this game") : was == me ? "another game's now: this game's is a copy" : "another game's", why);
+    if (was == me && owner != me && e->cell >= 0) {   // (a hit that came between the offer and the claim: a flinch left on the copy, research R34 5b)
+        uint64_t rag = coop_rd_ptr(en_comps(e->actor) + 0x3e8);
+        int32_t rs = 0;
+        uint8_t rq = 0;
+        if (rag) coop_rd(rag + 0x20, &rs, 4), coop_rd(rag + 0x149, &rq, 1);
+        static int said;
+        if (said++ < 200) rt_log("coop: en: own: %016llx/%u became a copy with a hit of %d waiting, a flinch asked %d, requested of the ragdoll %d, ragdoll state %d", (unsigned long long)e->id.a, e->id.b, e->pend_dmg, (int)atomic_load(&en_map[e->cell].flinch), rq & 1, rs);
+    }
     return 1;
 }
 
@@ -618,9 +626,15 @@ static void gone(En *e, const char *why) {
 // player is noticed there. So an enemy this game runs is offered to the game of another player whose Link is within
 // HAND_M of it and HAND_GAIN_M nearer to it than this game's: not in its first HAND_HOLD s with this game, not in the
 // middle of an interrupt action (S 4.6), and not again for 10 s when that game did not take it. A player who strikes
-// it gets it sooner: for 5 s after another player's hit (its flinch is an interrupt action and has to end first) the enemy is offered to that player's game when its Link is
+// it gets it sooner: for 5 s after another player's hit the enemy is offered to that player's game when its Link is
 // nearer than this game's at all, or this game's is over HAND_FAR_M away, after 3 s with this game; so an enemy turns
-// on the player who attacks it while its owner's player stands off.
+// on the player who attacks it while its owner's player stands off. Never while a hit or a flinch is under way here:
+// the flinch is the game's native partial ragdoll (facts/enemies.md 8), not an interrupt action, and it plays only on
+// the actor of the game that applies the hit. Offered in the pass that applies the striker's hit, it played in the
+// game that gave the enemy away and never in the striker's, where the enemy then ran (research R34 5b). So no offer
+// while the entry has a hit not yet applied (pend_dmg, applied by en_hit_phase0 after this pass), a flinch asked of
+// pre-calc and not yet handed to the ragdoll (EnCell.flinch), a flinch requested of the ragdoll and not yet started
+// (rag+0x149 bit 0), or a ragdoll state other than none (rag+0x20); the first pass after the flinch ends offers it.
 #define HAND_FAR_M 15.f
 #define HAND_M 35.f
 #define HAND_GAIN_M 6.f
@@ -647,6 +661,21 @@ static void handover(En *e, uint64_t now) {
     uint8_t status = 0;
     uint64_t bsa = en_bsa(e->actor);
     if (bsa && coop_rd(bsa + 0x26a8, &status, 1) && (status == 1 || status == 2)) return;
+    {   // (no hit, flinch or ragdoll under way: see above)
+        uint64_t rag = coop_rd_ptr(en_comps(e->actor) + 0x3e8);
+        int32_t rs = 0;
+        uint8_t rq = 0;
+        if (rag) coop_rd(rag + 0x20, &rs, 4), coop_rd(rag + 0x149, &rq, 1);
+        int flinch = e->cell >= 0 && atomic_load(&en_map[e->cell].flinch);
+        if (e->pend_dmg || flinch || (rq & 1) || rs) {
+            static int said;   // (not again for the enemy and epoch last said: this is asked every frame while a flinch lasts)
+            static uint64_t said_id;
+            static uint32_t said_ep;
+            if ((said_id != e->id.a || said_ep != e->epoch) && said++ < 60)
+                said_id = e->id.a, said_ep = e->epoch, rt_log("coop: en: own: %s %016llx/%u epoch %u not offered to player %d yet: a hit of %d waiting, a flinch asked %d, requested of the ragdoll %d, ragdoll state %d", e->name, (unsigned long long)e->id.a, e->id.b, e->epoch, to, e->pend_dmg, flinch, rq & 1, rs);
+            return;
+        }
+    }
     // Nor while it is not drawn: a Wizzrobe handed over in its unseen flight stayed in it for good in the game that
     // took it (its graphs there started from nothing in the middle of the warp; a play session, 2026-11-16).
     if (e->cur.hide) return;

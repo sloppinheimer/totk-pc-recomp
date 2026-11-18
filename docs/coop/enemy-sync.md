@@ -235,7 +235,13 @@ itself.
 - that player struck it in the last 5 s (HIT), this game has had it for at least 3 s, that player's Link is within
   80 m, and it is nearer than this game's Link or this game's Link is over 15 m away.
 
-Never in the middle of an interrupt action, and never while the enemy is not drawn (a Wizzrobe in its unseen flight).
+Never in the middle of an interrupt action, never while the enemy is not drawn (a Wizzrobe in its unseen flight), and
+never while a hit or a flinch is under way here: a hit received and not yet applied (`pend_dmg`, applied by
+`en_hit_phase0` after the hand-over pass), a flinch asked of pre-calc (`EnCell.flinch`) or of the ragdoll (rag+0x149
+bit 0), or a ragdoll state other than none (rag+0x20). The flinch is the game's native partial ragdoll and plays only
+in the game that applies the hit; offered in the same pass, it played in the game that gave the enemy away and not in
+the striker's (research R34 5b). A held offer is logged once per enemy and epoch ("not offered to player N yet"), and
+a game whose enemy became a copy logs what was still under way then ("became a copy with a hit of ...").
 An offer not taken in 2 s is withdrawn, and not made again for 10 s.
 
 When this game no longer runs the enemy (for half a second) or no longer has its actor, it offers it to everyone. In
