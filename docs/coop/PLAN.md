@@ -462,10 +462,18 @@ Design:
    `coop_enemy.c`); check.py lists "owner" only when no game has "o" and one has "l". A Link's blow on an enemy is
    judged in the striker's game; the other game's stand-in contact is listed, not judged. A per-frame line for each
    stand-in (its weapon attack byte +0x660 and weapon place) is recorded as information.
-7. **Far copies' clips** (R31 2.4). Read first: who sets bits 17 and 18 of the animation player's +0x124, what
-   main+0xb51440 and main+0x1b5666c are, and whether the calc's per-slot status loop (main+0x41df6c..0x41e03c) runs
-   on a copy (R29 2.2). Then, if the throttle has a per-actor switch, keep a copy updating while it is within 40 m of
-   any Link shown in its game. Designed after that read.
+7. **Far copies' clips** (research R32, 2026-11-17). Bits 17 and 18 of the player's +0x124 are not the throttle
+   ("graph not built", "stopped at clip end"); the other AS_update callers are not a slower path; the calc is entered
+   every frame and AS_update inside it is skipped by one of four gates, one of which (the 0xc4 pause masks on
+   actor+0x3fc) would also explain R29's "answered 3". The stall turns on and off per copy in blocks of 10 to 40 s,
+   more often at 20 to 35 m but also at 5 to 15 m. Its writer is not found, so no switch can be held. The calc's
+   per-slot status loop does run on a copy. The change: AS_update adds 1 to G+0xd8 on every run (main+0x432fa0, read
+   in Ghidra). At the calc-entry hook, a copy within 40 m of any Link shown in its game whose G+0xd8 did not move
+   since the previous calc gets one AS_update call from us (x0 = G, s0 = the calc's dt times [AC+0x98], as the calc
+   does at main+0x41ca18..0x41ca30; main+0xb51440 is the game's own call outside the calc). A once-a-second line per
+   copy logs which gate held (R32 5.4's fields), so the gate run both checks the change and names the gate. Unread:
+   whether the arm call (main+0x421a7c) is reached on the pause-mask path; if the run shows events but no arming, that
+   is next.
 
 Done when: the camp fight with the layer on, every verb, all slots and the light interrupts runs with no crash; no
 `lets go of its Weapon_Bow_004` line in either game; no "owner" finding for a resting enemy; every copy within 40 m
