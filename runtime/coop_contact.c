@@ -42,8 +42,8 @@ static int ct_is_link(uint64_t a) {
 }
 uint32_t coop_sess_frame_no(void);   // coop_sess.c
 
-// The record of a blow on this game's Link that an enemy struck, by its own body or by what it holds, once per attack
-// id: the enemy and whether this game runs it; the contact's attacker ([entry+0x80]+0x40) and striking object
+// The record of a blow on this game's Link that an enemy struck, by its own body or by what it holds, once per enemy and
+// attack id: the enemy and whether this game runs it; the contact's attacker ([entry+0x80]+0x40) and striking object
 // ([entry+0x68]+0x40) with their places, their distances from this Link and the striking object's holder; the enemy's
 // ragdoll state ([comps+0x3e8]+0x20); the contact's victim body (+0x58), type, level and the two bytes after
 // (+0x90..+0x93), power (+0xa0, an int: main+0x1cd263c multiplies it into the damage), attack id (+0x38) and class
@@ -59,9 +59,13 @@ static void enemy_blow_log(uint64_t e) {
     if (!en || !coop_world_me) return;
     uint32_t aid = 0;
     coop_rd(e + 0x38, &aid, 4);
-    static _Atomic uint32_t seen[16], seen_w;   // (a contact waits in several hit updates: one line per attack id)
-    for (int k = 0; aid && k < 16; k++) if (atomic_load_explicit(&seen[k], memory_order_relaxed) == aid) return;
-    if (aid) atomic_store_explicit(&seen[atomic_fetch_add(&seen_w, 1) % 16], aid, memory_order_relaxed);
+    // (a contact waits in several hit updates: one line per enemy and attack id; one with no id, per enemy and half
+    // second; the enemy is in the key in case attack ids are counted per attacker, which is not read)
+    uint64_t dk = (uint64_t)(aid ? aid : coop_sess_frame_no() / 30 | 0x80000000u) << 32 | (uint32_t)(en >> 4);
+    static _Atomic uint64_t seen[16];
+    static _Atomic uint32_t seen_w;
+    for (int k = 0; k < 16; k++) if (atomic_load_explicit(&seen[k], memory_order_relaxed) == dk) return;
+    atomic_store_explicit(&seen[atomic_fetch_add(&seen_w, 1) % 16], dk, memory_order_relaxed);
     uint64_t ka = 0;
     uint32_t kb = 0;
     coop_enemy_key(en, &ka, &kb);

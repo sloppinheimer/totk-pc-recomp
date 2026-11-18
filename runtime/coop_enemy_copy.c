@@ -826,6 +826,12 @@ static void slots_apply(Cpu *c, uint64_t actor, EnCell *m, const EnSlot *want, i
         const EnSlot *o = &want[i];
         uint64_t s = anim_slot(g, i);
         if (!s || !o->cmd) continue;
+        {   // (a rate the ahead-bend below cut to 0 is not left in the slot by a frame that skips its write: a play not
+            // taken yet or no clip context would keep the clip stopped; the stated rate is put back first, and the bend,
+            // when it applies, writes its own after; a review, 2026-11-17)
+            float now = -1;
+            if (o->rate > 0 && coop_rd(s + 0xd0, &now, 4) && now == 0) memcpy((void *)(uintptr_t)(s + 0xd0), &o->rate, 4);
+        }
         char cmd[40];
         anim_cmd(s, cmd, sizeof cmd);
         int played = 0;
