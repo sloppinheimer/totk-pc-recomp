@@ -279,8 +279,8 @@ static int text_ok(const char *s, size_t n) {
     return 1;
 }
 // What another game tells is checked here, where it is received (docs/coop/README.md rule 7): the slot below 5 (5 and
-// over would run on Main) and the request's own slot the same; the verb in range; flags only bits 0 (interrupt, with
-// the mark) and 8 (force restart); the variation's valid byte 0 or 1; texts ended and printable, the form one of the
+// over would run on Main) and the request's own slot the same; the verb in range; flag bit 0 (interrupt) matching the
+// mark; the variation's valid byte 0 or 1; texts ended and printable, the form one of the
 // known keys or empty. 0: passed; else the number of the check that refused it (en_act_msg logs it).
 static int act_msg_ok(const MAct *a) {
     if (a->slot >= ACT_SLOTS || a->mode > 1 || a->stop > 1 || a->intr > 1) return 1;
@@ -291,7 +291,10 @@ static int act_msg_ok(const MAct *a) {
     uint16_t fl;
     memcpy(&f28, a->req + 0x28, 4), memcpy(&v4c, a->req + 0x4c, 4), memcpy(&slot, a->req + 0x48, 4), memcpy(&fl, a->req + 0x50, 2);
     if (slot != a->slot || f28 > VERB_NONE || (f28 == VERB_NONE && v4c >= VERB_NONE)) return 4;
-    if ((fl & ~0x101u) || (fl & 1) != a->intr) return 5;
+    // (Bits 1 and 2 come with real requests: Run (verb 4) with 0x2 and 0x6, verb 1 with 0x6, in step 3's second gate
+    // run, where a check of "bits 0 and 8 only" refused them all. Their meaning is not read; step 2 passed every bit as
+    // the owner asked it, and so does this. Bit 0 must match the interrupt mark.)
+    if ((fl & 1) != a->intr) return 5;
     if (a->req[0x40] > 1 || (a->var[0] && a->req[0x40] != 1)) return 6;
     // (The numbers are not limited in size: a request may hold "no limit" values, and every Run request of step 3's
     // first gate run was refused while a size limit stood here (research R33). A number is a number to the game; only
@@ -481,7 +484,7 @@ static uint64_t act_call(Cpu *c, uint64_t actor, uint64_t bsa, int k, int stop, 
         // of a request just taken, as the owner's node asks it once at its enter and refreshes without it)
         uint16_t fl;
         memcpy(&fl, req + 0x50, 2);
-        fl = (uint16_t)((fl & 0x100u) & (actq[k].force ? 0x100u : 0u));
+        fl = (uint16_t)((fl & ~0x101u) | (actq[k].force ? (fl & 0x100u) : 0u));   // (no interrupt bit; force on the first call only; the rest as asked)
         memcpy(req + 0x50, &fl, 2);
         mode = actq[k].enter;
         actq[k].enter = 0, actq[k].force = 0;

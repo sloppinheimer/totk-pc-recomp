@@ -519,6 +519,15 @@ taken (read at the entry), making AS_update and then the arm poll as the full bo
 request checks no longer limit the numbers' size, and a refusal logs which check and the verb. What sets bits 0 and 1
 is not read. Built; the gate is to be run again.
 
+Second gate run (2026-11-17, d8beed7c; records in `build/gate6`): not a valid gate. The PC was busy with another game,
+and both test games ran at 32 to 34 fps (1 % low 14 to 15) against 59 to 60 in the first run. Lag, stutter and the
+command and phase shares fail on that and are not judged. What it does show: no crash; attacks armed with the owner
+91 to 100 % per copy (from 9 to 75 %), the mod's update and arm poll rarely needed (most copies stayed in the full
+body at that frame rate); no bow difference, no "owner" finding. The refusal log named the check: Run (verb 4) and
+verb 1 requests carry flag bits 1 and 2 (0x2, 0x6), which "bits 0 and 8 only" refused; the number-size limit removed
+before was not it. The check now passes every bit but the interrupt bit as asked, as step 2 did (their meaning is
+not read). To be run again on a quiet PC.
+
 ### 4. One camp fight in play
 
 Asked of the tester, by name, with the layer on for Bokoblins. The checker runs and screenshots are taken from both
