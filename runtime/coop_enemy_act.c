@@ -312,14 +312,17 @@ int en_act_msg(const CoopCtrMsg *m) {
     for (int i = 0; i < EN_N; i++) {
         // (the owner's word only: the game that runs the enemy)
         if (!en_tab[i].used || !enid_eq(en_tab[i].id, a->id) || en_tab[i].owner == me || en_tab[i].owner != m->from || en_tab[i].cell < 0) continue;
-        int cell = en_tab[i].cell + 1, f = -1, have = -1;
+        int cell = en_tab[i].cell + 1, f = -1, fz = 0, have = -1;
+        uint32_t fr = coop_sess_frame_no();
         for (int k = 0; k < ACTQ; k++) {
             int cc = atomic_load(&actq[k].cell);
             if (cc == cell && actq[k].slot == a->slot) have = k;
-            else if (!cc && f < 0) f = k;
+            // (free, or a queue whose copy has had no calc for 5 s: deleted or unloaded without a stop, as a Sub held in
+            // Ride whose copy went is)
+            else if (f < 0 && (!cc || (cc > 0 && cc <= EN_MAP_N && fr - atomic_load(&en_map[cc - 1].frame) > 300))) f = k, fz = cc;
         }
         if (have < 0 && (a->stop || f < 0)) return 1;
-        int k = have >= 0 ? have : f, z = 0;
+        int k = have >= 0 ? have : f, z = fz;
         if (have < 0 && !atomic_compare_exchange_strong(&actq[k].cell, &z, -1)) return 1;
         if (have < 0) {
             actq[k].slot = a->slot, actq[k].verb = 0, actq[k].enter = 0, actq[k].force = 0, actq[k].stop = 0, actq[k].said = 0, actq[k].have = 0, actq[k].form_have = 0;
@@ -540,7 +543,9 @@ int en_act_precalc(Cpu *c, uint64_t actor, EnCell *m) {
         int k = ks[s];
         if (k < 0) continue;
         // Main is told every frame its action sequence runs, so half a second without a word means its owner's calls
-        // stopped. Slots 1 to 4 are asked once at a state's enter and leave: they hold their request until told.
+        // stopped. Slots 1 to 4 are told once at a state's enter and leave: the copy keeps their request until told
+        // otherwise, and asks it again each frame with mode 0, since a slot's graph ticks only under its own request
+        // call (research R29 1.5).
         int stop = actq[k].stop || (!s && frame - actq[k].frame > 30);
         if (!actq[k].have && !stop) continue;   // (told, none due yet)
         if (!ready || !coop_rd_ptr(bsa + 0x1f0 + 8ull * (uint64_t)s)) {   // (not yet, or the copy has no such slot)
@@ -567,15 +572,23 @@ int en_act_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     return run;
 }
 
+// A cell's queues let go of (cell + 1): its copy thinks again, or the cell starts for another actor (coop_enemy.c
+// map_touch), whose calc must not get the old actor's held requests.
+void en_act_forget(int cell) {
+    for (int i = 0; i < ACTQ; i++) if (atomic_load_explicit(&actq[i].cell, memory_order_relaxed) == cell) atomic_store(&actq[i].cell, 0);
+}
+
 // A copy that thinks again (taken over, or its own): its queues are let go of, and each of its slots 1 to 4 that holds
 // a started request other than None is asked None, as the game's own fill does. Its utility, starting from its
 // default case, would never run the leave that asks it (R29 4.3: a Sub left in Ride keeps the lower body split). In
-// the game that now runs it this call is told to the copies elsewhere too (en_act_owner), with the slots' told marks
-// cleared, so the next request of each slot is told as an enter. From en_copy_precalc, on the actor's thread.
+// the game that now runs it each such None is told to the copies elsewhere too, as that slot's stop (en_act_owner
+// tells a None on slots 1 to 4 only after a told request, so the slot is marked told first), since their queues still
+// hold the old owner's request. The other told marks are cleared, so the next request of each slot is told as an
+// enter. From en_copy_precalc, on the actor's thread.
 void en_act_leave(Cpu *c, uint64_t actor, EnCell *m) {
     if (!en_act_on()) return;
     int cell = (int)(m - en_map) + 1;
-    for (int i = 0; i < ACTQ; i++) if (atomic_load_explicit(&actq[i].cell, memory_order_relaxed) == cell) atomic_store(&actq[i].cell, 0);
+    en_act_forget(cell);
     m->act_told = 0;
     uint64_t bsa = en_bsa(actor);
     static __thread _Alignas(16) uint8_t req[0x60];
@@ -587,6 +600,7 @@ void en_act_leave(Cpu *c, uint64_t actor, EnCell *m) {
         uint32_t v = verb_of(held);
         if (!v) continue;
         stop_req(req, s);
+        m->act_told |= (uint8_t)(1u << s), m->act_verb[s] = ~0u;   // (so the owner's entry tells this None as the slot's stop)
         uint64_t r = coop_guest_call(c, MOD_MAIN_BASE + FN_ACT, bsa, (uint64_t)(uintptr_t)req, 0, 0);
         static _Atomic int said;
         if (atomic_fetch_add(&said, 1) < 30) rt_log("coop: en: act: %llx thinks again: its slot %u, in verb %u, is asked None (the call answered %u)", (unsigned long long)actor, s, v, (unsigned)r);

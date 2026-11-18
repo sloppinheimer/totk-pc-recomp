@@ -215,6 +215,8 @@ static EnCell *map_touch(uint64_t actor) {
     if (m) {
         if (atomic_load_explicit(&m->gen, memory_order_relaxed) == gen) return m;
         // another actor in a gone one's memory: the cell starts again, and phase 0 lets the old binding go
+        void en_act_forget(int cell);   // coop_enemy_act.c: its action queues (the old actor's requests) let go of
+        en_act_forget((int)(m - en_map) + 1);
         atomic_store(&m->en, -1);
         atomic_store(&m->state, EM_FREE);
         atomic_store(&m->actor, 1);
@@ -238,6 +240,7 @@ static EnCell *map_touch(uint64_t actor) {
         atomic_store(&m->turned, 0), atomic_store(&m->leaks, 0);
         for (int k = 0; k < EN_EQ_N; k++) atomic_store(&m->eq_make[k], 0);
         m->eq_made_frame = 0, memset(m->eq_tries, 0, sizeof m->eq_tries), memset(m->eq_att_tries, 0, sizeof m->eq_att_tries), memset(m->eq_try_frame, 0, sizeof m->eq_try_frame);
+        { void en_act_forget(int cell); en_act_forget((int)(m - en_map) + 1); }   // (none of an earlier actor's requests)
         m->act_told = 0, m->clip_have = 0, m->clip_mark = 0, atomic_store(&m->clip_ours, 0);
         atomic_store(&m->eq_drop, 0), atomic_store(&m->hit_dmg, 0), atomic_store(&m->dying, 0), atomic_store(&m->kill_req, 0), atomic_store(&m->put_away, 0), atomic_store(&m->flinch, 0);
         m->put_done = m->dc_saved = m->req_tries = m->pinned = 0, m->hit_ns = 0, m->show_dstate = 0, m->hp_written = 0;
@@ -730,16 +733,21 @@ static void remake_pass(uint64_t now) {
             rt_log("coop: en: own: %s %016llx/%u lives on in player %d's game and has no actor here: made again here, at its owner's place %.1f m from this Link", e->name, (unsigned long long)e->id.a, e->id.b, id, d);
     }
 }
-// For the spawn sync (coop_spawn_sync.c): whether another game owns a live entry of the enemy of that key made at run
-// time. Its maker then does not send SPAWN_GONE when its own actor goes: the other game fights it.
+// For the spawn sync (coop_spawn_sync.c, its tick): whether another game owns a live entry of the enemy of that key made
+// at run time. Its maker then does not send SPAWN_GONE when its own actor goes: the other game fights it. The table is
+// read under en_lock; when the lock is busy the answer is 2, "not known now": the caller sends nothing and asks again
+// on its next tick (a torn read without the lock could have sent a GONE that deletes the enemy another game fights).
 int coop_enemy_rt_kept_elsewhere(uint32_t key) {
     if (!coop_enemy_new()) return 0;
+    if (!plat_mutex_trylock(&en_lock)) return 2;
     uint64_t me = coop_ctr_me();
-    for (int i = 0; i < EN_N; i++) {
+    int kept = 0;
+    for (int i = 0; i < EN_N && !kept; i++) {
         const En *e = &en_tab[i];
-        if (e->used && e->id.a == key && e->id.b == EN_RT && e->life == EN_LIVE && e->owner && e->owner != me) return 1;
+        if (e->used && e->id.a == key && e->id.b == EN_RT && e->life == EN_LIVE && e->owner && e->owner != me) kept = 1;
     }
-    return 0;
+    plat_mutex_unlock(&en_lock);
+    return kept;
 }
 
 // ---- Messages taken (the net tick) --------------------------------------------------------------------------------------

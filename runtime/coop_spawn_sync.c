@@ -273,11 +273,13 @@ void spawn_tick(Cpu *c) {
         int alive = coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6 && spawn_kind(coop_actor_name(a, nm, sizeof nm));
         if (alive && coop_life_of(a) == 0) spawned_mine[k].dead = 1;
         if (alive && keyed_of(a) == spawned_mine[k].key) continue;
-        int coop_enemy_rt_kept_elsewhere(uint32_t key);   // coop_enemy.c
+        int coop_enemy_rt_kept_elsewhere(uint32_t key);   // coop_enemy.c: 1 kept, 0 not, 2 not known now (its lock busy)
         if (!spawned_mine[k].dead && (!alive || coop_life_of(a) != 0)) {
             // (not while another game owns it alive: that game fights it, and its going here is this game's alone; this
             // game makes it again when its Link comes near, coop_enemy.c remake_pass)
-            if (coop_enemy_rt_kept_elsewhere(spawned_mine[k].key)) rt_log("coop: spawn sync: %08x gone here, but another game runs it: the others keep theirs", spawned_mine[k].key);
+            int kept = coop_enemy_rt_kept_elsewhere(spawned_mine[k].key);
+            if (kept == 2) continue;   // (asked again on the next tick)
+            if (kept) rt_log("coop: spawn sync: %08x gone here, but another game runs it: the others keep theirs", spawned_mine[k].key);
             else {
                 SpawnPacket sp = {.key = spawned_mine[k].key, .kind = SPAWN_GONE};
                 coop_net_hit_send(&sp, sizeof sp);
@@ -288,8 +290,11 @@ void spawn_tick(Cpu *c) {
     }
 }
 // The create part of a SPAWN, shared by spawn_take and the enemy sync's re-make: nothing when an actor of that key is
-// here or being made; this game's own actor of that name within 3 m takes the key; else one is made by name there.
-static void spawn_make(Cpu *c, uint32_t key, const char *name, const float pos[3], const float rot[9], int from, const char *why) {
+// here or being made; for a SPAWN, this game's own actor of that name within 3 m takes the key; else one is made by
+// name there. A re-make (remake 1) adopts none: it is placed at the owner's live place, which in a camp of enemies of
+// one name can be within 3 m of an unrelated one of this game's, and that one would then carry the key (no copy made,
+// and a later SPAWN_GONE of the key would delete this game's own enemy).
+static void spawn_make(Cpu *c, uint32_t key, const char *name, const float pos[3], const float rot[9], int from, const char *why, int remake) {
     for (int i = 0; i < KEYED_N; i++) {
         uint64_t a = atomic_load(&keyed[i].actor);
         if (a && keyed[i].key == key && keyed_of(a) == key) return;   // (have it)
@@ -297,7 +302,7 @@ static void spawn_make(Cpu *c, uint32_t key, const char *name, const float pos[3
     for (int k = 0; k < 32; k++) if (made[k].state && made[k].key == key) return;
     // This game's own spawner made one of that name at that place (both games run the same spawners): that one
     // takes the key, no second is made.
-    for (int i = 0; i < coop_world_n_enemies; i++) {
+    for (int i = 0; !remake && i < coop_world_n_enemies; i++) {
         uint64_t a = coop_world_enemies[i];
         int32_t st = 0;
         float q[3];
@@ -343,7 +348,7 @@ int coop_spawn_remake(uint32_t key, const char *name, const float pos[3], const 
 static void remake_tick(Cpu *c) {
     for (int i = 0; i < REMAKE_N; i++) {
         if (atomic_load_explicit(&remake[i].state, memory_order_acquire) != 2) continue;
-        spawn_make(c, remake[i].key, remake[i].name, remake[i].pos, remake[i].rot, remake[i].from, "made again for the enemy sync");
+        spawn_make(c, remake[i].key, remake[i].name, remake[i].pos, remake[i].rot, remake[i].from, "made again for the enemy sync", 1);
         atomic_store_explicit(&remake[i].state, 0, memory_order_release);
     }
 }
@@ -381,5 +386,5 @@ void spawn_take(Cpu *c, const SpawnPacket *sp, int from) {
     if (sp->pad == 1) atomic_store(&test_foe_key, sp->key);   // (the test enemy, kept from its far delete here too)
     char why[32];
     snprintf(why, sizeof why, "made in player %d game", from);
-    spawn_make(c, sp->key, sp->name, sp->pos, sp->rot, from, why);
+    spawn_make(c, sp->key, sp->name, sp->pos, sp->rot, from, why, 0);
 }

@@ -280,13 +280,15 @@ heartbeat (`en_world_stands`, `coop_sess.c`), which is what lets another game ta
 - Each other game makes one by name at that place (`spawn_take`, `coop_request_create`), or gives the key to its own
   actor of that name within 3 m.
 - When the maker's enemy goes away without dying (unloaded), SPAWN_GONE deletes the others', unless another game owns
-  a live entry of that key (`coop_enemy.c coop_enemy_rt_kept_elsewhere`): that game fights it. An enemy seen dead is
+  a live entry of that key (`coop_enemy.c coop_enemy_rt_kept_elsewhere`, read under `en_lock`; when the lock is busy it
+  is asked again on the next tick): that game fights it. An enemy seen dead is
   left to the enemy sync, whose death the copies are still playing.
 - A run-time enemy that another game runs and this game has no actor of is made again here (`coop_enemy.c
   remake_pass`, phase 0): alive, its name declared, its owner's game running, the owner's latest STATE (under 2 s old)
   within 60 m of this game's Link, not asked in the last 10 s. `coop_spawn_remake` queues it and `spawn_tick` makes it
   through `spawn_make`, the create part `spawn_take` uses (without the per-player rate and 500 m checks, which are
-  about another game's SPAWN). `cell_resolve` binds it as the copy by its key; `far_sweep` covers it.
+  about another game's SPAWN, and without giving the key to an actor of this game within 3 m: at the owner's live
+  place that could be an unrelated enemy of the same name). `cell_resolve` binds it as the copy by its key; `far_sweep` covers it.
 - The enemy `TOTK_COOP_TEST_SPAWN` made is marked in its SPAWN (`pad` 1, only 0 or 1 taken), and every game keeps the
   actor of that key from its own AI's far delete (`coop_life.c`, `coop_spawn_is_test_foe`).
 - A copy made here for another game is deleted when it is more than 1000 m from every player (`far_sweep`,
@@ -437,8 +439,11 @@ node tick of the copy's own (the node's actor, [[[node+8]+8]+0x1f8], is the mark
 node of another actor under the mark, were one calc ever run inside another's, is judged as outside it. A play the action asks for is answered "played" and not made, since the copy's slots
 already play the owner's commands (`TOTK_COOP_EN_ACT_PLAYS=1` lets them through). A stop, or for Main nothing for
 half a second, asks Main for Wait (verb 40) with mode 1 once, and a slot 1 to 4 for None with mode 0, as the game's
-own fill (main+0x46f020); slots 1 to 4 hold their request until told. A copy that thinks again (`en_act_leave`, from
-`en_copy_precalc`) drops its queues and asks None of each slot 1 to 4 that holds a started request other than None. While a copy runs an action the
+own fill (main+0x46f020); slots 1 to 4 keep their request until told and ask it again each frame with mode 0. A copy
+that thinks again (`en_act_leave`, from `en_copy_precalc`) drops its queues and asks None of each slot 1 to 4 that
+holds a started request other than None; in the game that now owns it that None is told to the other copies as the
+slot's stop. A cell's queues are also dropped when `map_touch` starts the cell for another actor, and a queue whose
+copy has had no calc for 5 s is taken as free by `en_act_msg`. While a copy runs an action the
 ARM replay is skipped and an effect its own node started is not started again.
 
 Under the same mark, whichever node makes the call, `en_act_refuse` skips the engine functions an action's outward acts
