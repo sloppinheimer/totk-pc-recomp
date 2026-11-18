@@ -585,6 +585,19 @@ Fixes (one batch, one build):
    action lines' caps for one named enemy.
 Item 3's own fix waits for its log line. Still to run for step 3's Done: the session run with the test foe (part 5).
 
+Fourth gate run (2026-11-17, merge 7c0d0e6f; records in `build/gate8`; both games 59 to 60 fps): FAIL on one item.
+No difference held two seconds; movement within target on every copy (lag 60 to 70 ms, error p95 0.04 to 0.09 m,
+stutter 1.12 to 1.27x); command same 99 to 100 %; every copy blow on a Link with its owner armed; no crash. The fixes
+fired: two hand-overs held for a hit or flinch, eight "became a copy" with nothing under way, three copy deaths from
+the owner's DEATH word, three copies given the end signal. The pictures show the fight in both games, nothing in the
+air. What fails: the Dark Bokoblin's copy in B armed with its owner just under 95 %. All 14 of the owner's arm windows
+had a copy window, but from 32529 on the copy's windows ended up to 0.09 s before the owner's (in gate7 they ended at
+the copy's lag after it). Part 7's record names the cause: in eight seconds the copy's every calc took the reduced
+body and the mod made AS_update each frame, while the game also ran it 24 to 42 times a second by a path R33 did not
+find; the clip stepped twice in those frames and ran ahead. Fixed: the mod's AS_update now fills only a frame the game
+left without one (G+0xd8 unmoved since its previous entry, our own call not counted). Built; to be run again, with the
+session run. Item 3 decided nothing this run (no blow without its owner armed).
+
 ### 4. One camp fight in play
 
 Asked of the tester, by name, with the layer on for Bokoblins. The checker runs and screenshots are taken from both

@@ -938,6 +938,15 @@ static int clip_links(float lp[][3]) {
 }
 static void clip_drive(Cpu *c, uint64_t actor, EnCell *m) {
     uint64_t dtp = c->x[1];
+    // Whether the game's AS_update ran for this copy since the previous entry (G+0xd8 counts every run, ours included,
+    // and clip_d8 is read after our own call): step 3's fourth gate run showed the game running AS_update 24 to 42
+    // times a second for a copy whose every calc took the reduced body, by a path R33's walk did not find, so a call
+    // of ours each frame stepped the clip twice in those frames and the copy ran ahead of its owner. Ours now only
+    // fills a frame the game left without one.
+    uint64_t g0 = anim_g(actor), d80 = 0;
+    int missed = 0;
+    if (g0 && coop_rd(g0 + 0xd8, &d80, 8)) missed = m->clip_have && d80 == m->clip_d8, m->clip_d8 = d80, m->clip_have = 1;
+    else m->clip_have = 0;
     uint8_t b3fc = 0;
     if (!coop_rd(actor + 0x3fc, &b3fc, 1) || !(b3fc & 3)) return;   // (the full body: the game updates and arms)
     atomic_fetch_add_explicit(&m->clip_red, 1, memory_order_relaxed);
@@ -965,12 +974,13 @@ static void clip_drive(Cpu *c, uint64_t actor, EnCell *m) {
     }
     __uint128_t v[8];
     memcpy(v, c->v, sizeof v);
-    if (dt >= 0.f && isfinite(step) && step >= 0.f && step <= 1.f) {
+    if (missed && dt >= 0.f && isfinite(step) && step >= 0.f && step <= 1.f) {
         uint32_t bits;
         memcpy(&bits, &step, 4);
         c->v[0] = bits;
         coop_guest_call(c, MOD_MAIN_BASE + 0x432fa0, g, 0, 0, 0);
         atomic_fetch_add_explicit(&m->clip_ours, 1, memory_order_relaxed);
+        coop_rd(g + 0xd8, &m->clip_d8, 8);   // (our own run is not the game's)
     }
     uint64_t sh = comps ? coop_rd_ptr(comps + 0x428) : 0;
     uint8_t s22 = 0;

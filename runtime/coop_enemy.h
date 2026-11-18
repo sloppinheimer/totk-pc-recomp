@@ -62,7 +62,7 @@ typedef struct {
     uint32_t sw_qcount; uint16_t sw_bits; int32_t sw_root; int16_t sw_pend;   // what the four writes overwrote
     float pin[7];                     // where a held actor stands
     uint32_t slot_try[EN_SLOT_N];     // the frame a play of a slot's command last did not take (asked again 12 frames on)
-    uint64_t clip_d8, clip_mark;      // (clip_d8 unused since research R33); its animation player's AS_update count (G+0xd8) at the last record line
+    uint64_t clip_d8, clip_mark;      // its animation player's AS_update count (G+0xd8) at its last calc entry (after our own call), and at the last record line
     uint8_t clip_have; _Atomic uint32_t clip_ours, clip_red, clip_polls;   // since the last record line: the mod's AS_update calls, calcs that took the reduced body, the mod's arm polls (PLAN.md step 3 part 7)
     _Atomic uint32_t turned, leaks, passed;   // entries the switch turned away; node ticks that got through; entries let through (it thinks)
     _Atomic uint32_t n_play, n_hard, n_soft, n_off;   // plays asked, clocks written, rates bent, frames not at the pose asked
