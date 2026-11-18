@@ -46,9 +46,36 @@ static void hp_write(uint64_t actor, int32_t v) {
     if (p && coop_rd(p, &was, 4) && was != v) memcpy((void *)(uintptr_t)p, &v, 4);
 }
 
+// A death word another game states is taken only when valid (bit 0), in a phase (bits 1 to 3 nonzero) and with a
+// cause the game's table has (bits 4 to 8, 0 to 20: facts/enemies.md 9.1); the second cause (bits 9 to 13) is a
+// 5-bit field whose every value the request takes as given.
+static int dword_ok(uint32_t w) { return (w & 1) && ((w >> 1) & 7) && ((w >> 4) & 0x1f) <= 20; }
+
+// The signal to a copy whose entry was freed at its owner's DEATH_END while its death still waited at phase 3 for it:
+// left so, the actor thought again, ran its own Die action and ragdoll and stayed 2 s longer than the owner's, sliding
+// 4 m (research R34 5d). Given here, on the actor's own thread like the copy's signal in en_hit_precalc, by the same
+// compare-and-swap (phase 3 -> 4, as ExecuteDeathSignalDeathProcedure sets it), so its death tick runs on to its
+// delete as the owner's did. Waited for at phases 1 and 2 (DEATH_END may come before the copy reached 3); dropped
+// once the death is past 3 or the frame set at DEATH_END has passed, so a death of the actor's own later is not cut.
+// That a death given the signal without its Die action having run still ends in the delete is read from facts 9.2's
+// phase table (4 to 7 are the tick's), not measured.
+static void death_signal_due(uint64_t actor, EnCell *m, uint64_t dc) {
+    uint32_t until = atomic_load_explicit(&m->death_sig_frame, memory_order_relaxed), w = 0;
+    if (!until) return;
+    if ((int32_t)(until - coop_sess_frame_no()) < 0 || !dc || !coop_rd(dc + 0x20, &w, 4)) { atomic_store(&m->death_sig_frame, 0); return; }
+    if (!(w & 1) || ((w >> 1) & 7) < 3) return;   // (not dying yet, or before its third phase: waited for)
+    if ((w & 0xe) != 6) { atomic_store(&m->death_sig_frame, 0); return; }   // (past the third phase already: its own tick ends it)
+    uint32_t to = (w & ~0xeu) | 8;
+    if (!__atomic_compare_exchange_n((uint32_t *)(uintptr_t)(dc + 0x20), &w, to, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) return;   // (the word changed under it: asked again next frame)
+    atomic_store(&m->death_sig_frame, 0);
+    static _Atomic int said;
+    if (atomic_fetch_add(&said, 1) < 60) rt_log("coop: en: death: the copy %llx, freed at its owner's end, is given the signal at phase 3", (unsigned long long)actor);
+}
+
 // ---- The actor's own thread ---------------------------------------------------------------------------------------------
 void en_hit_leave(uint64_t actor, EnCell *m) {
     uint64_t dc = dc_of(actor);
+    death_signal_due(actor, m, dc);
     uint32_t w = 0;
     uint16_t sw = 0;
     if (!dc || !m->dc_saved || !coop_rd(dc + 0x20, &w, 4) || !coop_rd(dc + 0x2c, &sw, 2)) { m->dc_saved = 0; return; }
@@ -61,6 +88,7 @@ void en_hit_leave(uint64_t actor, EnCell *m) {
 
 void en_hit_precalc(Cpu *c, uint64_t actor, EnCell *m, int off) {
     uint64_t dc = dc_of(actor);
+    if (!off) death_signal_due(actor, m, dc);   // (a copy freed at its owner's DEATH_END: it thinks again)
     if (atomic_load_explicit(&m->flinch, memory_order_relaxed)) {   // a flinch not of this game's making: asked as the damage step asks
         // Not while the enemy lies in a full ragdoll (its ragdoll state [rag+0x20] 3): main+0x1bddcb0 takes a partial
         // request there too and turns the controller's follow back on, and the enemy was launched (10 m up in 0.1 s,
@@ -115,7 +143,13 @@ void en_hit_precalc(Cpu *c, uint64_t actor, EnCell *m, int off) {
     if (!(w & 1) && (sw & 0x81) != 0x81 && !en_test_skip('d')) sw |= 0x81, memcpy((void *)(uintptr_t)(dc + 0x2c), &sw, 2);   // no drops, no request but this file's
     int dying = atomic_load_explicit(&m->dying, memory_order_relaxed) || (want & 1);
     if (dying && !(w & 1) && m->req_tries < 60) {
-        uint32_t cause = want & 1 ? (want >> 4) & 0x1f : 0x10, second = want & 1 ? (want >> 9) & 0x1f : 1, flag = want & 1 ? !((want >> 15) & 1) : 0;
+        // The causes: from the owner's stated state shown now when its word is valid; else from the word its DEATH
+        // message carried (a copy shows its owner's states about 70 ms late, so it often asks its death before any
+        // shown state has the word, and a cause once committed is not taken again: facts/enemies.md 9.1); else, with
+        // neither, LifeDepleted with second cause 1. Without the DEATH word a copy took second cause 1 where its owner
+        // had 4 (step 3's third gate run, research R34 5c).
+        uint32_t dw = atomic_load_explicit(&m->death_word, memory_order_relaxed), src = want & 1 ? want : dw & 1 ? dw : 0;
+        uint32_t cause = src ? (src >> 4) & 0x1f : 0x10, second = src ? (src >> 9) & 0x1f : 1, flag = src ? !((src >> 15) & 1) : 0;
         uint16_t open = (uint16_t)(sw & ~0x80u);
         uint64_t x[31], sp = c->sp, pc = c->pc;
         memcpy(x, c->x, sizeof x);
@@ -123,7 +157,8 @@ void en_hit_precalc(Cpu *c, uint64_t actor, EnCell *m, int off) {
         uint64_t r = coop_guest_call(c, MOD_MAIN_BASE + FN_DEATH_REQ, dc, cause, second, flag);
         memcpy(c->x, x, sizeof x), c->sp = sp, c->pc = pc;
         if (coop_rd(dc + 0x2c, &sw, 2)) sw |= 0x81, memcpy((void *)(uintptr_t)(dc + 0x2c), &sw, 2);
-        if (!m->req_tries++ || (r & 1)) rt_log("coop: en: death: asked of the copy %llx (cause %u, second %u, flag %u): the request answered %llu", (unsigned long long)actor, cause, second, flag, (unsigned long long)(r & 1));
+        if (!m->req_tries++ || (r & 1)) rt_log("coop: en: death: asked of the copy %llx (cause %u, second %u, flag %u, from %s): the request answered %llu", (unsigned long long)actor, cause, second, flag,
+                                               want & 1 ? "its owner's stated state" : dw & 1 ? "its owner's DEATH message" : "no word of its owner's yet", (unsigned long long)(r & 1));
         coop_rd(dc + 0x20, &w, 4);
     }
     // The signal the action graph gives when the Die action has run: the owner's death has passed its third phase.
@@ -212,7 +247,8 @@ void en_hit_phase0(void) {
         EnCell *m = &en_map[e->cell];
         if (e->owner != me) {
             int32_t d = atomic_exchange(&m->hit_dmg, 0);
-            if (e->life == EN_DYING) atomic_store(&m->dying, 1);
+            // (the word before the death: an actor bound after DEATH came gets it here; en_hit_msg ENM_DEATH)
+            if (e->life == EN_DYING) atomic_store(&m->death_word, e->death_word), atomic_store(&m->dying, 1);
             if (d <= 0) continue;
             MHit h = { e->id, e->epoch, ++e->hit_serial, d, 0 };
             en_send(en_peer_id(e->owner), ENM_HIT, &h, sizeof h);
@@ -328,11 +364,24 @@ void en_hit_msg(const CoopCtrMsg *m, int from) {
             En *e = &en_tab[i];
             if (!e->used || !enid_eq(e->id, d->id) || e->life == EN_UNSYNCED || e->owner != m->from) continue;
             if (m->type == ENM_DEATH) {   // a death is a fact, whoever states it (S 9.2)
+                // (its word is kept for the copy's death request, checked as the game's table needs; a word that
+                // fails the check is not used, and the death still is)
+                if (dword_ok(d->dstate) && !e->death_word) e->death_word = d->dstate;
                 if (e->life == EN_LIVE) e->life = EN_DYING, en_log_own(e, "dying", "its death was stated");
-                if (e->cell >= 0) atomic_store(&en_map[e->cell].dying, 1);
+                if (e->cell >= 0) atomic_store(&en_map[e->cell].death_word, e->death_word), atomic_store(&en_map[e->cell].dying, 1);
             } else {
-                en_log_own(e, "dead", "its owner's actor is gone");
-                en_entry_free(e);   // (a copy still dying here ends by itself: it thinks again and its Die action runs)
+                // A copy whose death waits here at phase 3, or has not reached it, is given the signal on its own
+                // thread once its entry is freed (death_signal_due, within 2 s); its owner's actor is gone, and its
+                // Die action would otherwise run on here by itself. The phase it had now is in the line.
+                char why[96];
+                uint32_t w = 0;
+                uint64_t dc = e->cell >= 0 && e->actor ? dc_of(e->actor) : 0;
+                int ph = dc && coop_rd(dc + 0x20, &w, 4) && (w & 1) ? (int)((w >> 1) & 7) : -1;
+                if (e->cell >= 0 && e->owner != me && ph >= 0 && ph <= 3) atomic_store(&en_map[e->cell].death_sig_frame, coop_sess_frame_no() + 120);
+                if (ph < 0) snprintf(why, sizeof why, "its owner's actor is gone; no death here");
+                else snprintf(why, sizeof why, "its owner's actor is gone; its death here in phase %d", ph);
+                en_log_own(e, "dead", why);
+                en_entry_free(e);
             }
         }
         break;

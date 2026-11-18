@@ -216,14 +216,20 @@ enemy (`en_hit_phase0`). Every game keeps the tombstone; a placement's actor see
 
 A copy never dies by itself. Its death component's bits 0x81 are set (no drops, no requests but the sync's). On DEATH
 its death is asked with the owner's causes (main+0x1b4b738), it waits at its third phase, and it is given the "Die
-ran" signal when the owner's death has passed that phase (`en_hit_precalc`). A copy's kill-counter writer
+ran" signal when the owner's death has passed that phase (`en_hit_precalc`). The causes come from the owner's word in
+the state the copy shows; until a shown state has a valid word (a copy shows its owner about 70 ms late), from the word
+DEATH carried, which is kept when valid, in a phase and with a cause 0 to 20 (`En.death_word`, `EnCell.death_word`);
+with neither, LifeDepleted with second cause 1. The line "asked of the copy" says which (research R34 5c). A copy's kill-counter writer
 (main+0xb28394) is turned off by setting its done bit (`coop_enemy_loot.c en_loot_hook`).
 
 Loot is the owner's: `coop_enemy_loot.c` notes each drop item as the owner's drop makes it, and each weapon an owned
 enemy drops or throws. The object mirror then sends them as this game's objects (`coop_enemy_loot_take`).
 
 When the owner's actor is gone, **DEATH_END** frees the entry everywhere (`en_dead`). A copy still dying ends by
-itself.
+itself; one whose death has not passed its third phase is first marked (`EnCell.death_sig_frame`, 2 s), and once it
+thinks again its own thread gives it the signal at phase 3 (`coop_enemy_hit.c death_signal_due`), so its death tick
+runs on to the delete instead of its own Die action and ragdoll (research R34 5d: 2 s longer, sliding 4 m). The "dead"
+line gives the copy's phase at DEATH_END.
 
 ### 7. Handed over
 

@@ -98,6 +98,8 @@ typedef struct {
     uint8_t eq_str[2][0x60];          // the strings of that create (the game may read them after the call)
     _Atomic uint8_t dying, kill_req, put_away, flinch;   // asked of pre-calc: the copy's death, the owner's death, the actor of a dead placement put away, a flinch
     uint8_t put_done, dc_saved, dc_bits, req_tries;
+    _Atomic uint32_t death_word;      // (a copy) its owner's death word from DEATH, checked (0 none): the causes its death is asked with until a stated state has a valid word
+    _Atomic uint32_t death_sig_frame; // (a copy freed at its owner's DEATH_END) the frame by which a death still waiting at phase 3 is given the signal; 0 none
 } EnCell;
 
 typedef struct {
@@ -112,6 +114,7 @@ typedef struct {
     uint64_t remake_ns;               // (made at run time, another game's, no actor here) when this game last asked the spawn sync to make it again
     uint64_t hit_by_ns; int hit_by;   // when another game's player last struck this game's enemy, and that player's id
     uint32_t decl_no, changes, hit_serial; int32_t pend_dmg; uint8_t send_burst;
+    uint32_t death_word;              // (another game's) the death word its owner's DEATH stated, checked; 0 none
     // motion and animation (coop_enemy_copy.c)
     EnState st[EN_SNAP_N]; uint32_t snap_w; uint8_t teleports, tele_seen;
     EnState cur;                      // an owned enemy as last read

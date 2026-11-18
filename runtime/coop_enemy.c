@@ -244,6 +244,7 @@ static EnCell *map_touch(uint64_t actor) {
         m->act_told = 0, m->clip_have = 0, m->clip_mark = 0, atomic_store(&m->clip_ours, 0), atomic_store(&m->clip_red, 0), atomic_store(&m->clip_polls, 0);
         atomic_store(&m->eq_drop, 0), atomic_store(&m->hit_dmg, 0), atomic_store(&m->dying, 0), atomic_store(&m->kill_req, 0), atomic_store(&m->put_away, 0), atomic_store(&m->flinch, 0);
         m->put_done = m->dc_saved = m->req_tries = m->pinned = 0, m->hit_ns = 0, m->show_dstate = 0, m->hp_written = 0;
+        atomic_store(&m->death_word, 0), atomic_store(&m->death_sig_frame, 0);   // (an earlier actor's: kept, a later enemy's Die would be cut short)
         for (int k = 0; k < EN_SLOT_N; k++) m->slot_try[k] = 0;
         // held from its first frame while a session is on (S 4.2); phase 0 says what it is
         atomic_store(&m->state, atomic_load(&en_active) ? EM_NEW : EM_OWN);
