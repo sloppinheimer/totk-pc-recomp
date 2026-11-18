@@ -679,6 +679,24 @@ Next gate run, pass: driven copies' arm edges inside a command at about 1x their
 names the path, G+0x150 among them.
 Open, not failing: full-body copies the game updates only 14 to 24 times a second (a part 7 gap, R37 3).
 
+Eighth gate run (2026-11-17, b2e2f9c2; `build/gate12`; 60 fps; `TOTK_COOP_EN_LOG_KEY` on p8e74ea9): **PASS.** No crash;
+no difference held two seconds; every copy armed with its owner 99 to 100 %, none without it; 6 of 6 copy blows on a
+Link with the owner armed; movement within target (lag 60 ms, error p95 0.03 to 0.05 m, stutter 1.07 to 1.21x); no
+"lets go of its Weapon_Bow" line; the pictures show the fight in both games, nothing in the air. Part 7's pass sign
+holds: in every full second a copy was driven, the game's and ours made 60 to 62 AS_update runs (30 to 41 ours), so
+the G+0xe0 write doubles nothing. Lines reading over 60 are the record line's own: it is printed only while the enemy
+is a copy, so after seconds as an owner its count spans them (one read 1205 with none of ours); a per-second line it
+is not. The named Junior was never driven this run, so the per-frame line wrote nothing, and its early-swing case
+did not come up to be judged.
+With the session run's pass (`build/session5`), step 3's Done is met: the camp fight with the layer, every verb, all
+slots and the light interrupts runs with no crash; the bow is kept; no "owner" finding for a resting enemy; every
+copy arms with its owner at 95 % or more; the differences of each run are read and explained (R33, R34, R36, R37); the
+run-time enemy is made again in the game that lost it. Not exercised by these runs: the Sub slot (no horse), a copy
+given a lost shield or bow (the kind fix), and the early-swing fix on a driven copy in an armed window.
+Known limits carried: each game's own hit-stop (a copy's arm up to about 0.1 s late in the striker's game); a Link's
+hit spark and sound missing in the other game (part 8, its own batch); full-body copies the game updates 14 to 24
+times a second; the parked Guard's crawling wait clip after a take-over (cause open).
+
 ### 4. One camp fight in play
 
 Asked of the tester, by name, with the layer on for Bokoblins. The checker runs and screenshots are taken from both
