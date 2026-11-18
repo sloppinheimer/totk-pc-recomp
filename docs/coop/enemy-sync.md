@@ -395,12 +395,13 @@ with it: o runs it for all, c a copy, l its own (unsynced) while this game runs 
 coop_enemy_cell_runs`, the ownership pass's test), r its own while nothing runs it here, h held, n new (the second's
 line has "v":2 since "r" came). The per-frame line also has each stand-in's weapon attack byte (EquipmentUser
 +0x660) and its weapon's place ("sl"). `tools/coop/check.py <dir A> <dir B>` pairs the two records by time and identity and lists each difference
-that holds two seconds (shown in one game only, two owners, both copies or one game running it unsynced while none
-runs it for all, place, rotation, life, death, ragdoll, drawn, command, equipment), per copy against its owner the
+that holds two seconds (shown in one game only, not run for all by exactly one game unless both games hold it
+resting, place, rotation, life, death, ragdoll, drawn, command, equipment), per copy against its owner the
 lag, the place error at that lag, stutter, the share of frames with the owner's command, the animation's phase and
 the attacks armed with the owner, the owner's effects by key found in the copy's game, every enemy copy's blow on a
 Link while its owner had an attack armed, and each Link's blow on an enemy in its player's own game, with the other
-game's stand-in contact listed as information (that contact never counts: `contacts_filter`);
+game's stand-in contact listed as information (that contact never counts: `contacts_filter`; a game whose blows on
+enemies include none by its own Link id leaves the run not judged);
 PLAN.md step 1 has the targets. `run_pair.ps1`,
 `run_session.ps1` and `play_two.ps1` run it at the end. `run_pair.ps1 -Nudge <t>,<s>,<m>` plants a desync to show
 it is found (`TOTK_COOP_TEST_NUDGE`: game B shows its first enemy copy m metres off for s seconds).

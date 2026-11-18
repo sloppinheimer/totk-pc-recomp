@@ -358,10 +358,12 @@ void coop_check_tick(Cpu *c, uint64_t me) {
             uint8_t att = 0;
             float wp[3];
             if (eq) coop_rd(eq + 0x660, &att, 1);
-            so += snprintf(sb + so, sizeof sb - so, "%s[\"L%d\",%u", nsl++ ? "," : "", ids[i], att);
-            if (w && coop_rd(w + COOP_ACTOR_POS, wp, 12) && isfinite(wp[0]) && isfinite(wp[1]) && isfinite(wp[2]))
-                so += snprintf(sb + so, sizeof sb - so, ",%.3f,%.3f,%.3f", wp[0], wp[1], wp[2]);
-            so += snprintf(sb + so, sizeof sb - so, "]");
+            // (a weapon place outside the world is not written: %.3f of a huge finite float is hundreds of characters)
+            int nw = w && coop_rd(w + COOP_ACTOR_POS, wp, 12) && fabsf(wp[0]) < 1e6f && fabsf(wp[1]) < 1e6f && fabsf(wp[2]) < 1e6f;
+            int r = nw ? snprintf(sb + so, sizeof sb - so, "%s[\"L%d\",%u,%.3f,%.3f,%.3f]", nsl ? "," : "", ids[i], att, wp[0], wp[1], wp[2])
+                       : snprintf(sb + so, sizeof sb - so, "%s[\"L%d\",%u]", nsl ? "," : "", ids[i], att);
+            if (r < 0 || r >= (int)sizeof sb - so) { sb[so] = 0; break; }   // (no room: the entry left out whole)
+            so += r, nsl++;
         }
     }
     if (fn && fo < (int)sizeof fl - 4) {

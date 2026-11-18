@@ -10,11 +10,10 @@ sync's key for one made at run time). A difference counts when it holds in two p
   missing     shown in one game only, within 60 m of the other game's own Link (farther, the other game may not
               have that part of the world loaded: listed as "far", not counted)
   unpaired    an actor neither placed nor synced (named by its address): each game has its own, nothing pairs them
-  owner       two games run it for all ("o" in both), both show it as a copy, or no game runs it for all while one
-              runs it as its own, unsynced ("l"). An enemy no game runs ("r", its own and resting: parked by the
-              game's battle LOD manager, or both Links far) is not one: the other checks of the pair still run
-              (research R30 2). A record from before the "r" role ("v" under 2) cannot tell "l" from "r": a pair
-              "l" "l" there is counted apart and not listed.
+  owner       not run for all by exactly one game ("o" in one game), except an enemy no game runs: "r" in both, its
+              own and resting in each (parked by the game's battle LOD manager, or both Links far); the other checks
+              of that pair still run (research R30 2). A record from before the "r" role ("v" under 2) cannot tell
+              "l" from "r": a pair "l" "l" there is counted apart and not listed.
   dup         two actors of one game with one identity
   pos         place: more than 0.75 m plus a quarter second of the owner's speed apart
   rot         rotation: more than 25 degrees apart
@@ -179,11 +178,15 @@ def compare_snaps(SA, SB, names):
                 continue
             compared += 1
             roles = a['r'] + b['r']
-            no = roles.count('o')
             if not newrec(snap) and roles == 'll':
                 rest_old.append((i, s))   # (an older record: resting or both running it unsynced, not told apart)
-            elif no >= 2 or roles == 'cc' or (no == 0 and 'l' in roles):
+            elif roles.count('o') != 1 and roles != 'rr':
                 seen[('owner', i)].append((s, f"roles A {a['r']} B {b['r']}"))
+            # (The checks below hold for every pair, an owner or not. With no owner ("rr", resting in both; "rl", one game
+            # running it unsynced) neither game's place, rotation, command or holding is the reference, but both are
+            # what that game's player sees: a difference there is a desync players see, whatever caused it, and a
+            # resting enemy shows none (research R30 2). Only the speed that widens the place tolerance is taken from
+            # whichever game is read as "own" below; resting, it is about 0 in both.)
             own, cop = (a, b) if a['r'] == 'o' else (b, a)
             pv = prev[0 if own is a else 1].get(i) if prev_s == s - 1 else None
             sp = dist(own['p'], pv['p']) if pv else 0.0   # (metres in the last second: the owner's speed, roughly)
@@ -463,7 +466,7 @@ def main():
             if x.get('me'):
                 cnt[x['me']] += 1
         me_ids.append(max(cnt, key=cnt.get) if cnt else None)
-    compare_events(EA, EB, owner, ser, names, fail, me_ids, (stand_ins(FA), stand_ins(FB)))
+    blows_unjudged = compare_events(EA, EB, owner, ser, names, fail, me_ids, (stand_ins(FA), stand_ins(FB)))
     # (a hook that never fires records nothing, and nothing would fail: each record must have something in it)
     armed = sum(1 for g in (0, 1) for s in ser[g].values() for r in s if r[5])
     nfx = sum(1 for E in (EA, EB) for e in E if e['w'] in 'xs')
@@ -472,6 +475,8 @@ def main():
     # (effects by key: only AI nodes and a few engine paths start them, so a fight may have none; that measure alone is
     # then not judged, and says so, while the run is judged on the rest)
     empty = [n for n, v in (('attacks armed', armed), ('blows', nblow)) if not v]
+    if blows_unjudged:
+        empty.append(f"a Link's blows on enemies by its own id (game {' and '.join(blows_unjudged)})")
     if not nfx:
         print('Effects by key: none started in either game, so not judged (and the record not shown to work).')
     over = max([s.get('over', 0) for s in SA + SB] or [0])
@@ -675,8 +680,17 @@ def compare_events(EA, EB, owner, ser, names, fail, me_ids, sl):
     for g, e, m in differs[:12]:
         print(f"    at {e['t']:.1f}: {e['by']} -> {e['a']}: {cls_name.get(e['cls'], e['cls'])} in {'AB'[g]} (counted), "
               f"{cls_name.get(m['cls'], m['cls'])} by the stand-in in {'AB'[1 - g]} {m['t'] - e['t']:+.2f} s")
-    if any(x is None for x in me_ids):
-        print("  (a game's own Link id is not in its record: its Links' blows were not judged)")
+    # (each game's own Link must be the striker of some of its blows on an enemy, when that game recorded any blow
+    # on an enemy at all: otherwise the ids do not match, nothing above paired, and the blows were not judged)
+    unjudged_blows = []
+    for g in (0, 1):
+        on_enemy = [e for e in blows[g] if not e['a'].startswith('L')]
+        if on_enemy and (me_ids[g] is None or not any(e['by'] == f'L{me_ids[g]}' for e in on_enemy)):
+            unjudged_blows.append('AB'[g])
+    if unjudged_blows:
+        print(f"  NOT JUDGED: game {' and '.join(unjudged_blows)} recorded blows on enemies, none by its own Link "
+              f"(its id: {[me_ids[0], me_ids[1]]}): the ids do not match, and its Link's blows were not judged")
+    return unjudged_blows
 
 
 def report_motion(i, who, r, names, fail):
