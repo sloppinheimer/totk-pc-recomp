@@ -945,7 +945,10 @@ static void clip_drive(Cpu *c, uint64_t actor, EnCell *m) {
     // fills a frame the game left without one.
     uint64_t g0 = anim_g(actor), d80 = 0;
     int missed = 0;
-    if (g0 && coop_rd(g0 + 0xd8, &d80, 8)) missed = m->clip_have && d80 == m->clip_d8, m->clip_d8 = d80, m->clip_have = 1;
+    if (g0 && coop_rd(g0 + 0xd8, &d80, 8)) {
+        if (!m->clip_have) m->clip_mark = d80;   // (the record line counts from here: not the seconds it was not a copy)
+        missed = m->clip_have && d80 == m->clip_d8, m->clip_d8 = d80, m->clip_have = 1;
+    }
     else m->clip_have = 0;
     uint8_t b3fc = 0;
     if (!coop_rd(actor + 0x3fc, &b3fc, 1) || !(b3fc & 3)) return;   // (the full body: the game updates and arms)
@@ -1028,6 +1031,7 @@ static void clip_drive(Cpu *c, uint64_t actor, EnCell *m) {
 void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     int st = atomic_load_explicit(&m->state, memory_order_relaxed);
     if (st == EM_COPY) clip_drive(c, actor, m);   // (first: it reads the calc's own x1)
+    else m->clip_have = 0;   // (a copy again later starts its counts afresh, the record line's among them)
     int off = is_off(st) && !noswitch() && atomic_load_explicit(&en_active, memory_order_relaxed);
     if (!atomic_load_explicit(&m->warm, memory_order_relaxed)) {
         // A new actor thinks until its interrupt graph has started (its instance has a queue count or a bit word), at
