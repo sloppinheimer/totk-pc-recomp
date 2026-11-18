@@ -232,7 +232,11 @@ static void equip_read(uint64_t actor, uint32_t eq[EN_EQ_N], int learn) {
     }
 }
 // The same, with what is fused to each held thing (the link at +0xb0 of its [comps+0x208]) and the slot's state byte
-// ([equipment user+0x4620+slot]: 2 drawn, 4 put away; research R13 section 3).
+// ([equipment user+0x4620+slot]: 2 drawn, 4 put away; research R13 section 3). No attachment is read for the bow
+// (slot 3): while an enemy nocks an arrow (ArrowReload, ArrowDraw) that link gives the arrow its prepare made, which a
+// copy, whose prepare is refused or replayed apart, never has; stated, it made the copy let go of its bow to make it
+// again "with the attachment", which failed and left the bow gone in one game for good (research R30 1). A bow takes
+// no fused material in the enemies' placements (research G8 3.1).
 static void equip_read_more(uint64_t actor, uint32_t att[EN_EQ_N], uint8_t eqs[EN_EQ_N], int learn) {
     uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230);
     for (int s = 0; s < EN_EQ_N; s++) {
@@ -250,7 +254,7 @@ static void equip_read_more(uint64_t actor, uint32_t att[EN_EQ_N], uint8_t eqs[E
         uint64_t wc = coop_rd_ptr(en_comps(held) + 0x208), aref = wc ? coop_rd_ptr(wc + 0xb0 + 8) : 0, a = aref ? coop_rd_ptr(aref + 0x40) : 0;
         int32_t ast = 0;
         char nm[40] = "";
-        if (!a || !coop_rd(a + COOP_ACTOR_STATE, &ast, 4) || ast < 2 || ast > 6) continue;
+        if (s == 3 || !a || !coop_rd(a + COOP_ACTOR_STATE, &ast, 4) || ast < 2 || ast > 6) continue;
         coop_actor_name(a, nm, sizeof nm);
         if (!nm[0]) continue;
         att[s] = fnv_str(nm);
@@ -868,8 +872,68 @@ static void slots_apply(Cpu *c, uint64_t actor, EnCell *m, const EnSlot *want, i
     }
 }
 
+// ---- A copy's clip kept playing near a Link (PLAN.md step 3 part 7; research R32) ------------------------------------
+// Far copies (about 20 m and more from their game's Link) stopped advancing their clips between the clocks
+// slots_apply writes, so a clip's events, the attack arm among them, never came (research R31 2). The calc is entered
+// every frame; inside it AS_update (main+0x432fa0, x0 the animation player G, s0 the step) is skipped by one of four
+// gates: a global flag with AC+0x9c bit 0 and G+0x124 bit 12, the IsAS pause mask (actor+0x3fc bit 18), the 0xc4 pause
+// masks without the exemption of [comps+0x88]+0x20 bit 4, or a missing AC, [AC+0x18] or G (research R32 3.1). Who
+// turns them on for a copy is not found. AS_update adds 1 to G+0xd8 on every run (read in Ghidra), so at the calc's
+// entry a count unmoved since the previous entry means the previous calc did not run it. For such a copy within
+// CLIP_NEAR_M (horizontal) of any Link shown in this game, the mod makes that one call itself, with the step the calc
+// would give it: the calc's dt times AC+0x98 (main+0x41ca18..0x41ca30; AC = [comps+0x40], G = [[AC+0x18]+0x18]).
+// AS_update returns at once when G+0x126 & 6 (bits 17 and 18 of +0x124), so that case is left alone. A clip whose
+// step is 0 inside AS_update ([G+0x38]+0x190 bit 1, research R32 case E) is not helped by this.
+//
+// The calc's dt, read in the lifted calc (f_700041bb20): its second argument x1 points at the step record; it takes
+// [x1+4] as the step it stores at sp+0x2f8 (the one multiplied by AC+0x98), or [[main+0x395da70]+0x10] when actor+0x5ac
+// bit 0 is set. Called at the calc's entry, before any guest call of en_copy_precalc, x1 is still that pointer. [guess:
+// the calc's other path, when actor+0x5b4 differs from the frame counter (main+0x41c798), was not followed to its
+// AS_update; the same step is used.]
+#define CLIP_NEAR_M 40.f
+static void clip_drive(Cpu *c, uint64_t actor, EnCell *m) {
+    uint64_t dtp = c->x[1];
+    uint64_t comps = en_comps(actor), ac = comps ? coop_rd_ptr(comps + 0x40) : 0, g = anim_g(actor), d8 = 0;
+    if (!ac || !g || !coop_rd(g + 0xd8, &d8, 8)) { m->clip_have = 0; return; }
+    int missed = m->clip_have && d8 == m->clip_d8;
+    m->clip_have = 1, m->clip_d8 = d8;
+    uint8_t g126 = 0;
+    if (!missed || !coop_rd(g + 0x126, &g126, 1) || (g126 & 6)) return;
+    {   // near a Link shown here: this game's or another player's stand-in
+        int coop_player_actors(uint64_t *actors, int *net_ids, int max);   // coop_players.c
+        float p[3], lp[3];
+        uint64_t acts[COOP_MAX_PLAYERS + 1], link = coop_player_actor();
+        int ids[COOP_MAX_PLAYERS], n = coop_player_actors(acts, ids, COOP_MAX_PLAYERS), near = 0;
+        if (link) acts[n++] = link;
+        if (!coop_rd(actor + COOP_ACTOR_POS, p, 12)) return;
+        for (int i = 0; i < n && !near; i++)
+            if (coop_rd(acts[i] + COOP_ACTOR_POS, lp, 12) && (p[0] - lp[0]) * (p[0] - lp[0]) + (p[2] - lp[2]) * (p[2] - lp[2]) <= CLIP_NEAR_M * CLIP_NEAR_M) near = 1;
+        if (!near) return;
+    }
+    uint32_t f5ac = 0;
+    float dt = 0, rate = 0;
+    coop_rd(actor + 0x5ac, &f5ac, 4);
+    if (f5ac & 1) {
+        uint64_t gp = coop_rd_ptr(MOD_MAIN_BASE + 0x395da70);
+        if (!gp || !coop_rd(gp + 0x10, &dt, 4)) return;
+    } else if (dtp < 0x10000 || !coop_rd(dtp + 4, &dt, 4)) return;
+    if (!coop_rd(ac + 0x98, &rate, 4)) return;
+    float step = dt * rate;
+    if (!isfinite(step) || step < 0.f || step > 1.f) return;
+    __uint128_t v[8];
+    uint32_t bits;
+    memcpy(v, c->v, sizeof v);
+    memcpy(&bits, &step, 4);
+    c->v[0] = bits;
+    coop_guest_call(c, MOD_MAIN_BASE + 0x432fa0, g, 0, 0, 0);
+    memcpy(c->v, v, sizeof v);
+    coop_rd(g + 0xd8, &m->clip_d8, 8);
+    atomic_fetch_add_explicit(&m->clip_ours, 1, memory_order_relaxed);
+}
+
 void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
     int st = atomic_load_explicit(&m->state, memory_order_relaxed);
+    if (st == EM_COPY) clip_drive(c, actor, m);   // (first: it reads the calc's own x1)
     int off = is_off(st) && !noswitch() && atomic_load_explicit(&en_active, memory_order_relaxed);
     if (!atomic_load_explicit(&m->warm, memory_order_relaxed)) {
         // A new actor thinks until its interrupt graph has started (its instance has a queue count or a bit word), at
@@ -950,6 +1014,7 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             if (atomic_fetch_add(&said, 1) < 12) rt_log("coop: en: switch: %llx thinks again: its interrupt graph gets back queue count %u, bits %x, root %d, pending root %d", (unsigned long long)actor, m->sw_qcount, m->sw_bits, (int)m->sw_root, (int)m->sw_pend);
         }
         en_hit_leave(actor, m);
+        { void en_act_leave(Cpu *c, uint64_t actor, EnCell *m); en_act_leave(c, actor, m); }   // (its slots 1 to 4 left with None: coop_enemy_act.c)
         if (body && m->body_static) coop_guest_call(c, MOD_MAIN_BASE + FN_MOTION_TYPE, body, 2, 0, 0);
         if (st == EM_OWNED && m->show_verb && !en_test_skip('b')) {   // this game runs it from here: its brain goes on where its owner's was
             m->grace_verb = m->show_verb, m->grace_tgt = m->show_tgt, m->grace_frame = coop_sess_frame_no() + BRAIN_GRACE;
@@ -1032,7 +1097,7 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             uint64_t eu = coop_rd_ptr(en_comps(actor) + 0x230);
             uint32_t fr = coop_sess_frame_no();
             if (!wn || !eu || fr - m->eq_made_frame < 120 || m->eq_tries[k] >= 2) continue;
-            m->eq_made_frame = fr, m->eq_tries[k]++;
+            m->eq_made_frame = fr, m->eq_tries[k]++, m->eq_try_frame[k] = fr;
             for (int j = 0; j < 2; j++) {
                 uint8_t *st = m->eq_str[j];
                 memset(st, 0, 0x60);
@@ -1046,10 +1111,16 @@ void en_copy_precalc(Cpu *c, uint64_t actor, EnCell *m) {
             uint64_t stack[6] = {0, 0, 0, (uint64_t)(uint32_t)-1, 0, (uint64_t)(uint32_t)-1};   // arguments 9 to 14
             memcpy((void *)(uintptr_t)sp, stack, sizeof stack);
             c->sp = sp;
+            // (the equipment user's flag word +0x4600: bit 0x200000000000 is set when a create request failed, research
+            // G8 3.2; logged before and after, since the create may finish later, when the next try's line shows it)
+            uint64_t fw0 = 0, fw1 = 0;
+            coop_rd(eu + 0x4600, &fw0, 8);
             uint64_t r = rt_call(c, MOD_MAIN_BASE + 0xaf100c, 8, eu, (uint64_t)k, (uint64_t)(uintptr_t)m->eq_str[0], (uint64_t)1, (uint64_t)(uint32_t)-1,
                                  (uint64_t)(uint32_t)-1, (uint64_t)(uintptr_t)m->eq_str[1], (uint64_t)1);
             c->sp = sp0;
-            rt_log("coop: en: equip: the copy %llx is given %s in slot %d, as its owner's enemy holds (the create answered %llx; try %d)", (unsigned long long)actor, wn, k, (unsigned long long)r, m->eq_tries[k]);
+            coop_rd(eu + 0x4600, &fw1, 8);
+            rt_log("coop: en: equip: the copy %llx is given %s in slot %d, as its owner's enemy holds (the create answered %llx; try %d; the create-failed bit %s before, %s after)", (unsigned long long)actor, wn, k, (unsigned long long)r, m->eq_tries[k],
+                   fw0 & 0x200000000000ull ? "set" : "clear", fw1 & 0x200000000000ull ? "set" : "clear");
             break;
         }
         {   // Drawn or put away as its owner's (main+0x4f59ec(equipment user, slot, 1 draw | 2 sheathe)): the slot's link is
@@ -1497,6 +1568,10 @@ void en_copy_phase0(Cpu *c) {
         }
         if ((frame & 15) == (uint32_t)(i & 15)) {   // what the copy holds against what its owner's enemy holds
             uint32_t eq[EN_EQ_N];
+            // (a slot whose creates or attachment drops gave up is tried again 10 s after the last: one failure no longer
+            // lasts the session)
+            for (int k = 0; k < EN_EQ_N; k++)
+                if ((m->eq_tries[k] || m->eq_att_tries[k]) && frame - m->eq_try_frame[k] >= 600) m->eq_tries[k] = 0, m->eq_att_tries[k] = 0;
             equip_read(e->actor, eq, 0);
             if (memcmp(eq, sl->eq, sizeof eq)) {
                 if (!e->eq_off++ || rec)
@@ -1523,7 +1598,10 @@ void en_copy_phase0(Cpu *c) {
                 uint8_t eqs[EN_EQ_N], drop = 0;
                 equip_read_more(e->actor, att, eqs, 0);
                 for (int k = 0; k < EN_EQ_N; k++) if (eq[k] && sl->att[k] && !att[k] && m->eq_att_tries[k] < 2) drop |= (uint8_t)(1u << k), m->eq_att_tries[k]++;
-                if (drop && ++e->eq_att_off >= 3) atomic_store(&m->eq_drop, drop), e->eq_att_off = 0;
+                if (drop && ++e->eq_att_off >= 3) {
+                    atomic_store(&m->eq_drop, drop), e->eq_att_off = 0;
+                    for (int k = 0; k < EN_EQ_N; k++) if (drop >> k & 1) m->eq_try_frame[k] = frame;
+                }
                 else if (!drop) e->eq_att_off = 0;
                 else for (int k = 0; k < EN_EQ_N; k++) if (drop >> k & 1) m->eq_att_tries[k]--;
             }
@@ -1547,6 +1625,23 @@ void en_copy_phase0(Cpu *c) {
                    (unsigned long long)e->id.a, e->name, (double)delay[id] / 1e6, e->st_used, e->st_held, atomic_exchange(&m->n_play, 0), atomic_exchange(&m->n_hard, 0),
                    atomic_exchange(&m->n_soft, 0), atomic_exchange(&m->n_off, 0));
             e->st_used = e->st_held = 0;
+            if (coop_debug()) {   // (record, research R32 5.4: which gate held a copy's AS_update this second)
+                uint64_t a = e->actor, comps = en_comps(a), ac = comps ? coop_rd_ptr(comps + 0x40) : 0, g = anim_g(a), d8 = 0;
+                uint64_t c88 = comps ? coop_rd_ptr(comps + 0x88) : 0, lod = comps ? coop_rd_ptr(comps + 0xb0) : 0, gl = coop_rd_ptr(coop_rd_ptr(MOD_MAIN_BASE + 0x3989e40));
+                float g11c = -1, ac98 = -1;
+                uint32_t a3fc = 0, g124 = 0, l84 = 0;
+                uint16_t c20 = 0;
+                uint8_t ac9c = 0, gfl = 0, lb6 = 0;
+                if (g) coop_rd(g + 0xd8, &d8, 8), coop_rd(g + 0x11c, &g11c, 4), coop_rd(g + 0x124, &g124, 4);
+                if (ac) coop_rd(ac + 0x98, &ac98, 4), coop_rd(ac + 0x9c, &ac9c, 1);
+                if (c88) coop_rd(c88 + 0x20, &c20, 2);
+                if (lod) coop_rd(lod + 0xb6, &lb6, 1), coop_rd(lod + 0x84, &l84, 4);
+                if (gl) coop_rd(gl + 0x48, &gfl, 1);
+                coop_rd(a + 0x3fc, &a3fc, 4);
+                rt_log("coop: en: clip: %016llx %llx: AS_update runs %llu (%u of them ours) in the last second; G+0x11c %.4f, G+0x124 %08x, actor+0x3fc %08x, [comps+0x88]+0x20 %04x, AC+0x98 %.3f, AC+0x9c %02x, global +0x48 %02x, LOD +0xb6 %02x +0x84 %08x",
+                       (unsigned long long)e->id.a, (unsigned long long)a, (unsigned long long)(d8 - m->clip_mark), atomic_exchange(&m->clip_ours, 0), g11c, g124, a3fc, c20, ac98, ac9c, gfl, lb6, l84);
+                m->clip_mark = d8;
+            }
         }
     }
     for (int id = 1; id <= COOP_MAX_PLAYERS; id++) tele_was[id] = tele[id];
@@ -1557,3 +1652,17 @@ void en_copy_phase0(Cpu *c) {
 }
 
 uint64_t en_state_key(Enid id) { return key_of(id); }
+// Where the owner's latest STATE of an entry places it (its epoch's, under 2 s old), for an entry this game has no
+// actor of (coop_enemy.c's re-make of an enemy made at run time; phase 0's own pass skips those). 1: read.
+int en_owner_place(const En *e, float pos[3], float quat[4]) {
+    int id = en_peer_id(e->owner);
+    MState ms;
+    uint64_t age = 0;
+    if (!id) return 0;
+    int len = coop_ctr_latest(id, ENM_STATE, key_of(e->id), &ms, sizeof ms, &age);
+    if (len < (int)(offsetof(MState, st) + offsetof(EnState, sl)) || !enid_eq(ms.id, e->id) || ms.epoch != e->epoch || age >= 2 * SEC) return 0;
+    for (int k = 0; k < 3; k++) if (!isfinite(ms.st.s.pos[k]) || fabsf(ms.st.s.pos[k]) > 1e5f) return 0;
+    for (int k = 0; k < 4; k++) if (!isfinite(ms.st.s.quat[k]) || fabsf(ms.st.s.quat[k]) > 2.f) return 0;
+    memcpy(pos, ms.st.s.pos, 12), memcpy(quat, ms.st.s.quat, 16);
+    return 1;
+}

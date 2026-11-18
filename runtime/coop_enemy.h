@@ -47,7 +47,8 @@ typedef struct {
     _Atomic uint32_t gen, frame;      // frame: the frame number of its last calc
     _Atomic uint32_t run_frame;       // the frame a graph runner of it was last entered (let through or turned away): the game thinks it
     uint32_t born_frame;              // the frame its cell was made
-    uint32_t act_verb;                // (run here) the action verb last told to its copies, 0 none (B.38)
+    uint32_t act_verb[5], act_key[5]; // (run here) per action slot, the verb and the variation and form (a hash) last told to its copies (B.38, PLAN.md step 3)
+    uint8_t act_told;                 // (run here) the slots (a bit each) whose last request was told and not yet stopped
     uint8_t act_run;                  // (a copy) it runs its owner's action this frame: the arm replay and the held effects are its nodes' (B.38)
     uint8_t graph_started;            // its interrupt graph had started when it was first switched off; without it nothing is asked of its brain (B.37)
     _Atomic uint8_t warm;             // its interrupt graph has started (or 30 frames passed): only then may the switch turn it off
@@ -61,6 +62,8 @@ typedef struct {
     uint32_t sw_qcount; uint16_t sw_bits; int32_t sw_root; int16_t sw_pend;   // what the four writes overwrote
     float pin[7];                     // where a held actor stands
     uint32_t slot_try[EN_SLOT_N];     // the frame a play of a slot's command last did not take (asked again 12 frames on)
+    uint64_t clip_d8, clip_mark;      // its animation player's AS_update count (G+0xd8) at its last calc entry, and at the last record line
+    uint8_t clip_have; _Atomic uint32_t clip_ours;   // clip_d8 read; AS_update calls the mod made for it since the last record line (PLAN.md step 3 part 7)
     _Atomic uint32_t turned, leaks, passed;   // entries the switch turned away; node ticks that got through; entries let through (it thinks)
     _Atomic uint32_t n_play, n_hard, n_soft, n_off;   // plays asked, clocks written, rates bent, frames not at the pose asked
     // What pre-calc shows (phase 0 writes it under the sequence, pre-calc reads it whole).
@@ -90,7 +93,8 @@ typedef struct {
     _Atomic uint8_t eq_drop;          // equipment slots (a bit each) whose held actor the copy must let go: its owner's enemy holds nothing there
     _Atomic uint32_t eq_make[EN_EQ_N];   // per equipment slot, the name hash of what the copy must be given (its owner's enemy holds it, the copy nothing)
     uint32_t eq_made_frame;           // the frame of the copy's last equipment create
-    uint8_t eq_tries[EN_EQ_N];        // creates made for a slot that stayed empty: after 2 no more (30 shields were made on one copy)
+    uint8_t eq_tries[EN_EQ_N];        // creates made for a slot that stayed empty: after 2 no more (30 shields were made on one copy), until 10 s after the last
+    uint32_t eq_try_frame[EN_EQ_N];   // the frame of a slot's last create or attachment drop (eq_tries and eq_att_tries fall back to 0 10 s on)
     uint8_t eq_str[2][0x60];          // the strings of that create (the game may read them after the call)
     _Atomic uint8_t dying, kill_req, put_away, flinch;   // asked of pre-calc: the copy's death, the owner's death, the actor of a dead placement put away, a flinch
     uint8_t put_done, dc_saved, dc_bits, req_tries;
@@ -105,6 +109,7 @@ typedef struct {
     int32_t hp; float pose[7];        // as last read (owned) or stated
     uint64_t made_ns, hold_until_ns, notrun_ns, offer_ns, no_offer_until_ns, offer_seen_ns, my_hit_ns, need_ns, state_ns, owner_ns;
     uint64_t offer_to;                // the game an offer is for (0: any that runs it)
+    uint64_t remake_ns;               // (made at run time, another game's, no actor here) when this game last asked the spawn sync to make it again
     uint64_t hit_by_ns; int hit_by;   // when another game's player last struck this game's enemy, and that player's id
     uint32_t decl_no, changes, hit_serial; int32_t pend_dmg; uint8_t send_burst;
     // motion and animation (coop_enemy_copy.c)

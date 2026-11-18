@@ -215,6 +215,8 @@ static EnCell *map_touch(uint64_t actor) {
     if (m) {
         if (atomic_load_explicit(&m->gen, memory_order_relaxed) == gen) return m;
         // another actor in a gone one's memory: the cell starts again, and phase 0 lets the old binding go
+        void en_act_forget(int cell);   // coop_enemy_act.c: its action queues (the old actor's requests) let go of
+        en_act_forget((int)(m - en_map) + 1);
         atomic_store(&m->en, -1);
         atomic_store(&m->state, EM_FREE);
         atomic_store(&m->actor, 1);
@@ -237,7 +239,9 @@ static EnCell *map_touch(uint64_t actor) {
         m->sw_on = m->sw_saved = m->body_static = 0, m->show_on = 0;
         atomic_store(&m->turned, 0), atomic_store(&m->leaks, 0);
         for (int k = 0; k < EN_EQ_N; k++) atomic_store(&m->eq_make[k], 0);
-        m->eq_made_frame = 0, memset(m->eq_tries, 0, sizeof m->eq_tries);
+        m->eq_made_frame = 0, memset(m->eq_tries, 0, sizeof m->eq_tries), memset(m->eq_att_tries, 0, sizeof m->eq_att_tries), memset(m->eq_try_frame, 0, sizeof m->eq_try_frame);
+        { void en_act_forget(int cell); en_act_forget((int)(m - en_map) + 1); }   // (none of an earlier actor's requests)
+        m->act_told = 0, m->clip_have = 0, m->clip_mark = 0, atomic_store(&m->clip_ours, 0);
         atomic_store(&m->eq_drop, 0), atomic_store(&m->hit_dmg, 0), atomic_store(&m->dying, 0), atomic_store(&m->kill_req, 0), atomic_store(&m->put_away, 0), atomic_store(&m->flinch, 0);
         m->put_done = m->dc_saved = m->req_tries = m->pinned = 0, m->hit_ns = 0, m->show_dstate = 0, m->hp_written = 0;
         for (int k = 0; k < EN_SLOT_N; k++) m->slot_try[k] = 0;
@@ -517,11 +521,20 @@ static void bind(En *e, EnCell *m, uint64_t actor, int state) {
     atomic_store(&m->state, (uint8_t)state);
     m->retry = 0;
 }
+// (its calc ran, its far gate is open, and a graph runner of it was entered in the last second and a half: the gate as
+// read here was open for an enemy 70 m off that no runner came for, and the game that "ran" it took it)
+static int cell_runs(EnCell *m, uint64_t actor, uint32_t frame) {
+    return frame - atomic_load(&m->frame) < 30 && en_gate_open(actor) && frame - atomic_load(&m->run_frame) < 90;
+}
 static int runs(const En *e, uint32_t frame) {   // S 4.1, without its waiting time
     if (e->cell < 0 || !en_alive(e->actor, e->gen)) return 0;
-    // (its calc ran, its far gate is open, and a graph runner of it was entered in the last second and a half: the
-    // gate as read here was open for an enemy 70 m off that no runner came for, and the game that "ran" it took it)
-    return frame - atomic_load(&en_map[e->cell].frame) < 30 && en_gate_open(e->actor) && frame - atomic_load(&en_map[e->cell].run_frame) < 90;
+    return cell_runs(&en_map[e->cell], e->actor, frame);
+}
+// For the mismatch checker (coop_check.c): whether this game runs the actor of a cell, by the test the ownership pass
+// uses (any thread; reads only).
+int coop_enemy_cell_runs(EnCell *m) {
+    uint64_t a = atomic_load(&m->actor);
+    return a > 1 && cell_runs(m, a, coop_sess_frame_no());
 }
 
 // An actor this game has and nobody has stated: what it is (S 4.2).
@@ -687,6 +700,54 @@ static void own_pass(uint64_t now, uint32_t frame) {
             else if (p >= SEC && e->my_hit_ns && now - e->my_hit_ns < 5 * SEC) take(e, "its owner is paused and this player fights it", now);
         }
     }
+}
+
+// An enemy made at run time that lives on in another game and has no actor here (its actor went: unloaded, or its own
+// far delete while this game ran it) is made again here, as a copy, when the owner's latest state places it within
+// REMAKE_M of this game's Link (research R30 3, PLAN.md step 3 part 5). Nothing else would: the spawn sync makes a copy
+// only on its maker's one SPAWN, and an entry binds only to an actor that appears. The spawn sync makes it by name at
+// that place under the same key (coop_spawn_sync.c coop_spawn_remake); cell_resolve then finds the entry by the key
+// and binds it as the copy, and far_sweep deletes it when far, as any copy made for another game. Not asked again for
+// an entry within 10 s (a create takes up to 10 s; one the game unloads again would be asked every frame).
+// [guess: 60 m is inside a Bokoblin's own unload radius; facts/enemies.md 13.5 leaves those radii open.]
+#define REMAKE_M 60.f
+static void remake_pass(uint64_t now) {
+    int coop_spawn_remake(uint32_t key, const char *name, const float pos[3], const float rot[9], int from);   // coop_spawn_sync.c
+    int en_owner_place(const En *e, float pos[3], float quat[4]);   // coop_enemy_copy.c
+    uint64_t me = coop_ctr_me(), link = coop_player_actor();
+    float lp[3];
+    if (!link || !coop_rd(link + COOP_ACTOR_POS, lp, 12)) return;
+    for (int i = 0; i < EN_N; i++) {
+        En *e = &en_tab[i];
+        if (!e->used || e->id.b != EN_RT || e->life != EN_LIVE || !e->owner || e->owner == me || e->cell >= 0) continue;
+        if (!e->have_decl || !e->name[0] || (e->id.a >> 32) || (e->remake_ns && now - e->remake_ns < 10 * SEC)) continue;
+        int id = en_peer_id(e->owner);
+        if (!id || coop_sess_peer(id) != COOP_SESS_RUNS) continue;
+        float pos[3], quat[4], r[9];
+        if (!en_owner_place(e, pos, quat)) continue;
+        float d = sqrtf((pos[0] - lp[0]) * (pos[0] - lp[0]) + (pos[1] - lp[1]) * (pos[1] - lp[1]) + (pos[2] - lp[2]) * (pos[2] - lp[2]));
+        if (d > REMAKE_M) continue;
+        en_rot_of_quat(quat, r);
+        e->remake_ns = now;
+        if (coop_spawn_remake((uint32_t)e->id.a, e->name, pos, r, id))
+            rt_log("coop: en: own: %s %016llx/%u lives on in player %d's game and has no actor here: made again here, at its owner's place %.1f m from this Link", e->name, (unsigned long long)e->id.a, e->id.b, id, d);
+    }
+}
+// For the spawn sync (coop_spawn_sync.c, its tick): whether another game owns a live entry of the enemy of that key made
+// at run time. Its maker then does not send SPAWN_GONE when its own actor goes: the other game fights it. The table is
+// read under en_lock; when the lock is busy the answer is 2, "not known now": the caller sends nothing and asks again
+// on its next tick (a torn read without the lock could have sent a GONE that deletes the enemy another game fights).
+int coop_enemy_rt_kept_elsewhere(uint32_t key) {
+    if (!coop_enemy_new()) return 0;
+    if (!plat_mutex_trylock(&en_lock)) return 2;
+    uint64_t me = coop_ctr_me();
+    int kept = 0;
+    for (int i = 0; i < EN_N && !kept; i++) {
+        const En *e = &en_tab[i];
+        if (e->used && e->id.a == key && e->id.b == EN_RT && e->life == EN_LIVE && e->owner && e->owner != me) kept = 1;
+    }
+    plat_mutex_unlock(&en_lock);
+    return kept;
 }
 
 // ---- Messages taken (the net tick) --------------------------------------------------------------------------------------
@@ -1041,6 +1102,7 @@ void coop_enemy_phase0(Cpu *c) {
         if (st == EM_NEW || st == EM_OWN) cell_resolve(m, now, frame);
     }
     own_pass(now, frame);
+    remake_pass(now);
     en_hit_phase0();
     en_copy_phase0(c);
     en_shot_phase0();

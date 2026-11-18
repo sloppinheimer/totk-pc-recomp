@@ -13,7 +13,13 @@
 // the one thing taken from the sync: two games' run-time actors have nothing else in common), else by its address
 // ("a...", this game's alone: an actor neither placed nor synced, which check.py lists as shown in one game only).
 // "r" says what the enemy sync does with it here (o runs it for all, c a copy of another game's, l its own and not
-// synced, h held, n new), so check.py knows which game is the owner; it judges nothing by it.
+// synced while this game runs it, r its own and not synced while nothing runs it here, h held, n new), so check.py
+// knows which game is the owner; it judges nothing by it. An enemy that neither game runs (parked by the game's battle
+// LOD manager, or both Links far) rests as "r" in both, and is no owner finding (research R30 2). The second's line
+// carries "v":2 since that role came; check.py reads an older record's "l" as either.
+// The per-frame line also carries each stand-in of another player's Link ("sl": its id, its weapon's attack byte,
+// EquipmentUser +0x660, which coop_players.c sets from its owner's state, and its weapon's place), so a blow of that
+// player missing in this game can be told apart: no attack on, or the weapon not where the enemy was (research R31 1.4).
 // On with TOTK_COOP_DEBUG=1 (the pair scripts set it); TOTK_COOP_CHECK=0 turns it off, =1 on alone.
 //
 // TOTK_COOP_TEST_NUDGE=<t>,<s>,<m> (a test of the checker, PLAN.md step 1): from t world seconds, the first enemy copy
@@ -55,11 +61,12 @@ static int ident(const EnCell *m, uint64_t a, char *out, size_t n) {
     if (m->rt && m->hash) return snprintf(out, n, "r%016llx", (unsigned long long)m->hash);
     return snprintf(out, n, "a%llx", (unsigned long long)a);
 }
-static char role(int st) {
-    switch (st) {
+static char role(EnCell *m) {
+    int coop_enemy_cell_runs(EnCell *m);   // coop_enemy.c
+    switch (atomic_load_explicit(&m->state, memory_order_relaxed)) {
     case EM_OWNED: return 'o';
     case EM_COPY: return 'c';
-    case EM_OWN: return 'l';
+    case EM_OWN: return coop_enemy_cell_runs(m) ? 'l' : 'r';
     case EM_HELD: return 'h';
     default: return 'n';
     }
@@ -84,7 +91,7 @@ static float near_link(const float p[3], float lp[][3], int nl) {
     return best;
 }
 
-static void snap_actor(FILE *f, int first, const EnCell *m, uint64_t a, const char *id, const float pose[7]) {
+static void snap_actor(FILE *f, int first, EnCell *m, uint64_t a, const char *id, const float pose[7]) {
     char nm[48] = "";
     coop_actor_name(a, nm, sizeof nm);
     int32_t st = 0, rag = 0;
@@ -100,7 +107,7 @@ static void snap_actor(FILE *f, int first, const EnCell *m, uint64_t a, const ch
     fprintf(f, "%s{\"id\":\"%s\",\"n\":", first ? "" : ",", id);
     put_str(f, nm);
     fprintf(f, ",\"r\":\"%c\",\"p\":[%.3f,%.3f,%.3f],\"q\":[%.4f,%.4f,%.4f,%.4f],\"hp\":%d,\"st\":%d,\"ds\":%u,\"rag\":%d,\"hide\":%u,\"vis\":%u",
-            role(atomic_load_explicit(&m->state, memory_order_relaxed)), pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], pose[6],
+            role(m), pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], pose[6],
             en_hp_of(a), st, dw, rag, hide, (fl >> 23) & 1);
     char cmd[EN_SLOT_N][40];
     float clk[EN_SLOT_N];
@@ -298,7 +305,7 @@ void coop_check_tick(Cpu *c, uint64_t me) {
     int snap = sec != last_s;
     if (snap) {
         last_s = sec;
-        fprintf(f, "{\"k\":\"s\",\"t\":%.6f,\"me\":%d,\"world\":%.2f,\"links\":[", now / 1e9, coop_net_id(), frame_step_world_us() / 1e6);
+        fprintf(f, "{\"k\":\"s\",\"v\":2,\"t\":%.6f,\"me\":%d,\"world\":%.2f,\"links\":[", now / 1e9, coop_net_id(), frame_step_world_us() / 1e6);
         for (int i = 0; i < nl; i++) fprintf(f, "%s[%.3f,%.3f,%.3f]", i ? "," : "", lp[i][0], lp[i][1], lp[i][2]);
         fputs("],\"a\":[", f);
     }
@@ -339,7 +346,31 @@ void coop_check_tick(Cpu *c, uint64_t me) {
     atomic_store_explicit(&users_n[ub], un, memory_order_relaxed);
     atomic_store_explicit(&users_cur, ub, memory_order_release);
     if (snap) fprintf(f, "],\"over\":%d,\"arms_full\":%u}\n", over, atomic_load(&arms_full));   // (actors the hooks' tables left out)
-    if (fn && fo < (int)sizeof fl - 4) fputs(fl, f), fputs("]}\n", f);
+    // the stand-ins, on the frames that have an enemy within 40 m: id, weapon attack byte, the weapon's place (none: no weapon)
+    char sb[COOP_MAX_PLAYERS * 96];
+    int so = 0, nsl = 0;
+    {
+        uint64_t coop_eq_row_ref(uint64_t actor, int row);   // coop_players.c
+        uint64_t acts[COOP_MAX_PLAYERS];
+        int ids[COOP_MAX_PLAYERS], k = coop_player_actors(acts, ids, COOP_MAX_PLAYERS);
+        for (int i = 0; fn && i < k && so < (int)sizeof sb - 96; i++) {
+            uint64_t eq = coop_rd_ptr(en_comps(acts[i]) + 0x230), ref = coop_eq_row_ref(acts[i], 0), w = ref ? coop_rd_ptr(ref + 0x40) : 0;
+            uint8_t att = 0;
+            float wp[3];
+            if (eq) coop_rd(eq + 0x660, &att, 1);
+            // (a weapon place outside the world is not written: %.3f of a huge finite float is hundreds of characters)
+            int nw = w && coop_rd(w + COOP_ACTOR_POS, wp, 12) && fabsf(wp[0]) < 1e6f && fabsf(wp[1]) < 1e6f && fabsf(wp[2]) < 1e6f;
+            int r = nw ? snprintf(sb + so, sizeof sb - so, "%s[\"L%d\",%u,%.3f,%.3f,%.3f]", nsl ? "," : "", ids[i], att, wp[0], wp[1], wp[2])
+                       : snprintf(sb + so, sizeof sb - so, "%s[\"L%d\",%u]", nsl ? "," : "", ids[i], att);
+            if (r < 0 || r >= (int)sizeof sb - so) { sb[so] = 0; break; }   // (no room: the entry left out whole)
+            so += r, nsl++;
+        }
+    }
+    if (fn && fo < (int)sizeof fl - 4) {
+        fputs(fl, f), fputs("]", f);
+        if (nsl) fprintf(f, ",\"sl\":[%s]", sb);
+        fputs("}\n", f);
+    }
     if (snap) fflush(f);
 }
 

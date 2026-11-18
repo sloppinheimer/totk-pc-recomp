@@ -133,11 +133,20 @@ Before each calc, `en_copy_precalc`:
 - **Animation.** `slots_apply` plays the owner's command in each slot by the game's own play request (main+0x4dc628)
   when it differs, at once; a command the slot did not take (read back after the play) is asked again 12 frames later
   at the soonest. Clocks more than 3 units off are written; smaller errors bend the rate by up to 10 %.
+- **Clip kept playing** (`clip_drive`, first in `en_copy_precalc`, PLAN.md step 3 part 7). The calc may skip
+  AS_update (main+0x432fa0) for a copy; AS_update adds 1 to G+0xd8 on every run (G the animation player). A copy
+  within 40 m (horizontal) of any Link shown here whose count did not move since its previous calc entry gets one
+  AS_update call from the mod, with s0 = the calc's dt ([x1+4] of the calc's argument, or [[main+0x395da70]+0x10]
+  when actor+0x5ac bit 0) times AC+0x98 (AC = [comps+0x40]); not when G+0x126 & 6, where AS_update returns at once.
+  With `TOTK_COOP_DEBUG=1` a line a second per copy (`coop: en: clip:`) gives the runs and the mod's calls that
+  second and the words the calc's gates read.
 - **Life and death.** `coop_enemy_hit.c en_hit_precalc` (below).
 - **Equipment.** Every 16 frames phase 0 compares what the copy holds with what the owner's enemy holds. After three
   differing looks, a thing the owner does not hold is deleted, and a missing one is made by the game's equipment create
-  (main+0xaf100c), at most once in 2 s and twice per slot. A thing with the wrong fused attachment is let go of and made
-  again. Draw and sheathe follow the owner's (main+0x4f59ec, at most once a second). The slot's shown byte follows the
+  (main+0xaf100c), at most once in 2 s and twice per slot, tried again 10 s after the last try; the log line of each
+  create shows the equipment user's create-failed bit (+0x4600, 0x200000000000) before and after. A thing with the
+  wrong fused attachment is let go of and made again, twice per slot, again 10 s on. No attachment is stated or
+  compared for the bow (slot 3): its link holds the nocked arrow while the owner aims. Draw and sheathe follow the owner's (main+0x4f59ec, at most once a second). The slot's shown byte follows the
   owner's. A drop is told at once (EQUIP) and the copy lets go at once.
 - **Throws.** When the owner's enemy throws (EQUIP, thrown), the copy makes the same throw with the owner's request
   (main+0x1b73be4). The thrown thing in this game is this game's own; it can hurt this game's Link. It is deleted once
@@ -270,8 +279,18 @@ heartbeat (`en_world_stands`, `coop_sess.c`), which is what lets another game ta
   (`spawn_scan`). Part actors of an enemy (weak points, dummies, bullets) are announced too.
 - Each other game makes one by name at that place (`spawn_take`, `coop_request_create`), or gives the key to its own
   actor of that name within 3 m.
-- When the maker's enemy goes away without dying (unloaded), SPAWN_GONE deletes the others'. An enemy seen dead is left
-  to the enemy sync, whose death the copies are still playing.
+- When the maker's enemy goes away without dying (unloaded), SPAWN_GONE deletes the others', unless another game owns
+  a live entry of that key (`coop_enemy.c coop_enemy_rt_kept_elsewhere`, read under `en_lock`; when the lock is busy it
+  is asked again on the next tick): that game fights it. An enemy seen dead is
+  left to the enemy sync, whose death the copies are still playing.
+- A run-time enemy that another game runs and this game has no actor of is made again here (`coop_enemy.c
+  remake_pass`, phase 0): alive, its name declared, its owner's game running, the owner's latest STATE (under 2 s old)
+  within 60 m of this game's Link, not asked in the last 10 s. `coop_spawn_remake` queues it and `spawn_tick` makes it
+  through `spawn_make`, the create part `spawn_take` uses (without the per-player rate and 500 m checks, which are
+  about another game's SPAWN, and without giving the key to an actor of this game within 3 m: at the owner's live
+  place that could be an unrelated enemy of the same name). `cell_resolve` binds it as the copy by its key; `far_sweep` covers it.
+- The enemy `TOTK_COOP_TEST_SPAWN` made is marked in its SPAWN (`pad` 1, only 0 or 1 taken), and every game keeps the
+  actor of that key from its own AI's far delete (`coop_life.c`, `coop_spawn_is_test_foe`).
 - A copy made here for another game is deleted when it is more than 1000 m from every player (`far_sweep`,
   `coop_far.c`; `TOTK_COOP_FAR=0`, `TOTK_COOP_FAR_M`).
 - These packets ride the HIT channel (`coop_net_hit_send`), not the enemy stream. Nothing orders a SPAWN against a
@@ -371,11 +390,18 @@ within 40 m, with the attack types it has armed (the arm call main+0x1bf20cc, fr
 arm replay); and as they happen, the effects and sounds an enemy starts by key (ELink main+0xa98cf8, SLink
 main+0xa98d00, hooked for this) and the blows between an enemy and a Link (the contacts of a body's hit update,
 main+0x300a30, read before `coop_contact.c` takes any out). An actor is named by its placement hash, else by the spawn
-sync's key, else by its address (this game's alone); a Link by its player's id. `tools/coop/check.py <dir A> <dir B>` pairs the two records by time and identity and lists each difference
-that holds two seconds (shown in one game only, two or no owners, place, rotation, life, death, ragdoll, drawn,
-command, equipment), per copy against its owner the lag, the place error at that lag, stutter, the share of frames
-with the owner's command, the animation's phase and the attacks armed with the owner, the owner's effects by key
-found in the copy's game, and every blow between an enemy and a Link found in both games with the same outcome;
+sync's key, else by its address (this game's alone); a Link by its player's id. Its role says what this game does
+with it: o runs it for all, c a copy, l its own (unsynced) while this game runs it (`coop_enemy.c
+coop_enemy_cell_runs`, the ownership pass's test), r its own while nothing runs it here, h held, n new (the second's
+line has "v":2 since "r" came). The per-frame line also has each stand-in's weapon attack byte (EquipmentUser
++0x660) and its weapon's place ("sl"). `tools/coop/check.py <dir A> <dir B>` pairs the two records by time and identity and lists each difference
+that holds two seconds (shown in one game only, not run for all by exactly one game unless both games hold it
+resting, place, rotation, life, death, ragdoll, drawn, command, equipment), per copy against its owner the
+lag, the place error at that lag, stutter, the share of frames with the owner's command, the animation's phase and
+the attacks armed with the owner, the owner's effects by key found in the copy's game, every enemy copy's blow on a
+Link while its owner had an attack armed, and each Link's blow on an enemy in its player's own game, with the other
+game's stand-in contact listed as information (that contact never counts: `contacts_filter`; a game whose blows on
+enemies include none by its own Link id leaves the run not judged);
 PLAN.md step 1 has the targets. `run_pair.ps1`,
 `run_session.ps1` and `play_two.ps1` run it at the end. `run_pair.ps1 -Nudge <t>,<s>,<m>` plants a desync to show
 it is found (`TOTK_COOP_TEST_NUDGE`: game B shows its first enemy copy m metres off for s seconds).
@@ -392,16 +418,33 @@ rule 3), which en_bench does not run yet.
 
 ### The action layer (`TOTK_COOP_EN_ACT=1`, off)
 
-`coop_enemy_act.c`. The owner sends its enemy's Main-slot action request (ACT) each frame it asks for a listed verb
-(`en_act_owner`; default verbs 131, 145, 108; `TOTK_COOP_EN_ACT_VERBS=all` for every verb;
-`TOTK_COOP_EN_ACT_FAMILY` limits it to name prefixes). The copy makes the same request on its own Main slot when this
-game shows the owner at the request's time (`en_act_precalc`), after writing the owner's controller move state and
-velocity (`cct_write`). Under that call (`tl_act_actor`) `en_copy_hook` lets the one call tree through the switch. A
+`coop_enemy_act.c`. The owner sends each action request its enemy asks of any of its five slots (ACT: the slot, the
+request, the variation and the form key's text) whenever it is for a listed verb (`en_act_owner`; default verbs 131,
+145, 108; `TOTK_COOP_EN_ACT_VERBS=all` for every verb; `TOTK_COOP_EN_ACT_FAMILY` limits it to name prefixes), and
+once more, as a stop, when it no longer is. For slots 1 to 4 verb 0 (None) goes as that slot's stop once after a told
+request (the copy's stop is the game's own None; the scheduler's fill asks None of empty slots over and over). It keeps the
+last verb, variation and form per slot, and tells mode 1 when any of them changed. An interrupt request (flags bit
+0) is told, with a mark, only for the light reactions (verbs 151, 152, 155, 160, 162, 164, 166, 167, 169, 173, 237);
+the heavy ones (death and the rigid-body reactions) are a stop. A form the receiver would refuse makes the request a
+stop. The receiving game checks the message (`act_msg_ok`): from the enemy's owner, slot below 5 and the request's
+own, verb in range, flags only bits 0 and 8, numbers finite or NaN and within 1e5, texts ended and printable, the form
+one of the known keys or empty. It keeps one queue per copy and slot. The copy makes the requests on its own slots
+when this game shows the owner at the request's time (`en_act_precalc`): first the owner's form, by the game's own
+setter (main+0x88d524 then main+0xd141fc, or for the default form main+0x88d524 with the default key and
+main+0x88d794, as OneShotBSAChangeForm and OneShotBSAResetForm do), with the text kept in a table never freed; then
+Main, then the other slots that hold a request, after writing the owner's controller move state and velocity
+(`cct_write`). An interrupt runs with bit 0 cleared; the force bit 8 is kept only on the call of a request just
+taken. Under that call (`tl_act_actor`) `en_copy_hook` lets the one call tree through the switch. A
 node tick of the copy's own (the node's actor, [[[node+8]+8]+0x1f8], is the marked one) whose class is in
 `coop_enemy_act_deny.inc` (276 classes in 10 categories) is turned away and marked succeeded (`en_act_tick_seen`); a
 node of another actor under the mark, were one calc ever run inside another's, is judged as outside it. A play the action asks for is answered "played" and not made, since the copy's slots
-already play the owner's commands (`TOTK_COOP_EN_ACT_PLAYS=1` lets them through). When the owner's verb leaves the
-list, or nothing comes for half a second, the copy is asked for Wait (verb 40) once. While a copy runs an action the
+already play the owner's commands (`TOTK_COOP_EN_ACT_PLAYS=1` lets them through). A stop, or for Main nothing for
+half a second, asks Main for Wait (verb 40) with mode 1 once, and a slot 1 to 4 for None with mode 0, as the game's
+own fill (main+0x46f020); slots 1 to 4 keep their request until told and ask it again each frame with mode 0. A copy
+that thinks again (`en_act_leave`, from `en_copy_precalc`) drops its queues and asks None of each slot 1 to 4 that
+holds a started request other than None; in the game that now owns it that None is told to the other copies as the
+slot's stop. A cell's queues are also dropped when `map_touch` starts the cell for another actor, and a queue whose
+copy has had no calc for 5 s is taken as free by `en_act_msg`. While a copy runs an action the
 ARM replay is skipped and an effect its own node started is not started again.
 
 Under the same mark, whichever node makes the call, `en_act_refuse` skips the engine functions an action's outward acts
@@ -420,8 +463,7 @@ the per-call line counts the refusals. The calls are routed as before: `en_copy_
 `COOP_HOOKED_EN` addresses, `coop_spawn.c coop_hook` for the creates, `coop_life.c` for the deaths and the prepare, each
 asking `en_act_refuse` first. The mod's own replays run before the action call, outside the mark.
 
-Not built, from the file's own list and PLAN.md: the other four slots, interrupt requests (`flags & 1` are not sent),
-and the form key. The refusals have not been run (PLAN.md step 2's gate). `TOTK_COOP_EN_ACT_ALLOW` and `TOTK_COOP_EN_ACT_DENY` change
+The five slots, the light interrupts and the form key (PLAN.md step 3, parts 1 to 3) are built and not yet run. `TOTK_COOP_EN_ACT_ALLOW` and `TOTK_COOP_EN_ACT_DENY` change
 the deny table for a test. PLAN.md lists what was measured with it.
 
 ### The Shooter-sleep replay

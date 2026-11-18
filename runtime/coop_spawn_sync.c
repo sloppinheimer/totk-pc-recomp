@@ -83,6 +83,14 @@ static struct { uint32_t key; uint64_t actor; uint8_t dead; } spawned_mine[64]; 
 // The copies made here for another game, after made[] let go of them: deleted once far from every player (coop_far.c),
 // as TotK Online's server disposes of an actor 1000 m from every player and its client deletes a runtime-made one.
 static struct { uint32_t key; uint64_t actor; int from; char name[48]; } made_held[64];
+// The key of the enemy TOTK_COOP_TEST_SPAWN made (coop_spawn.c), in the game that made it (set when it is announced)
+// and in the others (its SPAWN carries a mark: SpawnPacket.pad 1). coop_life.c keeps that enemy from its own AI's far
+// delete in every game, so the session test does not bounce it between games (PLAN.md step 3 part 5).
+static _Atomic uint32_t test_foe_key;
+int coop_spawn_is_test_foe(uint64_t a) {
+    uint32_t k = atomic_load_explicit(&test_foe_key, memory_order_relaxed);
+    return k && a && keyed_of(a) == k;
+}
 // Whether this game made that actor for another game's announcement (coop_enemy.c: its maker claims it, not this game).
 int coop_spawn_made_for_other(uint64_t actor) {
     for (int k = 0; actor && k < 64; k++) if (made_held[k].actor == actor) return 1;
@@ -173,6 +181,10 @@ static int spawn_send(uint64_t a, const char *nm) {
     SpawnPacket sp = {.key = coop_world_enemy_key(nm, p), .kind = SPAWN_KIND};
     snprintf(sp.name, sizeof sp.name, "%s", nm), memcpy(sp.pos, p, 12), memcpy(sp.rot, r, 36);
     keyed_set(a, sp.key);
+    {   // (the test enemy: marked, so every game keeps it from its far delete)
+        uint64_t coop_spawn_test_foe(void);   // coop_spawn.c
+        if (a == coop_spawn_test_foe()) sp.pad = 1, atomic_store(&test_foe_key, sp.key);
+    }
     int f = -1;
     for (int k = 0; k < 64 && f < 0; k++) if (!spawned_mine[k].key) f = k;
     if (f >= 0) spawned_mine[f].key = sp.key, spawned_mine[f].actor = a;   // (full: its going away is not told)
@@ -211,6 +223,7 @@ static void spawn_scan(void) {
     }
     memcpy(seen, next, (size_t)nnext * sizeof next[0]), memcpy(seen_n, next_n, (size_t)nnext * sizeof next_n[0]), nseen = nnext;
 }
+static void remake_tick(Cpu *c);   // (below: the enemy sync's re-makes made)
 void spawn_tick(Cpu *c) {
     if (!spawn_on()) return;
     far_copy_test(c);
@@ -234,6 +247,7 @@ void spawn_tick(Cpu *c) {
         spawn_send(a, nm);
     }
     spawn_scan();
+    remake_tick(c);
     for (int k = 0; k < 32; k++) {   // the copies being made; made ones let go of 10 s on (handed over by then)
         if (made[k].state == 2 && now - made[k].ns > 10000000000ull) made[k].state = 0, made[k].actor = 0;
         if (made[k].state != 1) continue;
@@ -259,12 +273,83 @@ void spawn_tick(Cpu *c) {
         int alive = coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6 && spawn_kind(coop_actor_name(a, nm, sizeof nm));
         if (alive && coop_life_of(a) == 0) spawned_mine[k].dead = 1;
         if (alive && keyed_of(a) == spawned_mine[k].key) continue;
+        int coop_enemy_rt_kept_elsewhere(uint32_t key);   // coop_enemy.c: 1 kept, 0 not, 2 not known now (its lock busy)
         if (!spawned_mine[k].dead && (!alive || coop_life_of(a) != 0)) {
-            SpawnPacket sp = {.key = spawned_mine[k].key, .kind = SPAWN_GONE};
-            coop_net_hit_send(&sp, sizeof sp);
-            rt_log("coop: spawn sync: %08x gone here: the others go too", sp.key);
+            // (not while another game owns it alive: that game fights it, and its going here is this game's alone; this
+            // game makes it again when its Link comes near, coop_enemy.c remake_pass)
+            int kept = coop_enemy_rt_kept_elsewhere(spawned_mine[k].key);
+            if (kept == 2) continue;   // (asked again on the next tick)
+            if (kept) rt_log("coop: spawn sync: %08x gone here, but another game runs it: the others keep theirs", spawned_mine[k].key);
+            else {
+                SpawnPacket sp = {.key = spawned_mine[k].key, .kind = SPAWN_GONE};
+                coop_net_hit_send(&sp, sizeof sp);
+                rt_log("coop: spawn sync: %08x gone here: the others go too", sp.key);
+            }
         }
         spawned_mine[k].key = 0, spawned_mine[k].actor = 0, spawned_mine[k].dead = 0;
+    }
+}
+// The create part of a SPAWN, shared by spawn_take and the enemy sync's re-make: nothing when an actor of that key is
+// here or being made; for a SPAWN, this game's own actor of that name within 3 m takes the key; else one is made by
+// name there. A re-make (remake 1) adopts none: it is placed at the owner's live place, which in a camp of enemies of
+// one name can be within 3 m of an unrelated one of this game's, and that one would then carry the key (no copy made,
+// and a later SPAWN_GONE of the key would delete this game's own enemy).
+static void spawn_make(Cpu *c, uint32_t key, const char *name, const float pos[3], const float rot[9], int from, const char *why, int remake) {
+    for (int i = 0; i < KEYED_N; i++) {
+        uint64_t a = atomic_load(&keyed[i].actor);
+        if (a && keyed[i].key == key && keyed_of(a) == key) return;   // (have it)
+    }
+    for (int k = 0; k < 32; k++) if (made[k].state && made[k].key == key) return;
+    // This game's own spawner made one of that name at that place (both games run the same spawners): that one
+    // takes the key, no second is made.
+    for (int i = 0; !remake && i < coop_world_n_enemies; i++) {
+        uint64_t a = coop_world_enemies[i];
+        int32_t st = 0;
+        float q[3];
+        char nm[48];
+        if (!coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || keyed_of(a) || !coop_rd(a + COOP_ACTOR_POS, q, 12) ||
+            dist3(q, pos) > 3 || strcmp(coop_actor_name(a, nm, sizeof nm), name))
+            continue;
+        keyed_set(a, key);
+        rt_log("coop: spawn sync: %s %08x %s: this game's own one there takes its key", name, key, why);
+        return;
+    }
+    for (int k = 0; k < 32; k++) {
+        if (made[k].state) continue;
+        memset(made[k].handle, 0, sizeof made[k].handle);
+        snprintf(made[k].name, sizeof made[k].name, "%s", name);   // (kept: the create may read it later)
+        if (!coop_request_create(c, made[k].name, pos, rot, made[k].handle)) return;
+        made[k].key = key, made[k].state = 1, made[k].actor = 0, made[k].ns = plat_now_ns(), made[k].from = from;
+        memcpy(made[k].pos, pos, 12);
+        rt_log("coop: spawn sync: %s %08x %s: requested here", made[k].name, key, why);
+        return;
+    }
+}
+// The enemy sync's re-make (coop_enemy.c remake_pass, at phase 0): an enemy made at run time that another game runs
+// and this game has no actor of, asked to be made again here at its owner's place under its key. Queued, and made by
+// spawn_tick on the HIT channel's tick through spawn_make, without the checks of spawn_take that are about another
+// game's word (the name is the enemy sync's declared one, still one the spawn sync makes). 1: queued.
+#define REMAKE_N 8
+static struct { _Atomic int state; uint32_t key; int from; char name[48]; float pos[3], rot[9]; } remake[REMAKE_N];   // 0 free, 1 being filled, 2 due
+int coop_spawn_remake(uint32_t key, const char *name, const float pos[3], const float rot[9], int from) {
+    if (!spawn_on() || !name || !spawn_kind(name)) return 0;
+    for (int i = 0; i < REMAKE_N; i++) if (atomic_load_explicit(&remake[i].state, memory_order_acquire) == 2 && remake[i].key == key) return 1;
+    for (int i = 0; i < REMAKE_N; i++) {
+        int z = 0;
+        if (!atomic_compare_exchange_strong(&remake[i].state, &z, 1)) continue;
+        remake[i].key = key, remake[i].from = from;
+        snprintf(remake[i].name, sizeof remake[i].name, "%s", name);
+        memcpy(remake[i].pos, pos, 12), memcpy(remake[i].rot, rot, 36);
+        atomic_store_explicit(&remake[i].state, 2, memory_order_release);
+        return 1;
+    }
+    return 0;
+}
+static void remake_tick(Cpu *c) {
+    for (int i = 0; i < REMAKE_N; i++) {
+        if (atomic_load_explicit(&remake[i].state, memory_order_acquire) != 2) continue;
+        spawn_make(c, remake[i].key, remake[i].name, remake[i].pos, remake[i].rot, remake[i].from, "made again for the enemy sync", 1);
+        atomic_store_explicit(&remake[i].state, 0, memory_order_release);
     }
 }
 void spawn_take(Cpu *c, const SpawnPacket *sp, int from) {
@@ -281,7 +366,7 @@ void spawn_take(Cpu *c, const SpawnPacket *sp, int from) {
             }
             return;   // (have it)
         }
-    if (sp->kind != SPAWN_KIND || memchr(sp->name, 0, sizeof sp->name) == NULL || !spawn_kind(sp->name)) return;
+    if (sp->kind != SPAWN_KIND || sp->pad > 1 || memchr(sp->name, 0, sizeof sp->name) == NULL || !spawn_kind(sp->name)) return;
     for (int i = 0; i < 3; i++) if (!isfinite(sp->pos[i]) || fabsf(sp->pos[i]) > 1e5f) return;   // (a NaN place matched
     for (int i = 0; i < 9; i++) if (!isfinite(sp->rot[i]) || fabsf(sp->rot[i]) > 1e3f) return;   // any enemy's below;
                                                                                               // a matrix may carry scale)
@@ -298,29 +383,8 @@ void spawn_take(Cpu *c, const SpawnPacket *sp, int from) {
         if (now - since[from] > 1000000000ull) since[from] = now, n[from] = 0;
         if (n[from]++ >= 32) return;   // (a camp loaded at once announces a few dozen)
     }
-    for (int k = 0; k < 32; k++) if (made[k].state && made[k].key == sp->key) return;
-    // This game's own spawner made one of that name at that place (both games run the same spawners): that one
-    // takes the key, no second is made.
-    for (int i = 0; i < coop_world_n_enemies; i++) {
-        uint64_t a = coop_world_enemies[i];
-        int32_t st = 0;
-        float q[3];
-        char nm[48];
-        if (!coop_rd(a + COOP_ACTOR_STATE, &st, 4) || st < 2 || st > 6 || keyed_of(a) || !coop_rd(a + COOP_ACTOR_POS, q, 12) ||
-            dist3(q, sp->pos) > 3 || strcmp(coop_actor_name(a, nm, sizeof nm), sp->name))
-            continue;
-        keyed_set(a, sp->key);
-        rt_log("coop: spawn sync: %s %08x made in player %d game: this game's own one there takes its key", sp->name, sp->key, from);
-        return;
-    }
-    for (int k = 0; k < 32; k++) {
-        if (made[k].state) continue;
-        memset(made[k].handle, 0, sizeof made[k].handle);
-        snprintf(made[k].name, sizeof made[k].name, "%s", sp->name);   // (kept: the create may read it later)
-        if (!coop_request_create(c, made[k].name, sp->pos, sp->rot, made[k].handle)) return;
-        made[k].key = sp->key, made[k].state = 1, made[k].actor = 0, made[k].ns = plat_now_ns(), made[k].from = from;
-        memcpy(made[k].pos, sp->pos, 12);
-        rt_log("coop: spawn sync: %s %08x made in player %d game: requested here", made[k].name, sp->key, from);
-        return;
-    }
+    if (sp->pad == 1) atomic_store(&test_foe_key, sp->key);   // (the test enemy, kept from its far delete here too)
+    char why[32];
+    snprintf(why, sizeof why, "made in player %d game", from);
+    spawn_make(c, sp->key, sp->name, sp->pos, sp->rot, from, why, 0);
 }

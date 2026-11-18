@@ -235,12 +235,15 @@ int coop_life_hook(Cpu *c, uint64_t addr) {
     // The enemy TOTK_COOP_TEST_SPAWN made is kept from its own AI's far delete: on the Great Sky Island platform its
     // brain finds no path home, takes verb 47 (ForceReturnHome) and its node OneShotGenericFarDeleteThisActor (the
     // call at main+0x2534d30) asks a delete with reason 3 about 8 s after it is made (a run, 2026-11-17; research R23).
-    // A test enemy only: an enemy of the game's own is left to it.
+    // A test enemy only: an enemy of the game's own is left to it. In every game, not only the one that made it: the
+    // spawn sync marks it to the others (coop_spawn_sync.c coop_spawn_is_test_foe), and kept in one game only it went
+    // in the game that ran it and was taken back by the other (PLAN.md step 1's session run; step 3 part 5).
     if ((off == DELETE_REQUEST || off == DELETE_DEFER) && c->x[1] == 3 && c->x[30] - MOD_MAIN_BASE == 0x2534d34) {
         uint64_t coop_spawn_test_foe(void);   // coop_spawn.c
+        int coop_spawn_is_test_foe(uint64_t a);   // coop_spawn_sync.c
         uint64_t foe = coop_spawn_test_foe();
         static _Atomic int said;
-        if (foe && c->x[0] == foe) {
+        if ((foe && c->x[0] == foe) || coop_spawn_is_test_foe(c->x[0])) {
             if (atomic_fetch_add(&said, 1) < 3) rt_log("coop: test: foe: its AI's far delete refused (a test enemy stays)");
             c->x[0] = 0;
             return 1;
