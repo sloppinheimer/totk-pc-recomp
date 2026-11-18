@@ -863,7 +863,17 @@ static void slots_apply(Cpu *c, uint64_t actor, EnCell *m, const EnSlot *want, i
             memcpy((void *)(uintptr_t)(ctx + 0x68), &wantc, 4);
             __atomic_fetch_or((uint32_t *)(uintptr_t)(ctx + 0xa0), 0x400u, __ATOMIC_SEQ_CST);
             if (!played) atomic_fetch_add_explicit(&m->n_hard, 1, memory_order_relaxed);
-        } else if (e > 0.5f || e < -0.5f) {
+        } else if (e < -0.5f && rate > 0) {
+            // Ahead of its owner: the next calc's step (half a 30th times the rate per 60th of a second) is cut so the
+            // clock lands at the edge of the half-unit band, never run backwards. So when the owner's clip stands (the
+            // game's hit-stop of about 0.1 s after another player's blow), the copy's stands with it; bent by 10 % at
+            // most, it ran on and armed its swing 43 ms before its owner (step 3's third gate run, research R34 4). That
+            // a slot rate of 0 holds the clip for that calc is assumed from this file's use of +0xd0 as the clock's
+            // step, not measured.
+            float r2 = rate + 2.f * (e + 0.5f);
+            rate = r2 > 0 ? r2 : 0;
+            atomic_fetch_add_explicit(&m->n_soft, 1, memory_order_relaxed);
+        } else if (e > 0.5f || e < -0.5f) {   // (behind: caught up by 10 % at most)
             float k = e / 30.f;
             rate *= 1.f + (k > 0.1f ? 0.1f : k < -0.1f ? -0.1f : k);
             atomic_fetch_add_explicit(&m->n_soft, 1, memory_order_relaxed);

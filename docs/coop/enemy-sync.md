@@ -132,7 +132,9 @@ Before each calc, `en_copy_precalc`:
   the matrix (COOP_FORCE_MATRIX) and the actor's own transforms.
 - **Animation.** `slots_apply` plays the owner's command in each slot by the game's own play request (main+0x4dc628)
   when it differs, at once; a command the slot did not take (read back after the play) is asked again 12 frames later
-  at the soonest. Clocks more than 3 units off are written; smaller errors bend the rate by up to 10 %.
+  at the soonest. Clocks more than 3 units off are written. A copy behind by more than half a unit is caught up by up
+  to 10 % of the rate; one ahead by more than half a unit has its next step cut so its clock lands half a unit ahead
+  (the rate down to 0, never below), so an owner's clip that stands (hit-stop) holds the copy's too (research R34 4).
 - **Clip kept playing** (`clip_drive`, first in `en_copy_precalc`, PLAN.md step 3 part 7). The calc may skip
   AS_update (main+0x432fa0) for a copy; AS_update adds 1 to G+0xd8 on every run (G the animation player). A copy
   within 40 m (horizontal) of any Link shown here whose count did not move since its previous calc entry gets one
