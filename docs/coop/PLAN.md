@@ -480,9 +480,34 @@ Done when: the camp fight with the layer on, every verb, all slots and the light
 arms with its owner at 95 % or more; and the checker's difference list is read and explained. A session run
 (`run_session.ps1`, the test foe) shows the run-time enemy made again in the game that lost it.
 
-Built (2026-11-17, merge 606f6f71: seven commits, reviewed, the review's eight findings fixed; no warning); not yet
-run. Not checked in code: the request's +0x24 field from the other game, and the known form keys leave out keys that
-come through graph links.
+8. **A Link's hit effects in the other game** (added 2026-11-17 at the user's request). A Link's blow counts only in
+   its player's game; the other game throws its stand-in's contact away (`contacts_filter`), so whether the other
+   player sees the hit spark and hears the hit sound depends on where those start: from the contact, or from the
+   enemy's reaction. Read first where a blow's spark and sound start; then the checker records them in both games and
+   compares them, as it does effects started by key.
+
+Built (2026-11-17, merge 606f6f71: seven commits, reviewed, the review's eight findings fixed; no warning; a second
+review's four findings fixed in 269c915d). Not checked in code: the request's +0x24 field from the other game, and the
+known form keys leave out keys that come through graph links.
+
+**First gate run: FAIL** (2026-11-17, 269c915d; the camp fight, layer on, every verb; records in `build/gate5`):
+- Good: no crash. No bow difference and no "owner" finding. Light interrupts told as forced requests. Movement within
+  target on every copy (lag 60 to 70 ms, error p95 0.03 to 0.28 m, stutter 1.04 to 1.20x).
+- Bad: attacks armed with the owner fell for the copies of game A's enemies in game B: 9 % (p8e74ea9), 38 %
+  (p5cb495b), 75 % (the Dark Bokoblin, also 17 % armed without its owner), against 97 to 100 % in step 2's gate. At the
+  missed attacks the copy's clip advanced every frame, so it is not the clip stall. Not found yet. Signs:
+  - game B logged copies' Main calls with the slot's graph never run for whole seconds ("60 calls, its graph run 0
+    times");
+  - each game logged ten (the log's cap) action requests from the other refused by the new message checks, with no
+    reason given;
+  - the logs cap most action lines at their first few dozen, so they cannot show which requests were lost.
+- Part 7's record names the stall: while a copy's clip stood, the game ran its AS_update about 8 times a second (not
+  never), with actor+0x3fc 0x22901 against 0x800 or 0x22800 when it ran fully, and LOD+0xb6 bit 7 clear (0x40, 0x48
+  against 0xc0, 0xc8). No pause mask of gates B or C was set. The 30-calc wait added after the second review stops
+  the mod's call for such a copy, since the game's 8 runs a second reset the count; the wait has to go or change.
+- One copy's blow on a Link with its owner not armed (game A, paced24f).
+- Still in the list: ragdoll states for 4 to 6 s (three enemies), one shield held in one game for 2 s, one Bokoblin
+  missing in one game for 2 s after dying.
 
 ### 4. One camp fight in play
 
