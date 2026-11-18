@@ -411,8 +411,12 @@ def main():
     measured = moved = 0
     for i in sorted(owner):
         for who in (0, 1):
-            own = ser[who].get(i)
-            cop = [r for r in ser[1 - who].get(i, []) if owner[i].get(int(r[0])) == who]   # (its frames while who ran it)
+            # (both sides over the seconds who ran it, one second more of the owner's on each side for the lag: the
+            # owner's frames of other seconds are of the enemy as a copy there, and a jerk taken over the whole run
+            # set a calm copy against a violent owner or the reverse; research R27)
+            secs = owner[i]
+            own = [r for r in ser[who].get(i, []) if any(secs.get(int(r[0]) + d) == who for d in (-1, 0, 1))]
+            cop = [r for r in ser[1 - who].get(i, []) if secs.get(int(r[0])) == who]   # (its frames while who ran it)
             if not own or not cop:
                 continue
             r = motion(own, cop, skip.get(i, []))

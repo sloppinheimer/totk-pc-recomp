@@ -346,7 +346,21 @@ So the gate is not passed: no crash and the refusals work, arming is fixed, but 
 The same fight with the layer off (2026-11-17, same build): stutter 1.01 to 1.24x on every copy that moved (place
 error p95 0.05 to 0.12 m), attacks armed without the owner 0 to 4 %, no FATAL. So **the play limit is good and the
 stutter is the layer's** (every verb on). Not read yet, a guess: what a copy's action does to its own body (its
-controller's move, the physics an action asks) fights the placing of the copy at its owner's pose. The layer does help arming with the
+controller's move, the physics an action asks) fights the placing of the copy at its owner's pose.
+
+Read (2026-11-17, research enemy/gaps/R27): the guess was wrong. Nothing moves a copy off its placing (its place is
+its owner's at the lag on almost every frame; "frames not at the pose asked" 0 throughout). The stutter figure was
+the checker's: it set the jerk of a copy over the seconds its owner ran it against the owner game's whole run, which
+includes the seconds that game showed the enemy as a copy. Fixed (`check.py` takes the owner's frames of the same
+seconds); with it, the gate run's copies are 1.15 to 1.28x, under the target. What is real: in B, three enemies B
+had run the layer on as copies and then took over **flew** after a blow (10 m up in 0.1 s, falling at 90 m/s,
+sliding 30 to 66 m/s, at a partial ragdoll), and their copies in A showed it faithfully; nothing flew with the layer
+off. Three causes stay possible: a jump request a copy's action leaves on its controller (OneShotPhysicsCctSetJumpHeight,
+main+0x38011a8, makes the same request as the denied OneShotPhysicsCctJump, read; it is now on the deny list); the
+controller's move state written by index each frame (`coop_enemy_act.c cct_write`), which skips the state change's
+leave and edge flags; or chance (three cases). What the take-over does not undo: the controller's state and the
+action's queue cell. Next: the same gate run (it decides the first), then, if flights remain, read `ChangeMoveState`
+main+0x298f7a8, the jump module's vtable +0x60 and the result pass main+0x240440 before changing `cct_write`. The layer does help arming with the
 owner: 94 to 100 % per copy with it, 81 and 43 % for two Bokoblins without it (a clip started at the owner's command
 still arms by its own clock). Next: read what moves a copy's body while its action runs (`cct_write`, the
 controller's move state and velocity, and the action's own movement requests) against `en_copy_precalc`'s placing,

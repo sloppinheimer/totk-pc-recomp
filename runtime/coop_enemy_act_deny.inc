@@ -6,7 +6,8 @@
 // ExecuteGenericRequestCreateActor, OneShotTargetEquipTarget and ExecuteOctarockStoneKeepPredation (whole: its
 // refused pick-up would still let its holder's entry go). OneShotEquipmentUserRequestChangeState is not listed: its
 // draw and put-away are the copy's own body, and its drop is refused at the drop record (coop_enemy_act.c
-// en_act_refuse). Sorted.
+// en_act_refuse). OneShotPhysicsCctSetJumpHeight (main+0x38011a8, calc main+0x2555114) does the same jump request as
+// the denied OneShotPhysicsCctJump, in the other order (research R27). Sorted.
 {0x3743808, 7},
 {0x3749210, 1},
 {0x3749c58, 7},
@@ -216,6 +217,7 @@
 {0x37ff838, 8},
 {0x37ff960, 8},
 {0x3800740, 10},
+{0x38011a8, 10},
 {0x3808420, 1},
 {0x3808798, 1},
 {0x380ea30, 6},
