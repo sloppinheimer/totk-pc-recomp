@@ -378,7 +378,21 @@ the flinch our sync asks for another game's hit (`coop_enemy_hit.c`): a killing 
 ragdolled. It only met enemies game B owned, and B owned only enemies it had taken over (which had been layer copies
 there), which is why it looked like the layer's; the layer-off run never met the pair. Fixed: no flinch for a
 killing hit (`en_hit_phase0`) and none while the ragdoll state is 3 (`en_hit_precalc`). Built; not yet run.
-SetJumpHeight stays denied (it is the same act as the denied jump). The layer does help arming with the
+SetJumpHeight stays denied (it is the same act as the denied jump).
+
+**Gate passed** (2026-11-17, f931baa7; the same camp fight, layer on, every verb; 16 take-overs between the games):
+- No crash, no FATAL. Refusals logged in both games: the Shooter's prepare, shoot and sleep, each with its caller.
+- No flight: 4 single frames over 0.5 m in all (the first gate run 138, the second 58), none a launch.
+- Movement within target on every copy measured: lag 70 ms, place error p95 0.04 to 0.08 m, stutter 0.94 to 1.09x.
+- Attacks armed with the owner 97 to 100 % per copy but one Bokoblin at 72 %; without the owner 0 to 3 % (the
+  baseline: 22 to 93 % and up to 62 %).
+- Once a second, 8 differences held two seconds, the baseline's number and kinds: the Guard Bokoblin's bow in one
+  game only (43 and 54 s), a Guard Bokoblin each game ran as its own (6 s), ragdoll states (5 s), two Bokoblins
+  missing in one game for 2 s. The pictures show the fight in both games and nothing in the air.
+- Blows: one copy's blow on a Link, with its owner armed; a Link's blow on an enemy in both games 18 times, in one
+  only 6, with another outcome 2 (the layer-off run: 6 and 1).
+Carried to step 3: the bow in one game only, the enemy both games run as their own, the run-time enemy not made again
+(step 1), the Link's blows seen in one game only, and attacks armed late on one Bokoblin. The layer does help arming with the
 owner: 94 to 100 % per copy with it, 81 and 43 % for two Bokoblins without it (a clip started at the owner's command
 still arms by its own clock). Next: read what moves a copy's body while its action runs (`cct_write`, the
 controller's move state and velocity, and the action's own movement requests) against `en_copy_precalc`'s placing,
