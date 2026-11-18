@@ -518,11 +518,20 @@ static void bind(En *e, EnCell *m, uint64_t actor, int state) {
     atomic_store(&m->state, (uint8_t)state);
     m->retry = 0;
 }
+// (its calc ran, its far gate is open, and a graph runner of it was entered in the last second and a half: the gate as
+// read here was open for an enemy 70 m off that no runner came for, and the game that "ran" it took it)
+static int cell_runs(EnCell *m, uint64_t actor, uint32_t frame) {
+    return frame - atomic_load(&m->frame) < 30 && en_gate_open(actor) && frame - atomic_load(&m->run_frame) < 90;
+}
 static int runs(const En *e, uint32_t frame) {   // S 4.1, without its waiting time
     if (e->cell < 0 || !en_alive(e->actor, e->gen)) return 0;
-    // (its calc ran, its far gate is open, and a graph runner of it was entered in the last second and a half: the
-    // gate as read here was open for an enemy 70 m off that no runner came for, and the game that "ran" it took it)
-    return frame - atomic_load(&en_map[e->cell].frame) < 30 && en_gate_open(e->actor) && frame - atomic_load(&en_map[e->cell].run_frame) < 90;
+    return cell_runs(&en_map[e->cell], e->actor, frame);
+}
+// For the mismatch checker (coop_check.c): whether this game runs the actor of a cell, by the test the ownership pass
+// uses (any thread; reads only).
+int coop_enemy_cell_runs(EnCell *m) {
+    uint64_t a = atomic_load(&m->actor);
+    return a > 1 && cell_runs(m, a, coop_sess_frame_no());
 }
 
 // An actor this game has and nobody has stated: what it is (S 4.2).
