@@ -321,11 +321,19 @@ void spawn_tick(Cpu *c) {
 // one name can be within 3 m of an unrelated one of this game's, and that one would then carry the key (no copy made,
 // and a later SPAWN_GONE of the key would delete this game's own enemy).
 static void spawn_make(Cpu *c, uint32_t key, const char *name, const float pos[3], const float rot[9], int from, const char *why, int remake) {
+    // (An actor of that key, or one made for it, counts only while it is alive: the session run's first re-make found
+    // the actor just deleted still keyed, and the one made 10 s before still in made[] at state 2, and asked nothing
+    // until its next try 10 s later, research R36 3.)
     for (int i = 0; i < KEYED_N; i++) {
         uint64_t a = atomic_load(&keyed[i].actor);
-        if (a && keyed[i].key == key && keyed_of(a) == key) return;   // (have it)
+        int32_t st = 0;
+        if (a && keyed[i].key == key && keyed_of(a) == key && coop_rd(a + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6) return;   // (have it)
     }
-    for (int k = 0; k < 32; k++) if (made[k].state && made[k].key == key) return;
+    for (int k = 0; k < 32; k++) {
+        int32_t st = 0;
+        if (made[k].key != key || !made[k].state) continue;
+        if (made[k].state == 1 || (made[k].actor && coop_rd(made[k].actor + COOP_ACTOR_STATE, &st, 4) && st >= 2 && st <= 6)) return;   // (being made, or made and alive)
+    }
     // This game's own spawner made one of that name at that place (both games run the same spawners): that one
     // takes the key, no second is made.
     for (int i = 0; !remake && i < coop_world_n_enemies; i++) {

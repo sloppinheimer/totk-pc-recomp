@@ -632,6 +632,19 @@ Explained (research R36, 2026-11-17; its key reads checked in Ghidra and the cod
   AS_update, G+0xe0 is set to 1, which makes that cheap step run the full AS_update itself (events raised, counted),
   so the mod stays out.
 
+Sixth gate run (2026-11-17, c0fd6e95; `build/gate10`; 59 fps): no difference held two seconds; the Dark's copy armed
+with its owner 100 % (from 91), so the cheap-step fix holds; movement and commands within target. Still failing:
+- two Junior copies' arming, 89 % (p8e74ea9, one window 0.13 s early among nine) and 57 % (p5cb495b, a single owner
+  window of 14 frames, the copy 0.17 s late): small samples, not read further yet;
+- two copy blows on a Link "with the owner unarmed": item 3 decided. The new contact line shows the contact naming the
+  Junior paced24f as the attacker while the striking object was the Dark Bokoblin's own body (1.6 m off; the Junior
+  3.4 m, unarmed). The checker now records a body blow's striking enemy as the striker (coop_check.c coop_check_hits);
+  the outcome sent to the wrong enemy's owner is left for now (it only logs for "landed").
+Session run (`build/session4`): the re-make works. B dropped its copy, the enemy sync asked a re-make at once and the
+second try made it ("made again for the enemy sync: requested here", then "made here"); B was without it 10 s, since
+the first try found the deleted actor still keyed. Fixed: an actor of that key, or one made for it, counts only while
+alive (coop_spawn_sync.c spawn_make). Built.
+
 ### 4. One camp fight in play
 
 Asked of the tester, by name, with the layer on for Bokoblins. The checker runs and screenshots are taken from both

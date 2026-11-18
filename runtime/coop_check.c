@@ -249,6 +249,14 @@ void coop_check_hits(uint64_t dc) {
     if (!vlink && !any_ident(v, vid, sizeof vid)) return;
     for (int k = 0; k < cnt; k++) {
         uint64_t en = base + (uint64_t)k * 0x1c0, r2 = coop_rd_ptr(en + 0x80), by = r2 ? coop_rd_ptr(r2 + 0x40) : 0;
+        // (The striking object, when it is itself an enemy of the record and not the named attacker, is the striker: a
+        // body blow. Step 3's sixth gate run logged blows on a Link whose contact named a Junior as the attacker while
+        // the striking object was the Dark Bokoblin's own body, 1.6 m off, the Junior 3.4 m and unarmed: research R34 3.)
+        {
+            uint64_t r1 = coop_rd_ptr(en + 0x68), w = r1 ? coop_rd_ptr(r1 + 0x40) : 0;
+            char wid[24];
+            if (w && w != by && !link_ident(w, wid, sizeof wid) && any_ident(w, wid, sizeof wid)) by = w;
+        }
         int blink = link_ident(by, bid, sizeof bid);
         if (!blink && !any_ident(by, bid, sizeof bid)) continue;
         if (vlink == blink) continue;   // (a Link and a Link, or an enemy and an enemy: not this check's)
