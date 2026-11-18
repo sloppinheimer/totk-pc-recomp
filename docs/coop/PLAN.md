@@ -486,6 +486,22 @@ arms with its owner at 95 % or more; and the checker's difference list is read a
    enemy's reaction. Read first where a blow's spark and sound start; then the checker records them in both games and
    compares them, as it does effects started by key.
 
+   Read in research R35 (2026-11-17; its call site checked in Ghidra): the spark and the hit sound are one "Hit"
+   request to the game's reaction system (main+0x2b4f008 on [main+0x395f518]+0x30), made by the struck body's own calc
+   for each entry of its received-hit list after the damage step (main+0x1b90cb4 from main+0x422a18, then
+   main+0x1b91844, which picks the type, Hit, Guard, GuardJust, HitIneffectual and others, from the victim's results).
+   So the striker's game shows them and **the other game shows neither**: its stand-in's contact is taken out of that
+   list. The checker never saw this: the request does not pass ELink/SLink, and no run has recorded one "x" or "s"
+   event at all. Design (a later batch, after the R34 batch passes; two new hooks, so a full rebuild):
+   - the striker's game sends, per blow of its Link on an enemy, the request it posted (type, flags, properties, place
+     and normal relative to the enemy) in a new message; the other game posts the same request with its own users
+     (the stand-in's and its enemy's). Sent properties, not recomputed, so a guard plays as a guard;
+   - the checker records each "Hit" request ("r": victim, attacker, attack id, type) in both games and compares: an
+     "r" in the striker's game within 2 frames of each blow, and one for the same enemy in the other game within
+     0.3 s with the same type;
+   - read before building: main+0x1b946f4, which runs after the requester's post on the struck actor [guess: the
+     hit-stop, which would also be R34 item 4's missing pause], and which user is the source of a sword blow.
+
 Built (2026-11-17, merge 606f6f71: seven commits, reviewed, the review's eight findings fixed; no warning; a second
 review's four findings fixed in 269c915d). Not checked in code: the request's +0x24 field from the other game, and the
 known form keys leave out keys that come through graph links.
